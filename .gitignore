@@ -12,7 +12,6 @@ dist
 build
 uv.lock
 CLAUDE.md
-ROADMAP.md
 
 # Third-party reference material. Copyrighted textbooks and commercial source,
 # none of it redistributable. This repo goes public before submission.
