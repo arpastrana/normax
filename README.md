@@ -1,9 +1,9 @@
-# norma
+# normax
 
-[![PyPI](https://img.shields.io/pypi/v/norma.svg)](https://pypi.org/project/norma/)
-[![Tests](https://github.com/arpastrana/norma/actions/workflows/test.yml/badge.svg)](https://github.com/arpastrana/norma/actions/workflows/test.yml)
-[![Changelog](https://img.shields.io/github/v/release/arpastrana/norma?include_prereleases&label=changelog)](https://github.com/arpastrana/norma/releases)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/arpastrana/norma/blob/main/LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/normax.svg)](https://pypi.org/project/normax/)
+[![Tests](https://github.com/arpastrana/normax/actions/workflows/test.yml/badge.svg)](https://github.com/arpastrana/normax/actions/workflows/test.yml)
+[![Changelog](https://img.shields.io/github/v/release/arpastrana/normax?include_prereleases&label=changelog)](https://github.com/arpastrana/normax/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/arpastrana/normax/blob/main/LICENSE)
 
 Backpropagating through building codes
 
@@ -11,7 +11,7 @@ Backpropagating through building codes
 
 Install this library using `pip`:
 ```bash
-pip install norma
+pip install normax
 ```
 ## Usage
 
@@ -21,7 +21,7 @@ Usage instructions go here.
 
 To contribute to this library, first checkout the code. Then create a new virtual environment:
 ```bash
-cd norma
+cd normax
 python -m venv venv
 source venv/bin/activate
 ```

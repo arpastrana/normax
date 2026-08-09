@@ -1,19 +1,27 @@
 [project]
-name = "norma"
+name = "normax"
 version = "0.1"
 description = "Backpropagating through building codes"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.15"
 authors = [{name = "Rafael Pastrana"}]
 license = "Apache-2.0"
 classifiers = []
 dependencies = [
-
+    "jax>=0.11.0",
+    "jaxtyping>=0.3.11",
+    "tesseract-core[runtime]>=1.11.0",
+    "tesseract-jax>=0.4.1",
 ]
+
+[tool.setuptools.packages.find]
+include = ["normax*"]
 
 [dependency-groups]
 dev = [
-    "pytest"
+    "blue-prints>=0.7.1",
+    "pytest",
+    "ruff>=0.16.2",
 ]
 
 [build-system]
@@ -21,9 +29,38 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "D202",  # no blank line after function/method docstring
+    "D300",  # use triple double quotes
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    "F722",  # jaxtyping annotations use empty-string shapes
+    "F821",  # jaxtyping dimension variable names (e.g. "nodes")
+]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.lint.per-file-ignores]
+"normax/__init__.py" = ["E402", "F401"]  # re-exports after the JAX config
+"tests/*" = ["E712", "E501"]  # JAX bool comparisons; relaxed line length
+
+
 [project.urls]
-Homepage = "https://github.com/arpastrana/norma"
-Changelog = "https://github.com/arpastrana/norma/releases"
-Issues = "https://github.com/arpastrana/norma/issues"
-CI = "https://github.com/arpastrana/norma/actions"
+Homepage = "https://github.com/arpastrana/normax"
+Changelog = "https://github.com/arpastrana/normax/releases"
+Issues = "https://github.com/arpastrana/normax/issues"
+CI = "https://github.com/arpastrana/normax/actions"
 

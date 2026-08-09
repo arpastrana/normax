@@ -5,8 +5,15 @@ __pycache__/
 venv
 .eggs
 .pytest_cache
+.ruff_cache
 *.egg-info
 .DS_Store
 dist
 build
 uv.lock
+CLAUDE.md
+ROADMAP.md
+
+# Third-party reference material. Copyrighted textbooks and commercial source,
+# none of it redistributable. This repo goes public before submission.
+references/
