@@ -561,3 +561,79 @@ def test_both_readings_are_differentiable():
         )(-5e5)
 
         assert jnp.isfinite(gradient)
+
+
+# --------------------------------------------------------------------------- #
+# The top of the search interval is assumed, so it is checked
+# --------------------------------------------------------------------------- #
+def test_a_root_above_the_search_interval_returns_nan_not_a_diameter():
+    # The lower end of the interval brackets by construction; the upper end is
+    # assumed. Were the root above it, the untested top would come back looking
+    # like an answer, and it would fail the very check it claims to satisfy.
+    steel = Steel()
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    sized = diameter(-1e5, 0.0, 0.0, 1.0, 1.0, 1e30, steel, tube, plastic=False)
+
+    assert jnp.isnan(sized)
+
+
+def test_the_ceiling_is_out_of_physical_reach():
+    # Twelve orders separate the two ends of the interval, so only a buckling
+    # length of order 1e28 mm can push the root past it. Anything a structure
+    # could have still finds its root.
+    steel = Steel()
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    for l_cr in (1e3, 1e6, 1e12, 1e18, 1e24):
+        sized = diameter(-1e5, 0.0, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False)
+        used = utilization(
+            sized, -1e5, 0.0, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False
+        )
+
+        assert not jnp.isnan(sized)
+        assert float(used) == pytest.approx(1.0, abs=1e-9)
+
+
+def test_the_guard_does_not_fire_on_a_member_carrying_nothing():
+    # A flat check has no root but never exceeds one, so the interval is not the
+    # reason it has no root and the catalogue decides the size.
+    steel = Steel()
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    sized = diameter(0.0, 0.0, 0.0, 1.0, 1.0, 1000.0, steel, tube, plastic=False)
+
+    assert not jnp.isnan(sized)
+    assert float(sized) == pytest.approx(float(tube.diameter_min), rel=1e-12)
+
+
+def test_a_failed_bracket_poisons_the_gradient_too():
+    # Loud in both passes: there is no valid design, so there is no sensitivity
+    # of one either.
+    steel = Steel()
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    def size(n_ed):
+        return diameter(n_ed, 0.0, 0.0, 1.0, 1.0, 1e30, steel, tube, plastic=False)
+
+    assert jnp.isnan(jax.grad(size)(-1e5))
+
+
+def test_the_guard_costs_one_evaluation_and_changes_no_answer():
+    # Every ordinary case must return exactly what it returned before the guard.
+    steel = Steel()
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    for n_ed, m_ed, l_cr in (
+        (-1e4, 0.0, 1000.0),
+        (-5e5, 2e6, 4000.0),
+        (1e5, 0.0, 4000.0),
+        (-2e6, 5e7, 12000.0),
+    ):
+        sized = diameter(n_ed, m_ed, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False)
+        used = utilization(
+            sized, n_ed, m_ed, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False
+        )
+
+        assert not jnp.isnan(sized)
+        assert float(used) == pytest.approx(1.0, abs=1e-9)

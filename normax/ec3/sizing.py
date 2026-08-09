@@ -482,6 +482,18 @@ def _solve(
     two differ by less than the spacing of the numbers representing them, but
     only one of them is guaranteed to satisfy the check, and a design standard
     should not hand back a member that fails it.
+
+    **The interval is checked at its top before its contents are believed.** The
+    lower end brackets by construction, being the larger of two necessary
+    conditions, but the upper end is assumed rather than searched for. Were the
+    root above it, every midpoint would exceed one, the lower end would climb to
+    meet the upper, and the untested top of the interval would come back looking
+    like an answer. One evaluation there is the difference between a diameter that
+    fails the check and a nan, and only the second is honest.
+
+    Reaching that takes a buckling length of some 1e28 mm, since the two ends are
+    twelve orders apart and only buckling can separate the root from the analytic
+    bound. Neither tension nor bending can, both inverting exactly.
     """
     shape = jnp.broadcast_shapes(
         jnp.shape(n_ed),
@@ -522,9 +534,27 @@ def _solve(
 
         return jnp.where(exceeded, middle, small), jnp.where(exceeded, large, middle)
 
+    ceiling = jnp.exp(over)
+    bracketed = (
+        utilization(
+            ceiling,
+            n_ed,
+            m_y_ed,
+            m_z_ed,
+            c_my,
+            c_mz,
+            l_cr,
+            steel,
+            tube,
+            plastic=plastic,
+            resultant=resultant,
+        )
+        <= 1.0
+    )
+
     under, over = lax.fori_loop(0, BISECTION_HALVINGS, halve, (under, over))
 
-    return jnp.exp(over)
+    return jnp.where(bracketed, jnp.exp(over), jnp.nan)
 
 
 @partial(jax.custom_jvp, nondiff_argnums=(0, 1))
