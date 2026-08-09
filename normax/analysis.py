@@ -45,6 +45,7 @@ from smax import Support
 from smax import compile_structure
 from smax import element_forces
 from smax import solve
+from smax import solve_buckling
 from smax.dof import DOF_PER_NODE
 
 from normax.ec3.sizing import Steel
@@ -88,6 +89,33 @@ class MemberForces(NamedTuple):
     n_ed: Float[Array, "members"]
     m_y_ed: Float[Array, "members ends"]
     m_z_ed: Float[Array, "members ends"]
+
+
+class Buckling(NamedTuple):
+    """
+    The elastic instability of a whole frame, rather than of one member.
+
+    Attributes
+    ----------
+    factors :
+        Multiple of the applied load at which the frame buckles, smallest first.
+    shapes :
+        Displacement of every node in each mode, in the six degrees of freedom.
+
+    Notes
+    -----
+    The smallest factor is what EN 1993-1-1 writes as `α_cr`. A value below one
+    says the frame becomes unstable before it is loaded to its design value, and
+    a member check cannot see that: it reads the slenderness of one member over
+    an assumed buckling length, while this reads the mode the whole structure
+    has.
+
+    Mode shapes are not normalised to any physical amplitude. An eigenvector
+    fixes a shape and not a size, so only ratios within a mode mean anything.
+    """
+
+    factors: Float[Array, "modes"]
+    shapes: Float[Array, "modes nodes 6"]
 
 
 def fixities(
@@ -279,4 +307,74 @@ def forces(
         n_ed=field.nx[:, 0],
         m_y_ed=to_newton_millimetres(field.my),
         m_z_ed=to_newton_millimetres(field.mz),
+    )
+
+
+def buckling(
+    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+    *,
+    normal: int | None,
+    num_modes: int = 1,
+) -> Buckling:
+    """
+    Load factors at which the frame becomes elastically unstable.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    xyz :
+        Position of every node, from form finding.
+    diameters :
+        Outer diameter of every member.
+    steel :
+        Material properties.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+    normal :
+        Index of the global axis a planar structure has no thickness along, or
+        None for a structure that occupies all three dimensions.
+    num_modes :
+        Number of modes to return, smallest factor first. Static.
+
+    Returns
+    -------
+    buckling :
+        The critical load factors and their mode shapes.
+
+    Notes
+    -----
+    **A diagnostic, never a differentiated quantity.** The eigenproblem is pure
+    JAX and would trace, but an eigenvalue derivative is undefined where two
+    modes cross, and a design under optimization moves modes around. Read the
+    factors beside a design and size against a buckling length instead.
+
+    The smallest factor is the multiple of the applied load at which the whole
+    frame buckles, so it measures the assumption a member-by-member buckling
+    length makes rather than restating it: a member check reads one member's
+    slenderness, while this reads the mode the structure actually has. The two
+    meet through the member slenderness, since the ratio of the cross-section
+    resistance factor to the critical factor is that slenderness squared.
+
+    Restraining the one translation normal to a plane leaves the modes in that
+    plane, which is what makes the factor comparable with an in-plane member
+    check rather than with a lateral one.
+    """
+    model = compile_structure(
+        frame(structure, xyz, diameters, steel, tube, normal=normal)
+    )
+
+    applied = [
+        PointLoad(node, load=structure.loads[node])
+        for node in range(structure.loads.shape[0])
+    ]
+    response = solve_buckling(model, LoadCase(applied, model), num_modes=num_modes)
+
+    return Buckling(
+        factors=response.buckling_factors,
+        shapes=response.mode_shapes,
     )

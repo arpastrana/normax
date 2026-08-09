@@ -26,6 +26,7 @@ dev = [
 ]
 pipeline = [
     "jax-fdm>=0.14.0",
+    "matplotlib>=3.11.1",
     "smax",
 ]
 

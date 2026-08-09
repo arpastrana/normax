@@ -9,7 +9,10 @@ PIPELINE_PACKAGES = ("jax_fdm", "smax")
 # A test importing either package, directly or through normax.formfinding,
 # normax.analysis or normax.pipeline, belongs here. Omitting one turns CI red at
 # collection rather than passing quietly, so this list fails loudly when stale.
-PIPELINE_TESTS = ("test_equilibrium_consistency.py",)
+PIPELINE_TESTS = (
+    "test_equilibrium_consistency.py",
+    "test_pipeline.py",
+)
 
 collect_ignore = []
 if any(importlib.util.find_spec(name) is None for name in PIPELINE_PACKAGES):
