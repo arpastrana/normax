@@ -25,26 +25,43 @@ Requires the upstream example image to have been built first:
     uv run tesseract build /tmp/tj/examples/simple/vectoradd_jax
     uv run python experiments/00_toolchain_smoke.py
 
-Expected output is the elementwise sum, [5.0, 7.0, 9.0]. Anything else means
-the toolchain is broken rather than this package.
+The upstream example returns several fields; the one to check is
+`vector_add.result`, the elementwise sum [5.0, 7.0, 9.0]. Anything else means the
+toolchain is broken rather than this package.
+
+**The forward pass is the less important half.** What P3 depends on is `jax.grad`
+crossing the boundary, so this also differentiates through the Tesseract and
+under `jit`. A toolchain that applies but will not differentiate looks healthy
+right up to the moment it matters.
+
+Note the upstream image is float32, so its gradient comes back float32. That is a
+property of the example, not of this toolchain — our own Tesseracts declare
+Float64 (invariant 3).
 """
 
+import jax
 import jax.numpy as jnp
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
+A = jnp.array([1.0, 2.0, 3.0])
+B = jnp.array([4.0, 5.0, 6.0])
+
 
 def main() -> None:
     """
-    Apply the upstream vector-addition Tesseract and print the result.
+    Apply the upstream vector-addition Tesseract, then differentiate through it.
     """
-    inputs = {
-        "a": {"v": jnp.array([1.0, 2.0, 3.0])},
-        "b": {"v": jnp.array([4.0, 5.0, 6.0])},
-    }
-
     with Tesseract.from_image("vectoradd_jax", user="root") as tesseract:
-        print(apply_tesseract(tesseract, inputs))
+
+        def total(a):
+            out = apply_tesseract(tesseract, {"a": {"v": a}, "b": {"v": B}})
+            return jnp.sum(out["vector_add"]["result"])
+
+        print("apply     :", apply_tesseract(tesseract, {"a": {"v": A}, "b": {"v": B}}))
+        print("sum       :", total(A), " expected 21.0")
+        print("grad      :", jax.grad(total)(A), " expected [1. 1. 1.]")
+        print("jit(grad) :", jax.jit(jax.grad(total))(A), " expected [1. 1. 1.]")
 
 
 if __name__ == "__main__":
