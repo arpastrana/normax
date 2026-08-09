@@ -12,6 +12,7 @@ PIPELINE_PACKAGES = ("jax_fdm", "smax")
 PIPELINE_TESTS = (
     "test_equilibrium_consistency.py",
     "test_pipeline.py",
+    "test_tesseract_parity.py",
 )
 
 collect_ignore = []

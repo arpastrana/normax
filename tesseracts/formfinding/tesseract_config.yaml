@@ -1,0 +1,8 @@
+name: "normax-formfinding"
+version: "0.1.0"
+description: "Force densities to the geometry that carries the loads, in JAX-FDM"
+
+build_config:
+  # normax needs 3.12, which the base image does not carry.
+  python_version: "3.12"
+  target_platform: "native"

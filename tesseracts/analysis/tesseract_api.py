@@ -1,22 +1,39 @@
-# Copyright 2026 normax contributors
-# SPDX-License-Identifier: Apache-2.0
-"""T2 — Structural analysis under the asymmetric load case.
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+T2 — Frame analysis of a form-found geometry.
 
-Differentiation strategy: **analytic sensitivities from a C++ solver** (OpenSees
-Direct Differentiation Method), with a JAX autodiff backend as fallback and as the
-cross-check.
+A geometry and a set of sections in, the internal forces the members carry out.
+Form finding is pin-jointed and can only report an axial force; the check
+downstream consumes moments, and this is where they come from.
 
-Why this Tesseract exists: under the symmetric design load the form-found shell is
-funicular and T1 already gives the complete internal force state. Under an
-asymmetric load it is not, and bending appears. That is the load case that decides
-the design, and it needs a real frame solver.
+**This schema is the swappable one, and it is frozen.** The whole submission
+turns on one interface serving two solvers that disagree about how they
+differentiate — a JAX frame solver that is traced end to end, and a C++ solver
+whose adjoints were hand-derived element by element over two decades and which
+nothing about JAX can see into. Adding a field here is a cost paid by every
+backend, so the inputs are the smallest set that describes a frame and the
+differentiable ones are exactly the two a direct differentiation backend can
+supply: the coordinates and the diameters.
 
-Why it is a real boundary: OpenSees is a large C++ codebase with no autodiff. Its
-derivatives come from DDM — adjoints hand-derived element by element over two
-decades of journal articles. Nothing about it is traceable by JAX. The same
-optimization loop drives both backends through this one schema.
+The critical load factor of the whole frame is deliberately **not** here. It is
+soft validation, it sizes nothing, and putting it in the schema would oblige
+every backend to produce one. `normax.pipeline.stability` reads it beside a
+finished design instead.
 
-SET `NORMA_ANALYSIS_BACKEND` to "sax" (default) or "opensees".
+Set `NORMAX_ANALYSIS_BACKEND` to choose a backend. Only `smax` exists today; the
+OpenSees backend arrives behind this same schema and changes nothing above it.
 """
 
 import os
@@ -28,82 +45,188 @@ from pydantic import BaseModel
 from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
+from tesseract_core.runtime import Int64
 
 jax.config.update("jax_enable_x64", True)
 
-BACKEND = os.environ.get("NORMA_ANALYSIS_BACKEND", "sax")
+BACKEND = os.environ.get("NORMAX_ANALYSIS_BACKEND", "smax")
 
 
-# --------------------------------------------------------------------------- #
-# Schemas — identical for both backends. This is the point.
-# --------------------------------------------------------------------------- #
 class InputSchema(BaseModel):
-    xyz: Differentiable[Array[(None, 3), Float64]]
-    """Node coordinates [mm], from T1."""
-
-    diameter: Differentiable[Array[(None,), Float64]]
-    """Member outer diameter [mm], from T3's previous outer iterate.
-
-    NOTE the staggered coupling: T3 needs forces to size, T2 needs sizes to
-    compute forces. The MVP passes the previous iterate and accepts a one-way
-    gradient. Document this in the writeup — do not quietly ignore it.
+    """
+    A frame: where its nodes are, what its members are, and what pushes on it.
     """
 
-    edges: Array[(None, 2), Float64]
-    supports: Array[(None,), Float64]
-    """Indices of restrained nodes. Non-differentiable."""
+    xyz: Differentiable[Array[(None, 3), Float64]]
+    """Position of every node, in millimetres. From form finding."""
+
+    diameter: Differentiable[Array[(None,), Float64]]
+    """Outer diameter of every member, in millimetres.
+
+    The coupling with the check downstream is staggered: sizing needs forces and
+    forces need sizes, so this is the previous outer iterate. One pass is taken,
+    not a fixed point, and what that costs is measured rather than assumed.
+    """
+
+    edges: Array[(None, 2), Int64]
+    """The two node indices spanned by every member."""
+
+    supports: Array[(None,), Int64]
+    """Indices of the nodes whose translation is restrained."""
 
     loads: Array[(None, 3), Float64]
-    """Asymmetric load case [N]."""
+    """Force applied at every node, in newtons. One load case per call."""
 
-    e_mod: Array[(), Float64]
-    dt_ratio: Array[(), Float64]
+    f_y: Float64
+    """Yield strength, in newtons per square millimetre."""
 
-    fd_epsilon: Array[(), Float64]
-    """Finite-difference step, used only by the OpenSees fallback path.
+    e_mod: Float64
+    """Modulus of elasticity, in newtons per square millimetre."""
 
-    Non-differentiable by design, so it can be swept without touching the schema.
-    Sweep it over several decades against a fixed geometry and look for the
-    plateau before trusting any FD gradient — the noise floor is set by the
-    solver's convergence tolerance, not by float64.
+    density: Float64
+    """Density, in tonnes per cubic millimetre."""
+
+    ratio: Float64
+    """Diameter-to-thickness ratio, fixing the wall of every member."""
+
+    normal: int | None = None
+    """Index of the global axis a planar frame has no thickness along.
+
+    None for a frame that occupies all three dimensions. Static. A planar frame
+    on pinned supports alone is a mechanism in a three-dimensional solver, since
+    rotating it about the line joining its supports strains nothing.
     """
 
 
 class OutputSchema(BaseModel):
+    """
+    What every member carries.
+    """
+
     n_ed: Differentiable[Array[(None,), Float64]]
-    """Design axial force per member [N]. Tension positive. Feeds T3."""
+    """Axial force of every member, in newtons. Tension positive.
 
-    m_ed: Differentiable[Array[(None,), Float64]]
-    """Peak bending moment per member [N mm].
+    One number per member: loads are applied at nodes alone, so nothing varies
+    along a span, and the analysis is linear.
+    """
 
-    Not consumed by the MVP's T3 (which is axial-only). Wired now so the N+M
-    interaction of §6.2.9 can be added without a schema change.
+    m_y_ed: Differentiable[Array[(None, 2), Float64]]
+    """Major-axis moment at each end of every member, in newton-millimetres."""
+
+    m_z_ed: Differentiable[Array[(None, 2), Float64]]
+    """Minor-axis moment at each end of every member, in newton-millimetres.
+
+    Both ends rather than a peak, because nodal loads leave the moment varying
+    linearly in between. That is what makes the first row of EN 1993-1-1 Table
+    B.3 exact downstream instead of approximate, and it is why a peak would be a
+    lossy contract rather than a convenient one.
     """
 
 
-# --------------------------------------------------------------------------- #
-# Backend dispatch
-# --------------------------------------------------------------------------- #
 def _forward(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
-    if BACKEND == "sax":
-        from _backend_sax import solve  # noqa: PLC0415
-    elif BACKEND == "opensees":
-        from _backend_opensees import solve  # noqa: PLC0415
+    """
+    Analyse the frame with whichever backend is selected.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields.
+
+    Returns
+    -------
+    outputs :
+        Axial force and both end moments of every member.
+
+    Raises
+    ------
+    ValueError
+        If the selected backend does not exist.
+    """
+    if BACKEND == "smax":
+        from _backend_smax import solve  # noqa: PLC0415
     else:
-        raise ValueError(f"Unknown backend: {BACKEND!r}")
+        raise ValueError(f"unknown analysis backend {BACKEND!r}")
+
     return solve(inputs)
 
 
 def apply(inputs: InputSchema) -> OutputSchema:
+    """
+    Analyse the frame.
+
+    Parameters
+    ----------
+    inputs :
+        The geometry, the sections, the topology and the load case.
+
+    Returns
+    -------
+    outputs :
+        The internal forces of every member.
+    """
     return _forward(inputs.model_dump())
 
 
 def abstract_eval(abstract_inputs):
-    n_edges = abstract_inputs.edges.shape[0]
+    """
+    Output shapes and dtypes, without analysing anything.
+
+    Parameters
+    ----------
+    abstract_inputs :
+        The input fields, arrays replaced by their shape and dtype.
+
+    Returns
+    -------
+    outputs :
+        A shape and a dtype for every output field.
+
+    Notes
+    -----
+    Required by Tesseract-JAX: JAX resolves shapes before it executes anything,
+    so every endpoint below is unreachable without this one.
+    """
+    members = abstract_inputs.edges.shape[0]
+
     return {
-        "n_ed": {"shape": (n_edges,), "dtype": "float64"},
-        "m_ed": {"shape": (n_edges,), "dtype": "float64"},
+        "n_ed": {"shape": (members,), "dtype": "float64"},
+        "m_y_ed": {"shape": (members, 2), "dtype": "float64"},
+        "m_z_ed": {"shape": (members, 2), "dtype": "float64"},
     }
+
+
+def _differentiate(
+    inputs: InputSchema,
+    wrt: list[str],
+    outputs: list[str],
+) -> tuple[Any, list[Any]]:
+    """
+    The map restricted to the requested inputs and outputs, and its primals.
+
+    Parameters
+    ----------
+    inputs :
+        The geometry, the sections, the topology and the load case.
+    wrt :
+        Names of the input fields a derivative is taken with respect to.
+    outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    restricted :
+        The restricted map and the primal values of the requested inputs.
+    """
+    raw = inputs.model_dump()
+    static = {name: value for name, value in raw.items() if name not in wrt}
+
+    def restricted(*values):
+        merged = {**static, **dict(zip(wrt, values))}
+        computed = _forward(merged)
+
+        return {name: computed[name] for name in outputs}
+
+    return restricted, [jnp.asarray(raw[name]) for name in wrt]
 
 
 def vector_jacobian_product(
@@ -112,61 +235,78 @@ def vector_jacobian_product(
     vjp_outputs: list[str],
     cotangent_vector: dict[str, Any],
 ):
-    """Reverse mode.
-
-    sax backend      -> jax.vjp, exact, ~2-3x forward.
-    opensees backend -> DDM sensitivities contracted with the cotangent, or FD.
-
-    For a scalar loss JAX issues ONE vjp call here, so a single HTTP round trip.
-    Whatever the backend does internally is the entire cost.
     """
-    raw = inputs.model_dump()
+    Pull a cotangent on the outputs back to the inputs.
 
-    if BACKEND == "sax":
-        static = {k: v for k, v in raw.items() if k not in vjp_inputs}
+    Parameters
+    ----------
+    inputs :
+        The geometry, the sections, the topology and the load case.
+    vjp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    vjp_outputs :
+        Names of the output fields a derivative is taken of.
+    cotangent_vector :
+        Cotangent on each of those outputs.
 
-        def f(*diff_args):
-            merged = {**static, **dict(zip(vjp_inputs, diff_args))}
-            out = _forward(merged)
-            return {k: out[k] for k in vjp_outputs}
+    Returns
+    -------
+    cotangents :
+        Cotangent on each of the requested inputs.
 
-        primals = [jnp.asarray(raw[k]) for k in vjp_inputs]
-        _, pullback = jax.vjp(f, *primals)
-        cot = pullback({k: jnp.asarray(v) for k, v in cotangent_vector.items()})
-        return dict(zip(vjp_inputs, cot))
+    Notes
+    -----
+    What `jax.grad` calls. A traced backend answers in one reverse pass whatever
+    the number of coordinates; a direct differentiation backend is forward-mode
+    by nature and has to assemble the same answer column by column, at a cost
+    that grows with the parameter count. Both satisfy this endpoint, and how
+    differently they pay for it is a result rather than an implementation
+    detail.
+    """
+    restricted, primals = _differentiate(inputs, vjp_inputs, vjp_outputs)
 
-    from _backend_opensees import vjp  # noqa: PLC0415
+    _, pullback = jax.vjp(restricted, *primals)
+    cotangents = pullback(
+        {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
+    )
 
-    return vjp(raw, vjp_inputs, vjp_outputs, cotangent_vector)
+    return dict(zip(vjp_inputs, cotangents))
 
 
-# --------------------------------------------------------------------------- #
-# OpenSees DDM notes — read before Aug 12 (CLAUDE.md §9)
-# --------------------------------------------------------------------------- #
-#
-# The DDM call sequence in OpenSeesPy:
-#
-#     ops.parameter(tag, 'element', ele_tag, 'E')   # register parameters
-#     ops.sensitivityAlgorithm('-computeAtEachStep')
-#     ops.analyze(1)
-#     for tag in ops.getParamTags():
-#         ops.sensNodeDisp(node, dof, tag)
-#         ops.sensSectionForce(ele, sec, dof, tag)
-#
-# THE OPEN RISK: DDM parametrizes material and section properties (E, A, I, Iz,
-# Iy, G, J for elastic sections). It does NOT obviously parametrize nodal
-# coordinates, and T1 hands us a geometry. Resolve before building this backend:
-#
-#   1. Verify sensNodeDisp against central differences on one elastic
-#      beam-column. If they disagree, stop — nothing downstream is trustworthy.
-#   2. Confirm the element implements getResistingForceSensitivity. The presence
-#      of setParameter does NOT mean DDM is enabled for that element.
-#   3. Establish whether a nodal-coordinate parameter can be registered at all.
-#
-# Fallbacks in preference order: (a) DDM for d, geometry gradients through T1
-# only; (b) DDM for section properties composed by hand with an analytic
-# dN/dxyz; (c) finite differences over ~50 inputs, affordable at this scale.
-#
-# The headline plot for the submission is experiments/04: the same optimization,
-# the same T1 and T3, gradients from JAX autodiff and from C++ DDM agreeing to
-# 1e-6. That figure makes the composition argument without a caption.
+def jacobian_vector_product(
+    inputs: InputSchema,
+    jvp_inputs: list[str],
+    jvp_outputs: list[str],
+    tangent_vector: dict[str, Any],
+):
+    """
+    Push a tangent on the inputs forward to the outputs.
+
+    Parameters
+    ----------
+    inputs :
+        The geometry, the sections, the topology and the load case.
+    jvp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jvp_outputs :
+        Names of the output fields a derivative is taken of.
+    tangent_vector :
+        Tangent on each of those inputs.
+
+    Returns
+    -------
+    tangents :
+        Tangent on each of the requested outputs.
+
+    Notes
+    -----
+    Never reached by `jax.grad`, and the natural mode for a direct
+    differentiation backend, which computes a tangent per parameter directly.
+    The two backends therefore meet here first, before the reverse rule.
+    """
+    restricted, primals = _differentiate(inputs, jvp_inputs, jvp_outputs)
+
+    tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
+    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+
+    return pushed

@@ -1102,3 +1102,139 @@ For the record, the other leaves that carry gradients and could become variables
 factor `alpha` at +1.266e-02, and `gamma_m1` at +2.751e-02. **The partial factor
 having a derivative is the thesis in one number** — a quantity that exists only
 because a committee wrote it down, carrying a sensitivity through a form-finder.
+
+---
+
+## P3 step 3 — the three stages as three Tesseracts
+
+The pipeline now exists twice. `normax/pipeline.py` runs it in one process and
+one JAX trace; `normax/composition.py` runs it as three Tesseracts with schemas
+and serialized arrays between them. Both expose `q` and a mass, both are
+differentiable in `q`, and `tests/test_tesseract_parity.py` asserts they agree.
+`experiments/10_arch_pipeline_tesseract.py` prints the comparison.
+
+### The boundary is free, and that is a measurement rather than a hope
+
+On the same 10 m arch, ten members, both class branches:
+
+| | worst scaled difference | target |
+|---|---|---|
+| every field of the design | **6.7e-16** | 1e-14 |
+| `dmass/dq` | **3.6e-14** | 1e-12 |
+| forward mode against reverse | **2.7e-14** | 1e-12 |
+| two stages in containers, over HTTP | **1.5e-13** | 1e-11 |
+
+The roadmap asked for 1e-10 on the mass and the gradient. Values cross exactly:
+the geometry, the member forces, the diameters and the mass are bit-identical on
+the Class 3 branch and differ by one unit in the last place on Class 2.
+
+**Derivatives are looser than values, and not because of the boundary.** Each
+stage linearizes on its own here and all three linearize together in process, so
+the same sum accumulates in a different order and the implicit tangent divides by
+a slope differing in its last bits. Forward mode against reverse mode, both
+entirely inside the composition, disagree by 2.7e-14 — the same size. The
+boundary is not what costs the digits; splitting the linearization is.
+
+### What each schema carries, and why
+
+| | differentiable in | differentiable of | static |
+|---|---|---|---|
+| T1 formfinding | `q` | `xyz`, `lengths`, `forces` | topology, loads |
+| T2 analysis | `xyz`, `diameter` | `n_ed`, `m_y_ed`, `m_z_ed` | material, `normal` |
+| T3 ec3_check | every action and material property | every output but `governing` | `plastic`, `resultant`, `diameter_min` |
+
+**T2's differentiable inputs are exactly the two that direct differentiation can
+supply**, and that is the constraint the frozen schema is built around rather
+than an accident. A nodal coordinate and a section property are what the OpenSees
+spike established are reachable; adding a third would be a promise the second
+backend cannot keep. A test pins the set at `{xyz, diameter}` so it cannot drift.
+
+**T3 differentiates in everything it is given except the catalogue floor.** It is
+pure JAX with no second implementation to satisfy, so `f_y`, `e_mod`, both
+partial factors, the `d/t` ratio and the imperfection factor all carry gradients
+across the boundary. The two stages disagreeing about what is differentiable is
+the honest state of affairs, and it is visible in the schema rather than buried.
+
+**The critical load factor is not in T2's output schema, and a test says so.**
+Putting it there would oblige every backend to produce one.
+
+### The corrections the stale stubs needed
+
+Three, all recorded in the roadmap before the work started and all real:
+`m_ed` was a single peak moment and is now both end moments at `(members, 2)`,
+which is what makes the first row of Table B.3 exact; the backend was named
+`sax` and is `smax`; and `_solve_fdm` raised `NotImplementedError` where
+`normax.formfinding` already existed. A fourth was found in the writing:
+`chi_buckling` and the section formulas were reimplemented inside the T3 stub,
+which would have been a second copy of the clauses to keep in step with
+`docs/clauses.md`. Every stage now imports `normax` and transcribes nothing.
+
+### Table B.3 lives in the check, not in the analysis
+
+`end_moments` reduces two end moments to a design moment and an equivalent
+uniform moment factor, and that reduction moved from the composition layer into
+T3. It is a clause of EN 1993-1-1 and not a product of an analysis, so a solver
+should have no opinion on it. The consequence is that T2's schema stays free of
+anything a C++ frame solver would have to be taught, and T3 reports `m_ed` and
+`c_m` as outputs — which is also what lets the parity test compare every field of
+the design rather than only the mass.
+
+### The §5 failure modes, exercised rather than cited
+
+A concrete cotangent on `governing` raises `ValueError` naming the field, and a
+test asserts it. The composition drops the diagnostic for that reason, and
+`normax.pipeline.governing` reads it beside a finished design instead; the
+Tesseract's own `governing` output is checked against that reader and matches
+exactly. A Python list is refused at the boundary with a `TypeError`, also
+pinned. Every schema declares `Float64` and a test walks every output and the
+gradient checking the dtype, because the upstream examples are float32 and a
+single float32 stage would downcast silently and cost eight digits.
+
+### Two of the three stages containerize today
+
+`tesseract build` produces `normax-formfinding:0.1.0` and
+`normax-ec3-check:0.1.0`, and swapping either into the chain in place of the
+imported module changes the mass by 2.6e-15 and the gradient by 1.5e-13. Warm,
+a mass costs 0.21 s served against 0.18 s imported and a gradient 0.67 s against
+0.38 s, so the round trips are visible but not dominant at this scale.
+
+**T2's image does not build, and the reason is `smax` rather than the schema.**
+It is not on PyPI, so `tesseract_requirements.txt` names it and the build fails
+at the dependency install; the day it is published the build works with no edit.
+Nothing else waits on that — the composition imports the module in process.
+
+Three things about the build that cost time:
+
+- **A Tesseract version must be three dot-separated numbers.** `0.1`, which is
+  what `pyproject.toml` carries, is rejected by the config validator.
+- **The base image's Python is too old**, so `python_version: "3.12"` is required
+  in every `build_config`.
+- **Only `tesseract_api.py` is copied into the image.** The analysis backend is a
+  separate module so a second one can arrive without touching the schema, which
+  means it needs a `package_data` entry.
+
+`tesseract_requirements.txt` installs `normax` from `../../dist/*.whl`, so
+`uv build` has to run first. The alternative — naming the repo root as a local
+dependency — copies the whole tree into the build context, and this one carries
+a 780 MB virtual environment.
+
+### Serving a container on macOS needs an explicit output path
+
+`Tesseract.from_image` defaults its `output_path` to a `tempfile.mkdtemp` under
+`/var/folders`, which the container runtime's file sharing does not reach. The
+mount then silently becomes an empty root-owned directory inside the container
+and every endpoint that opens a run directory fails with `PermissionError` on
+`/tesseract/output_data`. Passing a path under `$HOME` fixes it. The failure
+names a path inside the container, so it reads as an image permissions bug and
+is not one.
+
+### Tests
+
+**27 cases in `tests/test_tesseract_parity.py`**, added to `PIPELINE_TESTS` in
+`tests/conftest.py` because the analysis stage still needs `smax`. They import
+the API modules through `Tesseract.from_tesseract_api`, so **the suite needs no
+Docker**, per invariant 6. The suite is **1630 locally and still 1538 in CI**,
+every new case sitting in an excluded file; the gap is now 92, measured by
+collecting the three excluded files rather than inferred. The served-container comparison is deliberately not a
+test for the same reason; it runs from experiment 10 when
+`NORMAX_SERVED_OUTPUT` names a bindable directory.

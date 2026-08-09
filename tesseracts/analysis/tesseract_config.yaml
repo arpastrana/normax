@@ -1,0 +1,13 @@
+name: "normax-analysis"
+version: "0.1.0"
+description: "A form-found geometry to the internal forces its members carry"
+
+build_config:
+  # normax needs 3.12, which the base image does not carry.
+  python_version: "3.12"
+  target_platform: "native"
+
+  # Only tesseract_api.py is copied into the image by default, and the backend
+  # is a separate module so a second one can arrive without touching the schema.
+  package_data:
+    - [_backend_smax.py, /tesseract/_backend_smax.py]

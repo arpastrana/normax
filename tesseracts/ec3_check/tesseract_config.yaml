@@ -1,0 +1,8 @@
+name: "normax-ec3-check"
+version: "0.1.0"
+description: "Member actions to the sizes EN 1993-1-1 requires, and a mass"
+
+build_config:
+  # normax needs 3.12, which the base image does not carry.
+  python_version: "3.12"
+  target_platform: "native"

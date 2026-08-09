@@ -1,16 +1,34 @@
-# Copyright 2026 normax contributors
-# SPDX-License-Identifier: Apache-2.0
-"""T1 — Force-density form-finding.
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+T1 — Force density form finding.
 
-Differentiation strategy: **JAX autodiff**, with a `custom_vjp` around the linear
-solve via the implicit function theorem.
+Force densities in, the geometry that carries the loads out. Under the design
+load that geometry is funicular, so the network is in pure tension or pure
+compression and the shape is the only thing the stage has to say.
 
-Maps force densities `q` to the equilibrium geometry of a pin-jointed network and
-the resulting axial forces. Under the symmetric design load this geometry is
-funicular, so the member forces here are purely axial.
+Differentiation strategy: tracing autodiff. The equilibrium is linear in the
+coordinates once the force densities are fixed, so `jax-fdm` differentiates the
+solve by tracing it and no implicit rule is needed. This is the only stage of
+the pipeline whose derivatives come from a tracing system, and it is the
+baseline the other two are unlike.
 
-Boundary crossed: this is the only Tesseract in the pipeline whose derivatives come
-from a tracing autodiff system.
+**The handoff downstream is geometry alone** — no prestress and no initial
+member forces. The product of a force density and a length is reported here as
+a diagnostic, and the agreement between it and what a frame solver finds under
+the same load is a prediction that gets tested rather than an input that gets
+imposed.
 """
 
 from typing import Any
@@ -21,120 +39,177 @@ from pydantic import BaseModel
 from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
+from tesseract_core.runtime import Int64
+
+from normax.formfinding import equilibrium
+from normax.formfinding import graph
+from normax.structures import Structure
 
 jax.config.update("jax_enable_x64", True)
 
 
-# --------------------------------------------------------------------------- #
-# Schemas
-# --------------------------------------------------------------------------- #
 class InputSchema(BaseModel):
-    """Force densities and fixed topology.
-
-    NOTE: every array field must be a JAX or NumPy array when called through
-    Tesseract-JAX — Python floats and lists are rejected, including scalars.
+    """
+    The force densities, and the topology and loads they act on.
     """
 
     q: Differentiable[Array[(None,), Float64]]
-    """Force density per edge [N/mm]. Shape (n_edges,). The design variable."""
+    """Force density of every edge, in newtons per millimetre.
 
-    xyz_fixed: Array[(None, 3), Float64]
-    """Coordinates of anchored nodes [mm]. Shape (n_fixed, 3)."""
-
-    loads: Array[(None, 3), Float64]
-    """Applied nodal load vector [N]. Shape (n_free, 3)."""
-
-    edges: Array[(None, 2), Float64]
-    """Edge connectivity as node index pairs. Shape (n_edges, 2).
-
-    Float64 rather than int because Tesseract schemas are array-typed; cast to
-    int32 on entry. Non-differentiable.
+    The design variable of the whole pipeline. Negative in compression.
     """
 
-    n_free: Array[(), Float64]
-    """Number of free nodes. Non-differentiable."""
+    nodes: Array[(None, 3), Float64]
+    """Starting position of every node, in millimetres.
+
+    Read only at the supports, whose positions are held. Everywhere else the
+    equilibrium discards it.
+    """
+
+    edges: Array[(None, 2), Int64]
+    """The two node indices spanned by every edge."""
+
+    supports: Array[(None,), Int64]
+    """Indices of the nodes whose position is fixed."""
+
+    loads: Array[(None, 3), Float64]
+    """Force applied at every node, in newtons. Zero at the supports."""
 
 
 class OutputSchema(BaseModel):
+    """
+    The shape that carries the loads, and what its edges are carrying.
+    """
+
     xyz: Differentiable[Array[(None, 3), Float64]]
-    """Equilibrium coordinates of all nodes [mm]."""
+    """Position of every node at equilibrium, in millimetres."""
 
     lengths: Differentiable[Array[(None,), Float64]]
-    """Edge lengths [mm]. Feeds buckling length L_cr in T3."""
+    """Length of every edge, in millimetres."""
 
-    axial: Differentiable[Array[(None,), Float64]]
-    """Axial force per edge [N], sign convention: tension positive.
+    forces: Differentiable[Array[(None,), Float64]]
+    """Axial force of every edge, in newtons. Tension positive.
 
-    Equals q * length. Under the symmetric design load this is the complete
-    internal force state; T2 supplies the asymmetric load case.
+    The product of a force density and a length. Not consumed downstream: the
+    frame solver is handed geometry alone and finds its own internal forces, and
+    the two agreeing is the claim `tests/test_equilibrium_consistency.py` makes.
     """
-
-
-# --------------------------------------------------------------------------- #
-# Core solve
-# --------------------------------------------------------------------------- #
-def _solve_fdm(
-    q: jnp.ndarray,
-    xyz_fixed: jnp.ndarray,
-    loads: jnp.ndarray,
-    edges: jnp.ndarray,
-    n_free: int,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Solve the force-density equilibrium system.
-
-    The FDM equilibrium is linear in the coordinates for fixed `q`:
-
-        D_free @ xyz_free = loads - D_fixed @ xyz_fixed
-
-    with D = C_free^T diag(q) C_free. Because it is linear, `jnp.linalg.solve`
-    is already differentiable and no explicit `custom_vjp` is required for the
-    MVP. Keep the IFT wrapper in reserve for the nonlinear (large-displacement)
-    variant — see `sax` for the pattern.
-
-    TODO: delegate to `jax_fdm` rather than reimplementing. This function exists
-    so the Tesseract can be tested without the dependency resolved.
-    """
-    raise NotImplementedError(
-        "Build the branch matrix C from `edges`, split into free/fixed columns, "
-        "assemble D = C_free.T @ diag(q) @ C_free, solve for xyz_free. "
-        "Verify against a known catenary before wiring anything downstream."
-    )
 
 
 def _forward(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
-    edges = jnp.asarray(inputs["edges"], dtype=jnp.int32)
-    n_free = int(inputs["n_free"])
+    """
+    Solve for the equilibrium geometry.
 
-    xyz = _solve_fdm(
-        q=inputs["q"],
-        xyz_fixed=inputs["xyz_fixed"],
-        loads=inputs["loads"],
-        edges=edges,
-        n_free=n_free,
+    Parameters
+    ----------
+    inputs :
+        The validated input fields.
+
+    Returns
+    -------
+    outputs :
+        The geometry, the edge lengths and the edge forces.
+
+    Notes
+    -----
+    The connectivity is rebuilt from the flat arrays on every call, which is
+    host-side integer work and never traced. A schema carries arrays and not
+    objects, and that is the price of the boundary being real.
+    """
+    structure = Structure(
+        nodes=jnp.asarray(inputs["nodes"]),
+        edges=jnp.asarray(inputs["edges"]),
+        supports=jnp.asarray(inputs["supports"]),
+        loads=jnp.asarray(inputs["loads"]),
     )
-    vectors = xyz[edges[:, 1]] - xyz[edges[:, 0]]
-    lengths = jnp.linalg.norm(vectors, axis=1)
-    axial = inputs["q"] * lengths
 
-    return {"xyz": xyz, "lengths": lengths, "axial": axial}
+    state = equilibrium(jnp.asarray(inputs["q"]), structure, graph(structure))
+
+    return {
+        "xyz": state.xyz,
+        "lengths": state.lengths[:, 0],
+        "forces": state.forces[:, 0],
+    }
 
 
-# --------------------------------------------------------------------------- #
-# Tesseract endpoints
-# --------------------------------------------------------------------------- #
 def apply(inputs: InputSchema) -> OutputSchema:
+    """
+    Form-find the network.
+
+    Parameters
+    ----------
+    inputs :
+        The force densities, the topology and the loads.
+
+    Returns
+    -------
+    outputs :
+        The equilibrium geometry and the edge forces.
+    """
     return _forward(inputs.model_dump())
 
 
 def abstract_eval(abstract_inputs):
-    """Required by Tesseract-JAX: shapes and dtypes without executing."""
-    n_edges = abstract_inputs.q.shape[0]
-    n_nodes = int(abstract_inputs.n_free) + abstract_inputs.xyz_fixed.shape[0]
+    """
+    Output shapes and dtypes, without solving anything.
+
+    Parameters
+    ----------
+    abstract_inputs :
+        The input fields, arrays replaced by their shape and dtype.
+
+    Returns
+    -------
+    outputs :
+        A shape and a dtype for every output field.
+
+    Notes
+    -----
+    Required by Tesseract-JAX: JAX resolves shapes before it executes anything,
+    so every endpoint below is unreachable without this one.
+    """
+    nodes = abstract_inputs.nodes.shape[0]
+    edges = abstract_inputs.edges.shape[0]
+
     return {
-        "xyz": {"shape": (n_nodes, 3), "dtype": "float64"},
-        "lengths": {"shape": (n_edges,), "dtype": "float64"},
-        "axial": {"shape": (n_edges,), "dtype": "float64"},
+        "xyz": {"shape": (nodes, 3), "dtype": "float64"},
+        "lengths": {"shape": (edges,), "dtype": "float64"},
+        "forces": {"shape": (edges,), "dtype": "float64"},
     }
+
+
+def _differentiate(
+    inputs: InputSchema,
+    wrt: list[str],
+    outputs: list[str],
+) -> tuple[Any, list[Any]]:
+    """
+    The map restricted to the requested inputs and outputs, and its primals.
+
+    Parameters
+    ----------
+    inputs :
+        The force densities, the topology and the loads.
+    wrt :
+        Names of the input fields a derivative is taken with respect to.
+    outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    restricted :
+        The restricted map and the primal values of the requested inputs.
+    """
+    raw = inputs.model_dump()
+    static = {name: value for name, value in raw.items() if name not in wrt}
+
+    def restricted(*values):
+        merged = {**static, **dict(zip(wrt, values))}
+        computed = _forward(merged)
+
+        return {name: computed[name] for name in outputs}
+
+    return restricted, [jnp.asarray(raw[name]) for name in wrt]
 
 
 def vector_jacobian_product(
@@ -143,19 +218,38 @@ def vector_jacobian_product(
     vjp_outputs: list[str],
     cotangent_vector: dict[str, Any],
 ):
-    """Reverse-mode AD via `jax.vjp`. Cost is ~2-3x a forward solve, independent
-    of the number of force densities."""
-    raw = inputs.model_dump()
-    static = {k: v for k, v in raw.items() if k not in vjp_inputs}
+    """
+    Pull a cotangent on the outputs back to the inputs.
 
-    def f(*diff_args):
-        merged = {**static, **dict(zip(vjp_inputs, diff_args))}
-        out = _forward(merged)
-        return {k: out[k] for k in vjp_outputs}
+    Parameters
+    ----------
+    inputs :
+        The force densities, the topology and the loads.
+    vjp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    vjp_outputs :
+        Names of the output fields a derivative is taken of.
+    cotangent_vector :
+        Cotangent on each of those outputs.
 
-    primals = [jnp.asarray(raw[k]) for k in vjp_inputs]
-    _, pullback = jax.vjp(f, *primals)
-    cotangents = pullback({k: jnp.asarray(v) for k, v in cotangent_vector.items()})
+    Returns
+    -------
+    cotangents :
+        Cotangent on each of the requested inputs.
+
+    Notes
+    -----
+    What `jax.grad` calls, and the only endpoint it calls. One reverse pass
+    costs a few forward solves whatever the number of force densities, which is
+    the reason the design variable can be per-edge rather than global.
+    """
+    restricted, primals = _differentiate(inputs, vjp_inputs, vjp_outputs)
+
+    _, pullback = jax.vjp(restricted, *primals)
+    cotangents = pullback(
+        {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
+    )
+
     return dict(zip(vjp_inputs, cotangents))
 
 
@@ -165,17 +259,33 @@ def jacobian_vector_product(
     jvp_outputs: list[str],
     tangent_vector: dict[str, Any],
 ):
-    """Forward mode. Not used by `jax.grad`, but cheap to provide and useful for
-    cross-checking the VJP."""
-    raw = inputs.model_dump()
-    static = {k: v for k, v in raw.items() if k not in jvp_inputs}
+    """
+    Push a tangent on the inputs forward to the outputs.
 
-    def f(*diff_args):
-        merged = {**static, **dict(zip(jvp_inputs, diff_args))}
-        out = _forward(merged)
-        return {k: out[k] for k in jvp_outputs}
+    Parameters
+    ----------
+    inputs :
+        The force densities, the topology and the loads.
+    jvp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jvp_outputs :
+        Names of the output fields a derivative is taken of.
+    tangent_vector :
+        Tangent on each of those inputs.
 
-    primals = tuple(jnp.asarray(raw[k]) for k in jvp_inputs)
-    tangents = tuple(jnp.asarray(tangent_vector[k]) for k in jvp_inputs)
-    _, out_tangents = jax.jvp(f, primals, tangents)
-    return out_tangents
+    Returns
+    -------
+    tangents :
+        Tangent on each of the requested outputs.
+
+    Notes
+    -----
+    Never reached by `jax.grad`, and provided because it costs one call and
+    cross-checks the reverse rule.
+    """
+    restricted, primals = _differentiate(inputs, jvp_inputs, jvp_outputs)
+
+    tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
+    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+
+    return pushed

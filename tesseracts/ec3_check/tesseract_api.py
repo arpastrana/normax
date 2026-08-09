@@ -1,23 +1,39 @@
-# Copyright 2026 normax contributors
-# SPDX-License-Identifier: Apache-2.0
-"""T3 — EN 1993-1-1 member design, as a differentiable map.
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+T3 — EN 1993-1-1 member design, as a differentiable map.
 
-Differentiation strategy: **hand-derived piecewise analytic adjoint**, dispatched
-on the governing limit state. Deliberately *not* autodiff over the whole map.
+Member actions in, the diameter the standard requires out, and a mass. This is
+the component the project exists to argue about: a design standard is a
+normative text, not a solver. It states resistances and leaves a human to search
+for a section that carries the actions, and the reference implementations of it
+are scalar, branchy code returning verdicts. Here the search is a bisection on a
+monotone residual and it carries an adjoint, so the standard composes with an
+autodiff form-finder instead of terminating the chain.
 
-This is the component that makes the project's argument. A building code is a
-normative text, not a solver. It has no derivatives; the reference open-source
-implementations are scalar, branchy Python that return booleans. Here it carries
-an adjoint and composes with an autodiff form-finder.
+Differentiation strategy: an implicit tangent taken at the root of the residual,
+not autodiff through the bisection. `normax.ec3.sizing` wraps the solve in a
+`custom_jvp`, so tracing this module reaches the hand-derived rule rather than
+fifty-five halvings of a `while_loop`.
 
-Scope (see CLAUDE.md §3):
-  §6.2.3   tension resistance
-  §6.2.4   compression resistance
-  §6.3.1.1 flexural buckling, chi
-  No lateral-torsional buckling: CHS is doubly symmetric, so chi_LT = 1.
+The cross-section class is a static field rather than an array, because it
+selects a clause rather than scaling a number. Fixing the diameter-to-thickness
+ratio at a class limit makes the classification exact by construction, so no
+branch on a traced value is ever needed.
 
-CLEAN-ROOM. Implemented from EN 1993-1-1 directly. Blueprints (LGPL-2.1) appears
-only in tests/, never as a source.
+Scope, and what is deliberately absent, is in `CLAUDE.md` §3. Clean-room from
+EN 1993-1-1 by way of `docs/clauses.md`.
 """
 
 from typing import Any
@@ -29,236 +45,299 @@ from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
+from normax.ec3.sizing import Steel
+from normax.ec3.sizing import Tube
+from normax.ec3.sizing import diameter as diameter_required
+from normax.ec3.sizing import end_moments
+from normax.ec3.sizing import governing as governing_limit
+from normax.ec3.sizing import mass as mass_of_tubes
+from normax.ec3.sizing import utilization as utilization_of_tubes
+
 jax.config.update("jax_enable_x64", True)
 
-# Governing limit state codes, reported as a non-differentiable output.
-GOV_TENSION = 0.0  # §6.2.3, eq. for N_t,Rd
-GOV_BUCKLING = 1.0  # §6.3.1.1, chi < 1
-GOV_SQUASH = 2.0  # §6.3.1.1 with the chi <= 1 cap active
 
-
-# --------------------------------------------------------------------------- #
-# Schemas
-# --------------------------------------------------------------------------- #
 class InputSchema(BaseModel):
+    """
+    Member actions, a buckling length, and the material the tubes are cut from.
+    """
+
     n_ed: Differentiable[Array[(None,), Float64]]
-    """Design axial force per member [N]. Tension positive."""
+    """Design axial force of every member, in newtons. Tension positive."""
+
+    m_y_ed: Differentiable[Array[(None, 2), Float64]]
+    """Major-axis moment at each end of every member, in newton-millimetres."""
+
+    m_z_ed: Differentiable[Array[(None, 2), Float64]]
+    """Minor-axis moment at each end of every member, in newton-millimetres."""
 
     lengths: Differentiable[Array[(None,), Float64]]
-    """Member length [mm]. Buckling length is `k_cr * lengths`."""
+    """Length of every member, in millimetres. Sets the mass, not the check."""
 
-    f_y: Array[(), Float64]
-    """Yield strength [N/mm^2]. 355 for S355."""
+    l_cr: Differentiable[Array[(None,), Float64]]
+    """Buckling length of every member, in millimetres.
 
-    e_mod: Array[(), Float64]
-    """Young's modulus [N/mm^2]. 210000."""
+    An input and never derived from the mesh. Passing the member's own length
+    assumes every node is held in position by structure outside the model.
+    """
 
-    rho: Array[(), Float64]
-    """Density [t/mm^3]. 7.85e-9."""
+    f_y: Differentiable[Float64]
+    """Yield strength, in newtons per square millimetre."""
 
-    dt_ratio: Array[(), Float64]
-    """Fixed d/t. Set to 90 * eps^2 (Class 3/4 boundary). See CLAUDE.md §3."""
+    e_mod: Differentiable[Float64]
+    """Modulus of elasticity, in newtons per square millimetre."""
 
-    alpha_imp: Array[(), Float64]
-    """Imperfection factor. 0.21 = curve a, hot-finished CHS."""
+    density: Differentiable[Float64]
+    """Density, in tonnes per cubic millimetre, so the mass comes out in tonnes."""
 
-    k_cr: Array[(), Float64]
-    """Buckling length factor. 1.0 for pinned-pinned."""
+    gamma_m0: Differentiable[Float64]
+    """Partial factor for cross-section resistance."""
 
-    gamma_m0: Array[(), Float64]
-    gamma_m1: Array[(), Float64]
+    gamma_m1: Differentiable[Float64]
+    """Partial factor for member instability."""
+
+    ratio: Differentiable[Float64]
+    """Diameter-to-thickness ratio, fixing the wall and so the section class."""
+
+    alpha: Differentiable[Float64]
+    """Imperfection factor of the buckling curve, EN 1993-1-1 Table 6.1."""
+
+    diameter_min: Float64
+    """Smallest diameter the section family offers, in millimetres."""
+
+    plastic: bool
+    """Whether the section is Class 1 or 2. Static: it selects a clause."""
+
+    resultant: bool = True
+    """Whether the cross-section check combines the two moments as a resultant."""
 
 
 class OutputSchema(BaseModel):
-    diameter: Differentiable[Array[(None,), Float64]]
-    """Fully-stressed outer diameter [mm]."""
+    """
+    The sizes EN 1993-1-1 requires, what they weigh, and how hard they work.
+    """
 
-    mass: Differentiable[Array[(), Float64]]
-    """Total structural mass [t]. The optimization objective."""
+    diameter: Differentiable[Array[(None,), Float64]]
+    """Outer diameter of every member, in millimetres."""
+
+    mass: Differentiable[Float64]
+    """Total mass of the members, in tonnes. The objective of the pipeline."""
 
     utilization: Differentiable[Array[(None,), Float64]]
-    """Should be 1.0 +/- 1e-9 by construction. An assertion target, not a goal."""
+    """Demand over resistance of every member.
+
+    One to machine precision wherever a clause decided the size, and below one
+    wherever the catalogue minimum did. An invariant to assert on, not a goal.
+    """
+
+    m_ed: Differentiable[Array[(None,), Float64]]
+    """Larger end moment of every member in magnitude, in newton-millimetres."""
+
+    c_m: Differentiable[Array[(None,), Float64]]
+    """Equivalent uniform moment factor of every member, EN 1993-1-1 Table B.3."""
 
     governing: Array[(None,), Float64]
-    """Limit state code per member. NON-DIFFERENTIABLE.
+    """Limit state that decided every member's size, as a code.
 
-    Pop this before calling jax.grad: a concrete cotangent on a non-differentiable
-    output raises ValueError. Log it every iteration — repeated flips between
-    steps mean the optimizer is chattering across a branch boundary.
+    **Non-differentiable.** A concrete cotangent on this raises `ValueError`, so
+    drop it before differentiating; only a symbolic zero is accepted. Watch it
+    between optimizer steps, where repeated flips mean the design is chattering
+    across a boundary of the standard.
     """
 
 
-# --------------------------------------------------------------------------- #
-# CHS section properties (closed form, t = d / r)
-# --------------------------------------------------------------------------- #
-def area(d: jnp.ndarray, r: jnp.ndarray) -> jnp.ndarray:
-    """A = pi d^2 (r - 1) / r^2."""
-    return jnp.pi * d**2 * (r - 1.0) / r**2
-
-
-def second_moment(d: jnp.ndarray, r: jnp.ndarray) -> jnp.ndarray:
-    """I = (pi/64) d^4 [1 - (1 - 2/r)^4]."""
-    return (jnp.pi / 64.0) * d**4 * (1.0 - (1.0 - 2.0 / r) ** 4)
-
-
-# --------------------------------------------------------------------------- #
-# Resistances
-# --------------------------------------------------------------------------- #
-def chi_buckling(d, length, r, f_y, e_mod, alpha_imp, k_cr):
-    """Flexural buckling reduction factor, EN 1993-1-1 §6.3.1.1.
-
-    lambda_bar = sqrt(A f_y / N_cr),  N_cr = pi^2 E I / L_cr^2
-    Phi        = 0.5 [1 + alpha (lambda_bar - 0.2) + lambda_bar^2]
-    chi        = 1 / (Phi + sqrt(Phi^2 - lambda_bar^2)),  chi <= 1
-
-    TODO: verify the equation numbers against the standard before writing them
-    into docstrings. Do not trust Blueprints' file naming for this.
+def _material(inputs: dict[str, Any]) -> tuple[Steel, Tube]:
     """
-    a = area(d, r)
-    i_sec = second_moment(d, r)
-    n_cr = jnp.pi**2 * e_mod * i_sec / (k_cr * length) ** 2
-    lam = jnp.sqrt(a * f_y / n_cr)
-    phi = 0.5 * (1.0 + alpha_imp * (lam - 0.2) + lam**2)
-    chi = 1.0 / (phi + jnp.sqrt(phi**2 - lam**2))
-    return jnp.minimum(chi, 1.0), lam
+    The material and the section family, from the flat fields of the schema.
 
+    Parameters
+    ----------
+    inputs :
+        The validated input fields.
 
-def _residual(d, n_abs, length, p):
-    """R(d) = N_b,Rd(d) - |N_Ed|. Strictly increasing in d, so the root is unique
-    and bisection is unconditionally safe (CLAUDE.md §4)."""
-    chi, _ = chi_buckling(
-        d, length, p["dt_ratio"], p["f_y"], p["e_mod"], p["alpha_imp"], p["k_cr"]
+    Returns
+    -------
+    material :
+        The steel and the tube family.
+    """
+    steel = Steel(
+        f_y=inputs["f_y"],
+        e_mod=inputs["e_mod"],
+        density=inputs["density"],
+        gamma_m0=inputs["gamma_m0"],
+        gamma_m1=inputs["gamma_m1"],
     )
-    return chi * area(d, p["dt_ratio"]) * p["f_y"] / p["gamma_m1"] - n_abs
-
-
-# --------------------------------------------------------------------------- #
-# Fully-stressed sizing map, differentiated by the implicit function theorem
-# --------------------------------------------------------------------------- #
-@jax.custom_vjp
-def size_member(n_ed, length, p):
-    """Smallest CHS diameter satisfying EN 1993-1-1 for this force and length."""
-    return _size_fwd(n_ed, length, p)
-
-
-def _size_fwd(n_ed, length, p):
-    r, f_y = p["dt_ratio"], p["f_y"]
-    n_abs = jnp.abs(n_ed)
-
-    # Tension: closed form, no buckling. d = sqrt(N gamma_M0 r^2 / (pi (r-1) f_y))
-    # Unused only because the compression branch below is still a stub; the
-    # return it feeds is written out in the NotImplementedError. Do not delete.
-    d_ten = jnp.sqrt(n_abs * p["gamma_m0"] * r**2 / (jnp.pi * (r - 1.0) * f_y))  # noqa: F841
-
-    # Compression: bisection on the monotone residual.
-    raise NotImplementedError(
-        "Bisect _residual over [d_lo, d_hi]. Bracket from the tension solution "
-        "below and ~10x above. Use lax.while_loop with a fixed iteration count "
-        "so the forward pass stays jittable. Then:\n"
-        "    return jnp.where(n_ed > 0, d_ten, d_comp)"
+    tube = Tube(
+        ratio=inputs["ratio"],
+        alpha=inputs["alpha"],
+        diameter_min=inputs["diameter_min"],
     )
 
-
-def _size_fwd_res(n_ed, length, p):
-    d = _size_fwd(n_ed, length, p)
-    return d, (d, n_ed, length, p)
+    return steel, tube
 
 
-def _size_bwd(res, g):
-    """The hand-derived adjoint.
-
-    By the implicit function theorem on R(d; N, L) = 0:
-
-        dD/dN = -(dR/dN) / (dR/dd) =  1 / (dR/dd)     [since dR/dN = -1]
-        dD/dL = -(dR/dL) / (dR/dd)
-
-    The residual is smooth and explicit, so dR/dd and dR/dL come from jax.grad of
-    the *residual* — only the implicit inversion is by hand. Same pattern as the
-    Newton solves in `sax`.
-
-    Tension members take the closed-form branch: dD/dN = d / (2N), dD/dL = 0.
+def _forward(
+    inputs: dict[str, Any],
+    *,
+    diagnostics: bool,
+) -> dict[str, jnp.ndarray]:
     """
-    d, n_ed, length, p = res
-    n_abs = jnp.abs(n_ed)
+    Size every member, and weigh the result.
 
-    dR_dd = jax.grad(_residual, argnums=0)(d, n_abs, length, p)
-    dR_dL = jax.grad(_residual, argnums=2)(d, n_abs, length, p)
+    Parameters
+    ----------
+    inputs :
+        The validated input fields.
+    diagnostics :
+        Whether to report the governing limit state, which is not differentiated
+        and so is left out of every gradient endpoint.
 
-    dD_dN_comp = jnp.sign(n_ed) / dR_dd
-    dD_dL_comp = -dR_dL / dR_dd
+    Returns
+    -------
+    outputs :
+        The output fields, the diagnostic included only when asked for.
 
-    is_tension = n_ed > 0
-    dD_dN = jnp.where(is_tension, d / (2.0 * n_ed), dD_dN_comp)
-    dD_dL = jnp.where(is_tension, 0.0, dD_dL_comp)
+    Notes
+    -----
+    EN 1993-1-1 Table B.3 lives here rather than upstream, because reading a
+    design moment and an equivalent uniform moment factor out of two end moments
+    is a clause of the standard and not a product of an analysis. That is what
+    keeps the analysis schema free of anything a solver has no opinion on.
+    """
+    steel, tube = _material(inputs)
+    plastic = inputs["plastic"]
+    resultant = inputs["resultant"]
 
-    return (g * dD_dN, g * dD_dL, None)
+    m_y_ed = jnp.asarray(inputs["m_y_ed"])
+    m_z_ed = jnp.asarray(inputs["m_z_ed"])
 
+    m_ed, c_m = end_moments(m_y_ed[:, 0], m_y_ed[:, 1])
+    m_minor, c_minor = end_moments(m_z_ed[:, 0], m_z_ed[:, 1])
 
-size_member.defvjp(_size_fwd_res, _size_bwd)
+    n_ed = jnp.asarray(inputs["n_ed"])
+    l_cr = jnp.asarray(inputs["l_cr"])
+    lengths = jnp.asarray(inputs["lengths"])
 
+    # The tail every clause below shares, kept as one tuple so the three
+    # calls cannot drift out of step with each other.
+    arguments = (n_ed, m_ed, m_minor, c_m, c_minor, l_cr, steel, tube)
 
-# --------------------------------------------------------------------------- #
-# Forward
-# --------------------------------------------------------------------------- #
-def _forward(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
-    p = {
-        k: jnp.asarray(inputs[k])
-        for k in (
-            "f_y",
-            "e_mod",
-            "dt_ratio",
-            "alpha_imp",
-            "k_cr",
-            "gamma_m0",
-            "gamma_m1",
+    required = diameter_required(*arguments, plastic=plastic, resultant=resultant)
+    used = utilization_of_tubes(
+        required, *arguments, plastic=plastic, resultant=resultant
+    )
+
+    outputs = {
+        "diameter": required,
+        "mass": mass_of_tubes(required, lengths, steel, tube),
+        "utilization": used,
+        "m_ed": m_ed,
+        "c_m": c_m,
+    }
+
+    if diagnostics:
+        outputs["governing"] = governing_limit(
+            required, *arguments, plastic=plastic, resultant=resultant
         )
-    }
-    n_ed, lengths = inputs["n_ed"], inputs["lengths"]
 
-    d = jax.vmap(size_member, in_axes=(0, 0, None))(n_ed, lengths, p)
-    a = area(d, p["dt_ratio"])
-    mass = inputs["rho"] * jnp.sum(a * lengths)
-
-    chi, lam = jax.vmap(chi_buckling, in_axes=(0, 0, None, None, None, None, None))(
-        d, lengths, p["dt_ratio"], p["f_y"], p["e_mod"], p["alpha_imp"], p["k_cr"]
-    )
-
-    cap = jnp.where(
-        n_ed > 0,
-        a * p["f_y"] / p["gamma_m0"],
-        chi * a * p["f_y"] / p["gamma_m1"],
-    )
-    utilization = jnp.abs(n_ed) / cap
-
-    governing = jnp.where(
-        n_ed > 0,
-        GOV_TENSION,
-        jnp.where(chi < 1.0 - 1e-12, GOV_BUCKLING, GOV_SQUASH),
-    )
-
-    return {
-        "diameter": d,
-        "mass": mass,
-        "utilization": utilization,
-        "governing": governing,
-    }
+    return outputs
 
 
-# --------------------------------------------------------------------------- #
-# Tesseract endpoints
-# --------------------------------------------------------------------------- #
 def apply(inputs: InputSchema) -> OutputSchema:
-    return _forward(inputs.model_dump())
+    """
+    Run the check.
+
+    Parameters
+    ----------
+    inputs :
+        The member actions and the material.
+
+    Returns
+    -------
+    outputs :
+        The required sizes, the mass, the utilization and the diagnostics.
+    """
+    return _forward(inputs.model_dump(), diagnostics=True)
 
 
 def abstract_eval(abstract_inputs):
-    n = abstract_inputs.n_ed.shape[0]
+    """
+    Output shapes and dtypes, without sizing anything.
+
+    Parameters
+    ----------
+    abstract_inputs :
+        The input fields, arrays replaced by their shape and dtype.
+
+    Returns
+    -------
+    outputs :
+        A shape and a dtype for every output field.
+
+    Notes
+    -----
+    Required by Tesseract-JAX: JAX resolves shapes before it executes anything,
+    so every endpoint below is unreachable without this one.
+    """
+    members = abstract_inputs.n_ed.shape[0]
+
     return {
-        "diameter": {"shape": (n,), "dtype": "float64"},
+        "diameter": {"shape": (members,), "dtype": "float64"},
         "mass": {"shape": (), "dtype": "float64"},
-        "utilization": {"shape": (n,), "dtype": "float64"},
-        "governing": {"shape": (n,), "dtype": "float64"},
+        "utilization": {"shape": (members,), "dtype": "float64"},
+        "m_ed": {"shape": (members,), "dtype": "float64"},
+        "c_m": {"shape": (members,), "dtype": "float64"},
+        "governing": {"shape": (members,), "dtype": "float64"},
     }
+
+
+def _differentiate(
+    inputs: InputSchema,
+    wrt: list[str],
+    outputs: list[str],
+) -> tuple[Any, list[Any]]:
+    """
+    The map restricted to the requested inputs and outputs, and its primals.
+
+    Parameters
+    ----------
+    inputs :
+        The member actions and the material.
+    wrt :
+        Names of the input fields a derivative is taken with respect to.
+    outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    restricted :
+        The restricted map and the primal values of the requested inputs.
+
+    Raises
+    ------
+    ValueError
+        If the governing limit state is among the outputs.
+
+    Notes
+    -----
+    The diagnostic is refused here rather than silently returning a zero,
+    because a cotangent on it means the caller left a non-differentiable output
+    in the loss and would otherwise get a wrong answer quietly.
+    """
+    if "governing" in outputs:
+        raise ValueError(
+            "`governing` is non-differentiable; drop it before differentiating"
+        )
+
+    raw = inputs.model_dump()
+    static = {name: value for name, value in raw.items() if name not in wrt}
+
+    def restricted(*values):
+        merged = {**static, **dict(zip(wrt, values))}
+        computed = _forward(merged, diagnostics=False)
+
+        return {name: computed[name] for name in outputs}
+
+    return restricted, [jnp.asarray(raw[name]) for name in wrt]
 
 
 def vector_jacobian_product(
@@ -267,22 +346,75 @@ def vector_jacobian_product(
     vjp_outputs: list[str],
     cotangent_vector: dict[str, Any],
 ):
-    """Reverse mode. The custom_vjp on `size_member` means jax.vjp here dispatches
-    to the hand-derived adjoint rather than tracing through the bisection."""
-    if "governing" in vjp_outputs:
-        raise ValueError(
-            "`governing` is non-differentiable — pop it before differentiating."
-        )
+    """
+    Pull a cotangent on the outputs back to the inputs.
 
-    raw = inputs.model_dump()
-    static = {k: v for k, v in raw.items() if k not in vjp_inputs}
+    Parameters
+    ----------
+    inputs :
+        The member actions and the material.
+    vjp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    vjp_outputs :
+        Names of the output fields a derivative is taken of.
+    cotangent_vector :
+        Cotangent on each of those outputs.
 
-    def f(*diff_args):
-        merged = {**static, **dict(zip(vjp_inputs, diff_args))}
-        out = _forward(merged)
-        return {k: out[k] for k in vjp_outputs}
+    Returns
+    -------
+    cotangents :
+        Cotangent on each of the requested inputs.
 
-    primals = [jnp.asarray(raw[k]) for k in vjp_inputs]
-    _, pullback = jax.vjp(f, *primals)
-    cotangents = pullback({k: jnp.asarray(v) for k, v in cotangent_vector.items()})
+    Notes
+    -----
+    What `jax.grad` calls, and the only endpoint it calls. Tracing reaches the
+    `custom_jvp` on the sizing map, so the bisection is never differentiated
+    through: the tangent comes from the implicit function theorem applied at the
+    root, which needs the residual differentiable only there.
+    """
+    restricted, primals = _differentiate(inputs, vjp_inputs, vjp_outputs)
+
+    _, pullback = jax.vjp(restricted, *primals)
+    cotangents = pullback(
+        {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
+    )
+
     return dict(zip(vjp_inputs, cotangents))
+
+
+def jacobian_vector_product(
+    inputs: InputSchema,
+    jvp_inputs: list[str],
+    jvp_outputs: list[str],
+    tangent_vector: dict[str, Any],
+):
+    """
+    Push a tangent on the inputs forward to the outputs.
+
+    Parameters
+    ----------
+    inputs :
+        The member actions and the material.
+    jvp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jvp_outputs :
+        Names of the output fields a derivative is taken of.
+    tangent_vector :
+        Tangent on each of those inputs.
+
+    Returns
+    -------
+    tangents :
+        Tangent on each of the requested outputs.
+
+    Notes
+    -----
+    Never reached by `jax.grad`, and provided because it costs one call and
+    cross-checks the reverse rule against the same implicit tangent.
+    """
+    restricted, primals = _differentiate(inputs, jvp_inputs, jvp_outputs)
+
+    tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
+    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+
+    return pushed

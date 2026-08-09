@@ -494,23 +494,12 @@ force densities uniformly makes the arch lighter — it rises, the thrust drops,
 and the section saved beats the length bought. **The optimum rise is above 3 m,
 so the interior minimum P4 is looking for exists.**
 
-### Step 3 — wrap in Tesseracts
+### Step 3 — wrap in Tesseracts — **DONE** (Aug 9)
 
-⚠️ **The stubs are stale — do not take them literally.** The scope below says
-"keep the schema exactly as stubbed", which was written before P1b. Three things
-in `tesseracts/analysis/tesseract_api.py` are now wrong:
-
-1. `m_ed` is a single **peak** moment per member. The frozen contract is **both
-   end moments** — see the `MemberForces` container in `normax/analysis.py` and
-   `sizing.end_moments`. Nodal loads make the diagram linear between nodes, which
-   is what makes row 1 of Table B.3 exact.
-2. The backend is named `sax`. It is **`smax`**.
-3. `_solve_fdm` raises `NotImplementedError` with a note to defer to `jax_fdm`.
-   That is done: use `normax.formfinding`.
-
-**Do not add `alpha_cr` to the T2 schema.** Stability is soft validation and stays
-out of the chain, decided 2026-08-09 — putting it in would oblige every backend to
-supply it. The freeze applies from step 3 onward, not to what the stubs currently say.
+~~⚠️ The stubs are stale.~~ All three corrections landed: `m_ed` is now both end
+moments at `(members, 2)`, the backend is `smax`, and every stage imports
+`normax` rather than reimplementing it. `alpha_cr` stayed out of the T2 schema
+and a test asserts its absence.
 
 **Scope:**
 > Fill in the three `tesseract_api.py` stubs. T1 = JAX-FDM; T2 = `smax` backend
@@ -528,13 +517,56 @@ supply it. The freeze applies from step 3 onward, not to what the stubs currentl
 > `tests/test_tesseract_parity.py`: the composed pipeline reproduces step 2's
 > pure-JAX `q → mass` **and** its gradient to 1e-10. Step 2 is the oracle.
 
-**Done when:** the parity test passes and one end-to-end `jax.grad` call returns
-a finite gradient w.r.t. `q`.
+**Gate:** ~~the parity test passes and one end-to-end `jax.grad` call returns a
+finite gradient w.r.t. `q`.~~ — **PASSED, three decades better than the 1e-10
+asked for.** Every field of the design crosses at **6.7e-16** and `dmass/dq` at
+**3.6e-14**, on both class branches. `normax/composition.py`, 27 cases in
+`tests/test_tesseract_parity.py`, `experiments/10_arch_pipeline_tesseract.py`.
+Full write-up in `CHANGELOG.md` under `## P3 step 3`.
+
+**The composition lives in `normax/composition.py`, not in `pipeline.py`.** The
+scope above said otherwise and was written before `pipeline.py` became the
+oracle. Two modules, the same `Design` and the same signatures but for `chain`
+replacing `graph`, so the parity test compares like with like.
+
+**The higher-order Tesseract wrapping the chain was skipped**, decided
+2026-08-09. Three Tesseracts and an in-process composition is what the parity
+test needs; revisit in P5 or P6 if there is time.
+
+**Five things step 3 settled that P4 and P5 must not relitigate.**
+
+1. **T2's differentiable inputs are exactly `{xyz, diameter}`, and a test pins
+   the set.** That is the constraint the frozen schema is built around: those two
+   are what the OpenSees spike proved DDM can reach. Adding a third is a promise
+   the second backend cannot keep. T3, having no second implementation to
+   satisfy, differentiates in every material property it is given — the two
+   stages disagreeing is honest and it is visible in the schema.
+2. **Table B.3 lives in T3, not in T2.** `end_moments` is a clause of the
+   standard and not a product of an analysis, so a frame solver has no opinion on
+   it. That is what keeps T2's schema free of anything a C++ solver would have to
+   be taught, and it is why T3 reports `m_ed` and `c_m` as outputs.
+3. **Splitting the linearization costs digits; the boundary does not.** Values
+   cross bit-identically. Derivatives disagree at 3.6e-14 — and forward mode
+   against reverse mode, both entirely inside the composition, disagree by
+   2.7e-14. Do not attribute that to serialization.
+4. **The suite needs no Docker and must stay that way** (invariant 6). Tests go
+   through `Tesseract.from_tesseract_api`. The served-container comparison runs
+   from experiment 10 under `NORMAX_SERVED_OUTPUT` and is deliberately not a test.
+5. **Two of three images build.** `normax-formfinding:0.1.0` and
+   `normax-ec3-check:0.1.0` reproduce the mass to 2.6e-15 and the gradient to
+   1.5e-13 over HTTP. **T2's image is blocked on `smax` not being on PyPI and
+   nothing else** — the requirements file already names it, so the build works the
+   day it is published. Build gotchas, all in `CHANGELOG.md`: the version must be
+   `x.y.z`, `python_version: "3.12"` is required, only `tesseract_api.py` is
+   copied so the backend module needs `package_data`, and `uv build` must run
+   first because the requirements install `normax` from `dist/`.
 
 **For the writeup:** the pure-JAX baseline is the *control experiment*, not an
 admission that Tesseract is unnecessary. Pasteur's own caveat is that a single
 developer with a single stack might not need Tesseracts — the answer is the
-parity test plus the OpenSees backend, not a claim of convenience.
+parity test plus the OpenSees backend, not a claim of convenience. **The parity
+number is now the strongest sentence available**: the boundary costs nothing
+measurable, so the composition argument is not paid for in accuracy.
 
 ---
 
