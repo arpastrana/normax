@@ -705,3 +705,400 @@ the frozen T2 to T3 contract: nodal loads make the moment diagram linear between
 nodes, so row 1 of Table B.3 is exact and `sizing.end_moments` consumes the two
 ends directly. **The T2 schema stub still advertises a single peak `m_ed` and is
 stale** — it predates P1b. It needs updating in step 3.
+
+## P3 step 2 — the three stages as one differentiable function
+
+`normax/pipeline.py` composes form finding, analysis and the code check into
+`mass(q, ...)`, a scalar with a gradient in the force densities that crosses all
+three. `experiments/09_arch_pipeline_jax.py` runs it, `tests/test_pipeline.py`
+gates it, and this is the oracle step 3's Tesseract composition is measured
+against rather than scaffolding for it.
+
+Measured on a 10 m arch rising 3 m, ten members, 180 kN spread over its free
+nodes, S355:
+
+| | Class 2 | Class 3 |
+|---|---|---|
+| `d/t` | 46.338 | 59.577 |
+| diameters [mm] | 61.7 – 78.1 | 72.5 – 87.5 |
+| mass [t] | 0.032106 | 0.031199 |
+| worst `\|u − 1\|` | 1.3e-15 | 1.7e-15 |
+
+**The Class 3 design is the lighter one**, by 2.8%, and that is the documented
+rationale in `CLAUDE.md` §3 showing up as a number: every member is governed by
+the 6.61 member check, where Classes 1 to 3 all use the gross area, so the
+thinner wall at the Class 3 limit wins on material even though the tube is fatter.
+`tests/test_pipeline.py` asserts the ordering rather than leaving it as a claim.
+
+### The utilization invariant holds to machine precision
+
+**1.7e-15 against the 1e-9 of invariant 6.5**, on both class branches. The
+invariant only means something because no member is sitting on the 21.3 mm
+catalogue floor, where the utilization is below one by design — so that is
+asserted alongside it.
+
+### The gradient, and a metric that had to be fixed first
+
+`dmass/dq` agrees with central differences to **1.2e-8**. Two things were needed
+to say that honestly.
+
+**The step had to be swept, not guessed.** Textbook V: 3.8e-6 at a relative step
+of 1e-3, down to 1.2e-8 at 1e-5, back up to 1.0e-6 at 1e-7. Truncation on one
+side, cancellation on the other. The experiment prints the sweep.
+
+**A per-component relative error was the wrong instrument.** Two of the ten
+sensitivities are twenty times smaller than the rest, and a 1.6e-13 absolute
+difference there reads as an error of 1.3e-7 while saying nothing about the
+derivative. The measure is now the absolute difference over the largest
+component of the gradient. Same fix in spirit as the fixed-decimal tolerance
+lesson from P1b: the instrument has to match the quantity.
+
+### Two of the ten sensitivities nearly vanish, and the reason is physical
+
+The mass gradient is not small there by accident — **it changes sign**, and
+members 1 and 8 are the ones nearest the crossing. Decomposing it at frozen
+diameters against the full derivative:
+
+| | springing (0, 9) | crown (4, 5) |
+|---|---|---|
+| length term, `Σ A ∂L/∂q` | +2.96e-5 | +4.4e-7 |
+| sizing term, `Σ L A' ∂d/∂q` | −1.45e-5 | −2.41e-5 |
+| total | **+1.52e-5** | **−2.37e-5** |
+
+The sizing term is nearly uniform across members, because `∂Σ\|N\|/∂q` is −846 for
+every edge to three figures — the total axial demand of a funicular arch is set
+by its thrust, and any single force density moves that thrust almost identically.
+The length term instead falls by a factor of 67 from springing to crown, and that
+spread has a specific cause.
+
+**A uniform `q` fixes the horizontal projection.** The FDM system decouples per
+coordinate, so a constant force density leaves the `x` solution evenly spaced:
+every member spans exactly `span / n`, measured to a spread of 3.1e-12 mm over
+1000 mm. Length is then `dx / cos θ`, so the steep springing members are the long
+ones — 1471.87 mm against 1007.17 mm at the crown, a factor of 1.46. And because
+`N = q · L` with `q` uniform, **the axial force ratio is exactly the length
+ratio**, 1.4614 both. The springing is doubly penalised, longer and more heavily
+loaded, so it is also the fattest: area ratio 1.4575.
+
+**That is what amplifies the spread, and it is not the obvious mechanism.**
+`∂arc/∂q_k` alone spreads only 3.91x, and the diagonal `A_k ∂L_k/∂q_k` only 2.13x.
+The `∂L_j/∂q_k` Jacobian is a large positive diagonal, +10.9 to +15.9, against
+many small negatives — perturbing one edge lengthens it and shortens every other.
+Weighting by area **aligns** that positive diagonal with the fattest member at the
+springing and **misaligns** it at the crown, where the induced shortening lands on
+those same fat springing members and nearly cancels it: 3773.9 against 56.3.
+
+**P4 should expect this to move.** Optimizing `q` per edge breaks the
+constant-projection property outright, so both the length spread and the location
+of the sign change are properties of the uniform starting point rather than of the
+arch.
+
+**At the springing, length dominates; at the crown, section does.** They cancel
+one member in from each support. The sum over all edges is −8.5e-5, so weakening
+the force densities uniformly makes the arch lighter — it rises, the thrust
+drops, and the section saved beats the length bought. **That is the tension
+`CLAUDE.md` §2 says the optimizer exists to resolve, confirmed to have an
+interior optimum above 3 m rise before P4 goes looking for it.**
+
+### Mesh refinement: convergent, first order, and not what the gate assumed
+
+The ROADMAP asked for the mass to be "stable under mesh refinement". It is not
+stable, it is **convergent, first order in the member count**, and reporting it
+as stable would have been wrong.
+
+Getting to that statement needed the refinement protocol fixed first. **Holding
+the nodal load and the force density fixed changes the arch as the mesh changes**,
+so the mass moves for a reason that has nothing to do with discretization: the
+crown rise came out as exactly `3000 · n/(n−1)` mm, drifting 20% between the
+coarsest and finest meshes. The total load is now fixed and the force densities
+rescaled so the rise is exactly the target — the FDM `z` solution scales as
+`1/|q|` at fixed loads, so one trial solve fixes the scale with no formula.
+
+With the shape pinned, over meshes of 5 to 160 members:
+
+- the arc length converges **second order** — 12128.99, 12028.09, 12039.63,
+  12042.51, 12043.23, 12043.41 mm
+- the largest axial force converges **first order**, because the end member's
+  chord angle approaches the parabola's steeper tangent linearly in the segment
+  length — 127.26 down to 117.44 kN
+- so the mass converges first order. Successive relative changes fall by
+  **1.856, 2.067, 2.030, 2.015** — halving, as claimed. Richardson gives
+  **0.027351 t**.
+
+**`L_cr = L` superposes a second effect that is physics, not discretization.**
+Refining shortens the members, `L/i` at the crown falls from 73.5 to 5.5, `χ`
+approaches one and buckling stops governing, so the sequence converges to the
+squash limit instead. Both curves are reported. This is exactly the `L_cr = L`
+caveat P7 has to state, and it is the reason the buckling length is an argument
+to `design` rather than a convention inside it.
+
+### The staggered coupling is weak, and now quantified
+
+A frame cannot be analysed without sections and the sections are what the check
+returns, so `design` takes the analysed diameters as an input and returns the
+required ones. Repeating the pass contracts by a **constant factor of about
+1/39**: relative moves of 3.80e-1, 1.17e-2, 3.05e-4, 7.91e-6, 2.05e-7, 5.31e-9.
+
+**One pass costs 1.22% of the mass** against the fixed point. That is the price
+of the one-way gradient the T2 schema documents, and it is now a number rather
+than an acknowledged unknown. The contraction is fast because the analysis barely
+depends on the section — the same `(i/L)²` smallness that step 1 measured.
+
+### Figures
+
+`normax/visualization.py`, matplotlib only, no styles and no `show`. The
+experiments compute and it draws, so a figure can be recomposed without touching
+what produced it. Three, in `figures/`:
+
+- **`09_sections.png`** — the arch before and after the check has spoken, members
+  drawn at a width proportional to diameter and coloured on one shared scale, over
+  a per-member bar chart. 36.3% lighter than the uniform 100 mm assumption.
+- **`09_convergence.png`** — the mass against mesh density for both buckling-length
+  conventions, the order of convergence against a first-order reference line, and
+  the staggered coupling contracting.
+- **`08_handoff.png`** — step 1's outputs, for assessing them by eye rather than
+  by tolerance: `q · L` against `smax` per member, the gap and the bending share,
+  the quadratic law against a `d²` reference, and autodiff against central
+  differences.
+
+Widths are drawn to a stated exaggeration rather than to scale — a 100 mm tube on
+a 10 m arch is 1% of the span — and the factor is written into the figure instead
+of left for the reader to infer. `matplotlib` joins the `pipeline` group;
+`tests/test_pipeline.py` smoke-tests both figure builders under `Agg`.
+
+**Test counts: 1441 in CI, 1491 locally.** The 50-case difference is
+`test_equilibrium_consistency.py` and `test_pipeline.py`, both dropped at
+collection when the pipeline packages are absent.
+
+### The buckling length is an input, and the member-length choice is a strong assumption
+
+**Decided 2026-08-09.** `L_cr` is an argument to `normax.pipeline.design`, never
+derived from the mesh. The default is the member's own length, and that is
+**presumed, not conservative**: it asserts that every node is held in position by
+structure outside the model, so a member can only buckle between its ends. For a
+gridshell, whose hoop members brace its radial ones, that is the right reading.
+For the arch it is an idealisation of a rib in a braced system, and the writeup
+has to say so rather than let it pass as caution.
+
+**How far it is from true, measured rather than argued.** `normax.analysis.buckling`
+wraps `smax.solve_buckling` and returns the critical load factors of the whole
+frame. On the fully-stressed ten-member arch, all four lowest modes are below the
+design load:
+
+| mode | `α_cr` | shape |
+|---|---|---|
+| 0 | **0.1291** | antisymmetric sway — one half rises as the other falls |
+| 1 | 0.3119 | symmetric — crown lifts, quarter points drop |
+| 2 | 0.5642 | antisymmetric, two waves |
+| 3 | 0.8885 | symmetric, three waves |
+
+**Mode 0 is the classic two-pinned arch mode**, with `u_z` antisymmetric about
+midspan and zero at the crown while `u_x` is symmetric and non-zero there — the
+whole arch sways sideways. The buckle wavelength is the arch, not the segment,
+which is exactly what a member-length buckling length cannot see. Backing out
+`L_cr = π√(EI/(α_cr N_Ed))` gives **0.576 of the developed length, steady to three
+figures across a 32-fold range of mesh density** — mesh-independent, as a global
+mode must be.
+
+**The out-of-plane restraint is already counted, and it is already exhausted.**
+`u_y` is identically zero in every mode, and adding the out-of-plane rotations to
+the restraint set leaves `α_cr` at 0.1291 to four decimals with the same mode
+shapes. So 0.129 is the in-plane, already-stiffened figure rather than the
+pessimistic one; a bare three-dimensional arch would be weaker still. It also
+re-confirms P3 step 1's finding that restraining the one translation is enough.
+
+**What sizing against the real mode would cost:** `L_cr = 0.576 × arc` puts the
+diameters at 137–151 mm instead of 72–87 mm and the mass at **0.101669 t against
+0.031199 t, a factor of 3.26** — and even then `α_cr` reaches only 1.41, far short
+of the order of ten at which second-order effects are normally set aside. **So the
+bare arch is not rescuable by sizing at this span, rise and load**, which is why
+the braced-rib idealisation is the honest reading rather than a convenience. Both
+masses are printed by `experiments/09_arch_pipeline_jax.py` and the ratio is
+asserted in `tests/test_pipeline.py`, so the sensitivity is a result and not a
+remark.
+
+**`α_cr` is a diagnostic and is never differentiated.** The eigenproblem is pure
+JAX and would trace, but an eigenvalue derivative is undefined where two modes
+cross and an optimizer moves modes around. It is read beside a design, like
+`governing`.
+
+**Not implemented, and deliberately:** EN 1993-1-1's own use of `α_cr` — the
+threshold above which second-order effects may be neglected, and the sway
+amplifier — is **not in `docs/clauses.md`** and so is not verified. The factor is
+reported as a number with no clause verdict attached. Verifying §5.2.1 against the
+standard is a prerequisite for turning it into a check.
+
+`figures/09_modes.png` draws the four modes over the undeformed arch.
+
+### `α_cr` became a check, and the standard's two doors to slenderness
+
+**Changed 2026-08-09 on instruction**, from reporting the critical load factor to
+checking against it. `normax/ec3/stability.py` and `normax.pipeline.stability`.
+
+⚠️ **This is a deliberate exception to the rule that nothing marked UNVERIFIED
+gets implemented.** §5.2 and §6.3.4 were not in `docs/clauses.md`; they are now,
+transcribed from memory and flagged, with **open item 0f** recording that every
+threshold and equation number in them is unchecked — `α_cr ≥ 10` and `≥ 15`, the
+`1/(1 − 1/α_cr)` amplifier and its `α_cr ≥ 3` floor, and the numbers 5.1, 5.2 and
+6.64. The threshold is a parameter with a flagged default, so correcting it is one
+line. **None of it may reach the writeup unverified.**
+
+**A check, not a diagnostic, and the arch fails it.** `α_cr = 0.1291` against a
+threshold of 10 gives a utilization of **77.4**, and `is_adequate` returns False.
+That failure is now a pinned test rather than a caveat, which is the point: it is
+the evidence that the braced-node reading of `L_cr = L` is load-bearing rather
+than cautious.
+
+**The check cannot enter the sizing map, and that is structural.** The bisection
+roots a *member* check, which is local and monotone in one diameter. Global
+stability is a property of the whole frame: a design that fails it is not made to
+pass by growing one member, and the remedy is bracing or a different buckling
+length. So `stability` reads a finished `Design` and never appears inside it.
+
+#### Two doors into the same quantity
+
+The more interesting half. EN 1993-1-1 reaches the slenderness driving `χ` twice
+over — §6.3.1.3 Eq. 6.50 from a **member** buckling length, §6.3.4 Eq. 6.64 from a
+**system** critical load factor — and for pure compression they are the same
+equation. With `α_ult,k = A f_y / N_Ed` and `α_cr = N_cr / N_Ed`:
+
+```
+α_ult,k / α_cr = (A f_y / N_Ed) · (N_Ed / N_cr) = A f_y / N_cr = λ̄²
+```
+
+**That identity needs no source and is asserted as algebra**, over four diameters,
+three axial forces and three buckling lengths, agreeing to 1e-14. It is also what
+makes `L_cr = π√(EI/(α_cr N_Ed))` a legitimate inversion rather than a fudge, and
+that round trip is tested too.
+
+**Fed the arch, the two doors disagree by the assumption and not by an error:**
+
+| member | Eq. 6.50 from `L_cr` | Eq. 6.64 from `α_cr` | ratio | `L_cr` implied [mm] |
+|---|---|---|---|---|
+| 0 | 0.6334 | 2.9821 | 4.71 | 6930.1 |
+| 4 | 0.5232 | 2.9863 | 5.71 | 5748.5 |
+
+**The global route is almost uniform across the arch** — 2.978 to 2.986, a spread
+of 0.3% — because one mode governs the whole structure, while the member route
+varies by 21% with member length. That contrast is the physical content: a
+buckling length is a statement about a member, a critical load factor is a
+statement about a structure, and the standard will accept either. A pipeline that
+differentiates the code can walk through either door and report both, which is
+something no scalar branchy implementation of the same clauses offers.
+
+**`normax/ec3/stability.py` needs no pipeline guard** — it is pure EC3 with no
+solver dependency, so its **61 tests run in CI** alongside the rest of the clause
+layer. Only the composed `pipeline.stability`, which calls the eigensolver, sits
+behind the guard.
+
+### Stability is soft validation and stays out of the chain
+
+**Decided 2026-08-09.** `normax/ec3/stability.py` and `normax.pipeline.stability`
+size nothing, enter no gradient, and cross no Tesseract boundary. **Global
+stability is therefore not covered by what this package designs**, and the writeup
+says so as a limitation rather than implying otherwise.
+
+The boundary is a scope decision, and a cheap one. Putting a critical load factor
+into the T2 schema would change a schema the roadmap freezes on day one, add a
+non-differentiable output that must be popped before every gradient, and oblige
+**every** analysis backend to supply it — which the OpenSees backend cannot
+without real work, since linear buckling there needs the geometric stiffness
+assembled by hand. That is a direct cost against the swappability thesis, paid for
+a second structural feature. The thesis is that backpropagation through a design
+code works; stability is out of scope, stated rather than hidden.
+
+**Both structures fail the check, and both numbers go in the writeup.** The arch
+at `α_cr = 0.129`, the gridshell at **0.372** — measured on a 48-member cap, 25
+nodes, rise over span 0.135. Shallow caps are snap-through-prone, so the rise is
+worth sweeping before P4 fixes the geometry.
+
+**Two corrections to what was recorded earlier.**
+
+- **The self-consistent fixed point does not oscillate.** The two-cycling reported
+  before came from an ad hoc update rule, not the physics. With the correct
+  per-member inversion `L_cr = π√(EI/(α_cr N_Ed))` it converges in **one pass**:
+  `α_cr` 0.129 → 1.1613 → 1.1611 → 1.1610, mass 0.0312 → 0.0935 → 0.0932,
+  monotone. Under-relaxation only slows it. Not adopted, but no longer mis-recorded.
+- **Repeated eigenvalues are real here, not a hypothetical.** The eight-fold
+  symmetric gridshell returns `[0.3722 0.3722 0.6246 0.7193]` — a degenerate pair
+  at the critical mode. That is exactly where an eigenvalue derivative is
+  undefined, so "never differentiate `α_cr`" now has a counterexample behind it
+  rather than a caution.
+
+**One defect fixed.** A gridshell's boundary hoops span support to support and
+carry exactly zero axial force, and `resistance_factor` and `buckling_length`
+divided by it, reporting `inf`. They now return **nan**: infinity would read as a
+statement about the member, while nan says the question does not apply, and a
+reduction over the members says so too instead of quietly absorbing it. The
+two-doors bridge is only meaningful for a member carrying the load the global mode
+is scaled against, which is now documented and tested.
+
+### Classification is now exact by construction in floating point too
+
+`CLASS_LIMIT_TOLERANCE = 1e-12`, a relative widening of the inclusive bound of
+Table 5.2. CLAUDE.md §3 argues that pinning `d/t` makes classification exact by
+construction, and in exact arithmetic it is — but a member is *built* by pinning
+the ratio and taking its wall as the diameter over it, and recovering `d/t` from
+the diameter and the wall returns it only to within rounding. Measured spread
+**7.1e-15 absolute on 59.577**, and a strict comparison then hands back Class 4:
+
+```
+before:  arch class 3 -> classes {3, 4}   class 2 -> classes {2, 3}
+after:   arch class 3 -> classes {3}      class 2 -> classes {2}
+```
+
+Nothing in the design path was wrong — the class is a static Python integer and
+the ratio a constant, so `classify` is never called on a recovered ratio there.
+But **anyone auditing a design by recomputing `d/t` would have concluded we had
+violated our own scope boundary**, which is exactly the check a reader of this
+repo should be able to make.
+
+**Which side of the limit the rounding lands on is grade-dependent**, and the
+first attempt at a test asserted it always straddles, which is false for S235,
+S275 and S460. It straddles at **S355**, the grade every design here uses, and
+that is what the test now pins — alongside the invariant that matters, that a
+family built to one ratio classifies to one class over 64 diameters and all five
+grades. The tolerance is ten thousand times the observed rounding and ten orders
+below any difference in `d/t` between real sections, so it separates rounding
+from geometry and nothing else: CHS 508×8 at `d/t` 63.5 is still Class 4.
+
+### What is actually a variable, and what follows from it
+
+Worth stating plainly, since the section has two dimensions and only one degree
+of freedom.
+
+| quantity | role | how it moves |
+|---|---|---|
+| `q`, per edge | **the design variable** | what P4's optimizer will drive |
+| `d`, per member | **solved, not chosen** | the root of utilization = 1, with an exact tangent by IFT |
+| `t`, per member | **not a variable at all** | `t = d / r`, exactly |
+| `r = d/t` | config, per design | fixed by `Tube.at_class_limit`; differentiable but pinned |
+
+So the diameter and the thickness are never optimized separately, and the
+thickness is never optimized at all: **one section variable per member, and it is
+solved for rather than searched over.** That is what makes the sizing map a map
+and not an inner optimization, and it is why the utilization comes back at
+1.0 ± 1.7e-15 instead of at whatever an optimizer left it at.
+
+`r` is a genuine leaf and carries a gradient — `∂mass/∂r = -6.279e-05`, matching
+central differences to six figures — so freeing it is a one-line change.
+
+**Correction.** An earlier draft of this entry said the class "cannot be a traced
+value". That is wrong: `lax.switch` branches on a traced value perfectly well, and
+CLAUDE.md invariant 4 names it as the tool for exactly this. The claim also
+contradicted an invariant this repo already follows.
+
+**The real reason `r` is pinned is that the class boundary is a discontinuity in
+the standard, and tracing it does not remove one.** `M_Rk` steps from `W_pl f_y`
+to `W_el f_y` across it, a drop of 24.6% for a CHS. `lax.switch` would make that
+step *expressible*, not smooth. With `r` fixed the question never arises, because
+`t = d/r` leaves `d/t` invariant in `d`: no diameter the optimizer chooses can
+change the class. Freeing `r` within one class is available today; freeing it
+across a boundary is a piecewise problem best answered by optimizing inside each
+class and comparing, which is what `experiments/05_class_ratio_sweep.py` is for.
+
+For the record, the other leaves that carry gradients and could become variables:
+`f_y` at -6.814e-05, `e_mod` at -1.580e-08, the buckling curve's imperfection
+factor `alpha` at +1.266e-02, and `gamma_m1` at +2.751e-02. **The partial factor
+having a derivative is the thesis in one number** — a quantity that exists only
+because a committee wrote it down, carrying a sensitivity through a form-finder.

@@ -5,7 +5,7 @@
 [![Changelog](https://img.shields.io/github/v/release/arpastrana/normax?include_prereleases&label=changelog)](https://github.com/arpastrana/normax/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/arpastrana/normax/blob/main/LICENSE)
 
-Backpropagating through building codes
+Backpropagating through structural engineering codes
 
 ## Installation
 

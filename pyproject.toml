@@ -1,7 +1,7 @@
 [project]
 name = "normax"
 version = "0.1"
-description = "Backpropagating through building codes"
+description = "Backpropagating through structural engineering codes"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{name = "Rafael Pastrana"}]
