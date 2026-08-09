@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 
 from normax.ec3.classification import CLASS_LIMIT_FACTORS
+from normax.ec3.classification import CLASS_LIMIT_TOLERANCE
 from normax.ec3.classification import class_limits
 from normax.ec3.classification import classify
 from normax.ec3.classification import epsilon
+from normax.ec3.section import thickness
 
 # EN 1993-1-1 Table 5.2, the epsilon row, rounded to 2 d.p. in the standard.
 # (f_y, epsilon, epsilon squared)
@@ -122,3 +124,58 @@ def test_classify_vectorizes_over_members():
 def test_classify_is_jittable():
     # No Python branch on a traced value, so this must trace cleanly.
     assert jax.jit(classify)(24.45, 355.0) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The inclusive bound survives a round trip through a wall thickness
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("f_y", GRADES)
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, index):
+    # A member is built by pinning d/t, and its wall follows as d over that
+    # ratio. Recovering the ratio from the diameter and the wall returns it only
+    # to within rounding, and a strict comparison would scatter members built to
+    # one ratio across two classes.
+    limit = float(np.asarray(class_limits(f_y))[index])
+    diameters = jnp.linspace(21.3, 500.0, 64)
+    ratios = diameters / thickness(diameters, limit)
+
+    assert np.all(np.asarray(classify(ratios, f_y)) == index + 1)
+
+
+@pytest.mark.parametrize("f_y", GRADES)
+def test_the_round_trip_stays_inside_the_tolerance(f_y):
+    limit = float(np.asarray(class_limits(f_y))[2])
+    diameters = jnp.linspace(21.3, 500.0, 64)
+    ratios = np.asarray(diameters / thickness(diameters, limit))
+
+    assert np.max(np.abs(ratios - limit)) / limit < CLASS_LIMIT_TOLERANCE
+
+
+def test_the_round_trip_straddles_the_limit_at_the_design_grade():
+    # The tolerance is not decoration. Which side of a limit the rounding lands
+    # on depends on the grade, and at S355 — the grade every design here uses —
+    # it lands on both, which without the tolerance splits one section family
+    # across two classes.
+    limit = float(np.asarray(class_limits(355.0))[2])
+    diameters = jnp.linspace(21.3, 500.0, 64)
+    ratios = np.asarray(diameters / thickness(diameters, limit))
+
+    assert ratios.max() > limit
+    assert ratios.min() < limit
+
+
+@pytest.mark.parametrize("f_y", GRADES)
+def test_the_tolerance_does_not_reach_a_neighbouring_class(f_y):
+    # Widening the bound must not swallow any ratio geometry would separate.
+    lower, middle, upper = np.asarray(class_limits(f_y))
+
+    assert classify(lower * (1.0 + 1e-6), f_y) == 2
+    assert classify(middle * (1.0 + 1e-6), f_y) == 3
+    assert classify(upper * (1.0 + 1e-6), f_y) == 4
+
+
+def test_a_real_thin_walled_tube_is_still_class_four():
+    # CHS 508 x 8, S355: d/t = 63.5 against a limit of 59.58. Geometry, not
+    # rounding, so the tolerance leaves it alone.
+    assert classify(508.0 / 8.0, 355.0) == 4

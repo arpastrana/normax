@@ -30,6 +30,14 @@ from jaxtyping import Int
 # EN 1993-1-1 Table 5.2 sheet 3. Multiply by epsilon SQUARED, not by epsilon.
 CLASS_LIMIT_FACTORS = (50.0, 70.0, 90.0)
 
+# Relative width of the inclusive bound of Table 5.2. A section pinned to a limit
+# carries a wall thickness of the diameter over that limit, and recovering the
+# ratio from the two returns it only to within rounding — measured at 1e-16
+# relative, which a strict comparison turns into the class above. The tolerance is
+# some ten thousand times that and some ten orders below any difference in `d/t`
+# a real section has, so it separates rounding from geometry and nothing else.
+CLASS_LIMIT_TOLERANCE = 1e-12
+
 
 def epsilon(f_y: float | Float[Array, ""]) -> Float[Array, ""]:
     """
@@ -104,7 +112,15 @@ def classify(
     EN 1993-1-1 5.5.2, Table 5.2 sheet 3. The limits are stated as inclusive
     upper bounds, so a ratio sitting exactly on a limit takes the class below
     it. Counting the limits a ratio exceeds avoids branching on a traced value.
+
+    That inclusive bound is applied to within `CLASS_LIMIT_TOLERANCE`. A section
+    designed to sit on a limit reaches it only to within rounding once its ratio
+    has been through a wall thickness and back, and a strict comparison would
+    hand back the class above for half of a set of members that were all built to
+    the same ratio. The widening is far below any difference in `d/t` between
+    real sections, so it changes no classification that geometry decides.
     """
-    exceeded = jnp.asarray(ratio)[..., None] > class_limits(f_y)
+    limits = class_limits(f_y) * (1.0 + CLASS_LIMIT_TOLERANCE)
+    exceeded = jnp.asarray(ratio)[..., None] > limits
 
     return 1 + jnp.sum(exceeded, axis=-1)
