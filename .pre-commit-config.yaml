@@ -1,0 +1,31 @@
+# Pre-commit hooks for normax. Install with:
+#
+#     pre-commit install
+#
+# Run against all files with:
+#
+#     pre-commit run --all-files
+#
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Pinned to the ruff in the dev group, so the hook and CI cannot disagree.
+    rev: v0.16.2
+    hooks:
+      # Lint and auto-fix (imports, pycodestyle, pyflakes). Mirrors `ruff check`
+      # in CI. `ruff-check` rather than `ruff`, which is a legacy alias at v0.16.
+      - id: ruff-check
+        args: [--fix]
+      # Format the code, including snippets inside docstrings.
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      # The clause reference and the worked-example fixtures are the two places
+      # a stray large file would hurt most on a public repo.
+      - id: check-added-large-files

@@ -20,6 +20,7 @@ include = ["normax*"]
 [dependency-groups]
 dev = [
     "blue-prints>=0.7.1",
+    "pre-commit>=4.6.1",
     "pytest",
     "ruff>=0.16.2",
 ]
@@ -68,4 +69,3 @@ CI = "https://github.com/arpastrana/normax/actions"
 spike = [
     "openseespy>=3.8",
 ]
-
