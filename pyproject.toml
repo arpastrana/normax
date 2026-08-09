@@ -24,6 +24,10 @@ dev = [
     "pytest",
     "ruff>=0.16.2",
 ]
+pipeline = [
+    "jax-fdm>=0.14.0",
+    "smax",
+]
 
 [build-system]
 requires = ["setuptools"]
@@ -57,6 +61,9 @@ force-single-line = true
 [tool.ruff.lint.per-file-ignores]
 "normax/__init__.py" = ["E402", "F401"]  # re-exports after the JAX config
 "tests/*" = ["E712", "E501"]  # JAX bool comparisons; relaxed line length
+
+[tool.uv.sources]
+smax = { path = "../smax", editable = true }
 
 
 [project.urls]

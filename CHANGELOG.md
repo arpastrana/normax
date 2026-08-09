@@ -591,3 +591,117 @@ Recorded because each produced a confident, wrong reading of OpenSees:
   `u/|θ|`.
 
 Every conclusion above survived a rerun after all four were fixed.
+
+## P3 step 1 — the T1 to T2 handoff
+
+`jax-fdm` finds the shape and `smax` analyses it. They exchange a geometry and
+nothing else — no prestress, no initial member forces — so the axial forces that
+come back are `smax`'s own product and their agreement with `q · L` is a
+prediction rather than an identity. `experiments/08_arch_formfind_analyse.py`
+runs it and `tests/test_equilibrium_consistency.py` gates it.
+
+### The dependency question, and the interim guard
+
+`jax-fdm` is on PyPI; **`smax` is not yet — it is being published before the
+deadline** (decided 2026-08-09). Until then both live in a **`pipeline`
+dependency group**, `smax` as an editable path source, and CI installs
+`--group dev` alone and never sees them.
+
+`tests/conftest.py` drops the pipeline tests from collection when either import
+is missing. **1441 cases in CI, 1470 with the group installed** — the difference
+is `tests/test_equilibrium_consistency.py`.
+
+The guard is a hand-maintained filename list, which is safe because **omitting a
+file turns CI red at collection rather than passing quietly**: importing
+`normax.analysis` without `smax` raises `ModuleNotFoundError` before any test
+runs. Verified in a clean `pip install . --group dev` environment. `ruff check`
+and `ruff format --check` are unaffected either way, since neither imports.
+
+Two things to do when `smax` goes public: delete the marked block in
+`tests/conftest.py` and move both packages into the project dependencies. Note
+`jax-fdm` caps at Python `<3.14` while `normax` allows `<3.15`, so that move
+needs a marker or a narrower `requires-python`. Independently of all this, each
+Tesseract carries its own `tesseract_requirements.txt`; the group only exists
+for running the pipeline in process.
+
+### A planar arch on pinned supports alone is a mechanism
+
+Two pinned supports restrain translation and nothing else, so **rotating the
+whole arch about the line joining them strains no member and moves no support.**
+That mode has zero energy, the free-free stiffness block is singular, and
+`smax` returns **nan rather than a plausible wrong answer** — which is the good
+outcome, since a plausible wrong answer would have been believed.
+
+Restraining the one translation normal to the plane removes it. The two
+out-of-plane rotations are left free: they are unexcited by an in-plane load and
+come back **exactly zero**, and restraining them changes the in-plane result in
+no digit. `normax.analysis.fixities` takes the normal axis, or `None` for a
+structure that occupies all three dimensions.
+
+This does not touch `CLAUDE.md` §3. The **supports** are still pinned, with the
+in-plane rotation free at the base, so no end moment is injected. The
+out-of-plane restraint is a plane-of-symmetry condition on a two-dimensional
+idealisation, and it is what OpenSees builds natively with `-ndm 2 -ndf 3` — so
+the P5 backend comparison is against the same structure, not a stiffer one.
+
+`smax`'s own `examples/arch_2d.py` has the same singularity and reports its
+error against a baseline without noticing. Worth reporting upstream.
+
+### The gap is quadratic in the diameter, and that is the whole of it
+
+Measured on a 10 m, ten-member arch at `q = -75 N/mm` under 20 kN per node,
+sized near the 73–87 mm the code check asks for:
+
+| `d` [mm] | worst axial gap | worst `M / (N L)` | gap / `(d/100)²` |
+|---|---|---|---|
+| 50 | 5.68e-5 | 1.89e-4 | 2.27e-4 |
+| 100 | 2.27e-4 | 7.58e-4 | 2.27e-4 |
+| 200 | 9.09e-4 | 3.03e-3 | 2.27e-4 |
+| 400 | 3.63e-3 | 1.21e-2 | 2.27e-4 |
+
+**Constant in the last column to three figures over an eightfold range.** The
+mechanism is not elastic shortening, which was the first guess and is wrong:
+form finding returns a polygon with a kink at every node, and a chain of beams
+cannot turn a kink on axial force alone, because continuity of rotation demands
+a moment. That moment scales as `(i / L)²`, and `i ∝ d`.
+
+Two consequences, both asserted rather than argued: the gap is **free of the
+modulus** to 1e-12, since `EI` and `EA` both carry `E` and it cancels; and free
+of the **scale of the loading** to 1e-12, when loads and `q` scale together so
+the shape is unchanged. A tolerance pinned on a single number would have hidden
+both. **Tolerances recorded at `d = 100 mm`: 2.5e-4 axial, 1.0e-3 bending.**
+
+### What else the gate found
+
+- Form finding balances the loads at every free node to **1.5e-10 N** against
+  20 kN, and `state.forces` equals `q · L` to 1e-14.
+- The arch stays exactly planar: the FDM system decouples per coordinate, so
+  with no load along `Y` the free `Y` coordinates are **identically zero**, and
+  `m_z` comes back **exactly zero** from the analysis.
+- Axial force does not vary along a member, so **one number per member is not an
+  approximation** — loads are nodal and the analysis is linear.
+- End moments of neighbouring members agree at the shared node, and both bases
+  carry **zero moment**, which is the pinned support showing up in the output.
+- `jax.grad` of a scalar of `smax`'s output with respect to `q` crosses both
+  stages and matches central differences to **2.9e-10**.
+
+### Two modules, and the unit adapter written first
+
+`normax/units.py` carries the conversions and nothing else, and was tested on
+its own before either stage was wired: `normax` is millimetres, newtons and
+`N·mm⁻²` with masses in tonnes, `smax` is coherent SI. **Force is the newton in
+both and needs no conversion** — the one quantity crossing untouched, and its
+absence from the module is deliberate rather than an oversight. 40 cases,
+including that a stress times an area is the same force in either system.
+
+`normax/formfinding.py` and `normax/analysis.py` split along the line between
+topology and number. Connectivity is built once on the host; only `q`, the
+geometry and the diameters enter the traced call. `analysis.frame` assembles the
+`smax` model **inside** the differentiated function, which is what lets the
+gradient reach the geometry and, in step 2, the diameters.
+
+`MemberForces` carries the axial force and **both end moments** per member, per
+the frozen T2 to T3 contract: nodal loads make the moment diagram linear between
+nodes, so row 1 of Table B.3 is exact and `sizing.end_moments` consumes the two
+ends directly. **The T2 schema stub still advertises a single peak `m_ed` and is
+stale** — it predates P1b. It needs updating in step 3.

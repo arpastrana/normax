@@ -1,0 +1,107 @@
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Form finding with the force density method, the first stage of the pipeline.
+
+Maps force densities to the geometry that carries the applied loads in pure
+tension or compression. The equilibrium is linear in the coordinates once the
+force densities are fixed, so `jax-fdm` differentiates it by tracing the solve.
+
+The two functions split along the line that separates a shape from a number.
+Connectivity is topology, known before any force density is chosen, and is built
+once on the host. Only the force densities enter the traced call.
+"""
+
+import numpy as np
+from jax_fdm import DTYPE_INT_NP
+from jax_fdm.equilibrium import EquilibriumModel
+from jax_fdm.equilibrium import EquilibriumParametersState
+from jax_fdm.equilibrium import EquilibriumState
+from jax_fdm.equilibrium import EquilibriumStructure
+from jax_fdm.equilibrium import LoadState
+from jaxtyping import Array
+from jaxtyping import Float
+
+from normax.structures import Structure
+
+
+def graph(structure: Structure) -> EquilibriumStructure:
+    """
+    The connectivity the force density method solves on.
+
+    Parameters
+    ----------
+    structure :
+        The structure to read nodes, edges and supports from.
+
+    Returns
+    -------
+    graph :
+        The connectivity matrices and the free-fixed node partition.
+
+    Notes
+    -----
+    Built once on the host, outside any traced call. The support indices become
+    the per-node flags `jax-fdm` partitions on, so a node absent from them is
+    free in all three coordinates.
+    """
+    num_nodes = structure.nodes.shape[0]
+
+    nodes = np.arange(num_nodes, dtype=DTYPE_INT_NP)
+    edges = np.asarray(structure.edges, dtype=DTYPE_INT_NP)
+
+    supports = np.zeros(num_nodes, dtype=DTYPE_INT_NP)
+    supports[np.asarray(structure.supports)] = 1
+
+    return EquilibriumStructure(nodes, edges, supports)
+
+
+def equilibrium(
+    q: Float[Array, "edges"],
+    structure: Structure,
+    graph: EquilibriumStructure,
+) -> EquilibriumState:
+    """
+    The geometry that carries the loads at a given set of force densities.
+
+    Parameters
+    ----------
+    q :
+        Force density of every edge. Negative in compression.
+    structure :
+        The structure supplying the support positions and the nodal loads.
+    graph :
+        The connectivity, from `graph`.
+
+    Returns
+    -------
+    state :
+        Node positions, edge lengths, edge forces, nodal residuals and loads.
+
+    Notes
+    -----
+    One linear force density step, so the loads stay fixed in direction and
+    magnitude rather than following the shape. Each edge carries the product of
+    its force density and its length, and that state balances the applied loads
+    at every free node to solver precision, which is the claim the analysis
+    stage is measured against.
+
+    The supported nodes hold the positions they were given, so the starting
+    geometry matters only there. Everywhere else it is discarded.
+    """
+    xyz_fixed = structure.nodes[graph.indices_fixed]
+    loads = LoadState(nodes=structure.loads, edges=0.0, faces=0.0)
+    params = EquilibriumParametersState(q=q, xyz_fixed=xyz_fixed, loads=loads)
+
+    return EquilibriumModel(tmax=1)(params, graph)
