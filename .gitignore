@@ -17,3 +17,14 @@ ROADMAP.md
 # Third-party reference material. Copyrighted textbooks and commercial source,
 # none of it redistributable. This repo goes public before submission.
 references/
+
+# Figures, animations and anything else an experiment writes. Every one is
+# reproducible from the script that made it, so none of them belong in history.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.webp
+*.pdf
+*.mp4

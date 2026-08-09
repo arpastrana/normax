@@ -30,8 +30,11 @@ of the loading. The table below shows all three.
 Run with `uv run --group pipeline python experiments/08_arch_formfind_analyse.py`.
 """
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 from smax import diagnose_mechanisms
 
 from normax.analysis import forces
@@ -41,6 +44,7 @@ from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.structures import arch
+from normax.visualization import figure_handoff
 
 # A 10 m arch of ten members under a 20 kN load at every free node. Units are
 # millimetres and newtons throughout, as in every other module here.
@@ -64,6 +68,8 @@ SCALES = [0.1, 1.0, 10.0]
 TOLERANCE_AXIAL = 2.5e-4
 TOLERANCE_BENDING = 1.0e-3
 TOLERANCE_GRADIENT = 1e-7
+
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
@@ -170,14 +176,31 @@ def main():
     print("\nThe gradient crosses both stages")
     print(f"  {'edge':>4} {'autodiff':>18} {'central':>18} {'relative':>10}")
     worst_gradient = 0.0
+    differences = []
     for edge in range(NUM_EDGES):
-        numeric = float(central(objective, q, edge, 1e-3))
+        differences.append(float(central(objective, q, edge, 1e-3)))
         exact = float(gradient[edge])
-        relative = abs(exact - numeric) / abs(numeric)
+        relative = abs(exact - differences[-1]) / abs(differences[-1])
         worst_gradient = max(worst_gradient, relative)
-        print(f"  {edge:>4} {exact:>18.4f} {numeric:>18.4f} {relative:>10.2e}")
+        print(f"  {edge:>4} {exact:>18.4f} {differences[-1]:>18.4f} {relative:>10.2e}")
 
     deviation, bending = gap(DIAMETER, STEEL)
+
+    FIGURES.mkdir(exist_ok=True)
+    handoff = figure_handoff(
+        state.lengths[:, 0],
+        axial,
+        member.n_ed,
+        jnp.max(jnp.abs(member.m_y_ed), axis=1),
+        np.asarray(DIAMETERS),
+        np.asarray([gap(diameter, STEEL)[0] for diameter in DIAMETERS]),
+        DIAMETER,
+        gradient,
+        np.asarray(differences),
+    )
+    handoff.savefig(FIGURES / "08_handoff.png", dpi=160, bbox_inches="tight")
+    print(f"\nfigure written to {FIGURES / '08_handoff.png'}")
+
     print()
     for label, worst, tolerance in (
         ("axial disagreement", deviation, TOLERANCE_AXIAL),
