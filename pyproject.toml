@@ -64,3 +64,8 @@ Changelog = "https://github.com/arpastrana/normax/releases"
 Issues = "https://github.com/arpastrana/normax/issues"
 CI = "https://github.com/arpastrana/normax/actions"
 
+[project.optional-dependencies]
+spike = [
+    "openseespy>=3.8",
+]
+

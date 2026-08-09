@@ -420,3 +420,174 @@ function theorem buys the gradient. The two do not have to be traded.
 sampled at `num_samples=2` — exactly the two end moments `end_moments` wants, so
 Table B.3's linear row stays exact. **A unit adapter is required**: `smax` works
 in coherent SI (N, m, Pa) and `normax` in mm/N/N·mm⁻².
+
+## OpenSees DDM spike
+
+Run 2026-08-09, ahead of the Aug 12 milestone. `experiments/07_opensees_ddm_spike.py`
+reproduces every number below; `openseespy` 3.8.0.0 is a `spike` optional extra, so
+CI never installs it.
+
+### The answer splits by dimension
+
+CLAUDE.md §9 offered three outcomes. Both (a) and (b) landed, in different halves
+of the problem:
+
+- **In 2D, DDM reaches a nodal coordinate.** `parameter(tag, 'node', n, 'coord', d)`
+  binds and returns the right number. Against central differences on a kinked
+  cantilever, worst relative error **7.4e-9** across every (parameter, DOF) pair.
+  This is outcome (a) — the best case — and it covers P4's 2D arch entirely.
+- **In 3D, it does not.** Beams return identically zero for all three coordinate
+  directions. The truss is worse: `coord3` is always zero, while `coord1` and
+  `coord2` return values that are **wrong rather than absent** — off by 2.5x and
+  1.9x on a tripod whose bars are not axis-aligned. This is outcome (b).
+
+Per the agreed stopping rule the spike stopped at the finding rather than starting
+a workaround inside the timebox.
+
+**The decision it fed, taken 2026-08-09: OpenSees is the 2D swappability
+demonstration, and `smax` carries anything 3D.** The alternative — wrapping the
+OpenSees solve in a `custom_jvp` and supplying the geometric tangent DDM lacks —
+is not being built. It would mean re-deriving `∂K/∂x` per element type to recover
+a capability the primary backend already has, and the 2D case needs none of it:
+`∂N/∂xyz` from JAX autodiff against the same quantity from C++ DDM is exactly the
+backend-agreement plot P5 wants, available with no extra machinery. The
+restriction costs the demo nothing, because the demo was always going to be the
+2D arch.
+
+### `elasticBeamColumn` carries no DDM at all
+
+The most actionable fact, and it is invisible from the API: `parameter()` accepts
+`E`, `A`, `Iz`, `Iy`, `G`, `J` on `elasticBeamColumn`, returns a tag, and
+`getParamValue` reads the bound value back correctly. Every resulting sensitivity
+is then **identically zero**, in 2D and 3D alike, with no warning. Registration
+succeeding says nothing about `getResistingForceSensitivity` existing — exactly the
+trap §9 anticipated.
+
+`SRC/element/elasticBeamColumn/ElasticBeam3d.cpp` on current `master` is the whole
+story in one file: `setParameter` accepts `"E"`, `"A"`, `"Iz"`, `"Iy"`, `"G"`,
+`"J"`, `"Avy"`, `"Avz"`, `"releasez"`, `"releasey"`, and the class implements
+**no** `getResistingForceSensitivity`, no `commitSensitivity`, no
+`activateParameter`. The registration path is fully built and the differentiation
+path does not exist, so nothing can warn.
+
+`dispBeamColumn` and `forceBeamColumn` with `section('Elastic', ...)` do carry it:
+`E`, `A`, `I`/`Iz`, `Iy` all correct to ~1e-9, in both dimensions, with forward
+displacements matching the analytic cantilever to 4e-16. **T2's OpenSees backend
+must be built on those, never on `elasticBeamColumn`.** The section route is not a
+fibre approximation — it is the same linear-elastic beam.
+
+This matches the documented support. OpenSees' own guidance is to check for
+`getResistingForceSensitivity` in the element rather than trust the command
+surface, and the maintainers describe DDM as enabled for "the basic element
+formulations like `dispBeamColumn`, `forceBeamColumn`, and a handful of solid
+elements, as well as fibre sections" — a list `elasticBeamColumn` is absent from.
+The OpenSeesPy `parameter` page documents no parameter surface at all: "the
+specific set of parameters ... will be added in the future."
+
+### The 3D numbers are wrong, not noisy
+
+Worth stating separately because a silently wrong gradient is the worst failure
+mode available. The central differences are stable to eight digits across step
+sizes from 1e-4 to 1e-8, so they are the trustworthy side of the disagreement.
+The one 3D case DDM gets exactly right is a single bar aligned with the axis being
+perturbed (ratio to the closed form 1.00000000).
+
+**The source says why, and it is unfinished work rather than a design boundary.**
+`SRC/element/truss/Truss.cpp` computes the direction-cosine derivatives for a
+nodal-coordinate parameter from a planar formula, with the third term commented
+out — verbatim, in both `getResistingForceSensitivity` and `commitSensitivity`:
+
+```c
+double dx = L*cosX[0];
+double dy = L*cosX[1];
+//double dz = L*cosX[2];
+```
+
+That single comment produces both observed failures: `coord3` is identically zero
+because `dz` is never used, and `coord1`/`coord2` are wrong for any bar not lying
+in the xy-plane because the remaining formula assumes one.
+
+**No element swap fixes this**, which is the fact worth carrying into P5. For beams
+the gap sits one layer below the element, in the coordinate transformation they all
+delegate geometry to. `LinearCrdTransf2d.cpp` implements the full family —
+`getGlobalResistingForceShapeSensitivity`, `getdLdh`, `getd1overLdh`,
+`isShapeSensitivity`, `getBasicTrialDispShapeSensitivity`. Its 3D counterpart
+implements **none** of them, carrying only `getBasicDisplSensitivity`, and neither
+`PDeltaCrdTransf3d` nor `CorotCrdTransf3d` fills the gap. Every 3D beam element in
+OpenSees therefore has no geometric sensitivity to inherit, regardless of
+formulation. Checked against current `master`, so there is nothing to upgrade to.
+
+Berkeley's DDM documentation lists geometry among the supported parameter
+categories and documents `parameter $tag node $nodeTag coord $dir`, so the
+2D-only reach is a gap in the implementation rather than a stated limitation.
+
+### `∂N/∂xyz` is the quantity that matters, and it narrows the element choice
+
+`sensNodeDisp` gives `∂u/∂xyz`. T3 consumes member forces, not displacements, so
+the load-bearing quantity is `∂N/∂xyz` and `∂M/∂xyz` — one step further down the
+chain, reached through `sensSectionForce`, the only element-level sensitivity
+command in the surface. Checked against central differences of
+`eleResponse(ele, 'section', k, 'force')` on the same kinked cantilever:
+
+- **`forceBeamColumn`: correct.** Worst relative error **7.8e-8** over every
+  (parameter, element, section, dof) entry — axial and moment alike.
+- **`dispBeamColumn`: wrong.** Worst relative error **11.9**, with entries an
+  order of magnitude out (`-4.85e4` against a difference quotient of `-3.77e3`).
+  The two element types produce *identical* difference quotients, so the
+  disagreement is in `dispBeamColumn`'s DDM, not in the reference.
+
+Plausibly this is the force-based formulation carrying section forces as its
+primary interpolated quantity while the displacement-based one recovers them
+through the section stiffness. Whatever the cause, **T2's OpenSees backend should
+use `forceBeamColumn`**. `dispBeamColumn` remains fine for `∂u/∂θ` and for section
+properties, which is all the earlier passes exercised — it is specifically the
+coordinate-to-section-force path that fails.
+
+Two hazards in `sensSectionForce` worth pinning, both of which produced confident
+nonsense before being understood:
+
+- It returns **the section vector starting at the requested dof**, so element `0`
+  is the value asked for. Indexing `[dof-1]` silently returns a neighbouring
+  component — which is what made the first run of this check read as broken.
+- Passing a **parameter tag that was never registered segfaults the process**:
+  exit 139, no traceback, no output. Not an exception, not a warning.
+
+### Pseudo-loads are not reachable, and matter less than assumed
+
+Step 4 asked whether `P_i = ∂f/∂θ_i − (∂K/∂θ_i)u` can be read without a solve,
+which would buy reverse mode over OpenSees at O(1). **No.** `printB('-ret')`
+returns the converged residual — 1.07e-8 against an applied load of 4.9e4 — under
+`-computeAtEachStep`, `-computeByCommand` and no sensitivity mode at all.
+Reconstructing `P_i` as `K (du/dθ_i)` works but presupposes the solve it would
+replace, and nothing in the 237-command surface exposes `formSensitivityRHS`.
+
+The motivation is also weaker than it looked. DDM reuses one factorization, so each
+extra parameter costs a back-substitution, not a solve: **~6–12% of a full solve
+per parameter**, flat in parameter count at every size measured (0.0036 ms/param at
+57 DOF, 0.036 at 297, 0.41 at 1197). Against finite differences that is 7x to 17x,
+widening with both model size and parameter count.
+
+Two numbers for the P5 scaling plot, which wants "T2's VJP scales with parameter
+count, T1's and T3's don't": at 400 elements and 798 parameters the sensitivity
+sweep is **330 ms against a 6.5 ms solve** — 50x the forward cost, still 17x
+cheaper than the 5.6 s finite-difference equivalent. At P4's scale (20 elements,
+57 DOF, 38 parameters) the whole DDM sweep is 0.21 ms and the FD fallback 2.5 ms,
+so **the fallback is affordable outright** if the backend ever needs it.
+
+### Four ways the test itself lied first
+
+Recorded because each produced a confident, wrong reading of OpenSees:
+
+- A parameter registered on element 1 must be central-differenced by perturbing
+  **element 1 alone**. Sharing one property across the model made correct
+  sensitivities read as `WRONG`.
+- `G` computed as `E/(2(1+ν))` makes the difference quotient for `E` drag `G` with
+  it, so the torsional DOF disagrees. Likewise writing one `I` into `Iz`, `Iy` and
+  `J` at once. Both made working 3D section derivatives read as broken.
+- The second moment is named **`I` in 2D and `Iz` in 3D**. The wrong name binds to
+  nothing and is indistinguishable from a missing derivative.
+- Judging "informative" by a threshold scaled with the step size skips genuine
+  `∂u/∂E` values of order 1e-13 and scores a **vacuous pass**. The natural scale is
+  `u/|θ|`.
+
+Every conclusion above survived a rerun after all four were fixed.
