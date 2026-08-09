@@ -52,6 +52,48 @@ simplification). No torsion, no shear (see Open items).
 
 ---
 
+## §5.2 and §6.3.4 — Global stability  ⚠️ UNVERIFIED, transcribed from memory
+
+**Nothing in this section has been checked against the standard or the guide.**
+It is recorded here so that `normax/ec3/stability.py` has a spec to cite and a
+single place to be corrected, not because it is trusted. See open item 0f.
+
+- [ ] Eq. **5.1**: `α_cr = F_cr / F_Ed` — the factor by which the design load
+      must be multiplied to reach elastic instability **in a global mode**.
+- [ ] **§5.2.1(3)**: first-order analysis is adequate when `α_cr ≥ 10` for
+      elastic analysis and `α_cr ≥ 15` for plastic analysis. **Both numbers are
+      from memory.**
+- [ ] **§5.2.2(5)B**: sway effects amplified by `1 / (1 − 1/α_cr)`, valid down to
+      `α_cr ≥ 3.0` only. Below that a genuine second-order analysis is required.
+- [ ] Eq. **5.2**: an approximate `α_cr` for portal frames from storey drift,
+      `α_cr = (H_Ed/V_Ed)(h/δ_H,Ed)`. **Not used** — we compute `α_cr` from an
+      eigenvalue analysis instead, so the approximation is never needed.
+- [ ] Eq. **6.64** (§6.3.4, the general method): `λ̄_op = √(α_ult,k / α_cr,op)`,
+      with `α_ult,k` the amplifier reaching the characteristic cross-section
+      resistance and `α_cr,op` the amplifier reaching elastic instability.
+
+### The two routes to `λ̄` are the same equation — exact, no source needed
+
+Eq. 6.50 takes the slenderness from a **member** buckling length; Eq. 6.64 takes
+it from a **system** critical load factor. For pure compression they are
+algebraically identical, since `α_ult,k = A f_y / N_Ed` and `α_cr = N_cr / N_Ed`:
+
+```
+α_ult,k / α_cr = (A f_y / N_Ed) · (N_Ed / N_cr) = A f_y / N_cr = λ̄²
+```
+
+**This identity needs no reference** and is asserted directly in
+`tests/test_stability.py`. It is what lets a buckling length be recovered from a
+critical load factor, `L_cr = π √(E I / (α_cr · N_Ed))`, and it is the reason the
+two routes may be fed to the same `χ` and compared.
+
+What differs is not the equation but what each route is asked about: Eq. 6.50
+answers for one member over an assumed length, Eq. 6.64 for the mode the
+structure actually has. On the arch they disagree by a factor of 4.7 in `λ̄`,
+which is the size of the braced-node assumption rather than a discrepancy.
+
+---
+
 ## §5.5.2 / Table 5.2 (sheet 3) — Classification, tubular sections
 
 Verified. Limits apply to **sections in bending and/or compression**:
@@ -477,6 +519,14 @@ flips through `governing`, and quote these numbers in the writeup.
 traced.** Selecting the plastic or elastic branch is therefore an ordinary Python
 choice at build time and introduces no branch on a traced value.
 
+**That is a consequence of the decision, not a constraint that forced it.** A
+traced class is perfectly expressible — `lax.switch` branches on a traced value,
+and CLAUDE.md invariant 4 names it. The reason not to is that **the class boundary
+is a discontinuity in the standard**: `M_Rk` steps from `W_pl f_y` to `W_el f_y`
+across it, 24.6% for a CHS, and tracing the step does not smooth it. Fixing `d/t`
+means the question never arises, since `t = d/r` leaves the ratio invariant in the
+diameter and no size the design takes can change its class.
+
 | `d/t` | Class | `M_Rk` uses | Cross-section N+M | `k_ij` column |
 |---|---|---|---|---|
 | `70ε²` | 2 | `W_pl` | `M_N,Rd = M_pl(1 − n^1.7)`, Eq. 6.41 | Class 1/2 (plastic) |
@@ -808,6 +858,17 @@ but **Figure 6.20 is captioned `N_Ed = 1630 kN`**. Use 2110.
 0e. **Table B.3 row 3c** — the two books disagree on a sign
    (`0.90 ± 0.10 α_h(1 + 2ψ)`). Out of our path while loading stays nodal, since
    that cell requires span loading. Resolve against EN itself if that changes.
+0f. ⚠️ **§5.2 and §6.3.4 are UNVERIFIED and are implemented anyway** — a
+   deliberate exception to the rule that nothing marked ⚠️ gets built, taken
+   2026-08-09 on instruction, because the global stability of the arch has to be
+   checked rather than merely reported. `normax/ec3/stability.py` cites this file
+   and **every number in it came from memory**: the `α_cr ≥ 10` and `≥ 15`
+   thresholds, the `1/(1 − 1/α_cr)` amplifier and its `α_cr ≥ 3` floor, and the
+   equation numbers 5.1, 5.2 and 6.64. **Verify all of them against the standard
+   before any of it reaches the writeup.** The one part needing no source is the
+   Eq. 6.50 / Eq. 6.64 identity, which is algebra and is tested as such. The
+   threshold is a parameter with a flagged default, so correcting it is a
+   one-line change.
 1. Equation numbers 6.5, 6.9, 6.46 (the `≤ 1.0` utilization checks) — inferred,
    not confirmed. Low risk: cite the clause without the equation number. The
    guide reproduces neither; only the standard itself would settle them.
