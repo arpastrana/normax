@@ -64,6 +64,7 @@ Run with `uv run --group pipeline python experiments/03_optimize_arch.py`.
 
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -114,10 +115,11 @@ POINT_SHARE = 0.25
 CASE_NAMES = ("LC1 uniform", "LC2 half span", "LC3 crown point")
 
 # Sharpnesses to report the cost of the smoothing at, and the schedule the
-# descent anneals over.
-SHARPNESSES = (10.0, 25.0, 50.0, 100.0, 250.0, 500.0)
+# descent anneals over. Arrays rather than floats so that a sharpness is traced
+# and changing it does not compile the objective again.
+SHARPNESSES = jnp.asarray([10.0, 25.0, 50.0, 100.0, 250.0, 500.0])
 BETA_START = 10.0
-BETA_STOP = 500.0
+BETA_STOP = jnp.asarray(500.0)
 ROUNDS = 5
 
 # Enough that neither descent stops on its limit. The floored one needs far more
@@ -207,9 +209,15 @@ def load_cases(structure):
     return jnp.stack([uniform, half, point])
 
 
+@eqx.filter_jit
 def build(q, structure, graph_fdm, model, cases, beta, diameters=None):
     """
     The enveloped design at one set of force densities.
+
+    Compiled, which is what makes the sweeps below affordable as well as the
+    descents: every caller here passes the same prepared topologies, so one trace
+    serves all of them. The sharpness is an argument rather than a constant so
+    that annealing it does not compile again.
     """
     seed = jnp.full(NUM_EDGES, SEED) if diameters is None else diameters
 
@@ -261,9 +269,9 @@ def report_smoothing(structure, graph_fdm, model, cases, q):
         exact = unsmoothed(result, STEEL, TUBE, plastic=PLASTIC)
 
         excess = float(result.mass) / float(exact.mass) - 1.0
-        bound = float(cases.shape[0] ** (2.0 / beta)) - 1.0
+        bound = float(cases.shape[0] ** (2.0 / float(beta))) - 1.0
         print(
-            f"  {beta:>8.0f} {float(result.mass):>14.9f} {excess:>10.4%}"
+            f"  {float(beta):>8.0f} {float(result.mass):>14.9f} {excess:>10.4%}"
             f" {bound:>10.4%} {float(jnp.max(exact.utilization)):>18.15f}"
         )
 
@@ -334,7 +342,7 @@ def report_descent(structure, graph_fdm, model, cases, q, *, floor):
     The same mass with one force density per member, annealed.
     """
     bounds = (float(q[0]) * DECADES, float(q[0]) / DECADES)
-    schedule = anneal(BETA_START, BETA_STOP, ROUNDS)
+    schedule = anneal(BETA_START, float(BETA_STOP), ROUNDS)
 
     kind = f"a {floor:.0f} mm floor" if floor else "no length floor"
     print(f"\nDescending with one variable per member, {kind}, bounds {bounds}")

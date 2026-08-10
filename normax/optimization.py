@@ -36,6 +36,7 @@ from collections.abc import Callable
 from collections.abc import Sequence
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -202,6 +203,41 @@ def anneal(
     return jnp.geomspace(start, stop, rounds)
 
 
+def value_and_gradient(
+    objective: Callable[[Float[Array, "members"]], Float[Array, ""]],
+) -> Callable[
+    [Float[Array, "members"]], tuple[Float[Array, ""], Float[Array, "members"]]
+]:
+    """
+    The value and the gradient of an objective together, compiled once.
+
+    Parameters
+    ----------
+    objective :
+        The mass, as a function of the force densities alone.
+
+    Returns
+    -------
+    value_and_gradient :
+        A function returning both, tracing on its first call and running the
+        compiled program on every later one.
+
+    Notes
+    -----
+    **The compilation boundary, exposed so that a caller can decide when it is
+    paid.** `descend` builds one of these if it is not handed one, and a caller
+    timing a search wants it built and called once beforehand instead: compiling
+    is a fixed cost that belongs to neither the objective nor the optimizer, and
+    charging a descent for it measures the tracer.
+
+    Reusing one across several searches is what makes the compilation a cost per
+    objective rather than per search. Two searches over the same objective can
+    share this; two rounds of an annealing schedule cannot, their sharpnesses
+    being different constants captured in different programs.
+    """
+    return eqx.filter_jit(jax.value_and_grad(objective))
+
+
 def descend(
     objective: Callable[[Float[Array, "members"]], Float[Array, ""]],
     q: Float[Array, "members"],
@@ -209,6 +245,10 @@ def descend(
     bounds: tuple[float, float],
     iterations: int,
     sharpness: float | Float[Array, ""] = 0.0,
+    gradient: Callable[
+        [Float[Array, "members"]], tuple[Float[Array, ""], Float[Array, "members"]]
+    ]
+    | None = None,
 ) -> Trajectory:
     """
     Minimize a scalar objective in the force densities, under box bounds.
@@ -227,6 +267,10 @@ def descend(
         Envelope sharpness to stamp on every iterate. Recorded and never used,
         this being generic over any scalar objective; zero says the caller had
         none to give.
+    gradient :
+        A compiled value and gradient of the objective, from
+        `value_and_gradient`. If None, one is built here and this call pays for
+        compiling it.
 
     Returns
     -------
@@ -237,6 +281,29 @@ def descend(
     -----
     L-BFGS-B, driven from JAX's value and gradient together, so each iteration
     costs one forward pass and one reverse pass rather than two forward ones.
+
+    **Compiled once and reused for every evaluation.** The objective is traced on
+    the first evaluation and every later one runs the compiled program, which is
+    where nearly all of the saving in a descent is. The objective must therefore
+    be jittable, which for the pipeline means its analysis model is prepared by
+    the caller rather than built inside.
+
+    **A caller who is timing the search should compile before it starts**, by
+    building `value_and_gradient` and calling it once, then passing it here. Left
+    to itself this call traces inside its first evaluation, and the elapsed time
+    of the search then includes a fixed cost that has nothing to do with either
+    the objective or the optimizer.
+
+    One compilation covers one objective, so an annealing schedule pays for as
+    many as it has rounds: the sharpness reaches the objective as a captured
+    constant rather than an argument, and a captured array is baked into the
+    program rather than traced. That is the price of staying generic over any
+    scalar objective, and it is a fixed cost per round against a saving on every
+    evaluation within it.
+
+    The value at an iterate the search never evaluated directly is recovered from
+    this same compiled function and its gradient discarded, rather than by
+    compiling the objective a second time on its own.
 
     **The bounds are what keep the force densities away from zero**, where the
     force density system is singular and a funicular shape stops existing. They
@@ -256,7 +323,7 @@ def descend(
     evaluated: dict[bytes, float] = {}
     visited = [np.asarray(q, dtype=np.float64)]
 
-    gradient = jax.value_and_grad(objective)
+    gradient = value_and_gradient(objective) if gradient is None else gradient
 
     def evaluate(x: Float[np.ndarray, "members"]):
         value, slope = gradient(jnp.asarray(x))
@@ -270,7 +337,7 @@ def descend(
     if iterations < 1:
         return Trajectory(
             q=jnp.asarray(np.stack(visited)),
-            mass=jnp.asarray([float(objective(jnp.asarray(q)))]),
+            mass=jnp.asarray([float(gradient(jnp.asarray(q))[0])]),
             beta=jnp.full(1, sharpness),
         )
 
@@ -288,7 +355,7 @@ def descend(
         visited.append(np.asarray(result.x, dtype=np.float64))
 
     masses = [
-        evaluated.get(step.tobytes()) or float(objective(jnp.asarray(step)))
+        evaluated.get(step.tobytes()) or float(gradient(jnp.asarray(step))[0])
         for step in visited
     ]
 
@@ -341,18 +408,29 @@ def optimize(
     what any case demands. Annealing therefore approaches the answer from the
     safe side, and stopping early leaves a heavier structure rather than an
     inadequate one.
+
+    **Each round compiles its own objective, and does so here rather than inside
+    the search.** A sharpness reaches the objective as a captured constant, so a
+    round is a different program from its neighbour and no compilation carries
+    over. Building it at this level is what keeps that cost outside the descent it
+    pays for, and visible to anything timing one.
     """
     iterates = []
     masses = []
     sharpnesses = []
 
     for sharpness in schedule:
+
+        def round_objective(x, sharpness=sharpness):
+            return objective(x, sharpness)
+
         walked = descend(
-            lambda x, sharpness=sharpness: objective(x, sharpness),
+            round_objective,
             q,
             bounds=bounds,
             iterations=iterations,
             sharpness=sharpness,
+            gradient=value_and_gradient(round_objective),
         )
         q = walked.q[-1]
 
