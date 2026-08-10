@@ -39,6 +39,9 @@ on it raises rather than passing quietly. Read it beside a finished design with
 `normax.pipeline.governing`.
 """
 
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -62,6 +65,48 @@ from normax.structures import Structure
 TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
 
 STAGES = ("formfinding", "analysis", "ec3_check")
+
+# What the analysis stage reads to choose its solver. Named here so a caller
+# switching backends does not have to know the stage's own spelling.
+BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
+
+
+@contextmanager
+def backend(name: str) -> Iterator[None]:
+    """
+    Run the analysis stage on a named solver for the duration of a block.
+
+    Parameters
+    ----------
+    name :
+        Backend to select, `smax` or `opensees`.
+
+    Yields
+    ------
+    None
+        The block runs with that backend selected.
+
+    Notes
+    -----
+    The stage takes its backend from the environment, since a schema cannot
+    carry a choice about who implements it and a container is configured once at
+    startup. Comparing two backends in one process is the case that needs more
+    than that, and this makes the switch a block rather than a global edit: the
+    previous value is restored on the way out, exceptions included.
+
+    Nothing is rebuilt. The same chain serves either solver, which is the claim
+    the boundary makes rather than an optimisation.
+    """
+    previous = os.environ.get(BACKEND_VARIABLE)
+    os.environ[BACKEND_VARIABLE] = name
+
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ[BACKEND_VARIABLE]
+        else:
+            os.environ[BACKEND_VARIABLE] = previous
 
 
 class Chain(NamedTuple):

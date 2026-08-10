@@ -22,10 +22,17 @@ traced at all can sit behind this same schema.
 
 Three dimensions throughout, which is what the gridshell needs and what a direct
 differentiation backend cannot supply.
+
+**Both derivative rules are this module's own.** The stage's endpoints ask a
+backend for them rather than differentiating it, since a backend that cannot be
+traced has nothing for `jax.vjp` to record. Here they are one line each; the
+other backend assembles the same answers from a Jacobian it sweeps out by hand,
+and the schema cannot tell the difference.
 """
 
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 
 from normax.analysis.smax import forces
@@ -91,3 +98,120 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         "m_y_ed": member.m_y_ed,
         "m_z_ed": member.m_z_ed,
     }
+
+
+def _restricted(
+    inputs: dict[str, Any],
+    wrt: list[str],
+    outputs: list[str],
+) -> tuple[Any, list[jnp.ndarray]]:
+    """
+    The solve restricted to the requested inputs and outputs, and its primals.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+    wrt :
+        Names of the input fields a derivative is taken with respect to.
+    outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    restricted :
+        The restricted solve and the primal values of the requested inputs.
+
+    Notes
+    -----
+    Everything not differentiated is closed over rather than passed, so JAX sees
+    a function of the requested arguments alone and no static field has to be
+    marked as such.
+    """
+    static = {name: value for name, value in inputs.items() if name not in wrt}
+
+    def restricted(*values):
+        merged = {**static, **dict(zip(wrt, values))}
+        computed = solve(merged)
+
+        return {name: computed[name] for name in outputs}
+
+    return restricted, [jnp.asarray(inputs[name]) for name in wrt]
+
+
+def jvp(
+    inputs: dict[str, Any],
+    jvp_inputs: list[str],
+    jvp_outputs: list[str],
+    tangent_vector: dict[str, Any],
+) -> dict[str, jnp.ndarray]:
+    """
+    Push a tangent on the inputs forward to the outputs.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+    jvp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jvp_outputs :
+        Names of the output fields a derivative is taken of.
+    tangent_vector :
+        Tangent on each of those inputs.
+
+    Returns
+    -------
+    tangents :
+        Tangent on each of the requested outputs.
+
+    Notes
+    -----
+    One forward pass whatever the number of parameters, the assembly and the
+    solve being traced along with everything else.
+    """
+    restricted, primals = _restricted(inputs, jvp_inputs, jvp_outputs)
+
+    tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
+    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+
+    return pushed
+
+
+def vjp(
+    inputs: dict[str, Any],
+    vjp_inputs: list[str],
+    vjp_outputs: list[str],
+    cotangent_vector: dict[str, Any],
+) -> dict[str, jnp.ndarray]:
+    """
+    Pull a cotangent on the outputs back to the inputs.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+    vjp_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    vjp_outputs :
+        Names of the output fields a derivative is taken of.
+    cotangent_vector :
+        Cotangent on each of those outputs.
+
+    Returns
+    -------
+    cotangents :
+        Cotangent on each of the requested inputs.
+
+    Notes
+    -----
+    One reverse pass whatever the number of coordinates, which is the property a
+    direct differentiation backend has to buy with a sweep.
+    """
+    restricted, primals = _restricted(inputs, vjp_inputs, vjp_outputs)
+
+    _, pullback = jax.vjp(restricted, *primals)
+    cotangents = pullback(
+        {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
+    )
+
+    return dict(zip(vjp_inputs, cotangents))

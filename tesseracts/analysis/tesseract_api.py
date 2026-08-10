@@ -32,15 +32,16 @@ soft validation, it sizes nothing, and putting it in the schema would oblige
 every backend to produce one. `normax.pipeline.stability` reads it beside a
 finished design instead.
 
-Set `NORMAX_ANALYSIS_BACKEND` to choose a backend. Only `smax` exists today; the
-OpenSees backend arrives behind this same schema and changes nothing above it.
+Set `NORMAX_ANALYSIS_BACKEND` to choose a backend: `smax` traces a JAX frame
+solver in three dimensions, `opensees` drives a C++ one in two. Nothing above
+this line differs between them, including the derivative endpoints — a backend
+supplies its own rules, because only one of the two can be traced at all.
 """
 
 import os
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 from pydantic import BaseModel
 from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
@@ -49,7 +50,9 @@ from tesseract_core.runtime import Int64
 
 jax.config.update("jax_enable_x64", True)
 
-BACKEND = os.environ.get("NORMAX_ANALYSIS_BACKEND", "smax")
+# Environment variable naming the backend, and the one used when it is unset.
+BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
+BACKEND_DEFAULT = "smax"
 
 
 class InputSchema(BaseModel):
@@ -123,31 +126,46 @@ class OutputSchema(BaseModel):
     """
 
 
-def _forward(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
+def _backend() -> Any:
     """
-    Analyse the frame with whichever backend is selected.
-
-    Parameters
-    ----------
-    inputs :
-        The validated input fields.
+    The module implementing the selected backend.
 
     Returns
     -------
-    outputs :
-        Axial force and both end moments of every member.
+    backend :
+        A module exposing `solve`, `jvp` and `vjp`.
 
     Raises
     ------
     ValueError
         If the selected backend does not exist.
-    """
-    if BACKEND == "smax":
-        from _backend_smax import solve  # noqa: PLC0415
-    else:
-        raise ValueError(f"unknown analysis backend {BACKEND!r}")
 
-    return solve(inputs)
+    Notes
+    -----
+    Imported on use rather than at the top of the file, because an image ships
+    the dependencies of one backend and a module-level import of the other would
+    fail before the schema could be read.
+
+    **The environment is read per call, not at import.** A container sets the
+    variable once and never changes it, so nothing is lost there; a process
+    comparing the two backends against each other needs to switch between calls,
+    and reading once at import would silently serve it whichever was selected
+    first.
+
+    **A backend owns its derivatives as well as its forward pass.** Only one of
+    the two can be traced, so differentiating the forward pass here would be a
+    claim about how a solver works rather than a request for what it computes.
+    """
+    selected = os.environ.get(BACKEND_VARIABLE, BACKEND_DEFAULT)
+
+    if selected == "smax":
+        import _backend_smax as backend  # noqa: PLC0415
+    elif selected == "opensees":
+        import _backend_opensees as backend  # noqa: PLC0415
+    else:
+        raise ValueError(f"unknown analysis backend {selected!r}")
+
+    return backend
 
 
 def apply(inputs: InputSchema) -> OutputSchema:
@@ -164,7 +182,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     outputs :
         The internal forces of every member.
     """
-    return _forward(inputs.model_dump())
+    return _backend().solve(inputs.model_dump())
 
 
 def abstract_eval(abstract_inputs):
@@ -193,40 +211,6 @@ def abstract_eval(abstract_inputs):
         "m_y_ed": {"shape": (members, 2), "dtype": "float64"},
         "m_z_ed": {"shape": (members, 2), "dtype": "float64"},
     }
-
-
-def _differentiate(
-    inputs: InputSchema,
-    wrt: list[str],
-    outputs: list[str],
-) -> tuple[Any, list[Any]]:
-    """
-    The map restricted to the requested inputs and outputs, and its primals.
-
-    Parameters
-    ----------
-    inputs :
-        The geometry, the sections, the topology and the load case.
-    wrt :
-        Names of the input fields a derivative is taken with respect to.
-    outputs :
-        Names of the output fields a derivative is taken of.
-
-    Returns
-    -------
-    restricted :
-        The restricted map and the primal values of the requested inputs.
-    """
-    raw = inputs.model_dump()
-    static = {name: value for name, value in raw.items() if name not in wrt}
-
-    def restricted(*values):
-        merged = {**static, **dict(zip(wrt, values))}
-        computed = _forward(merged)
-
-        return {name: computed[name] for name in outputs}
-
-    return restricted, [jnp.asarray(raw[name]) for name in wrt]
 
 
 def vector_jacobian_product(
@@ -263,14 +247,9 @@ def vector_jacobian_product(
     differently they pay for it is a result rather than an implementation
     detail.
     """
-    restricted, primals = _differentiate(inputs, vjp_inputs, vjp_outputs)
-
-    _, pullback = jax.vjp(restricted, *primals)
-    cotangents = pullback(
-        {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
+    return _backend().vjp(
+        inputs.model_dump(), vjp_inputs, vjp_outputs, cotangent_vector
     )
-
-    return dict(zip(vjp_inputs, cotangents))
 
 
 def jacobian_vector_product(
@@ -304,9 +283,4 @@ def jacobian_vector_product(
     differentiation backend, which computes a tangent per parameter directly.
     The two backends therefore meet here first, before the reverse rule.
     """
-    restricted, primals = _differentiate(inputs, jvp_inputs, jvp_outputs)
-
-    tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
-    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
-
-    return pushed
+    return _backend().jvp(inputs.model_dump(), jvp_inputs, jvp_outputs, tangent_vector)
