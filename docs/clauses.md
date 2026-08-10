@@ -101,7 +101,7 @@ with `χ_op = min(χ, χ_LT)`, and the guide recommends the whole clause be used
 with caution as it is new and thinly validated.
 
 **The mode we measure on the arch is in-plane by construction** —
-`normax.analysis.buckling` restrains the one translation normal to the plane
+`normax.analysis.smax.buckling` restrains the one translation normal to the plane
 precisely so the modes stay in it. So §6.3.4 is where the standard writes this
 algebra, not authority for the number we report from it. The identity below is
 what carries our use; the clause is a citation for the form, not for the case.

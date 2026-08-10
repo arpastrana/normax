@@ -1743,3 +1743,289 @@ parameters registered, so the backend rebuilds per call and holds nothing.
 **1724, up from 1707.** Seventeen in the new `tests/test_backend_opensees.py`,
 guarded in `conftest.py` on `openseespy` — the `spike` extra, which CI never
 installs — and on `smax`, since every assertion there is against it.
+
+## P5b — the topology hoisted out of the objective
+
+`experiments/03_optimize_arch.py` runs in **29 s against over ten minutes**, and
+the reason is not a faster solver. The analysis stage was rebuilding a
+`smax.CompiledStructure` on every evaluation, three times per objective — once
+per load case — and roughly 2,500 times across a full run of the experiment,
+producing a bit-identical `Topology` each time.
+
+### The measurement that redirected the work
+
+Rebuilding the topology is **16.1 ms per case, 48 ms per objective, 9.4% of the
+forward pass**. That alone would not have been worth a refactor. What made it
+worth one is where the Python lives: `smax.topology.build_free_dof_mask` decides
+the degree-of-freedom maps with `if support.fixity[i]`, a Python conditional on
+what was a traced pytree leaf. **That conditional is inside compilation, not
+inside the solve.** Hoisting compilation to the host therefore does not merely
+save the 9% — it removes the only thing that stopped the stage being jitted.
+
+| | eager | prepared and jitted | |
+|---|---|---|---|
+| analysis stage, one case | 120.4 ms | 0.17 ms | 719x |
+| `q → member forces` | 115.8 ms | 0.10 ms | 1151x |
+| its gradient | 304.0 ms | 0.19 ms | 1564x |
+| objective, three cases | 640.4 ms | 0.17 ms | 3686x |
+| value and gradient | 1381.4 ms | 0.44 ms | 3127x |
+
+One-off compilation is 0.8 s for the value and 2.2 s for the gradient.
+
+**The upstream change is no longer needed.** Making `Support.fixity` static in
+`smax` was recorded as the precondition for jitting anything; it is not. The
+blocker was compilation happening inside the trace, and preparing once removes it
+without touching the dependency. The upstream field is now optional tidying.
+
+**The sizing bisection is not 0.016% of a design.** That figure does not survive
+measurement: eager, `diameter()` over twenty members is **66.5 ms, about 39% of
+the forward pass**, since fifty-five halvings of a full utilization check is some
+2,750 eager dispatches. The earlier conclusion still holds — do not rewrite it as
+Newton — but because `lax.fori_loop` collapses under compilation, not because the
+loop was ever cheap eagerly.
+
+### The contract, and why it is symmetric
+
+Every backend is now reached in two calls: `prepare(structure, steel, tube, *,
+normal) -> Model` on the host, then `forces(model, xyz, diameters, steel, tube,
+*, loads)`. This mirrors `normax.formfinding`, where `graph` is built once and
+`equilibrium` consumes it — and the asymmetry it removes is that T1's derived
+topology was already hoisted while T2's was not.
+
+**Both backends take it, including the one that cannot use it.** OpenSees holds
+one global model with no handle to it, so its `Model` carries only the plane the
+frame lies in and every call still wipes and reassembles. A contract that fits a
+solver reusing an assembly and a solver that cannot is the stage's claim; the
+difference showing up as an empty model rather than as a different call shape is
+the point of stating it.
+
+`normax.structures.Structure` became a `NamedTuple`, so it is a pytree and
+crosses a jit boundary as four array leaves instead of an unhashable object. It
+now matches every other container in the package.
+
+### Nothing is baked, and that is tested rather than asserted
+
+`prepare` builds its template from a placeholder geometry and a placeholder
+section, and `forces` replaces **every array leaf a result can depend on** —
+`params.xyz`, the four `Section` properties, and all three material arrays, not
+just the modulus. A leaf left alone would keep its placeholder, and since that is
+a constant the gradient with respect to it would be a silent zero rather than an
+error.
+
+`tests/test_analysis_prepared.py` pins it. Forces come back **bitwise identical**
+from templates built on the starting geometry, on the form-found geometry, and on
+a deliberately absurd seed — unit modulus, unit density, a tube whose smallest
+size exceeds anything the arch uses. Liveness is checked per leaf, and for the
+modulus against a difference quotient rather than against zero: member forces of
+a uniform-E linear frame are E-independent, so the axial force cannot tell an
+injected modulus from a baked one, and only a displacement can.
+
+Poisson's ratio is deliberately not injected. It is a constant of the backend
+taken from EN 1993-1-1 rather than a field of `Steel`, so nothing upstream varies
+it, and the shear modulus follows the modulus that is injected.
+
+### What reproduces, and the one thing that does not
+
+The floored descent — the number P4 says to quote — reproduces: **31.6% against
+31.7%** lighter than the funicular arch, shortest member 311.3 against 313.4 mm,
+`α_cr` 1.723 against 1.734. Utilization is 1.0 to 1e-12, the gradient agrees with
+central differences to 3.7e-08 against a 2e-07 target, and `experiments/04`
+returns the same 0.024808755 t in the same seven steps.
+
+**The unconstrained descent does not reproduce: 0.0696 t against 0.0472 t.** It
+is not an error, and it is worth recording why.
+
+The function is the same function. Mass agrees to **7.3e-13** and its gradient to
+**1.0e-10**, and at the collapsed design the refactored gradient matches central
+differences to **7.1e-08** with utilization exactly 1.0. What differs is the path.
+Traced step by step, the two descents agree to 1e-6 through step 13, 7e-3 by step
+14, and O(1) by step 19 — a 1e-10 gradient difference passing through the
+line search's Wolfe threshold tests, then amplifying about tenfold per iteration.
+
+**The unconstrained run was never a determinate quantity.** P4 already recorded
+that it has no interior optimum and "goes on trading members for stubs until
+something stops it". Measured directly: a **1e-12 relative nudge on the starting
+`q` moves its endpoint by 4%**, and the spread across nudges of 0, 1e-12, 1e-9 and
+1e-6 is 5.8%, with step counts of 27 to 35. The floored descent under the same
+nudges spreads **0.2%**. One problem has an optimum and the other has a plateau,
+and only the first has an endpoint worth pinning. Quote the floored number.
+
+### Tolerances that moved, and why
+
+`tests/test_tesseract_parity.py` gains `TOLERANCE_MOMENT = 1e-11` for the end
+moments and the factors read off them, against `1e-14` for everything else. The
+cause is the arch rather than the boundary: a funicular shape carries its design
+case axially, so an end moment is a near-cancellation worth 4e-4 of `N·L`, and its
+relative precision is set by that larger scale. Measured, the composed and
+in-process designs are **exact** at the Class 3 ratio and differ by 8.2e-13 at
+Class 2, where the axial force they came from differs by 7.1e-16 — one ulp,
+amplified about a thousandfold. The old `1e-14` held on luck about which values
+round-tripped bit-exactly, not on anything about the boundary.
+
+### What was left alone
+
+**The Tesseract path still prepares per call.** `normax/composition.py` crosses a
+stateless boundary, so nothing can be reused between crossings without a cache
+inside `_backend_smax` keyed on topology. The wrappers were adapted to the new
+signatures and are no slower than before; the caching is separate work.
+
+`normax.pipeline.envelope` is not jitted. It is the oracle the Tesseract
+composition is measured against, and burying a compilation inside it would muddy
+that role. The jit sits at `normax.optimization.descend`, where the value and
+gradient are already built together, and at `build` in `experiments/03`.
+
+**An annealing schedule pays one compilation per round.** The sharpness reaches
+the objective as a captured constant rather than an argument, and a captured array
+is baked into the program instead of traced, so each round traces afresh. Five
+rounds is 11 s of compilation against 830 s of eager evaluation; making it one
+would mean giving up `descend` being generic over any scalar objective.
+
+### Tests
+
+**1732, up from 1724.** Eight in the new `tests/test_analysis_prepared.py`.
+
+### The backend comparison was measuring Python, and it reversed
+
+`experiments/04` timed the traced backend uncompiled, re-prepared inside the timed
+call, and without waiting for JAX to finish. Fixing all three turns the headline
+around.
+
+| members | DDM [ms] | traced [ms] | traced / DDM |
+|---|---|---|---|
+| 5 | 2.2 | 0.3 | 0.15x |
+| 10 | 3.0 | 0.7 | 0.23x |
+| 20 | 7.7 | 2.0 | 0.26x |
+| 40 | 35.8 | 8.9 | 0.20x |
+
+**At the stage, tracing is four to seven times cheaper than the DDM sweep, not
+fifteen to a hundred and eighty times dearer.** The earlier figures were an
+artifact: `stage_cost` called `prepare` inside the function it timed, so the
+traced side rebuilt an assembly per call and compiled nothing, and 388–545 ms of
+Python dispatch was being compared against a C++ sweep.
+
+Three defects, all of which mattered:
+
+- **Preparation inside the timed call.** Both backends are now prepared once, which
+  is what the stage's contract says to do. It costs OpenSees nothing — its domain
+  is rebuilt per call regardless — and it is the whole of the traced backend's
+  advantage.
+- **No compilation.** The traced Jacobian is now `eqx.filter_jit`-wrapped, with the
+  warm-up excluding the compile exactly as it already excluded the kernel the
+  section slopes need on the other side.
+- **No blocking.** `steady` timed dispatch rather than execution, so it charged the
+  C++ backend for completing work and the traced one for queueing it. It now waits
+  on whatever the call returns, which is why the timed callables return their
+  results.
+
+The composition still favours DDM, **2.6x to 3.2x**, and that is honest: the
+composed path crosses a stateless Tesseract boundary, so every crossing rebuilds
+the solver behind it and the traced side pays its eager assembly inside the
+Tesseract. That is the deferred caching work, and the two panels of
+`figures/04_backends.png` now say which is which in their titles.
+
+The composed descent reaches the same **0.024808755 t in seven steps** either way,
+agreeing to 1.9e-8 on the mass and 4.8e-7 on the force densities.
+
+### Compilation is paid before the clock starts, and reported
+
+`normax.optimization.value_and_gradient` is new: the compiled value-and-gradient of
+an objective, exposed so a caller decides when compilation is paid. `descend` takes
+one through a new `gradient` argument and builds its own only if not given one, and
+`optimize` builds one per round — a round is a different program from its
+neighbour, its sharpness being a captured constant, so nothing carries over.
+
+`experiments/04` now compiles each objective, times that call on its own, and hands
+the compiled program to `descend`:
+
+| backend | descent | per step | compile |
+|---|---|---|---|
+| smax | 7.6 s | 1082 ms | 6.60 s |
+| opensees | 2.3 s | 335 ms | 0.41 s |
+
+**A descent of seven steps was more than half compilation on the traced side**,
+which is why the earlier 16.9 s against 2.3 s said as much about the tracer as
+about either solver. Reported separately it is a fixed cost per objective, so it
+matters here and vanishes over a few hundred steps.
+
+`steady` grew a warm-up for the composed timings too, which removes the artifact
+where one mesh size read 3.1x against 27x and 26x either side because a single
+measurement had caught a warm cache.
+
+### The Tesseract's solve is compiled once, its assembly still per crossing
+
+`tesseracts/analysis/_backend_smax.py` gains `_member_forces`, an
+`eqx.filter_jit`-wrapped call taking a prepared model and returning the member
+forces. **The only thing that matters is that the wrapper lives at module scope**:
+the compilation cache belongs to the wrapper, so one built inside `solve` is a new
+cache every crossing and compiles afresh every time.
+
+Nothing else was needed. The cache keys itself on the shapes and dtypes of the
+array leaves, so a second load case reuses the program and a second frame size
+gets its own, and every array a derivative might be taken through arrives as an
+argument — the loads included, since they reach the call inside the model as
+ordinary leaves rather than as folded constants.
+
+**It survives the derivative endpoints tracing it, which was the open question.**
+`jvp` and `vjp` call `solve` inside `jax.jvp` / `jax.vjp`, and a compiled call
+nested in a trace stays compiled rather than being unrolled into it. Measured on a
+VJP through the stage: **331.9 ms eager against 4.7 ms, 71x**, cotangents agreeing
+to 4.6e-13.
+
+| composed, ten members | before | after | |
+|---|---|---|---|
+| value | 180.1 ms | 75.3 ms | 2.4x |
+| value and gradient | 843.5 ms | 248.3 ms | 3.4x |
+| of which `prepare` | 45.7 ms | 35.7 ms | — |
+| of which the solve | 415.2 ms | 0 ms | compiled away |
+
+The descent comparison closes with it: **1.2x for the C++ backend against 3.2x**,
+at 422 ms per step against 363, both compiled before the clock started. Across the
+sweep the composed gradient is **1.12x to 1.31x**, monotone in the member count:
+
+| members | smax | opensees | ratio |
+|---|---|---|---|
+| 5 | 0.230 s | 0.206 s | 1.12x |
+| 10 | 0.265 s | 0.226 s | 1.17x |
+| 20 | 0.284 s | 0.248 s | 1.15x |
+| 40 | 0.423 s | 0.323 s | 1.31x |
+
+**`steady` reports a median rather than a mean, and that mattered.** At a few
+hundred milliseconds a crossing, one sample landing at three times the rest moved
+a mean of five enough to reverse which backend looked faster: the first run after
+compiling read 0.25x at ten members and 4.33x at forty, non-monotone in both
+directions. The median over seven samples is monotone and the spread is 1.1x–1.3x.
+
+**The prepared model is deliberately not cached.** That needs a key over the
+topology arriving in the inputs, and the ~36 ms it would save is now the largest
+remaining item rather than a decisive one. It is left out on purpose; the reason
+the loads must then be passed explicitly rather than baked is recorded in
+`ROADMAP.md` under P5b, since it is the trap anyone adding that cache will meet.
+
+### Parity now compares two compiled paths, which is what it meant to compare
+
+Compiling one side of the boundary broke the parity tests, and loosening the
+tolerance would have been the wrong fix. Measured against the composed path:
+
+| | eager oracle | compiled oracle |
+|---|---|---|
+| `n_ed` | 1.8e-15 | **0.0** at Class 2, 4.7e-16 at Class 3 |
+| `diameters` | 3.9e-14 | 4.9e-15 |
+| `mass` | 3.0e-15 | 6.7e-16 |
+
+So the boundary is still transparent — bitwise, in one case — and what the failing
+tests had started measuring was the difference between compiled and eager
+arithmetic. `tests/test_tesseract_parity.py` now compiles its in-process oracle,
+which restores the premise its tolerance was written under: both sides run the same
+program over the same inputs.
+
+**One genuine looseness remains and it is structural.** An enveloped design agrees
+to 1.0e-13 on the axial force and 6e-14 to 1.1e-13 on everything downstream, the
+mass included. In process the three load cases compile into one program; across
+the boundary one solve is compiled and called three times, so the same sums are
+accumulated in different units. That cannot be equalised without giving up one
+side's structure, so `TOLERANCE_PARITY_ENVELOPE` is 1e-12 and covers the whole
+container — an early draft exempted the mass and the utilization, which measurement
+showed was false.
+
+`normax.pipeline.envelope` itself is still not compiled. The test compiles it;
+the module stays the readable reference.

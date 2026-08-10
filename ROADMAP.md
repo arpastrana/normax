@@ -677,12 +677,20 @@ submission.**
    frame's response separates exactly: the only block a plane model cannot reach
    is `∂m_z_ed/∂y`, and `∂xyz[normal]/∂q` is exactly zero, so form finding never
    asks for it. **The gradient claim needs no caveat.**
-3. **The cost prediction was backwards, and the predicted shape is still there.**
-   DDM is 152x cheaper than tracing at 22 parameters and 16x at 162 — narrowing
-   as predicted, but from so far ahead that the crossover sits past the
-   fifty-member gridshell. **Warm up before timing**: cold, the first call
-   reports 226 ms where the steady state is 3.1 ms, and the measurement becomes
-   one of XLA.
+3. **The cost claim was measuring Python and has since reversed — corrected
+   2026-08-10.** As first recorded, DDM looked 152x cheaper than tracing at 22
+   parameters and 16x at 162. It was not: `stage_cost` prepared the assembly
+   inside the call it timed, compiled nothing, and never waited on JAX, so
+   388–545 ms of dispatch was being compared against a C++ sweep. Prepared once,
+   compiled, and blocked on, **tracing is four to seven times cheaper than the
+   DDM sweep** — 0.3 ms against 2.2 at five members, 8.9 against 35.8 at forty.
+   **Warm up before timing** still holds, and now so does *compile before timing*
+   and *block before timing*.
+
+   The composition favoured DDM 2.6x–3.2x while the solve behind the boundary was
+   still eager. Compiling it inside the backend closes that to **1.12x–1.31x**, so
+   the composed comparison is now a wash and what remains is the price of the
+   boundary itself, paid equally by both.
 4. **The spike's rebuild ceiling does not reproduce** — 2000 parameterized sweeps,
    flat at 3.3 ms, so the backend can drive a full descent in process.
 5. **The schema never changed.** What moved is that a backend now owns its
@@ -732,6 +740,87 @@ forward cost, still 17x cheaper than finite differences. Reuse
 mesh vs fine) still demonstrates swappability. Finite differences over OpenSees
 are also a legitimate third strategy — 2.5 ms per sweep at P4's scale — and are
 worth more than an OpenSees backend that does not work.
+
+---
+
+## P5b — The topology hoisted out of the objective — **DONE** (Aug 10)
+
+Every number is in `CHANGELOG.md` under `## P5b`. The stage now prepares once and
+solves many times, which made it jittable and took `experiments/03` from over ten
+minutes to 29 s. See the jit note above for the table and the two corrections it
+retires.
+
+**What it changed beyond speed.** `normax.structures.Structure` is a `NamedTuple`
+so it crosses a jit boundary as four array leaves. `normax.optimization` exposes
+`value_and_gradient`, so compilation is paid where a caller chooses rather than
+inside a search being timed. Both backends share a `prepare` / `forces` contract.
+
+**The unconstrained descent stopped reproducing, and that is a finding.** 0.0696 t
+against 0.0472 t. The function is unchanged — mass to 7.3e-13, gradient to 1.0e-10,
+and against central differences at the collapsed design to 7.1e-08 — but the path
+is not: a 1e-10 gradient difference passes through the line search's threshold
+tests and amplifies about tenfold per iteration. **The run was never determinate.**
+A 1e-12 nudge on the starting `q` moves its endpoint 4%, with 5.8% spread across
+nudges; the floored descent spreads 0.2% under the same nudges and reproduces to
+31.6% against 31.7%. The single-`q` sweep is bit-identical across all 21 samples.
+**Quote the floored number.**
+
+### The Tesseract's solve is compiled — DONE (Aug 10)
+
+A boundary crossing is stateless, so `_backend_smax.solve` was calling `prepare`
+and an uncompiled `forces` every time, and a value-and-gradient crosses twice —
+once for the primal and once for the VJP. Measured at ten members before the fix:
+
+| | per composed value+grad | share of 843 ms |
+|---|---|---|
+| two `prepare` calls | 45.7 ms | 5.4% |
+| two `forces` calls | 415.2 ms | 49.2% |
+| boundary, T1, T3 | 382.6 ms | 45.4% |
+
+**Jitting from outside the Tesseract does not fix it, and it was already
+happening.** `descend` compiles the composed objective and it traces fine, but the
+crossing is an opaque callout: XLA cannot see inside it, so the eager Python still
+ran per call and only the glue between crossings was compiled.
+
+**The fix is one `eqx.filter_jit` at module scope inside the backend.** The
+compilation cache belongs to the wrapper, so a wrapper built per call is a cache
+per call. At module scope, shapes and dtypes key it: a second load case reuses the
+program, a second frame size gets its own. It survives the derivative endpoints
+tracing it — a compiled call nested in a trace stays compiled — measured at **71x
+on a VJP through the stage**, 331.9 ms to 4.7 ms.
+
+Composed value-and-gradient: **843.5 ms to 248.3 ms**. The descent comparison
+closes to **1.2x for the C++ backend against 3.2x**, and across the sweep the
+composed gradient is **1.12x to 1.31x** — a wash, as projected. Take the median
+rather than the mean when timing a crossing: at a few hundred milliseconds a call,
+one outlier in five reversed which backend looked faster.
+
+### Open: the prepared model is still rebuilt per crossing
+
+`prepare` is now the largest remaining item at ~36 ms of a 248 ms composed
+gradient, and it is deliberately left alone — caching it needs a key over the
+topology in the inputs, which is more machinery than the saving justifies today.
+
+**If it is ever added, the trap is the loads.** `solve` builds `structure` with
+`loads=inputs["loads"]` and `prepare` bakes them into the `LoadCase` prototype,
+and `forces` is then called without `loads=`, so the analysis runs on the baked
+copy. A model cached on topology alone would serve load case 1 to every case —
+measured, the three cases differ by **3.3e4 N** in `n_ed`, and the baked model
+reproduces case 1 to 1.6e-10. Pass `loads=` explicitly first; that keeps the key
+to the topology and makes the loads a live leaf.
+
+The key would be a digest of `edges`, `supports`, `normal` and the node count,
+with shape and dtype alongside the bytes so two shapes cannot collide. Those four
+are never differentiated, so they stay concrete even inside `jvp` and `vjp`, where
+`_restricted` closes over everything not in `wrt`. What must stay *out* of the key
+is the geometry, the material and the section family, and the licence for that is
+`tests/test_analysis_prepared.py` — forces come back bitwise identical from a
+template built on a different geometry with a unit modulus and a 999 mm minimum
+tube. If that test ever fails, such a cache is unsound.
+
+**Floor on any of this:** the ~380 ms the boundary plus T1 and T3 cost. That is the
+price of composition, both backends pay it equally, and it is the honest thing for
+the writeup to quote.
 
 ---
 
@@ -967,34 +1056,61 @@ routes:
   the upstream Tesseract bottleneck, where multi-cotangent VJPs are issued
   sequentially at one HTTP round trip each (issue #244).
 
-**The analysis stage cannot be jitted, and that is accepted — measured 2026-08-09.**
+**The analysis stage is jitted — RESOLVED 2026-08-10, and the earlier diagnosis
+was wrong about where the obstacle sat.** Numbers in `CHANGELOG.md` under
+`## P5b`.
 
-`normax.analysis.forces` runs **eager at ~101 ms**, and `pipeline.design` at
-~152 ms, because `smax.topology.build_free_dof_mask` does a Python `if` on
-`support.fixity`, which is a traced pytree leaf. Verified down to a bare
-`Support(0, numpy_array)` inside `jit`. **Decided not to touch smax upstream for
-now**, so this stands.
+The Python conditional is real: `smax.topology.build_free_dof_mask` does
+`if support.fixity[i]` on what `jit` turns into an abstract value. But it lives
+inside **compilation**, not inside the solve. Preparing the assembly on the host
+and injecting the traced arrays into it therefore removes the obstacle without
+touching the dependency at all.
 
-Budget accordingly: a value-plus-gradient is around 0.3 s, so a few hundred
-L-BFGS iterations over three load cases is single-digit minutes. It only bites if
-P4 wants thousands of iterations or a fine brute-force sweep.
+`normax.analysis.smax.prepare` builds the `CompiledStructure` and a `LoadCase`
+prototype once; `forces` replaces every array leaf per call with `eqx.tree_at`.
+Both backends now take the same two-call contract, `prepare` then `forces`, and
+OpenSees takes it while reusing nothing — its `Model` carries only the plane.
 
-**Two ways out exist and are measured, if it ever bites.** The sizing bisection is
-*not* where the time goes — it is 0.024 ms, **0.016% of a design** — so do not
-touch it.
+| | eager | prepared and jitted | |
+|---|---|---|---|
+| analysis stage, one case | 120.4 ms | 0.17 ms | 719x |
+| `q → member forces` | 115.8 ms | 0.10 ms | 1151x |
+| its gradient | 304.0 ms | 0.19 ms | 1564x |
+| objective, three cases | 640.4 ms | 0.17 ms | 3686x |
+| value and gradient | 1381.4 ms | 0.44 ms | 3127x |
 
-1. **Upstream in `smax`, one field:** `eqx.field(static=True)` on `Support.fixity`
-   (it sets array shapes, so it can never legitimately be traced). Measured
-   **0.057 ms, a 1775x speedup**, with the diameter still the differentiable leaf
-   and material gradients still live. One consumer in that library,
-   `smax/topology.py:72`, plus its own `tests/test_supports.py`. Needs `fixity` to
-   become `tuple[bool, ...]` for hashability — a small breaking change there.
-2. **Our side, no upstream change:** compile the topology once outside the trace
-   and `eqx.tree_at`-inject `params.xyz` and the four section properties. Measured
-   **0.041 ms**, agreeing to 1.6e-15. **But it bakes everything not injected** —
-   material included — so `∂/∂e_mod` silently becomes zero. Harmless today, since
-   member forces of a uniform-E linear frame are E-independent to 1.5e-15, but the
-   failure mode is a silent zero rather than an error. Prefer option 1.
+`experiments/03` runs in **29 s against over ten minutes**. Compilation is 0.8 s
+for a value and 2.2 s for a gradient, exposed through
+`normax.optimization.value_and_gradient` so a caller pays it before timing
+anything.
+
+**The upstream `smax` change is no longer a precondition.** Making
+`Support.fixity` static (`eqx.field(static=True)`, needing `tuple[bool, ...]` for
+hashability) remains a tidy-up worth doing on its own merits, and nothing here
+waits on it.
+
+**Two corrections to the earlier note, both worth keeping visible.**
+
+1. **The sizing bisection is not 0.016% of a design.** Eager, `diameter()` over
+   twenty members is **66.5 ms, about 39% of the forward pass** — fifty-five
+   halvings of a full utilization check is some 2,750 eager dispatches. Still do
+   not rewrite it as Newton: `lax.fori_loop` collapses under compilation, so the
+   fix is to compile rather than to replace the loop.
+2. **Injecting only `xyz` and the four section properties would have baked the
+   material.** Every array leaf of `Material` is injected too, so `∂/∂e_mod` stays
+   live rather than becoming a silent zero. `tests/test_analysis_prepared.py`
+   pins it: forces come back bitwise identical from an absurd placeholder
+   template, and the modulus is checked against a difference quotient on a
+   displacement, since member forces of a uniform-E frame are E-independent and
+   cannot tell an injected leaf from a baked one.
+
+**The Tesseract path is still eager, and that is the open item.** Each crossing is
+stateless, so `_backend_smax.solve` calls `prepare` and an uncompiled `forces`
+every time. Measured at ten members, per composed value-and-gradient: two
+`prepare` calls at 45.7 ms and two `forces` calls at 415.2 ms, together **55% of
+the 843 ms total**, the rest being the boundary itself plus T1 and T3. Caching the
+prepared model and the compiled solve inside the backend, keyed on the topology
+arriving in the inputs, is what closes it — see the P5b note below.
 
 **Test suite size — audited 2026-08-09, deferred to after P4.**
 
