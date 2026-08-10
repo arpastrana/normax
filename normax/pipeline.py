@@ -755,7 +755,7 @@ class Stability(NamedTuple):
         Slenderness each member has from its assumed buckling length, Eq. 6.50.
     slenderness_global :
         Slenderness each member has from the frame's critical load factor,
-        Eq. 6.64.
+        §6.3.4(3).
     l_cr_global :
         Buckling length the critical load factor is equivalent to.
 
@@ -765,8 +765,8 @@ class Stability(NamedTuple):
     ratio is the size of the assumption a member buckling length makes, and it is
     one wherever that assumption is right.
 
-    ⚠️ The clauses behind `utilization` and `adequate` are unverified — see
-    `docs/clauses.md` open item 0f.
+    The clauses behind `utilization` and `adequate` are EN 1993-1-1 §5.2.1(3),
+    verified in `docs/clauses.md`.
     """
 
     factors: Float[Array, "modes"]

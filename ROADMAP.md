@@ -472,11 +472,15 @@ Full write-up in `CHANGELOG.md` under `## P3 step 2`.
    member check, while stability is a property of the whole frame — so
    `pipeline.stability` reads a finished `Design`. **Never differentiated**
    (eigenvalue derivatives are undefined at mode crossings).
-   ⚠️ **§5.2 and §6.3.4 are UNVERIFIED and implemented anyway**, recorded as
-   **open item 0f** in `docs/clauses.md`. Every threshold came from memory.
-   **Verify before the writeup.**
-   The exception is the **two-doors identity**, which is algebra and needs no
-   source: Eq. 6.50 takes `λ̄` from a member buckling length, Eq. 6.64 from a
+   ~~⚠️ §5.2 and §6.3.4 are UNVERIFIED~~ — **verified 2026-08-09**, open item 0f
+   closed. Every threshold held, so no reported number moves. Two equation
+   numbers did not: Eq. 5.1 is the threshold pair rather than the definition of
+   `α_cr`, and 6.64 could not be confirmed at all, so the general method is now
+   cited as §6.3.4(3). **§6.3.4's `α_cr,op` excludes in-plane buckling** and our
+   arch mode is in-plane, so the clause is cited for the algebra's form, not as
+   authority for the case.
+   The identity carrying it is algebra and needs no
+   source: Eq. 6.50 takes `λ̄` from a member buckling length, §6.3.4(3) from a
    system critical load factor, and `α_ult,k/α_cr = A f_y/N_cr = λ̄²`. On the arch
    they disagree by 4.7–5.7x, the global route uniform to 0.3% while the member
    route varies 21%. **That is a headline for the writeup** — the standard offers
@@ -770,8 +774,8 @@ Draft the README skeleton in week one with numbers blank. Order it by the rubric
    length**, and **3.26x the mass** to size against it — which still only reaches
    `α_cr = 1.41`. Legitimate for the gridshell, where hoop members brace radial
    ones; an idealisation of a braced rib for the arch. `figures/09_modes.png` is
-   the figure. Do **not** claim an EN 1993-1-1 `α_cr` verdict: §5.2.1 is not in
-   `docs/clauses.md` and is unverified.
+   the figure. The `α_cr` verdict may now be claimed: §5.2.1(3) is verified in
+   `docs/clauses.md`, thresholds 10 and 15 both confirmed.
 6. **The errata finding** — the guide has ≥11 wrong printed numbers. That is the
    thesis in miniature: a design code and its commentary are normative text, not
    executable artifacts, and nothing checks their arithmetic. See

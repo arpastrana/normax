@@ -319,8 +319,7 @@ def main():
     worst_order = float(np.max(np.abs(ratios - 2.0)) / 2.0)
     print(f"  worst departure from first order  {worst_order:.3f}")
 
-    print("\nThe global stability check, EN 1993-1-1 5.2.1")
-    print("  (clause UNVERIFIED — docs/clauses.md open item 0f)")
+    print("\nThe global stability check, EN 1993-1-1 5.2.1(3)")
     checked = stability(
         result,
         structure,
@@ -340,7 +339,7 @@ def main():
 
     print("\nBoth of the standard's routes to the same slenderness")
     print(
-        f"  {'member':>7} {'6.50 from L_cr':>15} {'6.64 from a_cr':>15}"
+        f"  {'member':>7} {'6.50 from L_cr':>15} {'6.3.4 from a_cr':>15}"
         f" {'ratio':>7} {'L_cr,global [mm]':>17}"
     )
     for member in range(NUM_EDGES):

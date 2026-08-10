@@ -1553,3 +1553,48 @@ once before honouring a limit of zero**, returning a clipped trial point, so
 `descend` refuses to report it; and the point it reports last is not always the
 best it found, so the trajectory's last row is scipy's answer rather than the
 last callback.
+
+---
+
+## §5.2 and §6.3.4 verified — open item 0f closed
+
+**Verified 2026-08-09** against both textbooks, closing the one deliberate
+exception to the rule that nothing marked ⚠️ gets implemented. It was taken
+because the arch's global stability had to be checked rather than reported, and
+P4's headline limitation now quotes `α_cr = 0.713` and `1.734` against these
+thresholds. `docs/clauses.md` §5.2/§6.3.4 carries ✅ and open item 0f is struck.
+
+**Every threshold held, so nothing P4 reports moves.** `α_cr ≥ 10` for elastic
+analysis and `≥ 15` for plastic are EN 1993-1-1 §5.2.1(3) — guide p. 18, ECCS
+pp. 79–80 and again p. 369. The sway amplifier `1/(1 − 1/α_cr)` is §5.2.2(5) and
+its `α_cr ≥ 3.0` floor is real — ECCS p. 276. Memory got the numbers right.
+
+**Two equation numbers were wrong.** Eq. 5.1 is the threshold *pair*, not the
+definition `α_cr = F_cr/F_Ed`, which EN never numbers — the guide gives it one of
+its own making, `(D5.1)`, which is what exposed it. And **6.64 could not be
+confirmed at all**: neither book prints EN's numbering for §6.3.4, so the general
+method is cited as **§6.3.4(3)** under the same policy as open item 1, with its
+check at §6.3.4(2). Eq. 5.2 survives and gained its clause, §5.2.1(4)B.
+
+**The finding that matters is a scope error, not a number.** §6.3.4's `α_cr,op`
+is the amplifier reaching instability *in a lateral or lateral-torsional mode*
+and takes no account of in-plane flexural buckling (ECCS p. 300); UK NA NA.2.22
+narrows it further and the guide advises caution with the whole clause. The mode
+`normax.analysis.buckling` measures is in-plane by construction — it restrains
+the one translation normal to the plane precisely to keep it there. So §6.3.4 is
+where the standard writes this algebra, **not authority for the case we apply it
+to**. The two-doors identity is unaffected: it is algebra, needs no source, and
+is tested as one. The citation now says which of the two it is leaning on.
+
+Also new from the check and not previously known: **UK NA clause NA.2.9** lowers
+the *plastic* limit to `α_cr ≥ 10` for clad structures and to `≥ 5` for portal
+frames under gravity loads only, leaving the elastic 10 we use untouched; and the
+two books disagree on where `H_Ed` is measured in Eq. 5.2, ECCS recording that
+EN's original *bottom of the storey* was corrected to *top* by corrigendum.
+
+`normax/ec3/stability.py` loses its ⚠️ banner and every from-memory marker,
+`ALPHA_CR_ELASTIC`, `ALPHA_CR_PLASTIC` and `ALPHA_CR_AMPLIFIABLE` keep their
+values, and `normax.pipeline.Stability` cites §5.2.1(3) directly. No test
+changed — `test_the_thresholds_are_the_values_the_spec_records` was already
+pinning 10 and 15, and the spec now agrees with the standard rather than with
+memory.

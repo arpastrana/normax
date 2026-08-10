@@ -26,16 +26,9 @@ back into the schema would oblige every analysis backend to supply one, which th
 OpenSees backend cannot without real work, and would trade the thesis — that a
 design code can carry an adjoint and compose — for a second structural feature.
 
-⚠️ **The clauses here are marked UNVERIFIED in `docs/clauses.md`, open item 0f.**
-Every threshold and equation number was transcribed from memory rather than from
-the standard, against the rule the rest of this package follows. It is built that
-way on instruction, because the arch's stability has to be checked and not merely
-reported, and the thresholds are parameters so that correcting them is a one-line
-change. Verify before any number here reaches the writeup.
-
 EN 1993-1-1 offers two routes to the slenderness that drives the reduction factor.
 §6.3.1.3 Eq. 6.50 asks a **member**: pick a buckling length, and the slenderness
-follows. §6.3.4 Eq. 6.64 asks the **structure**: find the load factor at which it
+follows. §6.3.4(3) asks the **structure**: find the load factor at which it
 becomes unstable, and the slenderness follows from that instead. For pure
 compression the two are the same equation — `α_ult,k / α_cr` reduces to
 `A f_y / N_cr`, which is `λ̄²` — so either may be fed to the same `χ`.
@@ -44,6 +37,13 @@ They differ in what they are asked about, not in what they compute. A buckling
 length is an assumption about how a member is held; a critical load factor is a
 property of the whole frame. Where the assumption is wrong the two answers
 diverge, and the size of the divergence is the size of the assumption.
+
+**§6.3.4 is an out-of-plane clause and this is not an out-of-plane use of it.**
+Its `α_cr,op` is the amplifier reaching instability in a lateral or
+lateral-torsional mode, taking no account of in-plane flexural buckling, while a
+planar frame's mode is in-plane by construction. The clause is cited for where
+the standard writes this algebra, not as authority for the case; the identity
+itself needs no source and is tested as one.
 """
 
 import jax.numpy as jnp
@@ -51,13 +51,13 @@ from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
 
-# ⚠️ UNVERIFIED, from memory. EN 1993-1-1 §5.2.1(3): the critical load factor
-# above which second-order effects need not be accounted for.
+# EN 1993-1-1 §5.2.1(3): the critical load factor above which second-order
+# effects need not be accounted for. UK NA clause NA.2.9 moves only the plastic.
 ALPHA_CR_ELASTIC = 10.0
 ALPHA_CR_PLASTIC = 15.0
 
-# ⚠️ UNVERIFIED, from memory. EN 1993-1-1 §5.2.2(5)B: below this the sway
-# amplifier is inadmissible and a second-order analysis is required outright.
+# EN 1993-1-1 §5.2.2(5): below this the sway amplifier is inadmissible and a
+# second-order analysis is required outright.
 ALPHA_CR_AMPLIFIABLE = 3.0
 
 
@@ -82,7 +82,8 @@ def slenderness_global(
 
     Notes
     -----
-    EN 1993-1-1 Eq. 6.64, §6.3.4. ⚠️ Unverified, `docs/clauses.md` open item 0f.
+    EN 1993-1-1 §6.3.4(3), whose `α_cr,op` is an out-of-plane amplifier; the
+    algebra is general and a planar frame's mode is in-plane.
 
     The same quantity Eq. 6.50 returns from a buckling length, so its result may
     be passed to the same reduction factor. Both amplifiers are ratios to the
@@ -115,8 +116,8 @@ def resistance_factor(
 
     Notes
     -----
-    `α_ult,k` of EN 1993-1-1 §6.3.4, for pure compression, where the
-    characteristic cross-section resistance is the squash load. ⚠️ Unverified.
+    `α_ult,k` of EN 1993-1-1 §6.3.4(2), for pure compression, where the
+    characteristic cross-section resistance is the squash load.
 
     Only the magnitude of the axial force is read, so a member in tension returns
     the amplifier of its squash load too. That is meaningless for stability and is
@@ -157,8 +158,8 @@ def critical_force(
 
     Notes
     -----
-    The definition of EN 1993-1-1 Eq. 5.1 read for one member: the factor scales
-    the load, so it scales the member's share of it.
+    `α_cr = F_cr/F_Ed` of EN 1993-1-1 §5.2.1(3) read for one member: the factor
+    scales the load, so it scales the member's share of it.
     """
     return alpha_cr * jnp.abs(n_ed)
 
@@ -229,7 +230,7 @@ def utilization(
     Notes
     -----
     EN 1993-1-1 §5.2.1(3), written as a utilization so that it reads like every
-    other check here. ⚠️ Unverified, `docs/clauses.md` open item 0f.
+    other check here.
 
     A frame with a factor below one is unstable before it is loaded to its design
     value, and this returns a utilization above the threshold to say so rather
@@ -260,8 +261,8 @@ def is_adequate(
 
     Notes
     -----
-    EN 1993-1-1 §5.2.1(3). ⚠️ Unverified. **Non-differentiable**, being a verdict
-    rather than a magnitude; read `utilization` when a gradient is wanted.
+    EN 1993-1-1 §5.2.1(3). **Non-differentiable**, being a verdict rather than a
+    magnitude; read `utilization` when a gradient is wanted.
     """
     return utilization(alpha_cr, threshold) <= 1.0
 
@@ -282,7 +283,8 @@ def amplification(alpha_cr: float | Float[Array, ""]) -> Float[Array, ""]:
 
     Notes
     -----
-    EN 1993-1-1 §5.2.2(5)B. ⚠️ Unverified, `docs/clauses.md` open item 0f.
+    EN 1993-1-1 §5.2.2(5), which carries no equation number of its own. It
+    amplifies the horizontal loads and the equivalent loads from imperfections.
 
     **Admissible only for a factor above `ALPHA_CR_AMPLIFIABLE`**; the expression
     is returned regardless, since clamping it would hide the very case that needs
