@@ -1598,3 +1598,148 @@ values, and `normax.pipeline.Stability` cites §5.2.1(3) directly. No test
 changed — `test_the_thresholds_are_the_values_the_spec_records` was already
 pinning 10 and 15, and the spec now agrees with the standard rather than with
 memory.
+
+---
+
+## P5 — swappability, one schema over two solvers
+
+The analysis stage now has a second backend, and the pipeline above it cannot
+tell which one ran. `smax` is a JAX frame solver traced end to end; OpenSees is
+C++ behind a command interface whose adjoints were hand-derived element by
+element and compiled years before this pipeline existed. Neither reimplements the
+other, so every agreement below is a measurement rather than a round trip.
+`experiments/04_backend_agreement.py` reproduces all of it.
+
+### The gradients agree six orders below what was asked
+
+| | worst relative |
+|---|---|
+| axial force | 1.4e-15 |
+| end moments | 9.0e-13 |
+| every Jacobian block, DDM vs traced autodiff | **1.1e-11** |
+| the whole VJP through the endpoints | 8.4e-14 |
+| mass, end to end | 1.7e-15 |
+| **`dmass/dq`, end to end** | **3.0e-12** |
+
+The roadmap asked for 1e-6. The agreement holds as the frame refines — 3.0e-13
+at five members, 4.7e-11 at forty — growing only as accumulation does.
+
+**The primal matched on the first attempt**, sign conventions included: the 2D
+projection, the units, the supports, the loads and the Lobatto end sections all
+lined up with no fitting. That is worth stating because it is the part that
+usually costs a day.
+
+### The blind block is exactly one, and the composition annihilates it
+
+A planar frame's response separates, and this is measured rather than argued.
+`∂n_ed/∂y` and `∂m_y_ed/∂y` are **exactly zero**; `∂m_z_ed/∂x` and `∂m_z_ed/∂z`
+are **exactly zero**; `m_z_ed` itself is identically zero. So a model built in
+the plane carries every derivative except `∂m_z_ed/∂y`, which it reports as zero.
+
+Isolated, the gap is total: a tangent moving one interior node out of plane gives
+`m_z_ed = 3.83e2` from the traced backend and `0` from the two-dimensional one.
+Through the endpoints it appears as a 4.4e-3 discrepancy in the `xyz` cotangent
+**confined to the normal column** — the in-plane columns agree to 8.3e-14, and
+dropping the `m_z_ed` cotangent brings the whole VJP to 8.4e-14.
+
+**It never reaches the answer.** The force density method decouples per
+coordinate, so `∂xyz[normal]/∂q` is **exactly zero** for a planar arch and the
+blind block is multiplied by nothing. That is why `dmass/dq` agrees at 3.0e-12
+with no caveat attached.
+
+**A uniform out-of-plane tangent is a rigid motion and strains nothing**, so it
+reports zero from both backends and demonstrates nothing. The experiment pushes
+one interior node for that reason.
+
+### The cost result inverts the prediction, then confirms it
+
+The roadmap expected DDM to be the expensive side — "T2's VJP scales with
+parameter count, T1's and T3's don't". Both halves turn out to be true and the
+conclusion does not follow, because the constant favours DDM enormously.
+
+Analysis stage alone, steady state:
+
+| members | parameters | DDM | traced | ratio |
+|---|---|---|---|---|
+| 5 | 22 | 2.1 ms | 315 ms | 152x |
+| 10 | 42 | 3.1 ms | 393 ms | 125x |
+| 20 | 82 | 7.6 ms | 452 ms | 59x |
+| 40 | 162 | 36.4 ms | 585 ms | **16x** |
+
+The predicted shape is there — DDM grows 17x over a 7.4x rise in parameters
+while the traced backend grows 1.9x — but the advantage only narrows from 152x
+to 16x and does not cross within the measured range. Extrapolating the two
+trends puts the crossover in the low hundreds of members, past the fifty-member
+gridshell this project targets.
+
+**Warming up is not optional here.** The section slopes come from `jax.grad` of
+the closed forms, so the first call at a new member count compiles a kernel and
+reports 226 ms where the second reports 3.1 ms. Timed cold, the measurement is
+of XLA and is reported as direct differentiation.
+
+**And at pipeline level none of it decides anything.** The whole composition
+costs 0.40 s against 10.2 s at ten members — 26x — and the analysis stage is a
+small fraction of either. Form finding, the sizing bisection and two boundary
+crossings dominate whoever solves the frame.
+
+### The same descent, one solver swapped for the other
+
+Both backends drive the descent from 0.0312 t to **0.024808755 t**, 20% lighter,
+in **seven steps each**. They agree to **1.8e-8** on the mass and **4.8e-7** on
+the force densities, and the C++ backend takes 2.3 s against 16.9 s.
+
+**That is four orders looser than the 3.0e-12 the gradient agrees to at a
+point, and it should be.** A line search amplifies a difference in the last bits
+into a slightly different step, and seven steps compound it. Landing on the same
+optimum to 1.8e-8 in the objective is the claim; identical trajectories would
+have been a claim about arithmetic rather than about the optimizer.
+
+**The starting point has to be inside the box, and it is not obviously so.** The
+funicular `q` is −83.3 here, so the decade-either-side bounds of
+`experiments/03` are (−833, −8.3). A tighter box clips the start, L-BFGS-B takes
+its one clipped step and stops, and the run reports a converged answer *heavier*
+than where it began — 0.0389 t against 0.0312 t. Both backends report it
+identically, so agreement between them says nothing about whether either is
+descending.
+
+### What changed in the code
+
+- **`normax/analysis.py` became `normax/analysis/`**, a stage package with a
+  backend module each. `__init__.py` holds what the stage means — `MemberForces`,
+  `Buckling`, `fixities` — and imports no solver, so the contracts are readable
+  without one installed and neither backend inherits the other's dependencies.
+  `smax.py` is the move of the old module; `opensees.py` is new. Behaviour is
+  unchanged, pinned by the suite passing at the same count across the split.
+- **A backend owns its derivative rules.** `tesseract_api.py` is now a
+  dispatcher: `apply`, `jacobian_vector_product` and `vector_jacobian_product`
+  ask the backend. Differentiating the forward pass there would have been a claim
+  about how a solver works, and only one of the two can be traced at all.
+  **The schema is untouched**, which is the whole argument.
+- **The backend is read from the environment per call rather than at import**, so
+  a process comparing the two can switch between them. `normax.composition.
+  backend` makes the switch a block and restores the previous value, exceptions
+  included.
+- `normax/analysis/opensees.py` builds `forceBeamColumn` over `section('Elastic')`
+  and registers `('node', n, 'coord', d)` for the in-plane axes plus
+  `('element', e, 'A')` and `('element', e, 'I')` per member. Diameters are not
+  registered: a section is what the solver understands, so the chain rule from
+  area and second moment to a diameter is taken here with `jax.grad` of the same
+  closed forms the check uses, which is what stops the two stages drifting apart
+  about what a section is.
+- **It refuses what it cannot represent** rather than answering anyway: no normal
+  axis, a frame that is not flat along it, or a load with a component along it.
+  Each would otherwise be silently projected away.
+
+### The spike's rebuild ceiling does not reproduce
+
+The spike recorded OpenSees exiting hard after a few hundred model rebuilds in
+one interpreter, which would have made a full descent impossible in process.
+**2000 parameterized sweeps ran with no crash and no drift**, flat at 3.3 ms
+each. Whatever the spike hit, it is not reached by rebuilding this model with its
+parameters registered, so the backend rebuilds per call and holds nothing.
+
+### Tests
+
+**1724, up from 1707.** Seventeen in the new `tests/test_backend_opensees.py`,
+guarded in `conftest.py` on `openseespy` — the `spike` extra, which CI never
+installs — and on `smax`, since every assertion there is against it.

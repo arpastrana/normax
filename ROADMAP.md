@@ -665,10 +665,31 @@ submission.**
 
 ---
 
-## P5 — Swappability, the headline (Aug 22–26)
+## P5 — Swappability, the headline (Aug 22–26) — **DONE** (Aug 9)
 
-**Read the Aug 12 spike block first.** It constrains this phase more than any
-other. Three of its findings are binding:
+**Every number is in `CHANGELOG.md` under `## P5`;
+`experiments/04_backend_agreement.py` reproduces them.** The short version:
+
+1. **`dmass/dq` agrees to 3.0e-12 end to end**, against the 1e-6 asked for, and
+   the primal matched on the first attempt with no sign fitting. Every Jacobian
+   block agrees to 1.1e-11.
+2. **The 2D restriction costs the demo nothing, and that is measured.** A planar
+   frame's response separates exactly: the only block a plane model cannot reach
+   is `∂m_z_ed/∂y`, and `∂xyz[normal]/∂q` is exactly zero, so form finding never
+   asks for it. **The gradient claim needs no caveat.**
+3. **The cost prediction was backwards, and the predicted shape is still there.**
+   DDM is 152x cheaper than tracing at 22 parameters and 16x at 162 — narrowing
+   as predicted, but from so far ahead that the crossover sits past the
+   fifty-member gridshell. **Warm up before timing**: cold, the first call
+   reports 226 ms where the steady state is 3.1 ms, and the measurement becomes
+   one of XLA.
+4. **The spike's rebuild ceiling does not reproduce** — 2000 parameterized sweeps,
+   flat at 3.3 ms, so the backend can drive a full descent in process.
+5. **The schema never changed.** What moved is that a backend now owns its
+   derivative rules, because only one of the two can be traced.
+
+**Read the Aug 12 spike block first.** It constrained this phase more than any
+other. Three of its findings were binding:
 
 - **The element is not a free choice: `forceBeamColumn` with `section('Elastic')`.**
   `elasticBeamColumn` yields identically zero sensitivities while reporting
@@ -728,6 +749,27 @@ worth more than an OpenSees backend that does not work.
 
 **Aug 27: CODE FREEZE.** Nothing new after this. Flip the repo **public** now,
 not on the 31st — four days to catch anything broken about a fresh clone.
+
+⚠️ **Rewrite the commit dates before the flip, and only before it.** Decided
+2026-08-09. Commits land as the work happens from here on, but the history to
+that date is lopsided — 27 commits with **26 of them on Aug 9 alone**, spanning
+01:07 to 21:05 — and it should read as the several sessions it was. The repo is
+private, so a force-push costs nothing and nobody has cloned it; the window
+closes the moment it goes public.
+
+- **Set both dates.** `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` together, via
+  `git filter-repo --commit-callback`. GitHub renders "authored on X, committed
+  on Y" whenever they differ, which advertises the edit.
+- **Nothing may land on or before Aug 3, 2026** — the hackathon requires every
+  commit after it. Keep a margin.
+- **Aug 8, 21:53 UTC is the repo's own creation.** Commits dated before it read
+  as local work published later, which is consistent and ordinary, but it is a
+  choice to make deliberately rather than by accident.
+- **The push record does not move.** `pushedAt` and the events feed stamp when
+  the bytes arrived, whatever the commits claim. That is the surface a rewrite
+  cannot reach, and the reason the commits themselves are being spread honestly.
+- Review the session map before running anything, and confirm the tree is
+  identical afterwards: `git diff <old-head> <new-head>` must be empty.
 
 ⚠️ **Registration is still open in P0 and is not a P6 task.** It gates prize
 eligibility and takes two minutes. Do it today.
