@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -5,6 +6,8 @@ import pytest
 from normax.optimization import anneal
 from normax.optimization import descend
 from normax.optimization import optimize
+from normax.optimization import penalized
+from normax.optimization import shortest
 
 # A bowl whose minimum is known exactly, so the driver is tested against
 # arithmetic rather than against the pipeline it usually drives.
@@ -168,3 +171,102 @@ def test_the_sharpness_reaches_the_objective():
     optimize(watched, START, anneal(2.0, 8.0, 3), bounds=BOUNDS, iterations=3)
 
     assert sorted(set(seen)) == pytest.approx([2.0, 4.0, 8.0])
+
+
+# --------------------------------------------------------------------------- #
+# The length floor
+# --------------------------------------------------------------------------- #
+LENGTHS = jnp.asarray([500.0, 700.0, 300.0, 900.0])
+
+
+def test_the_smooth_minimum_never_overstates_the_shortest():
+    # Understating is the safe direction for a floor: a constraint built on it
+    # bites slightly early rather than slightly late.
+    for beta in (5.0, 20.0, 100.0):
+        assert float(shortest(LENGTHS, beta)) <= float(jnp.min(LENGTHS))
+
+
+def test_the_smooth_minimum_approaches_the_shortest_as_it_sharpens():
+    blunt = float(shortest(LENGTHS, 5.0))
+    sharp = float(shortest(LENGTHS, 200.0))
+
+    assert blunt < sharp <= float(jnp.min(LENGTHS))
+    assert sharp == pytest.approx(float(jnp.min(LENGTHS)), rel=1e-6)
+
+
+def test_the_smooth_minimum_respects_its_bound():
+    # It falls below the true shortest by at most the member count raised to the
+    # reciprocal of the sharpness, the same bound the envelope carries.
+    for beta in (5.0, 20.0, 100.0):
+        ratio = float(jnp.min(LENGTHS)) / float(shortest(LENGTHS, beta))
+
+        assert 1.0 <= ratio <= float(len(LENGTHS) ** (1.0 / beta)) + 1e-12
+
+
+def test_the_smooth_minimum_scales_with_the_structure():
+    # Taken in the logarithm, so the sharpness means the same thing whatever the
+    # structure is measured in.
+    assert float(shortest(LENGTHS * 1000.0, 20.0)) == pytest.approx(
+        1000.0 * float(shortest(LENGTHS, 20.0))
+    )
+
+
+def test_a_design_clear_of_the_floor_is_not_penalized():
+    mass = jnp.asarray(0.05)
+
+    assert float(penalized(mass, LENGTHS, 200.0, beta=50.0, weight=10.0)) == (
+        pytest.approx(float(mass))
+    )
+
+
+def test_a_design_below_the_floor_is_penalized():
+    mass = jnp.asarray(0.05)
+    inflated = float(penalized(mass, LENGTHS, 600.0, beta=50.0, weight=10.0))
+
+    assert inflated > float(mass)
+
+
+def test_the_penalty_grows_as_the_shortest_member_shrinks():
+    mass = jnp.asarray(0.05)
+    lengths = [LENGTHS.at[2].set(value) for value in (280.0, 200.0, 120.0)]
+    inflated = [
+        float(penalized(mass, case, 600.0, beta=50.0, weight=10.0)) for case in lengths
+    ]
+
+    assert inflated[0] < inflated[1] < inflated[2]
+
+
+def test_the_penalty_is_flat_where_it_starts():
+    # Squared, so the objective is not kinked at the floor and a search may
+    # approach it from either side.
+    mass = jnp.asarray(0.05)
+    floor = float(shortest(LENGTHS, 50.0))
+
+    slope = jax.grad(lambda x: penalized(mass, x, floor, beta=50.0, weight=10.0))(
+        LENGTHS
+    )
+
+    assert np.allclose(np.asarray(slope), 0.0, atol=1e-9)
+
+
+def test_the_penalty_is_a_fraction_and_not_a_mass():
+    # Multiplicative and reading a ratio, so it needs no mass scale and means
+    # the same thing on a structure of any size.
+    light = jnp.asarray(0.05)
+    heavy = jnp.asarray(5.0)
+
+    ratio_light = float(penalized(light, LENGTHS, 600.0, beta=50.0, weight=10.0)) / 0.05
+    ratio_heavy = float(penalized(heavy, LENGTHS, 600.0, beta=50.0, weight=10.0)) / 5.0
+
+    assert ratio_light == pytest.approx(ratio_heavy)
+
+
+def test_the_penalty_gradient_reaches_only_the_shortest_members():
+    mass = jnp.asarray(0.05)
+
+    slope = np.asarray(
+        jax.grad(lambda x: penalized(mass, x, 600.0, beta=50.0, weight=10.0))(LENGTHS)
+    )
+
+    assert np.all(np.isfinite(slope))
+    assert abs(slope[2]) > abs(slope[3])

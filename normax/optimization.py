@@ -39,6 +39,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
 from scipy.optimize import minimize
@@ -72,6 +73,91 @@ class Trajectory(NamedTuple):
     q: Float[Array, "steps members"]
     mass: Float[Array, "steps"]
     beta: Float[Array, "steps"]
+
+
+def shortest(
+    lengths: Float[Array, "members"],
+    beta: float | Float[Array, ""],
+) -> Float[Array, ""]:
+    """
+    Smooth minimum of the member lengths.
+
+    Parameters
+    ----------
+    lengths :
+        Length of every member.
+    beta :
+        Sharpness. The value approaches the true shortest as it grows.
+
+    Returns
+    -------
+    shortest :
+        A length no greater than the shortest member.
+
+    Notes
+    -----
+    The envelope of `normax.ec3.sizing` with its sign reversed, and taken in the
+    logarithm of the length for the same reason: the sharpness is then
+    dimensionless and comparable between structures of different size.
+
+    It never overstates the true shortest, and falls below it by at most the
+    member count raised to the reciprocal of the sharpness. Understating is the
+    safe direction for a floor, since a constraint built on this one bites
+    slightly early rather than slightly late.
+    """
+    return jnp.exp(-logsumexp(-beta * jnp.log(lengths)) / beta)
+
+
+def penalized(
+    mass: Float[Array, ""],
+    lengths: Float[Array, "members"],
+    floor: float | Float[Array, ""],
+    *,
+    beta: float | Float[Array, ""],
+    weight: float | Float[Array, ""],
+) -> Float[Array, ""]:
+    """
+    A mass inflated wherever the shortest member falls below a floor.
+
+    Parameters
+    ----------
+    mass :
+        Total mass of the members.
+    lengths :
+        Length of every member.
+    floor :
+        Shortest member the design is allowed.
+    beta :
+        Sharpness of the smooth minimum.
+    weight :
+        Size of the inflation at a member of zero length.
+
+    Returns
+    -------
+    penalized :
+        The mass, multiplied by one plus the penalty.
+
+    Notes
+    -----
+    **Why a floor is needed at all.** Nothing in a member check objects to a
+    vanishing member, and two things reward one: its mass is the product of an
+    area and a length, and its buckling length is its own length, so as it
+    shortens it becomes both free and unbucklable. An unconstrained search
+    therefore collapses members rather than improving the form, and the mass it
+    reports is the collapse rather than a design.
+
+    The penalty is multiplicative and reads a ratio, so it needs no mass scale
+    and means the same thing on any structure. It is the square of the
+    fractional violation, so it is zero and flat at the floor rather than
+    kinked, and a search may approach from either side.
+
+    A penalty rather than a constraint because the objective stays scalar, which
+    keeps one reverse pass per gradient. Bounding the length exactly would need
+    a constrained method and a Jacobian row per member.
+    """
+    violation = jnp.maximum(1.0 - shortest(lengths, beta) / floor, 0.0)
+
+    return mass * (1.0 + weight * violation**2)
 
 
 def anneal(
