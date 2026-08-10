@@ -740,3 +740,98 @@ def figure_load_cases(
         ax.grid(axis="y", alpha=0.3)
 
     return figure
+
+
+def figure_backends(
+    members: Int[np.ndarray, "sizes"],
+    parameters: Int[np.ndarray, "sizes"],
+    gaps: Float[np.ndarray, "sizes"],
+    stage: dict[str, Float[np.ndarray, "sizes"]],
+    pipeline: dict[str, Float[np.ndarray, "sizes"]],
+    tolerance: float,
+) -> Figure:
+    """
+    Two solvers agreeing on a gradient, and disagreeing about what it costs.
+
+    Parameters
+    ----------
+    members :
+        Number of members in each frame measured.
+    parameters :
+        Number of quantities the direct differentiation sweep registers.
+    gaps :
+        Worst relative disagreement in the mass gradient at each size.
+    stage :
+        Seconds the analysis stage alone spends on its derivatives, by backend.
+    pipeline :
+        Seconds the whole composition spends on a value and gradient, by
+        backend.
+    tolerance :
+        Agreement the roadmap asked for, drawn as a reference.
+
+    Returns
+    -------
+    figure :
+        The agreement, the cost of the stage alone, and the cost of the whole
+        composition.
+
+    Notes
+    -----
+    **The middle panel is the scaling claim and the right panel is why it does
+    not decide anything here.** Direct differentiation reuses one factorization,
+    so a parameter costs a back-substitution and the sweep grows with the
+    parameter count; a traced backend answers in one reverse pass whatever the
+    count. That difference is real and visible in isolation, and at these sizes
+    it is buried under what the composition costs regardless of who solves.
+
+    Every cost axis is logarithmic, the two backends differing by more than an
+    order of magnitude, and a linear axis would draw one of them flat.
+    """
+    figure, axes = plt.subplots(1, 3, figsize=(WIDTH_MAX, 3.4), layout="constrained")
+
+    axes[0].axhline(tolerance, color=GREY, linestyle="--", linewidth=1.0)
+    axes[0].annotate(
+        f"asked for {tolerance:.0e}",
+        (members[0], tolerance),
+        textcoords="offset points",
+        xytext=(4, -12),
+        color=GREY,
+        fontsize=8,
+    )
+    axes[0].plot(members, gaps, "o-", color="#31688e", markersize=4)
+    axes[0].set_yscale("log")
+    axes[0].set_ylim(top=tolerance * 30.0)
+    axes[0].set_xlabel("members")
+    axes[0].set_ylabel("worst relative gap in dmass/dq")
+    axes[0].set_title("DDM against traced autodiff", fontsize=10)
+    axes[0].grid(alpha=0.3)
+
+    styles = {"smax": ("#440154", "o"), "opensees": ("#35b779", "s")}
+
+    for name, series in stage.items():
+        color, marker = styles[name]
+        axes[1].plot(
+            parameters, series, marker + "-", color=color, markersize=4, label=name
+        )
+
+    axes[1].set_yscale("log")
+    axes[1].set_xlabel("parameters registered")
+    axes[1].set_ylabel("seconds")
+    axes[1].set_title("the analysis stage alone", fontsize=10)
+    axes[1].grid(alpha=0.3)
+    axes[1].legend(fontsize=8)
+
+    for name, series in pipeline.items():
+        color, marker = styles[name]
+        axes[2].plot(
+            members, series, marker + "-", color=color, markersize=4, label=name
+        )
+
+    axes[2].set_yscale("log")
+    axes[2].set_xlabel("members")
+    axes[2].set_ylabel("seconds")
+    axes[2].set_title("the whole composition", fontsize=10)
+    axes[2].grid(alpha=0.3)
+    axes[2].legend(fontsize=8)
+
+    return figure
