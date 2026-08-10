@@ -570,7 +570,7 @@ measurable, so the composition argument is not paid for in accuracy.
 
 ---
 
-## P4 — The 2D arch (Aug 18–21) ← minimum viable submission
+## P4 — The 2D arch (Aug 18–21) — **DONE** (Aug 9) ← minimum viable submission
 
 **Most of the forward model already exists** — P3 step 2 leaves an importable
 pure-JAX `q → mass` on this very arch. P4 adds the load cases, the aggregation
@@ -590,9 +590,74 @@ and the optimizer, and should consume that function rather than rebuild it.
 > tension / buckling / squash / N+M interaction / k_yy cap — a much richer
 > animation than the axial-only version would have produced.
 
-**Done when:** the mass-vs-q curve shows an interior minimum and the composed
-gradient matches the sweep. **Stop here if time runs short — this plus a good
-writeup is a valid submission.**
+**Four prerequisites were folded into this phase**, none of which existed before
+it: load case generators in `normax/structures.py`; a `loads` argument on the
+analysis and on both pipelines, which cost **no schema change** because T2
+already carried the nodal loads; `pipeline.envelope`, the enveloped multi-case
+design, with `unsmoothed` to read it back at the true largest; and
+`normax/optimization.py`, the annealed L-BFGS-B driver. `scipy` is now a project
+dependency.
+
+**Gate:** ~~the mass-vs-q curve shows an interior minimum and the composed
+gradient matches the sweep.~~ — **PASSED.** Interior minimum in the uniform
+family, and the gradient agrees with the sweep to **1.8e-8**. Full write-up in
+`CHANGELOG.md` under `## P4`.
+
+**Six things P5 and P7 must not relitigate.**
+
+1. **The finite-difference step is 1e-4 here, not P3's 1e-5, and it was swept
+   rather than guessed.** Three load cases make the mass four times larger and
+   its arithmetic three times longer, so cancellation dominates a decade sooner:
+   1.8e-8 at 1e-4 against 4.5e-7 at 1e-5 and 5.2e-5 at 1e-7. **The sharpness has
+   nothing to do with it** — the error is identical from β = 10 to β = 500, and
+   the two largest per-member demands differ by 7–27%, so the envelope is
+   nowhere near a kink. That hypothesis was tested and rejected.
+2. **The funicular case never governs a single member.** LC2 and LC3 decide all
+   twenty. That is the project's premise showing up as a count: the case the
+   shape was found under is the benign one, and everything the design is sized by
+   is invisible to a form-finder.
+3. **Left to itself the search collapses members, and a length floor is what
+   stops it.** Unconstrained, member lengths run 26.7 to 2335 mm with fifteen of
+   twenty under 100 mm and one 0.20 diameters long — a five-member arch with
+   fifteen stubs. A vanishing member is free (mass is area times length) and
+   unbucklable (`L_cr` is that same length), so nothing objects and two things
+   reward it. `normax.optimization.penalized` adds the floor.
+   **31.7% lighter is the number to quote, not 64.8%** — half the unconstrained
+   reduction is collapse rather than design. The floor also makes the problem well
+   posed: force densities on a bound fall from **fourteen of twenty to one**, so
+   the answer becomes interior, and `α_cr` recovers from 0.713 to **1.734**, above
+   one. **Both descents are converged**, 32 and 110 iterations against a budget of
+   300. **More budget buys the unconstrained run a deeper collapse rather than a
+   better arch** — raising the cap took it from 0.0510 to 0.0472 t and `α_cr` down
+   from 0.812 to 0.713, with fifteen members still under the floor. It has no
+   interior optimum to find. **Do not tighten the box to make an
+   unconstrained answer look converged**; add the floor instead.
+4. **The descent spends the stability margin, and this is the headline
+   limitation.** Unconstrained and like for like under LC1, `α_cr` falls from
+   **2.72** at the starting arch to **0.873** at the unconstrained optimum — below
+   one, so the frame buckles before reaching its design load. The floored design
+   recovers to 1.913 under the same case. Member checks were never going to stop
+   that, and global stability is outside the pipeline by design. **P7 must state
+   this plainly**: the optimized arch is not buildable.
+   **The number to quote is 0.713, not 0.873.** `α_cr` now takes a load case,
+   and the unconstrained design measures 0.873 under LC1, **0.713 under LC2** and
+   0.988 under LC3; the floored one 1.913, **1.734** and 1.764. A case-blind check reports the funicular case and overstates
+   the margin by 21%, and the weakest case is not the one that sized the most
+   members.
+5. **The staggered coupling costs 8.7% at the optimum, not P3's 1.22%.** The gap
+   grows as the design leaves the seed diameter, and the optimizer walks a long
+   way from it. The reported optimum is a one-pass optimum; relaxing to the fixed
+   point makes it *lighter* still. This is the strongest argument for
+   formulation B, which dissolves the stagger at every iterate.
+6. **The envelope's excess is bounded and the bound is tight.** 4.35% of the mass
+   at β = 10, 0.037% at β = 50, 0.0000% at β = 500, against a bound of the case
+   count raised to the reciprocal of the sharpness. Utilization of the unsmoothed
+   design is exactly 1.0 throughout, so **invariant 6.5 survives the
+   aggregation** — some case works every member to one, though no single case
+   works all of them.
+
+**Stop here if time runs short — this plus a good writeup is a valid
+submission.**
 
 ---
 
@@ -727,6 +792,74 @@ highly shareable). Post a WIP thread to the Tesseract forum Showcase before the
 deadline — staff engage substantively there.
 
 **Aug 31: buffer. Submit early.**
+
+---
+
+## After the deadline — `jax_tna`, and why the plan needs it
+
+**Not hackathon scope.** Recorded here because P4 proved the gap and named the
+fix, and neither should be rediscovered.
+
+**The gap.** An unconstrained per-edge `q` collapses members: measured on the
+optimized arch, lengths run 26.7 to 2335 mm and fifteen of twenty members fall
+under 100 mm, one of them 0.20 diameters long. Two things reward it — a member's
+mass is an area times a length, and its buckling length is its own length, so a
+vanishing member is both free and unbucklable.
+
+**The obvious fix does not work, and the reason is algebraic.** Holding the plan
+and solving only for heights (`normax.formfinding.positions_vertical`) bounds
+every member below by its own projection. But horizontal equilibrium of the axial
+forces is then not imposed, and on an evenly spaced plan it reads
+`q_after = q_before` — **only a uniform force density leaves such a shape
+funicular.** Measured: with non-uniform `q` a held plan carries 93 kN of
+unbalanced horizontal force, and LC1 bending rises from `|M|/(N·L)` of 2.0e-4 to
+0.72, a factor of 3660. The funicular subspace of a held plan on this arch is one
+parameter wide, and that parameter is the uniform sweep P4 already ran.
+
+**Thrust network analysis is the general form of that statement.** Fix the plan
+and treat horizontal equilibrium as a linear system in the force densities: its
+nullspace is the funicular design space, and a basis for it is what TNA calls the
+independent edges. Optimize those, propagate the dependent ones, and the plan is
+fixed **by construction with equilibrium intact** — no penalty, no collapsed
+members, no lost funicularity. See `compas_tno` for the reference implementation.
+
+**The dimension is what makes this worth building, and it is why the arch was
+misleading.** Write horizontal equilibrium as linear in the force densities —
+`B_c = C_free^T diag(C x_c)` for each horizontal coordinate, stacked — and count
+the nullspace by an actual rank, not by a formula:
+
+| | edges | rows | rank | independent edges |
+|---|---|---|---|---|
+| arch, 20 members | 20 | 19 (x alone) | 19 | **1** |
+| gridshell, 4 rings × 12 spokes | 96 | 74 | 71 | **25** |
+| the same, plan jittered | 96 | 74 | 74 | 22 |
+
+A chain has exactly one independent edge, so a held plan gives it no design
+freedom at all. **The gridshell has twenty-five**, a genuine funicular design
+space with the plan fixed and every member's length bounded below.
+
+**The classification must come from a factorization, not from a count.** The
+naive `edges − 2 × free nodes` gives 22 and is a lower bound only: the symmetric
+cap is rank-deficient by three, and perturbing the plan to break its rotational
+symmetry restores full rank and drops the nullity to exactly 22. Across
+configurations the deficiency is the number of free rings — two for three rings,
+three for four, four for five — and is independent of the spoke count. **The
+geometries this project uses are exactly the symmetric ones**, so a TNA
+implementation that trusts the formula will under-count the design space on
+every one of them. The mechanism behind the deficiency has not been verified;
+the measurement has.
+
+**The prototype.** `jax_tna`: build the horizontal equilibrium matrix from the
+connectivity and the fixed plan, take a rank-revealing factorization once on the
+host to classify edges, and expose `q_independent → q_all` as a traced linear map
+so the whole thing differentiates and drops in where
+`normax.formfinding.positions` sits now. The classification is topology and
+belongs outside the trace, exactly as the form-finding graph does today. It also
+depends on the plan, so it is fixed for a given plan and has to be redone if the
+plan changes.
+
+Until then, the length floor of `normax.optimization.penalized` is what keeps a
+per-edge search honest, and it is a penalty rather than a guarantee.
 
 ---
 
@@ -881,12 +1014,22 @@ diameter at 160 kNm. It only bites where the *cross-section* check governs —
 pure bending (12.25% in diameter, 26.0% in area) and tension members (9.0% /
 18.8%).
 
-**What would change the answer.** Once P4 runs, look at how many members are
+~~**What would change the answer.** Once P4 runs, look at how many members are
 actually governed by the cross-section check rather than by 6.61, and whether
-any of them carry significant biaxial moment. If that population is small, the
-reading is immaterial and the resultant stands on its physics. If it is large,
-the conservative linear sum deserves to be the default and the choice belongs in
-the writeup as a headline caveat rather than a footnote.
+any of them carry significant biaxial moment.~~ — **MEASURED, and the answer is
+that both halves of the test matter and they point opposite ways.**
+
+**The population is large: the cross-section check governs 19 of 20 members**,
+against P3 step 2's single-case design where 6.61 governed every one. Admitting
+load cases that raise real bending moves the decision from the member check to
+the cross-section check, which is a finding in its own right.
+
+**But the reading is still immaterial here, because `m_z` is identically zero** —
+0.0 exactly, not merely small, on a planar arch under in-plane load. With one
+moment there is nothing to combine and the resultant and the linear sum are the
+same number. **The choice cannot bite until the 3D gridshell**, where the two
+moments are both live and the population is known to be large. Decide it there,
+and treat it as a headline caveat at that point rather than this one.
 
 Flip it with one keyword and rerun `experiments/05_class_ratio_sweep.py`, which
 already tabulates both.

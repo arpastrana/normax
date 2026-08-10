@@ -1238,3 +1238,318 @@ every new case sitting in an excluded file; the gap is now 92, measured by
 collecting the three excluded files rather than inferred. The served-container comparison is deliberately not a
 test for the same reason; it runs from experiment 10 when
 `NORMAX_SERVED_OUTPUT` names a bindable directory.
+
+---
+
+## P4 — the 2D arch, optimized
+
+`experiments/03_optimize_arch.py` searches twenty force densities for the
+lightest arch EN 1993-1-1 will accept under three load cases. The sizes are never
+searched over: they are solved for inside the objective at every iterate, so the
+optimizer sees an unconstrained scalar and gets back a gradient that has crossed
+form finding, a frame analysis and the standard.
+
+**Four prerequisites were folded in**, none of which existed before this phase:
+load case generators in `normax/structures.py`; a `loads` argument on the
+analysis and on both pipelines; `pipeline.envelope` with `unsmoothed` beside it;
+and `normax/optimization.py`. `scipy` became a project dependency.
+
+**The load case is free at the boundary.** Checking a structure against several
+cases changes the Python signature of `design` and no part of the frozen T2
+contract, because the analysis schema already carried the nodal loads. That is
+the schema freeze of P3 step 3 paying for itself one phase later.
+
+### The gate
+
+Interior minimum in the uniform family, at 1.50 times the funicular force
+density, and the composed gradient agrees with the sweep to **4.4e-8**.
+
+| | mass [t] | against funicular |
+|---|---|---|
+| funicular, uniform `q` | 0.134063 | — |
+| best uniform `q`, scale 1.50 | 0.129030 | 3.8% lighter |
+| twenty variables, 300 mm floor | **0.091552** | **31.7% lighter** |
+| twenty variables, unconstrained | 0.047151 | 64.8% lighter, and degenerate |
+
+The one-variable family is what a form-finder can reach by scaling; twenty
+variables under a length floor end **29.0% below its best**. That is the whole
+argument for a gradient in one number. The unconstrained row is the same search
+with nothing stopping it from collapsing members, and it is reported as evidence
+rather than as a design — see below.
+
+### The finite-difference step moved, and the reason is not the smoothing
+
+**1e-4 here, not P3's 1e-5.** Swept rather than guessed:
+
+| relative step | 1e-3 | 1e-4 | 1e-5 | 1e-6 | 1e-7 |
+|---|---|---|---|---|---|
+| worst scaled error | 1.2e-6 | **4.4e-8** | 2.7e-7 | 2.1e-7 | 5.5e-5 |
+
+Three load cases make the mass four times larger and the arithmetic behind it
+three times longer, so cancellation dominates a decade sooner and the trough
+moves. **The obvious explanation was tested and rejected**: a sharp envelope is
+nearly a maximum, so it should be nearly a kink, and a kink would ruin a central
+difference. It does not. The error is 4.5e-7 at a step of 1e-5 for every
+sharpness from β = 10 to β = 500, identical to three figures, and the two largest
+per-member demands differ by 7–27% — nowhere near a tie. The step is the whole
+story.
+
+The tolerance is pinned at 2e-7 rather than on the measured floor. 4.4e-8 against
+a 5e-8 gate is a 12% margin and would fail on another machine; a gradient that
+was actually wrong misses by a thousand times more than the gap between those.
+
+### What the envelope costs, and that the invariant survives
+
+| β | 10 | 25 | 50 | 100 | 250 | 500 |
+|---|---|---|---|---|---|---|
+| excess mass | 4.35% | 0.449% | 0.037% | 0.0008% | 0.0000% | 0.0000% |
+| bound | 24.6% | 9.19% | 4.49% | 2.22% | 0.883% | 0.440% |
+
+The bound is the case count raised to the reciprocal of the sharpness, squared
+for a mass rather than a diameter. It is honest but loose — the real excess runs
+five to twenty times under it, because it assumes every case ties everywhere.
+
+**Utilization of the unsmoothed design is exactly 1.0 at every sharpness.**
+Invariant 6.5 survives the aggregation in the only form it can take with more
+than one case: some case works every member to one, though no single case works
+all of them. The envelope never understates, so the design is adequate at every
+sharpness and annealing approaches the answer from the safe side.
+
+### The funicular case never governs a single member
+
+Not one, before or after. LC2 decides 16 members and LC3 decides 4 at the
+starting shape; after the descent that reverses to 4 and 16. **The case the shape
+was found under is the benign one by construction**, and everything the design is
+actually sized by is invisible to a form-finder. That is the project's premise
+arriving as a count rather than an argument, and the reversal is the figure only
+a differentiable code check can produce: no member was reassigned, the form
+moved and the pattern followed.
+
+### The search collapses members, and a length floor is what stops it
+
+Measured on the unconstrained design: member lengths run **26.7 to 2335 mm, a
+ratio of 87**, with **fifteen of twenty members under 100 mm** and one of them
+0.20 diameters long. Five members carry 46 kg of the 51 kg total. The descent
+turned a twenty-member arch into a five-member arch with fifteen vestigial stubs.
+
+**Two things reward that and nothing objects to it.** A member's mass is an area
+times a length, so a vanishing member is free; and its buckling length is that
+same length, so `λ̄ → 0` and `χ → 1` and it is also unbucklable — measured,
+`λ̄ ≈ 0.007` on the shortest member against 0.94 on the longest. Collapsing an
+edge makes it both weightless and strong.
+
+`normax.optimization.penalized` adds a floor: a smooth minimum of the lengths in
+log space, the envelope operator with its sign reversed, and a multiplicative
+penalty on the fractional violation. Multiplicative because it then needs no mass
+scale, squared because the objective stays flat at the floor rather than kinked.
+
+Both descents are run to convergence, 32 and 110 iterations against a budget of
+300, so neither stops on its limit and both numbers are optima rather than
+bounds.
+
+| | unconstrained | 300 mm floor |
+|---|---|---|
+| mass [t] | 0.0472 | 0.0916 |
+| against the funicular arch | 64.8% lighter | **31.7% lighter** |
+| against the best single `q` | 63.5% lighter | **29.0% lighter** |
+| shortest member [mm] | 27.3 | 313.4 |
+| length ratio | 85.3 | 11.9 |
+| members under the floor | 15 of 20 | **0 of 20** |
+| force densities on a bound | 14 of 20 | **1 of 20** |
+| diameters [mm] | 60 – 136 | 104 – 170 |
+| `α_cr`, weakest case | 0.713 | **1.734** |
+
+**Half the headline reduction was collapse rather than design.** 31.7% is the
+number to quote.
+
+**More budget buys the unconstrained run a deeper collapse, not a better arch.**
+Raising the iteration cap moved it from 0.0510 to 0.0472 t and `α_cr` from 0.812
+down to 0.713, with fifteen members still under the floor and fourteen force
+densities still on a bound. That is the diagnosis confirming itself: the
+unconstrained problem has no interior optimum to find, so it goes on trading
+members for stubs until something stops it. The floored problem does have one,
+and finds it.
+
+**The floor also makes the problem well posed.** Unconstrained, fourteen of
+twenty force densities end on a bound and the answer is set by a box chosen to
+keep the model meaningful. With the floor, one does — the design sits in the
+interior and the physics decides it.
+
+**The figures compare the constrained design against the single force
+density**, which is the comparison that means something: the best a form-finder
+can reach by scaling against the best twenty variables can reach without
+collapsing anything. The unconstrained run is drawn beside them rather than
+instead of them, since it is the evidence for why the floor is there.
+`figure_optimization` takes any number of descents and `figure_load_cases` any
+number of forms.
+
+**And it recovers the stability margin.** `α_cr` rises from 0.713 to 1.734, so
+the floored frame no longer buckles below its design load — measured under every
+case, 1.913 for LC1, 1.734 for LC2 and 1.764 for LC3. It is still far from
+§5.2.1's threshold, and first-order analysis is still not adequate for it, but
+the design is no longer self-evidently unbuildable. The governing pattern also
+evens out, LC2 taking 8 members against 4.
+
+### Holding the plan instead is degenerate, and the reason is algebraic
+
+`normax.formfinding.positions_vertical` solves for heights with the plan held, so
+no member can shorten past its own projection — a hard bound rather than a
+penalty. It does not work, and the arithmetic says so before any experiment does.
+
+The force density system decouples per coordinate, so **holding the plan does not
+change the heights at all**: the full solve and the held solve agree to 1e-9 in
+`z` for any `q`. It moves the plan and nothing else. What it drops is horizontal
+equilibrium, which at a node reads
+`q_before (x_before − x) + q_after (x_after − x) = 0` and on an evenly spaced plan
+collapses to `q_after = q_before`. **Only a uniform force density leaves a held
+plan funicular.**
+
+Measured with non-uniform `q`: the held plan carries **93.4 kN of unbalanced
+horizontal force** against 5.5e-10 N for the full equilibrium, and LC1 bending
+rises from `|M|/(N·L)` of 2.0e-4 to **0.72**, a factor of 3660. The case the shape
+was found under stops being the benign one, which is the premise P4 rests on.
+
+So the funicular subspace of a held plan on this arch is one parameter wide, and
+that parameter is the uniform sweep. Four tests pin it.
+
+### Thrust network analysis is the general form, and the count has a trap in it
+
+Fix the plan, write horizontal equilibrium as linear in the force densities —
+`B_c = C_free^T diag(C x_c)`, stacked over the horizontal coordinates — and its
+nullspace is the funicular design space with the plan fixed. A basis for it is
+what TNA calls the independent edges; optimize those, propagate the rest, and the
+plan is held **with equilibrium intact**. Noted in `ROADMAP.md` for after the
+deadline as a `jax_tna` prototype, with `compas_tno` as the reference.
+
+| | edges | rows | rank | independent edges |
+|---|---|---|---|---|
+| arch, 20 members | 20 | 19 (x alone) | 19 | **1** |
+| gridshell, 4 × 12 | 96 | 74 | 71 | **25** |
+| the same, plan jittered | 96 | 74 | 74 | 22 |
+
+A chain has one, which is why holding its plan gives nothing. The shell has
+twenty-five.
+
+**The naive count is a lower bound and it is wrong here.** `edges − 2 × free
+nodes` gives 22; the symmetric cap is rank-deficient by three and the true
+nullity is 25. Breaking the rotational symmetry by jittering the plan restores
+full rank and drops it to 22 exactly. The deficiency is the number of free rings
+— two at three rings, three at four, four at five — and is independent of the
+spoke count. **The geometries here are the symmetric ones**, so a TNA prototype
+that trusts the formula under-counts the design space on all of them; the
+classification has to come from a rank-revealing factorization. The mechanism
+behind the deficiency is not verified, the measurement is.
+
+### Three things the answer is not
+
+**The per-edge optimum is set by its box.** Fourteen of twenty force densities
+end on a bound, nine low and five high. Nothing in a member check penalises a
+shape for being a bad arch — every member is fully stressed and adequate whatever
+the form does between them — so the search keeps going until the box stops it.
+Tightening the box to make the answer look converged would be dishonest; the
+bound activity is reported instead.
+
+**The form is degenerate, and `figures/03_load_cases.png` shows it.** The right
+leg collapses into a near-vertical cluster of nodes and the rise falls from 3000
+to 2299 mm. Both drawings share axis limits precisely so that this is visible
+rather than framed away.
+
+**The unconstrained descent spends the stability margin.** Like for like under
+LC1, `α_cr` falls from **2.72** at the starting arch to **0.873** at the
+unconstrained optimum — below one, so the frame buckles before reaching its
+design load. The floored design does not: it recovers to 1.913 under the same
+case. Member checks were
+never going to catch that, and global stability is outside the pipeline by
+design. The optimized arch is not buildable and the number is the evidence.
+
+**And quoting one case flatters it.** `analysis.buckling` and
+`pipeline.stability` now take a load case, because a frame sized for its worst
+case is not necessarily least stable under that case. On the optimized design:
+
+| case | LC1 uniform | LC2 half span | LC3 crown point |
+|---|---|---|---|
+| unconstrained | 0.873 | **0.713** | 0.988 |
+| 300 mm floor | 1.913 | **1.734** | 1.764 |
+
+The weakest is LC2 in both, 18% below the LC1 figure a case-blind check would
+have reported, and it is not the case that sized the most members. **The numbers
+to carry into P7 are 0.713 and 1.734.**
+
+### Which clause decides, and one deferred question closed
+
+**The cross-section check governs 19 of 20 members**, and Eq. 6.61 just one.
+P3 step 2's single-case design was governed by 6.61 everywhere, so admitting load
+cases that raise real bending moves the decision from the member check to the
+cross-section check. Worth knowing before reading either clause's sensitivity as
+representative.
+
+That also settles the Eq. 6.42 question deferred in P1b — how the two moments
+combine in the cross-section check — but not in the way the deferral anticipated.
+The test was "is the cross-section population large, and does it carry biaxial
+moment". The population is large. **The biaxial moment is identically zero**: on
+a planar arch under in-plane load `m_z` is 0.0 exactly, so there is nothing to
+combine and the resultant and the linear sum are the same number. **The choice
+cannot bite until the 3D gridshell**, and it should be decided there.
+
+### The staggered coupling costs 8.7% here, not P3's 1.22%
+
+Measured at the unconstrained optimum, one pass costs **8.7%** of the mass, and
+the relaxed sequence settles by the fifth pass. The gap grows as the design
+leaves the seed diameter, and the optimizer walks a long way from it: the seed is
+100 mm and the answer runs 60 to 136 mm. **The
+reported optimum is a one-pass optimum**, and relaxing to the fixed point makes it
+lighter still. This is the strongest argument yet for formulation B, which
+dissolves the stagger at every iterate rather than at the end.
+
+### The multi-case objective crosses the boundary too
+
+`composition.envelope` mirrors `pipeline.envelope`, and the two agree **exactly**
+— 0.0 on every field of the design and on the gradient, with one array differing
+by a single unit in the last place. So the objective the optimizer actually
+minimizes, three analyses and three checks per call, is as transparent to the
+boundary as the single-case design was.
+
+**The cost gap is in the reverse pass, not the forward one.** At ten members and
+three cases: 0.505 s composed against 0.493 s in process for a value, 2.4% apart;
+1.79 s against 1.10 s for a value and gradient, 63% apart. Each stage linearizes
+on its own and there are three times as many round trips, which is the number
+P5's scaling plot needs.
+
+Two things had to change to make it fit. **The check now reports both moment
+axes** — `m_y_ed`, `m_z_ed`, `c_my`, `c_mz` where it previously reported only the
+major ones — so a finished design can be re-read at a size the standard did not
+choose without analysing anything again. And **form finding runs once for all the
+cases**, the shape answering to one load case by construction, so only the
+analysis and the check are walked per case.
+
+**One asymmetry, named rather than hidden.** The envelope over cases is the
+optimizer's smoothing and the mass is `ρ Σ A L`, so neither is a clause and both
+sit above the chain. But the utilization at the enveloped size *is* a clause, and
+it is computed above the chain as well, because the check answers "what size do
+these actions need" rather than "how hard would this size work". The sizes cross
+the boundary; the re-check does not.
+
+### Cost
+
+A value is 0.5 s and a value-plus-gradient 2 s at twenty members and three cases,
+the analysis stage dominating both. The descent is five annealing rounds of
+twenty-five iterations, warm-started, and the whole experiment runs in about nine
+minutes.
+
+### Tests
+
+**1707 locally and 1582 in CI**, up from 1630 and 1538. 44 in
+`tests/test_structures.py` including the load cases, 19 in the new
+`tests/test_optimization.py`, the envelope, the aggregation invariants, the
+per-case stability check and both new figures in `tests/test_pipeline.py`, and
+five more in `tests/test_tesseract_parity.py` for the enveloped design, and
+the length floor, the held plan and the figures on top of those. The CI gap is
+125, being the three files that need `smax`. The optimizer
+tests drive analytic bowls rather than the pipeline, so they run in CI: the
+driver is tested against arithmetic, not against the thing it usually drives.
+
+Two behaviours of the driver are pinned because they surprised: **L-BFGS-B steps
+once before honouring a limit of zero**, returning a clipped trial point, so
+`descend` refuses to report it; and the point it reports last is not always the
+best it found, so the trajectory's last row is scipy's answer rather than the
+last callback.
