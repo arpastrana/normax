@@ -32,14 +32,72 @@ and the schema cannot tell the difference.
 
 from typing import Any
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jaxtyping import Array
+from jaxtyping import Float
 
+from normax.analysis import MemberForces
+from normax.analysis.smax import Model
 from normax.analysis.smax import forces
 from normax.analysis.smax import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
+
+
+@eqx.filter_jit
+def _member_forces(
+    model: Model,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+) -> MemberForces:
+    """
+    The analysis, compiled, from a model the caller prepared.
+
+    Parameters
+    ----------
+    model :
+        The prepared assembly, from `normax.analysis.smax.prepare`.
+    xyz :
+        Position of every node.
+    diameters :
+        Outer diameter of every member.
+    steel :
+        Material properties.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+
+    Returns
+    -------
+    forces :
+        Axial force and both end moments of every member.
+
+    Notes
+    -----
+    **Wrapped once here rather than per call, which is the whole point.** The
+    compilation cache belongs to the wrapper, so a wrapper built inside `solve`
+    would be a new cache every crossing and would compile afresh every time. At
+    module scope the second crossing of a given shape reuses the first, and the
+    cache keys itself on the shapes and dtypes of the array leaves, so a second
+    load case reuses the program and a second frame size gets its own.
+
+    **Preparation stays outside.** Compiling a frame decides its degree of freedom
+    maps by reading support flags with a Python conditional, which is exactly what
+    a trace cannot follow, so `prepare` cannot be inside this boundary.
+
+    **This survives the derivative endpoints tracing it.** They call `solve`
+    inside `jax.vjp` or `jax.jvp`, and a compiled call nested in a trace stays
+    compiled rather than being unrolled into it.
+
+    Every array a derivative might be taken through arrives as an argument,
+    including the loads, which reach here inside the model as ordinary leaves
+    rather than as constants folded into the program.
+    """
+    return forces(model, xyz, diameters, steel, tube)
 
 
 def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -64,9 +122,12 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     internal force appears, and that elastic response is the whole of the gap
     between these axial forces and the ones form finding predicted.
 
-    **The assembly is prepared per crossing.** A boundary crossing is stateless,
-    so nothing a previous call prepared survives into this one and `prepare` runs
-    again.
+    **The assembly is prepared per crossing and the solve is compiled once.** A
+    boundary crossing is stateless, so nothing a previous call prepared survives
+    into this one and `prepare` runs again; what does survive is the compiled
+    program behind `_member_forces`, because its wrapper lives at module scope.
+    Caching the prepared model across crossings would need a key over the topology
+    arriving in the inputs, and is deliberately not done here.
 
     Yield strength and density reach the material but not the answer, a linear
     elastic analysis under nodal loads having no use for either. They are carried
@@ -91,13 +152,7 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
 
     model = prepare(structure, steel, tube, normal=inputs["normal"])
 
-    member = forces(
-        model,
-        xyz,
-        jnp.asarray(inputs["diameter"]),
-        steel,
-        tube,
-    )
+    member = _member_forces(model, xyz, jnp.asarray(inputs["diameter"]), steel, tube)
 
     return {
         "n_ed": member.n_ed,

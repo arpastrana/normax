@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -25,6 +26,12 @@ from normax.structures import loads_half_span
 from normax.structures import loads_point
 from normax.structures import loads_uniform
 
+# The in-process side is compiled, so that what is compared is the boundary and
+# not the arithmetic. Both sides then run the same program over the same inputs.
+design_compiled = eqx.filter_jit(design_in_process)
+envelope_compiled = eqx.filter_jit(envelope_in_process)
+mass_compiled = eqx.filter_jit(mass_in_process)
+
 # The same 10 m arch rising 3 m under 180 kN that the in-process pipeline is
 # tested on, so the two are compared on identical ground.
 SPAN = 10_000.0
@@ -38,10 +45,21 @@ NORMAL = 1
 # The diameter the frame is analysed with before the check has spoken.
 SEED = 100.0
 
-# The boundary serializes float64 losslessly and both sides run the same code,
-# so parity is exact rather than approximate. Measured at 6.7e-16 across every
-# field of the design, which is the width of the numbers themselves.
+# The boundary serializes float64 losslessly and both sides run the same code, so
+# parity is exact rather than approximate — measured bitwise at the Class 2 ratio
+# and 4.7e-16 at Class 3. Both sides are compiled for this to hold: comparing a
+# compiled composition against an eager oracle measures the arithmetic instead,
+# which shows up as 1.8e-15 on the axial force and 3.9e-14 once a root find has
+# amplified it into a diameter.
 TOLERANCE_PARITY = 1e-14
+
+# An enveloped design is looser, and the cause is where the programs are cut. In
+# process the three load cases compile into one program; across the boundary one
+# solve is compiled and called three times, so the same sums are accumulated in
+# different units. Measured at 1.0e-13 on the axial force and 6e-14 to 1.1e-13 on
+# everything downstream of it, the mass included — 1.3e-14 t on a design of 0.13 t.
+# Nothing here is exempt, so the bound covers the whole container.
+TOLERANCE_PARITY_ENVELOPE = 1e-12
 
 # The end moments are the exception, and the reason is the arch rather than the
 # boundary. A funicular shape carries its design case axially, so the moment is a
@@ -58,8 +76,9 @@ MOMENT_FIELDS = ("m_ed", "m_y_ed", "m_z_ed", "c_m", "c_my", "c_mz")
 # stage linearizes on its own here and all three linearize together in process,
 # so the same sum is accumulated in a different order and the implicit tangent
 # divides by a slope that differs in its last bits. Measured at 3.6e-14 between
-# the two routes and 2.7e-14 between forward and reverse mode.
-TOLERANCE_DERIVATIVE = 1e-12
+# the two routes and 2.7e-14 between forward and reverse mode, and 1.6e-12 for an
+# enveloped objective, where the two routes also cut their programs differently.
+TOLERANCE_DERIVATIVE = 5e-12
 
 # Invariant 6.5 of CLAUDE.md. Measured at 1.8e-15 through the boundary.
 TOLERANCE_UTILIZATION = 1e-9
@@ -108,7 +127,7 @@ def both(setup, chain, steel, seed, cross_section_class, **kwargs):
     tube = Tube.at_class_limit(steel.f_y, cross_section_class)
     plastic = is_plastic(cross_section_class)
 
-    oracle = design_in_process(
+    oracle = design_compiled(
         q,
         seed,
         structure,
@@ -135,7 +154,7 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
     plastic = is_plastic(cross_section_class)
 
     def in_process(q):
-        return mass_in_process(
+        return mass_compiled(
             q,
             seed,
             structure,
@@ -501,7 +520,7 @@ def enveloped(setup, chain, steel, seed, cases, beta):
     structure, fdm, q = setup
     tube = Tube.at_class_limit(steel.f_y, 3)
 
-    oracle = envelope_in_process(
+    oracle = envelope_compiled(
         q,
         seed,
         structure,
@@ -539,7 +558,9 @@ def test_every_field_of_the_enveloped_design_survives_the_boundary(
     oracle, composed = enveloped(setup, chain, steel, seed, cases, beta)
 
     for field in oracle._fields:
-        limit = TOLERANCE_MOMENT if field in MOMENT_FIELDS else TOLERANCE_PARITY
+        limit = (
+            TOLERANCE_MOMENT if field in MOMENT_FIELDS else TOLERANCE_PARITY_ENVELOPE
+        )
 
         assert relative(getattr(oracle, field), getattr(composed, field)) < limit, field
 
@@ -551,7 +572,7 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
     tube = Tube.at_class_limit(steel.f_y, 3)
 
     def in_process(q):
-        return envelope_in_process(
+        return envelope_compiled(
             q,
             seed,
             structure,
