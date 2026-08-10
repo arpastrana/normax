@@ -54,6 +54,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from normax.analysis.smax import buckling
+from normax.analysis.smax import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
@@ -114,6 +115,10 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
 
+# Preparing the analysis model needs a section family to stand up a frame, and
+# every property of it is replaced per call, so one seed serves both classes.
+TUBE_SEED = Tube.at_class_limit(STEEL.f_y, 3)
+
 LIMIT_NAMES = {
     0.0: "catalogue minimum",
     1.0: "tension",
@@ -130,11 +135,12 @@ def setup(num_edges):
     load = TOTAL_LOAD / (num_edges - 1)
     structure = arch(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
     graph_fdm = graph(structure)
+    model = prepare(structure, STEEL, TUBE_SEED, normal=NORMAL)
 
     trial = jnp.full(num_edges, -1.0)
     reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
 
-    return structure, graph_fdm, trial * reached / RISE
+    return structure, graph_fdm, model, trial * reached / RISE
 
 
 def central(f, x, index, step):
@@ -156,7 +162,7 @@ def disagreement(exact, numeric, scale):
     return abs(exact - numeric) / scale
 
 
-def relaxed(q, structure, graph_fdm, tube, *, plastic, passes):
+def relaxed(q, structure, graph_fdm, model, tube, *, plastic, passes):
     """
     Repeat the staggered analysis and check, reporting how far each pass moves.
     """
@@ -170,9 +176,9 @@ def relaxed(q, structure, graph_fdm, tube, *, plastic, passes):
             diameters,
             structure,
             graph_fdm,
+            model,
             STEEL,
             tube,
-            normal=NORMAL,
             plastic=plastic,
         )
         moves.append(
@@ -185,7 +191,7 @@ def relaxed(q, structure, graph_fdm, tube, *, plastic, passes):
 
 
 def main():
-    structure, graph_fdm, q = setup(NUM_EDGES)
+    structure, graph_fdm, model, q = setup(NUM_EDGES)
     seed = jnp.full(NUM_EDGES, SEED)
 
     print("The arch")
@@ -201,7 +207,7 @@ def main():
         tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
         plastic = is_plastic(cross_section_class)
         result = design(
-            q, seed, structure, graph_fdm, STEEL, tube, normal=NORMAL, plastic=plastic
+            q, seed, structure, graph_fdm, model, STEEL, tube, plastic=plastic
         )
         codes = governing(result, STEEL, tube, plastic=plastic)
         departure = float(jnp.max(jnp.abs(result.utilization - 1.0)))
@@ -227,9 +233,7 @@ def main():
     print("\nThe central difference plateaus before it is trusted")
 
     def objective(q):
-        return mass(
-            q, seed, structure, graph_fdm, STEEL, tube, normal=NORMAL, plastic=plastic
-        )
+        return mass(q, seed, structure, graph_fdm, model, STEEL, tube, plastic=plastic)
 
     gradient = jax.grad(objective)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
@@ -258,7 +262,7 @@ def main():
 
     print("\nThe staggered coupling closes geometrically")
     _, moves, masses = relaxed(
-        q, structure, graph_fdm, tube, plastic=plastic, passes=PASSES
+        q, structure, graph_fdm, model, tube, plastic=plastic, passes=PASSES
     )
     print(f"  {'pass':>5} {'relative move':>15} {'mass [t]':>14} {'ratio':>8}")
     for step, (move, total) in enumerate(zip(moves, masses)):
@@ -276,16 +280,16 @@ def main():
     by_member = []
     by_fixed = []
     for count in MESHES:
-        refined, refined_graph, refined_q = setup(count)
+        refined, refined_graph, refined_model, refined_q = setup(count)
         refined_seed = jnp.full(count, SEED)
         free = design(
             refined_q,
             refined_seed,
             refined,
             refined_graph,
+            refined_model,
             STEEL,
             tube,
-            normal=NORMAL,
             plastic=plastic,
         )
         held = design(
@@ -293,9 +297,9 @@ def main():
             refined_seed,
             refined,
             refined_graph,
+            refined_model,
             STEEL,
             tube,
-            normal=NORMAL,
             plastic=plastic,
             l_cr=jnp.full(count, BUCKLING_LENGTH),
         )
@@ -322,10 +326,9 @@ def main():
     print("\nThe global stability check, EN 1993-1-1 5.2.1(3)")
     checked = stability(
         result,
-        structure,
+        model,
         STEEL,
         tube,
-        normal=NORMAL,
         num_modes=NUM_MODES,
     )
     factors = np.asarray(checked.factors)
@@ -358,9 +361,9 @@ def main():
         seed,
         structure,
         graph_fdm,
+        model,
         STEEL,
         tube,
-        normal=NORMAL,
         plastic=plastic,
         l_cr=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc),
     )
@@ -406,12 +409,11 @@ def main():
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
 
     modes = buckling(
-        structure,
+        model,
         result.xyz,
         result.diameters,
         STEEL,
         tube,
-        normal=NORMAL,
         num_modes=NUM_MODES,
     )
     shapes = figure_modes(result.xyz, factors, np.asarray(modes.shapes), RISE)

@@ -15,7 +15,7 @@
 Generators of the structures the pipeline form-finds and sizes.
 """
 
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -24,8 +24,7 @@ from jaxtyping import Float
 from jaxtyping import Int
 
 
-@dataclass(frozen=True)
-class Structure:
+class Structure(NamedTuple):
     """
     The topology, the starting geometry and the loads of a bar structure.
 
@@ -39,6 +38,14 @@ class Structure:
         Indices of the nodes whose position is fixed.
     loads :
         Force applied at every node. Zero at the supports.
+
+    Notes
+    -----
+    A pytree, so it crosses a jit boundary as four array leaves rather than as
+    one opaque object that would have to be hashed. The geometry and the loads
+    are then traced and differentiable, and the two index arrays are traced but
+    never indexed with, every consumer that needs them concrete — the backends
+    preparing a solver — reading them on the host.
     """
 
     nodes: Float[Array, "nodes 3"]

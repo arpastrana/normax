@@ -14,6 +14,7 @@ from smax import solve
 from normax.analysis import fixities
 from normax.analysis.smax import forces
 from normax.analysis.smax import frame
+from normax.analysis.smax import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
@@ -57,6 +58,11 @@ def tube(steel):
 
 
 @pytest.fixture(scope="module")
+def model(structure, steel, tube):
+    return prepare(structure, steel, tube, normal=NORMAL)
+
+
+@pytest.fixture(scope="module")
 def q():
     return jnp.full(NUM_EDGES, FORCE_DENSITY)
 
@@ -67,14 +73,13 @@ def state(q, structure):
 
 
 @pytest.fixture(scope="module")
-def member(structure, state, steel, tube):
+def member(model, state, steel, tube):
     return forces(
-        structure,
+        model,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
         steel,
         tube,
-        normal=NORMAL,
     )
 
 
@@ -88,12 +93,11 @@ def deviation(diameter, steel, tube, load=LOAD, force_density=FORCE_DENSITY):
 
     funicular = q * state.lengths[:, 0]
     member = forces(
-        structure,
+        prepare(structure, steel, tube, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
         steel,
         tube,
-        normal=NORMAL,
     )
 
     return float(jnp.max(jnp.abs(member.n_ed - funicular) / jnp.abs(funicular)))
@@ -300,14 +304,14 @@ def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, tube)
 # The gradient crosses both stages
 # --------------------------------------------------------------------------- #
 def test_the_gradient_through_both_stages_matches_central_differences(
-    q, structure, steel, tube
+    q, structure, model, steel, tube
 ):
     fdm = graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
 
     def objective(q):
         state = equilibrium(q, structure, fdm)
-        member = forces(structure, state.xyz, diameters, steel, tube, normal=NORMAL)
+        member = forces(model, state.xyz, diameters, steel, tube)
         return jnp.sum(member.n_ed**2)
 
     gradient = jax.grad(objective)(q)
@@ -321,13 +325,13 @@ def test_the_gradient_through_both_stages_matches_central_differences(
         assert float(gradient[edge]) == pytest.approx(float(central), rel=1e-7)
 
 
-def test_the_gradient_through_both_stages_is_finite(q, structure, steel, tube):
+def test_the_gradient_through_both_stages_is_finite(q, structure, model, steel, tube):
     fdm = graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
 
     def objective(q):
         state = equilibrium(q, structure, fdm)
-        member = forces(structure, state.xyz, diameters, steel, tube, normal=NORMAL)
+        member = forces(model, state.xyz, diameters, steel, tube)
         return jnp.sum(member.n_ed**2)
 
     gradient = jax.grad(objective)(q)

@@ -52,6 +52,7 @@ import numpy as np
 
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import forces as forces_smax
+from normax.analysis.smax import prepare as prepare_smax
 from normax.composition import backend
 from normax.composition import local
 from normax.composition import mass as mass_composed
@@ -157,9 +158,19 @@ def agreement():
     diameters = jnp.full(NUM_EDGES, SEED)
 
     mine = backend_opensees.forces(
-        structure, xyz, diameters, STEEL, TUBE, normal=NORMAL
+        backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL),
+        xyz,
+        diameters,
+        STEEL,
+        TUBE,
     )
-    theirs = forces_smax(structure, xyz, diameters, STEEL, TUBE, normal=NORMAL)
+    theirs = forces_smax(
+        prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+        xyz,
+        diameters,
+        STEEL,
+        TUBE,
+    )
 
     print("\nmember forces, DDM backend against the traced one")
     for name in ("n_ed", "m_y_ed"):
@@ -169,11 +180,21 @@ def agreement():
     print(f"  {'m_z_ed':<10} exactly zero in a plane frame, max {minor:.1e}")
 
     blocks = backend_opensees.jacobian(
-        structure, xyz, diameters, STEEL, TUBE, normal=NORMAL
+        backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL),
+        xyz,
+        diameters,
+        STEEL,
+        TUBE,
     )
 
     def run(coords, sizes):
-        member = forces_smax(structure, coords, sizes, STEEL, TUBE, normal=NORMAL)
+        member = forces_smax(
+            prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+            coords,
+            sizes,
+            STEEL,
+            TUBE,
+        )
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
 
@@ -224,7 +245,13 @@ def blind():
     diameters = jnp.full(NUM_EDGES, SEED)
 
     def run(coords):
-        member = forces_smax(structure, coords, diameters, STEEL, TUBE, normal=NORMAL)
+        member = forces_smax(
+            prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+            coords,
+            diameters,
+            STEEL,
+            TUBE,
+        )
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed, "m_z_ed": member.m_z_ed}
 
@@ -274,10 +301,22 @@ def stage_cost(structure, xyz, diameters):
     """
 
     def ddm():
-        backend_opensees.jacobian(structure, xyz, diameters, STEEL, TUBE, normal=NORMAL)
+        backend_opensees.jacobian(
+            backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL),
+            xyz,
+            diameters,
+            STEEL,
+            TUBE,
+        )
 
     def run(coords, sizes):
-        member = forces_smax(structure, coords, sizes, STEEL, TUBE, normal=NORMAL)
+        member = forces_smax(
+            prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+            coords,
+            sizes,
+            STEEL,
+            TUBE,
+        )
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
 
@@ -428,6 +467,7 @@ def optimize():
             start = time.perf_counter()
             result = descend(total, q, bounds=bounds, iterations=ITERATIONS)
             elapsed = time.perf_counter() - start
+
         results[name] = (result, elapsed)
         print(
             f"\n  {name:<9} mass {float(result.mass[-1]):.9f} t"

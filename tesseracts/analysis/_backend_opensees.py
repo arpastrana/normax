@@ -32,6 +32,7 @@ import jax.numpy as jnp
 from normax.analysis.opensees import Jacobian
 from normax.analysis.opensees import forces
 from normax.analysis.opensees import jacobian
+from normax.analysis.opensees import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
@@ -63,13 +64,14 @@ def _model(inputs: dict[str, Any]) -> tuple[Structure, Steel, Tube]:
     Returns
     -------
     model :
-        The structure, the material and the section family.
+        The prepared analysis model, the material and the section family.
 
     Notes
     -----
     Rebuilt per call rather than cached. OpenSees keeps one global model with no
     handle to it, so there is nothing a cache could hold that the next call
-    would not overwrite.
+    would not overwrite, and preparing one settles only which plane the frame
+    lies in.
     """
     structure = Structure(
         nodes=jnp.asarray(inputs["xyz"]),
@@ -83,8 +85,9 @@ def _model(inputs: dict[str, Any]) -> tuple[Structure, Steel, Tube]:
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
+    tube = Tube(ratio=inputs["ratio"])
 
-    return structure, steel, Tube(ratio=inputs["ratio"])
+    return prepare(structure, steel, tube, normal=inputs["normal"]), steel, tube
 
 
 def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -107,15 +110,14 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     elastic analysis under nodal loads having no use for either, exactly as in
     the other backend. Carrying them keeps one schema describing both.
     """
-    structure, steel, tube = _model(inputs)
+    model, steel, tube = _model(inputs)
 
     member = forces(
-        structure,
+        model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
         steel,
         tube,
-        normal=inputs["normal"],
     )
 
     return {
@@ -146,15 +148,14 @@ def _blocks(inputs: dict[str, Any]) -> Jacobian:
     back-substitution each and dropping some would save a fraction of a sweep
     while making the two derivative rules disagree about what was solved.
     """
-    structure, steel, tube = _model(inputs)
+    model, steel, tube = _model(inputs)
 
     return jacobian(
-        structure,
+        model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
         steel,
         tube,
-        normal=inputs["normal"],
     )
 
 

@@ -44,6 +44,7 @@ from jaxtyping import Bool
 from jaxtyping import Float
 from jaxtyping import Int
 
+from normax.analysis.smax import Model
 from normax.analysis.smax import buckling
 from normax.analysis.smax import forces
 from normax.ec3.resistance import n_cr
@@ -101,13 +102,12 @@ class Actions(NamedTuple):
 
 
 def actions(
-    structure: Structure,
+    model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Actions:
     """
@@ -115,8 +115,8 @@ def actions(
 
     Parameters
     ----------
-    structure :
-        The structure supplying the connectivity and the supports.
+    model :
+        The prepared analysis model, from `normax.analysis.smax.prepare`.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -125,9 +125,6 @@ def actions(
         Material properties.
     tube :
         The section family every member is drawn from.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
     loads :
         Load case to analyse under. If None, the structure's own loads.
 
@@ -136,7 +133,7 @@ def actions(
     actions :
         Axial force, both design moments and both moment factors.
     """
-    member = forces(structure, xyz, diameters, steel, tube, normal=normal, loads=loads)
+    member = forces(model, xyz, diameters, steel, tube, loads=loads)
 
     m_y_ed, c_my = end_moments(member.m_y_ed[:, 0], member.m_y_ed[:, 1])
     m_z_ed, c_mz = end_moments(member.m_z_ed[:, 0], member.m_z_ed[:, 1])
@@ -193,10 +190,10 @@ def design(
     diameters: Float[Array, "members"],
     structure: Structure,
     graph: EquilibriumStructure,
+    model: Model,
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     plastic: bool,
     resultant: bool = True,
     l_cr: Float[Array, "members"] | None = None,
@@ -216,13 +213,12 @@ def design(
         The structure supplying the connectivity, the supports and the loads.
     graph :
         The form-finding connectivity, from `normax.formfinding.graph`.
+    model :
+        The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
     tube :
         The section family every member is drawn from.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
     resultant :
@@ -272,9 +268,7 @@ def design(
     state = equilibrium(q, structure, graph)
     lengths = state.lengths[:, 0]
 
-    acting = actions(
-        structure, state.xyz, diameters, steel, tube, normal=normal, loads=loads
-    )
+    acting = actions(model, state.xyz, diameters, steel, tube, loads=loads)
 
     buckling = lengths if l_cr is None else l_cr
 
@@ -304,10 +298,10 @@ def mass(
     diameters: Float[Array, "members"],
     structure: Structure,
     graph: EquilibriumStructure,
+    model: Model,
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     plastic: bool,
     resultant: bool = True,
     l_cr: Float[Array, "members"] | None = None,
@@ -326,13 +320,12 @@ def mass(
         The structure supplying the connectivity, the supports and the loads.
     graph :
         The form-finding connectivity, from `normax.formfinding.graph`.
+    model :
+        The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
     tube :
         The section family every member is drawn from.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
     resultant :
@@ -364,9 +357,9 @@ def mass(
         diameters,
         structure,
         graph,
+        model,
         steel,
         tube,
-        normal=normal,
         plastic=plastic,
         resultant=resultant,
         l_cr=l_cr,
@@ -440,12 +433,12 @@ def envelope(
     diameters: Float[Array, "members"],
     structure: Structure,
     graph: EquilibriumStructure,
+    model: Model,
     steel: Steel,
     tube: Tube,
     loads: Float[Array, "cases nodes 3"],
     beta: float | Float[Array, ""],
     *,
-    normal: int | None,
     plastic: bool,
     resultant: bool = True,
     l_cr: Float[Array, "members"] | None = None,
@@ -465,6 +458,8 @@ def envelope(
         is form-found under.
     graph :
         The form-finding connectivity, from `normax.formfinding.graph`.
+    model :
+        The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
     tube :
@@ -474,9 +469,6 @@ def envelope(
     beta :
         Sharpness of the envelope. The design approaches the smallest adequate
         one from above as it grows.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
     resultant :
@@ -517,8 +509,7 @@ def envelope(
     buckling = lengths if l_cr is None else l_cr
 
     acting = [
-        actions(structure, state.xyz, diameters, steel, tube, normal=normal, loads=case)
-        for case in loads
+        actions(model, state.xyz, diameters, steel, tube, loads=case) for case in loads
     ]
 
     required = jnp.stack(
@@ -779,11 +770,10 @@ class Stability(NamedTuple):
 
 def stability(
     result: Design,
-    structure: Structure,
+    model: Model,
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     num_modes: int = 1,
     threshold: float = ALPHA_CR_ELASTIC,
     loads: Float[Array, "nodes 3"] | None = None,
@@ -795,15 +785,12 @@ def stability(
     ----------
     result :
         A design, from `design`.
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
+    model :
+        The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
     tube :
         The section family every member is drawn from.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
     num_modes :
         Number of critical load factors to return. Static.
     threshold :
@@ -837,12 +824,11 @@ def stability(
     say about a member the load never reaches.
     """
     modes = buckling(
-        structure,
+        model,
         result.xyz,
         result.diameters,
         steel,
         tube,
-        normal=normal,
         num_modes=num_modes,
         loads=loads,
     )

@@ -27,15 +27,29 @@ differentiation backend cannot supply. This is the reference the second backend
 is measured against rather than the interesting one: the argument the stage makes
 is that a solver which cannot be traced at all fits behind the same contract.
 
+**The assembly is compiled once and the traced values are injected into it.**
+Compiling a frame flattens model objects into arrays and works out the degree of
+freedom maps, and only the second half depends on anything an optimizer varies —
+which is to say none of it does. `prepare` runs both on the host and `forces`
+replaces every array leaf that a geometry or a size reaches, so the maps are
+computed once for a structure rather than once per call. That is also what makes
+the stage jittable: compilation reads support flags with a Python conditional,
+so it cannot happen inside a trace, and after this it never does.
+
 The stage's own vocabulary — what a member force is, which degrees of freedom a
 support restrains — lives in `normax.analysis` and is shared with every backend.
 All lengths, forces and stresses cross the boundary through `normax.units`.
 """
 
+from typing import NamedTuple
+
+import equinox as eqx
+import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 from smax import BeamElement
+from smax import CompiledStructure
 from smax import LoadCase
 from smax import Material
 from smax import Node
@@ -51,6 +65,8 @@ from smax import solve_buckling
 from normax.analysis import Buckling
 from normax.analysis import MemberForces
 from normax.analysis import fixities
+from normax.ec3.section import area
+from normax.ec3.section import second_moment
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
@@ -62,6 +78,38 @@ from normax.units import to_pascals
 # EN 1993-1-1 3.2.6. Enters only the torsional and out-of-plane response, both
 # of which vanish in a planar frame under in-plane load.
 POISSONS_RATIO = 0.3
+
+# Torsion constant of a thin ring over its second moment. A tube is doubly
+# symmetric, so the polar moment is twice the bending one.
+TORSION_FACTOR = 2.0
+
+
+class Model(NamedTuple):
+    """
+    Everything this backend can work out before a geometry or a size is chosen.
+
+    Attributes
+    ----------
+    compiled :
+        The compiled assembly: parameter arrays and the degree of freedom maps.
+    loads :
+        The structure's own load case, compiled into dense nodal channels.
+
+    Notes
+    -----
+    Built by `prepare` on the host and reused for every call. The arrays it
+    carries are placeholders wherever a geometry, a size or a material property
+    reaches them, and `forces` replaces all of those; what is kept is the half
+    that no optimizer varies, which is the connectivity, the support pattern and
+    the degree of freedom maps built from them.
+
+    The load case is compiled from the structure's own loads, so it doubles as
+    the default case. A caller passing a load case of its own gets the same
+    channels with different values rather than a second compilation.
+    """
+
+    compiled: CompiledStructure
+    loads: LoadCase
 
 
 def frame(
@@ -139,23 +187,73 @@ def frame(
     return Frame(nodes, elements, supports)
 
 
-def forces(
+def prepare(
     structure: Structure,
-    xyz: Float[Array, "nodes 3"],
-    diameters: Float[Array, "members"],
     steel: Steel,
     tube: Tube,
     *,
     normal: int | None,
-    loads: Float[Array, "nodes 3"] | None = None,
-) -> MemberForces:
+) -> Model:
     """
-    Internal forces of a frame under a load case.
+    Compile everything a solve needs that no design variable reaches.
 
     Parameters
     ----------
     structure :
-        The structure supplying the connectivity and the supports.
+        The structure supplying the connectivity, the supports and the loads.
+    steel :
+        Material properties. Placeholders only, replaced at every call.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+    normal :
+        Index of the global axis a planar structure has no thickness along, or
+        None for a structure that occupies all three dimensions.
+
+    Returns
+    -------
+    model :
+        The compiled assembly and the structure's own load case.
+
+    Notes
+    -----
+    **Host-side, and never called from inside a traced function.** Compiling a
+    frame decides the degree of freedom maps by reading support flags with a
+    Python conditional, which a tracer cannot follow; running it once here is
+    what leaves everything downstream jittable.
+
+    The starting geometry and the smallest tube in the family stand in for the
+    values that matter. Both are overwritten by `forces` before anything is
+    assembled, so what they are cannot reach a result — only their shapes can,
+    and those come from the structure.
+    """
+    placeholder = jnp.full(structure.edges.shape[0], tube.diameter_min)
+
+    compiled = compile_structure(
+        frame(structure, structure.nodes, placeholder, steel, tube, normal=normal)
+    )
+
+    applied = [
+        PointLoad(node, load=structure.loads[node])
+        for node in range(structure.nodes.shape[0])
+    ]
+
+    return Model(compiled=compiled, loads=LoadCase(applied, compiled))
+
+
+def _injected(
+    model: Model,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+) -> CompiledStructure:
+    """
+    A compiled assembly with every traced leaf replaced.
+
+    Parameters
+    ----------
+    model :
+        The compiled assembly, from `prepare`.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -164,9 +262,127 @@ def forces(
         Material properties.
     tube :
         The section family, whose ratio fixes the wall thickness.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
+
+    Returns
+    -------
+    compiled :
+        The same maps, carrying the geometry and the sections given here.
+
+    Notes
+    -----
+    **Every array a derivative might be taken through is replaced, not reused.**
+    A leaf left alone keeps the placeholder `prepare` built it from, and since
+    that placeholder is a constant the gradient with respect to it is silently
+    zero rather than an error. The section properties come from
+    `normax.ec3.section` rather than from the solver's own section class, so the
+    two stages cannot disagree about what a tube is; they agree algebraically.
+
+    Poisson's ratio is deliberately not replaced. It is a constant of this
+    backend taken from EN 1993-1-1 rather than a field of the material container,
+    so nothing upstream can vary it and the shear modulus follows the modulus
+    that is replaced.
+
+    Elements are grouped by type in the compiled assembly, so each group is
+    indexed by the global member ids it holds. One group is the usual case here,
+    every member being a beam.
+    """
+    outer = to_metres(diameters)
+    gross = area(outer, tube.ratio)
+    inertia = second_moment(outer, tube.ratio)
+
+    e_mod = to_pascals(jnp.asarray(steel.e_mod))
+    f_y = to_pascals(jnp.asarray(steel.f_y))
+    density = to_kilograms_per_cubic_metre(jnp.asarray(steel.density))
+
+    compiled = eqx.tree_at(
+        lambda c: c.params.xyz, model.compiled, to_metres(jnp.asarray(xyz))
+    )
+
+    groups = enumerate(compiled.topology.element_group_ids)
+    for index, member_ids in groups:
+        held = jnp.asarray(member_ids)
+        compiled = eqx.tree_at(
+            lambda c, i=index: (
+                c.params.element_groups[i].section.area,
+                c.params.element_groups[i].section.Iy,
+                c.params.element_groups[i].section.Iz,
+                c.params.element_groups[i].section.J,
+                c.params.element_groups[i].material.elasticity_modulus,
+                c.params.element_groups[i].material.yield_stress,
+                c.params.element_groups[i].material.density,
+            ),
+            compiled,
+            (
+                gross[held],
+                inertia[held],
+                inertia[held],
+                TORSION_FACTOR * inertia[held],
+                jnp.broadcast_to(e_mod, held.shape),
+                jnp.broadcast_to(f_y, held.shape),
+                jnp.broadcast_to(density, held.shape),
+            ),
+        )
+
+    return compiled
+
+
+def _load_case(
+    model: Model,
+    loads: Float[Array, "nodes 3"],
+) -> LoadCase:
+    """
+    The structure's compiled load channels, carrying a different load case.
+
+    Parameters
+    ----------
+    model :
+        The compiled assembly, from `prepare`.
+    loads :
+        Force applied at every node.
+
+    Returns
+    -------
+    loads :
+        A load case of the same shape as the model's own.
+
+    Notes
+    -----
+    A compiled load case is a dense channel per node and degree of freedom, so
+    swapping a case is an array replacement rather than a second compilation. The
+    three translations are written and the three moments left at zero, loads
+    being forces here.
+    """
+    channels = jnp.zeros_like(model.loads.node_loads)
+
+    return eqx.tree_at(
+        lambda c: c.node_loads, model.loads, channels.at[:, :3].set(loads)
+    )
+
+
+def forces(
+    model: Model,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+    *,
+    loads: Float[Array, "nodes 3"] | None = None,
+) -> MemberForces:
+    """
+    Internal forces of a frame under a load case.
+
+    Parameters
+    ----------
+    model :
+        The compiled assembly, from `prepare`.
+    xyz :
+        Position of every node, from form finding.
+    diameters :
+        Outer diameter of every member.
+    steel :
+        Material properties.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
     loads :
         Force applied at every node. If None, the structure's own loads.
 
@@ -177,9 +393,9 @@ def forces(
 
     Notes
     -----
-    Differentiable in the geometry and in the diameters, since the frame is
-    assembled inside this call from those arrays rather than read off a model
-    built beforehand.
+    Differentiable in the geometry, in the diameters and in every material
+    property, since all of them are injected into the assembly here rather than
+    baked into it when the model was built.
 
     The load case is an argument because a structure is form-found under one
     case and has to be checked under several. Only the first of them leaves the
@@ -190,18 +406,11 @@ def forces(
     not model, not an error, and they are the whole of the gap between these
     axial forces and the product of force density and length.
     """
-    model = compile_structure(
-        frame(structure, xyz, diameters, steel, tube, normal=normal)
-    )
+    compiled = _injected(model, xyz, diameters, steel, tube)
+    case = model.loads if loads is None else _load_case(model, loads)
 
-    applied_loads = structure.loads if loads is None else loads
-    applied = [
-        PointLoad(node, load=applied_loads[node])
-        for node in range(applied_loads.shape[0])
-    ]
-    response = solve(model, LoadCase(applied, model))
-
-    field = element_forces(model, response, num_samples=2)
+    response = solve(compiled, case)
+    field = element_forces(compiled, response, num_samples=2)
 
     return MemberForces(
         n_ed=field.nx[:, 0],
@@ -211,13 +420,12 @@ def forces(
 
 
 def buckling(
-    structure: Structure,
+    model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     num_modes: int = 1,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Buckling:
@@ -226,8 +434,8 @@ def buckling(
 
     Parameters
     ----------
-    structure :
-        The structure supplying the connectivity and the supports.
+    model :
+        The compiled assembly, from `prepare`.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -236,9 +444,6 @@ def buckling(
         Material properties.
     tube :
         The section family, whose ratio fixes the wall thickness.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
     num_modes :
         Number of modes to return, smallest factor first. Static.
     loads :
@@ -272,16 +477,10 @@ def buckling(
     plane, which is what makes the factor comparable with an in-plane member
     check rather than with a lateral one.
     """
-    model = compile_structure(
-        frame(structure, xyz, diameters, steel, tube, normal=normal)
-    )
+    compiled = _injected(model, xyz, diameters, steel, tube)
+    case = model.loads if loads is None else _load_case(model, loads)
 
-    applied_loads = structure.loads if loads is None else loads
-    applied = [
-        PointLoad(node, load=applied_loads[node])
-        for node in range(applied_loads.shape[0])
-    ]
-    response = solve_buckling(model, LoadCase(applied, model), num_modes=num_modes)
+    response = solve_buckling(compiled, case, num_modes=num_modes)
 
     return Buckling(
         factors=response.buckling_factors,

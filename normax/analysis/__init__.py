@@ -31,6 +31,21 @@ dimensions and `normax.analysis.opensees` drives a C++ one in two. Nothing here
 imports either, so the contracts below are readable without a solver installed
 and neither backend inherits the other's dependencies.
 
+**Every backend is reached in two calls, and the split is where the topology
+lives.** `prepare` reads a structure and returns a model: whatever that solver
+can work out from the connectivity, the supports and the load positions alone,
+built on the host and outside any traced call. `forces` then takes that model
+with a geometry and a set of sizes and returns what the members carry. The model
+is opaque and belongs to the backend, so a solver that can precompute an
+assembly holds one and a solver that must rebuild its domain per call holds only
+what it needs to do that. This mirrors `normax.formfinding`, where `graph` is
+built once and `equilibrium` consumes it.
+
+The split is what keeps a topology out of the objective. A model is a pure
+function of things no optimizer varies, so recomputing it per iterate is waste,
+and for a traced backend it is worse than waste: compilation reads support flags
+in Python, so a rebuild inside the trace is what stops the stage being jitted.
+
 All lengths, forces and stresses cross the boundary through `normax.units`.
 """
 

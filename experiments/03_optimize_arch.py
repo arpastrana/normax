@@ -68,6 +68,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from normax.analysis.smax import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
@@ -165,7 +166,13 @@ PLASTIC = is_plastic(3)
 
 def setup():
     """
-    The arch, its form-finding connectivity, and the `q` that reaches the rise.
+    The arch, both prepared topologies, and the `q` that reaches the rise.
+
+    Neither the form-finding connectivity nor the analysis model depends on a
+    force density, so both are built here and passed to everything below. The
+    analysis model is the expensive one and the reason the objective can be
+    compiled at all: preparing it reads support flags in Python, which a tracer
+    cannot follow.
     """
     structure = arch(
         num_edges=NUM_EDGES,
@@ -174,11 +181,12 @@ def setup():
         load=TOTAL_LOAD / (NUM_EDGES - 1),
     )
     graph_fdm = graph(structure)
+    model = prepare(structure, STEEL, TUBE, normal=NORMAL)
 
     trial = jnp.full(NUM_EDGES, -1.0)
     reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
 
-    return structure, graph_fdm, trial * reached / RISE
+    return structure, graph_fdm, model, trial * reached / RISE
 
 
 def load_cases(structure):
@@ -199,7 +207,7 @@ def load_cases(structure):
     return jnp.stack([uniform, half, point])
 
 
-def build(q, structure, graph_fdm, cases, beta, diameters=None):
+def build(q, structure, graph_fdm, model, cases, beta, diameters=None):
     """
     The enveloped design at one set of force densities.
     """
@@ -210,20 +218,20 @@ def build(q, structure, graph_fdm, cases, beta, diameters=None):
         seed,
         structure,
         graph_fdm,
+        model,
         STEEL,
         TUBE,
         cases,
         beta,
-        normal=NORMAL,
         plastic=PLASTIC,
     )
 
 
-def report_cases(structure, graph_fdm, cases, q):
+def report_cases(structure, graph_fdm, model, cases, q):
     """
     What each case demands of each member at the starting shape.
     """
-    result = build(q, structure, graph_fdm, cases, BETA_STOP)
+    result = build(q, structure, graph_fdm, model, cases, BETA_STOP)
     decided = np.asarray(governing_case(result))
 
     print("The three load cases, each carrying 180 kN")
@@ -241,7 +249,7 @@ def report_cases(structure, graph_fdm, cases, q):
     return result, decided
 
 
-def report_smoothing(structure, graph_fdm, cases, q):
+def report_smoothing(structure, graph_fdm, model, cases, q):
     """
     What the envelope gives away at each sharpness, against the true largest.
     """
@@ -249,7 +257,7 @@ def report_smoothing(structure, graph_fdm, cases, q):
     print(f"  {'beta':>8} {'mass [t]':>14} {'excess':>10} {'bound':>10} {'max u':>18}")
 
     for beta in SHARPNESSES:
-        result = build(q, structure, graph_fdm, cases, beta)
+        result = build(q, structure, graph_fdm, model, cases, beta)
         exact = unsmoothed(result, STEEL, TUBE, plastic=PLASTIC)
 
         excess = float(result.mass) / float(exact.mass) - 1.0
@@ -260,13 +268,13 @@ def report_smoothing(structure, graph_fdm, cases, q):
         )
 
 
-def report_sweep(structure, graph_fdm, cases, q):
+def report_sweep(structure, graph_fdm, model, cases, q):
     """
     The mass along the uniform force densities, and the gradient against it.
     """
 
     def objective(scaled):
-        return build(scaled, structure, graph_fdm, cases, BETA_STOP).mass
+        return build(scaled, structure, graph_fdm, model, cases, BETA_STOP).mass
 
     masses = []
     exact = []
@@ -321,7 +329,7 @@ def report_sweep(structure, graph_fdm, cases, q):
     return np.asarray(masses), np.asarray(exact), np.asarray(numeric), best, worst
 
 
-def report_descent(structure, graph_fdm, cases, q, *, floor):
+def report_descent(structure, graph_fdm, model, cases, q, *, floor):
     """
     The same mass with one force density per member, annealed.
     """
@@ -332,7 +340,7 @@ def report_descent(structure, graph_fdm, cases, q, *, floor):
     print(f"\nDescending with one variable per member, {kind}, bounds {bounds}")
 
     def objective(x, beta):
-        result = build(x, structure, graph_fdm, cases, beta)
+        result = build(x, structure, graph_fdm, model, cases, beta)
         if not floor:
             return result.mass
 
@@ -353,12 +361,12 @@ def report_descent(structure, graph_fdm, cases, q, *, floor):
     return walked, bounds
 
 
-def report_final(structure, graph_fdm, cases, walked, bounds, label):
+def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
     """
     The design the descent arrived at, read back against the standard.
     """
     q = walked.q[-1]
-    result = build(q, structure, graph_fdm, cases, BETA_STOP)
+    result = build(q, structure, graph_fdm, model, cases, BETA_STOP)
     exact = unsmoothed(result, STEEL, TUBE, plastic=PLASTIC)
     decided = np.asarray(governing_case(result))
 
@@ -396,7 +404,7 @@ def report_final(structure, graph_fdm, cases, walked, bounds, label):
     diameters = jnp.full(NUM_EDGES, SEED)
     print(f"\n  {'pass':>6} {'relative move':>15} {'mass [t]':>14}")
     for step in range(PASSES):
-        relaxed = build(q, structure, graph_fdm, cases, BETA_STOP, diameters)
+        relaxed = build(q, structure, graph_fdm, model, cases, BETA_STOP, diameters)
         move = float(
             jnp.max(jnp.abs(relaxed.diameters - diameters) / relaxed.diameters)
         )
@@ -423,9 +431,7 @@ def report_final(structure, graph_fdm, cases, walked, bounds, label):
     print(f"\n  {'case':>16} {'alpha_cr':>10} {'adequate':>10}")
     weakest = None
     for name, case in zip(CASE_NAMES, cases):
-        factors = stability(
-            single, structure, STEEL, TUBE, normal=NORMAL, num_modes=1, loads=case
-        )
+        factors = stability(single, model, STEEL, TUBE, num_modes=1, loads=case)
         alpha_cr = float(factors.factors[0])
         weakest = alpha_cr if weakest is None else min(weakest, alpha_cr)
         print(f"  {name:>16} {alpha_cr:>10.4f} {str(bool(factors.adequate)):>10}")
@@ -434,15 +440,17 @@ def report_final(structure, graph_fdm, cases, walked, bounds, label):
 
 
 def main():
-    structure, graph_fdm, q = setup()
+    structure, graph_fdm, model, q = setup()
     cases = load_cases(structure)
 
-    start, _ = report_cases(structure, graph_fdm, cases, q)
-    report_smoothing(structure, graph_fdm, cases, q)
-    masses, exact, numeric, best, worst = report_sweep(structure, graph_fdm, cases, q)
-    walked, bounds = report_descent(structure, graph_fdm, cases, q, floor=0.0)
+    start, _ = report_cases(structure, graph_fdm, model, cases, q)
+    report_smoothing(structure, graph_fdm, model, cases, q)
+    masses, exact, numeric, best, worst = report_sweep(
+        structure, graph_fdm, model, cases, q
+    )
+    walked, bounds = report_descent(structure, graph_fdm, model, cases, q, floor=0.0)
     final, sized, decided_final, stagger, alpha_cr, lengths = report_final(
-        structure, graph_fdm, cases, walked, bounds, "no length floor"
+        structure, graph_fdm, model, cases, walked, bounds, "no length floor"
     )
 
     # The funicular design, which is where the descent starts and the only
@@ -451,14 +459,14 @@ def main():
     reduction = 1.0 - float(sized.mass) / masses[funicular]
     against_best = 1.0 - float(sized.mass) / masses[best]
 
-    floored, _ = report_descent(structure, graph_fdm, cases, q, floor=FLOOR)
+    floored, _ = report_descent(structure, graph_fdm, model, cases, q, floor=FLOOR)
     held, held_sized, decided_held, _, held_alpha, held_lengths = report_final(
-        structure, graph_fdm, cases, floored, bounds, f"a {FLOOR:.0f} mm floor"
+        structure, graph_fdm, model, cases, floored, bounds, f"a {FLOOR:.0f} mm floor"
     )
 
     # The best the single force density can do, which is the design the twenty
     # variables have to beat and the one the figures compare against.
-    single = build(q * SCALES[best], structure, graph_fdm, cases, BETA_STOP)
+    single = build(q * SCALES[best], structure, graph_fdm, model, cases, BETA_STOP)
     single_sized = unsmoothed(single, STEEL, TUBE, plastic=PLASTIC)
     decided_single = np.asarray(governing_case(single))
 

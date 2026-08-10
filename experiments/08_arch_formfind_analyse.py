@@ -39,6 +39,7 @@ from smax import diagnose_mechanisms
 
 from normax.analysis.smax import forces
 from normax.analysis.smax import frame
+from normax.analysis.smax import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
@@ -93,12 +94,11 @@ def gap(diameter, steel, load=LOAD, force_density=FORCE_DENSITY):
     """
     structure, _, state, axial = funicular(load, force_density)
     member = forces(
-        structure,
+        prepare(structure, steel, TUBE, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
         steel,
         TUBE,
-        normal=NORMAL,
     )
 
     deviation = jnp.max(jnp.abs(member.n_ed - axial) / jnp.abs(axial))
@@ -118,7 +118,8 @@ def central(f, x, index, step):
 def main():
     structure, fdm, state, axial = funicular(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    member = forces(structure, state.xyz, diameters, STEEL, TUBE, normal=NORMAL)
+    prepared = prepare(structure, STEEL, TUBE, normal=NORMAL)
+    member = forces(prepared, state.xyz, diameters, STEEL, TUBE)
 
     model = frame(structure, state.xyz, diameters, STEEL, TUBE, normal=NORMAL)
     mechanisms = diagnose_mechanisms(model).num_mechanisms
@@ -167,7 +168,8 @@ def main():
 
     def objective(q):
         state = equilibrium(q, structure, fdm)
-        member = forces(structure, state.xyz, diameters, STEEL, TUBE, normal=NORMAL)
+        member = forces(prepared, state.xyz, diameters, STEEL, TUBE)
+
         return jnp.sum(member.n_ed**2)
 
     q = jnp.full(NUM_EDGES, FORCE_DENSITY)

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from tesseract_jax import apply_tesseract
 
+from normax.analysis.smax import prepare
 from normax.composition import STAGES
 from normax.composition import design as design_composed
 from normax.composition import envelope as envelope_composed
@@ -41,6 +42,17 @@ SEED = 100.0
 # so parity is exact rather than approximate. Measured at 6.7e-16 across every
 # field of the design, which is the width of the numbers themselves.
 TOLERANCE_PARITY = 1e-14
+
+# The end moments are the exception, and the reason is the arch rather than the
+# boundary. A funicular shape carries its design case axially, so the moment is a
+# near-cancellation worth 4e-4 of the axial action times the length, and its
+# relative precision is set by that larger scale. A single last-bit difference in
+# the analysis inputs therefore reaches 8e-13 here while the axial force it came
+# from stays at 7e-16. Measured: exact at the Class 3 ratio, 8.2e-13 at Class 2.
+#
+# The moment factors read a ratio of the two end moments, so they inherit it.
+TOLERANCE_MOMENT = 1e-11
+MOMENT_FIELDS = ("m_ed", "m_y_ed", "m_z_ed", "c_m", "c_my", "c_mz")
 
 # Derivatives are looser than values, and not because of the boundary. Each
 # stage linearizes on its own here and all three linearize together in process,
@@ -97,7 +109,15 @@ def both(setup, chain, steel, seed, cross_section_class, **kwargs):
     plastic = is_plastic(cross_section_class)
 
     oracle = design_in_process(
-        q, seed, structure, fdm, steel, tube, normal=NORMAL, plastic=plastic, **kwargs
+        q,
+        seed,
+        structure,
+        fdm,
+        prepare(structure, steel, tube, normal=NORMAL),
+        steel,
+        tube,
+        plastic=plastic,
+        **kwargs,
     )
     composed = design_composed(
         q, seed, structure, chain, steel, tube, normal=NORMAL, plastic=plastic, **kwargs
@@ -120,9 +140,9 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
             seed,
             structure,
             fdm,
+            prepare(structure, steel, tube, normal=NORMAL),
             steel,
             tube,
-            normal=NORMAL,
             plastic=plastic,
             **kwargs,
         )
@@ -176,10 +196,9 @@ def test_every_field_of_the_design_survives_the_boundary(
     oracle, composed = both(setup, chain, steel, seed, cross_section_class)
 
     for field in oracle._fields:
-        assert (
-            relative(getattr(oracle, field), getattr(composed, field))
-            < TOLERANCE_PARITY
-        ), field
+        limit = TOLERANCE_MOMENT if field in MOMENT_FIELDS else TOLERANCE_PARITY
+
+        assert relative(getattr(oracle, field), getattr(composed, field)) < limit, field
 
 
 @pytest.mark.parametrize("cross_section_class", [2, 3])
@@ -483,7 +502,16 @@ def enveloped(setup, chain, steel, seed, cases, beta):
     tube = Tube.at_class_limit(steel.f_y, 3)
 
     oracle = envelope_in_process(
-        q, seed, structure, fdm, steel, tube, cases, beta, normal=NORMAL, plastic=False
+        q,
+        seed,
+        structure,
+        fdm,
+        prepare(structure, steel, tube, normal=NORMAL),
+        steel,
+        tube,
+        cases,
+        beta,
+        plastic=False,
     )
     composed = envelope_composed(
         q,
@@ -511,10 +539,9 @@ def test_every_field_of_the_enveloped_design_survives_the_boundary(
     oracle, composed = enveloped(setup, chain, steel, seed, cases, beta)
 
     for field in oracle._fields:
-        assert (
-            relative(getattr(oracle, field), getattr(composed, field))
-            < TOLERANCE_PARITY
-        ), field
+        limit = TOLERANCE_MOMENT if field in MOMENT_FIELDS else TOLERANCE_PARITY
+
+        assert relative(getattr(oracle, field), getattr(composed, field)) < limit, field
 
 
 def test_the_enveloped_mass_gradient_survives_the_boundary(
@@ -529,11 +556,11 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
             seed,
             structure,
             fdm,
+            prepare(structure, steel, tube, normal=NORMAL),
             steel,
             tube,
             cases,
             100.0,
-            normal=NORMAL,
             plastic=False,
         ).mass
 

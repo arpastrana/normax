@@ -36,6 +36,7 @@ import jax
 import jax.numpy as jnp
 
 from normax.analysis.smax import forces
+from normax.analysis.smax import prepare
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
@@ -57,11 +58,15 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
 
     Notes
     -----
-    The frame is assembled inside this call from the coordinates and the
-    diameters, so both are differentiable leaves rather than properties of a
-    model built beforehand. The reference state is unstressed: the nodes displace
-    before any internal force appears, and that elastic response is the whole of
-    the gap between these axial forces and the ones form finding predicted.
+    The coordinates and the diameters are injected into the assembly here, so both
+    are differentiable leaves rather than properties baked in when the model was
+    prepared. The reference state is unstressed: the nodes displace before any
+    internal force appears, and that elastic response is the whole of the gap
+    between these axial forces and the ones form finding predicted.
+
+    **The assembly is prepared per crossing.** A boundary crossing is stateless,
+    so nothing a previous call prepared survives into this one and `prepare` runs
+    again.
 
     Yield strength and density reach the material but not the answer, a linear
     elastic analysis under nodal loads having no use for either. They are carried
@@ -84,13 +89,14 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     )
     tube = Tube(ratio=inputs["ratio"])
 
+    model = prepare(structure, steel, tube, normal=inputs["normal"])
+
     member = forces(
-        structure,
+        model,
         xyz,
         jnp.asarray(inputs["diameter"]),
         steel,
         tube,
-        normal=inputs["normal"],
     )
 
     return {

@@ -79,6 +79,35 @@ DOF_AXIAL = 1
 DOF_MOMENT = 2
 
 
+class Model(NamedTuple):
+    """
+    Everything this backend can settle before a geometry or a size is chosen.
+
+    Attributes
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    spanned :
+        The plane the frame is modelled in.
+
+    Notes
+    -----
+    **Almost nothing, and that is the honest answer for this backend.** OpenSees
+    holds one global model with no handle to it, so a domain cannot be built once
+    and updated; every call wipes and reassembles. What can be settled ahead of
+    time is which two global axes the frame lives in, and that is what this
+    carries.
+
+    The contract is shared with `normax.analysis.smax` all the same. A stage that
+    prepares once and solves many times fits a solver that reuses an assembly and
+    a solver that cannot, and the difference between them showing up as an empty
+    model rather than as a different call is the point.
+    """
+
+    structure: Structure
+    spanned: "Plane"
+
+
 class Plane(NamedTuple):
     """
     The two global axes a planar frame is modelled in.
@@ -158,15 +187,19 @@ def plane(
     Raises
     ------
     ValueError
-        If no normal axis is given, if it is not 0, 1 or 2, if the nodes do not
-        share one coordinate along it, or if any load points along it.
+        If no normal axis is given, if it is not 0, 1 or 2, or if the nodes do
+        not share one coordinate along it.
 
     Notes
     -----
     Every rejection here is a case the solver would otherwise accept and answer
-    wrongly: a three-dimensional frame flattened into a projection of itself, or
-    a load component silently discarded. A backend that cannot represent
-    something should say so rather than represent something else.
+    wrongly: a three-dimensional frame flattened into a projection of itself. A
+    backend that cannot represent something should say so rather than represent
+    something else.
+
+    Loads are checked where they are applied rather than here, since a structure
+    is analysed under cases other than its own and only the case reaching the
+    solver can be the one vouched for.
     """
     if normal is None:
         raise ValueError("the OpenSees backend is planar; give the normal axis")
@@ -178,22 +211,63 @@ def plane(
         spread = float(np.ptp(offsets))
         raise ValueError(f"nodes are not planar along axis {normal}; spread {spread}")
 
-    out_of_plane = np.asarray(structure.loads)[:, normal]
-    if np.any(out_of_plane != 0.0):
-        raise ValueError(f"loads have components along the normal axis {normal}")
-
     axes = tuple(axis for axis in range(3) if axis != normal)
 
     return Plane(axes=axes, normal=normal)
 
 
-def _build(
+def prepare(
     structure: Structure,
+    steel: Steel,
+    tube: Tube,
+    *,
+    normal: int | None,
+) -> Model:
+    """
+    Settle the plane the frame is modelled in, and nothing else.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    steel :
+        Material properties. Unused, the domain being rebuilt per call.
+    tube :
+        The section family. Unused, for the same reason.
+    normal :
+        Index of the global axis the frame has no thickness along.
+
+    Returns
+    -------
+    model :
+        The structure and the plane it spans.
+
+    Raises
+    ------
+    ValueError
+        If no normal axis is given, if it is not 0, 1 or 2, or if the starting
+        geometry does not share one coordinate along it.
+
+    Notes
+    -----
+    The plane is read from the starting geometry rather than from a form-found
+    one, which makes planarity a property of the structure and fixes the axis map
+    before any force density is chosen. The geometry actually analysed is checked
+    again per call, so a shape that leaves the plane is still refused.
+
+    The material and the section family are accepted and ignored, so that this
+    reads the same as the other backend's `prepare`. Nothing about a plane frame
+    can be precomputed from either.
+    """
+    return Model(structure=structure, spanned=plane(structure, structure.nodes, normal))
+
+
+def _build(
+    model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: Steel,
     tube: Tube,
-    spanned: Plane,
     loads: Float[Array, "nodes 3"] | None,
     parameters: bool,
 ) -> int:
@@ -202,8 +276,8 @@ def _build(
 
     Parameters
     ----------
-    structure :
-        The structure supplying the connectivity and the supports.
+    model :
+        The structure and its plane, from `prepare`.
     xyz :
         Position of every node.
     diameters :
@@ -212,8 +286,6 @@ def _build(
         Material properties. Only the modulus reaches a plane frame.
     tube :
         The section family, whose ratio fixes the wall thickness.
-    spanned :
-        The plane the frame is modelled in.
     loads :
         Force applied at every node. If None, the structure's own loads.
     parameters :
@@ -224,6 +296,12 @@ def _build(
     count :
         Number of parameters registered.
 
+    Raises
+    ------
+    ValueError
+        If the geometry does not lie in the model's plane, or if the load case
+        applied has a component along the normal axis.
+
     Notes
     -----
     Every element carries its own section, so a parameter registered on one
@@ -233,10 +311,25 @@ def _build(
     The whole model is rebuilt per call. OpenSees holds one global model and no
     handle to it, so there is nothing to update in place, and the solve is a few
     milliseconds at the sizes this backend is used at.
+
+    **The geometry and the load case are vouched for here rather than upstream.**
+    Both change from call to call while the plane does not, so this is the only
+    place that sees the numbers a solve is actually given.
     """
+    structure = model.structure
+    spanned = model.spanned
+
+    plane(structure, xyz, spanned.normal)
+
+    applied = structure.loads if loads is None else loads
+    out_of_plane = np.asarray(applied)[:, spanned.normal]
+    if np.any(out_of_plane != 0.0):
+        raise ValueError(
+            f"loads have components along the normal axis {spanned.normal}"
+        )
+
     coordinates = np.asarray(to_metres(xyz))[:, list(spanned.axes)]
     edges = np.asarray(structure.edges)
-    applied = structure.loads if loads is None else loads
     applied = np.asarray(applied)[:, list(spanned.axes)]
     flags = fixities(structure, spanned.normal)
 
@@ -375,13 +468,12 @@ def _read(num_members: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def forces(
-    structure: Structure,
+    model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberForces:
     """
@@ -389,8 +481,8 @@ def forces(
 
     Parameters
     ----------
-    structure :
-        The structure supplying the connectivity and the supports.
+    model :
+        The structure and its plane, from `prepare`.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -399,8 +491,6 @@ def forces(
         Material properties.
     tube :
         The section family, whose ratio fixes the wall thickness.
-    normal :
-        Index of the global axis the frame has no thickness along.
     loads :
         Force applied at every node. If None, the structure's own loads.
 
@@ -418,10 +508,9 @@ def forces(
     The minor-axis moment is returned as exact zeros. A plane frame under
     in-plane load carries none, so this is the value rather than a placeholder.
     """
-    spanned = plane(structure, xyz, normal)
-    _build(structure, xyz, diameters, steel, tube, spanned, loads, parameters=False)
+    _build(model, xyz, diameters, steel, tube, loads, parameters=False)
 
-    axial, moments = _read(np.asarray(structure.edges).shape[0])
+    axial, moments = _read(np.asarray(model.structure.edges).shape[0])
 
     return MemberForces(
         n_ed=jnp.asarray(axial),
@@ -503,13 +592,12 @@ def _sensitivity(element: int, section: int, dof: int, tag: int) -> float:
 
 
 def jacobian(
-    structure: Structure,
+    model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: Steel,
     tube: Tube,
     *,
-    normal: int | None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Jacobian:
     """
@@ -517,8 +605,8 @@ def jacobian(
 
     Parameters
     ----------
-    structure :
-        The structure supplying the connectivity and the supports.
+    model :
+        The structure and its plane, from `prepare`.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -527,8 +615,6 @@ def jacobian(
         Material properties.
     tube :
         The section family, whose ratio fixes the wall thickness.
-    normal :
-        Index of the global axis the frame has no thickness along.
     loads :
         Force applied at every node. If None, the structure's own loads.
 
@@ -550,13 +636,10 @@ def jacobian(
     model built in the plane cannot reach, and it belongs to the minor-axis
     moment alone, which this Jacobian does not carry.
     """
-    spanned = plane(structure, xyz, normal)
-    count = _build(
-        structure, xyz, diameters, steel, tube, spanned, loads, parameters=True
-    )
+    count = _build(model, xyz, diameters, steel, tube, loads, parameters=True)
 
     num_nodes = np.asarray(xyz).shape[0]
-    num_members = np.asarray(structure.edges).shape[0]
+    num_members = np.asarray(model.structure.edges).shape[0]
 
     axial = np.zeros((num_members, count))
     moments = np.zeros((num_members, 2, count))
@@ -570,7 +653,9 @@ def jacobian(
                 element, NUM_INTEGRATION_POINTS, DOF_MOMENT, tag
             )
 
-    return _assemble(axial, moments, diameters, tube, spanned, num_nodes, num_members)
+    return _assemble(
+        axial, moments, diameters, tube, model.spanned, num_nodes, num_members
+    )
 
 
 def _assemble(
