@@ -15,9 +15,19 @@ PIPELINE_TESTS = (
     "test_tesseract_parity.py",
 )
 
+# openseespy is the "spike" optional extra and CI never installs it, so the
+# second analysis backend is skipped wherever it is absent. It needs smax too,
+# being tested against it, and so is listed under both guards.
+OPENSEES_PACKAGES = ("openseespy",)
+
+OPENSEES_TESTS = ("test_backend_opensees.py",)
+
 collect_ignore = []
 if any(importlib.util.find_spec(name) is None for name in PIPELINE_PACKAGES):
     collect_ignore.extend(PIPELINE_TESTS)
+    collect_ignore.extend(OPENSEES_TESTS)
+if any(importlib.util.find_spec(name) is None for name in OPENSEES_PACKAGES):
+    collect_ignore.extend(OPENSEES_TESTS)
 
 
 def load_tesseract_api(name):
