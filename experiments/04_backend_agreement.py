@@ -46,6 +46,7 @@ import sys
 import time
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -61,6 +62,7 @@ from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.optimization import descend
+from normax.optimization import value_and_gradient
 from normax.structures import arch
 from normax.visualization import figure_backends
 
@@ -81,8 +83,9 @@ SEED = 100.0
 # and two section parameters per member to the sweep OpenSees performs.
 MESHES = (5, 10, 20, 40)
 
-# Timed calls after the warm-up, at each size.
-REPEATS = 5
+# Timed calls after the warm-up, at each size. Odd, so the median is a sample
+# rather than an average of two.
+REPEATS = 7
 
 # What the roadmap asked the two backends to agree to.
 TOLERANCE_ASKED = 1e-6
@@ -298,31 +301,39 @@ def stage_cost(structure, xyz, diameters):
     finding, a sizing bisection and two boundary crossings whoever solves the
     frame, and those dominate at these sizes; the scaling claim is about the
     stage.
+
+    Notes
+    -----
+    **Both backends are prepared once and timed on the work that remains**, which
+    is how the stage's contract says to use them. Preparing inside the timed call
+    would charge the traced backend for compiling an assembly it is meant to reuse
+    and charge neither for what an optimizer actually pays per iterate.
+
+    **The traced Jacobian is compiled.** Uncompiled it runs two orders of
+    magnitude slower, and comparing that against a C++ sweep measures Python
+    dispatch rather than either differentiation strategy. The compilation is a
+    fixed cost per frame size and the warm-up excludes it, exactly as it excludes
+    the kernel the section slopes need on the other side.
     """
+    prepared_ddm = backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL)
+    prepared_smax = prepare_smax(structure, STEEL, TUBE, normal=NORMAL)
 
     def ddm():
-        backend_opensees.jacobian(
-            backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL),
-            xyz,
-            diameters,
-            STEEL,
-            TUBE,
-        )
+        return backend_opensees.jacobian(prepared_ddm, xyz, diameters, STEEL, TUBE)
 
     def run(coords, sizes):
-        member = forces_smax(
-            prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
-            coords,
-            sizes,
-            STEEL,
-            TUBE,
-        )
+        member = forces_smax(prepared_smax, coords, sizes, STEEL, TUBE)
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
 
+    coordinates = eqx.filter_jit(jax.jacfwd(run, argnums=0))
+    sections = eqx.filter_jit(jax.jacfwd(run, argnums=1))
+
     def traced():
-        jax.jacfwd(run, argnums=0)(xyz, diameters)
-        jax.jacfwd(run, argnums=1)(xyz, diameters)
+        return (
+            coordinates(xyz, diameters),
+            sections(xyz, diameters),
+        )
 
     return {"opensees": steady(ddm), "smax": steady(traced)}
 
@@ -334,34 +345,66 @@ def steady(call, repeats=REPEATS):
     Parameters
     ----------
     call :
-        The work to time, taking no arguments.
+        The work to time, taking no arguments and returning its result.
     repeats :
         Times to run it after the warm-up.
 
     Returns
     -------
     seconds :
-        Mean seconds per call.
+        Median seconds per call.
 
     Notes
     -----
+    **The median rather than the mean, because the composed timings are noisy.**
+    A crossing of the boundary is host-side work of a few hundred milliseconds, and
+    one sample landing at three times the rest — a collection, a page fault, the
+    scheduler — moves a mean of five enough to reverse which backend looks faster.
+    The stage timings are stable either way, so nothing is lost by taking the
+    middle sample for both.
+
     **The warm-up is not optional and it is not noise.** The section slopes come
     from `jax.grad` of the closed forms, so the first call at a new member count
     compiles a kernel and reports two orders of magnitude more than the second.
     Timing it cold would measure XLA and call it direct differentiation. An
     optimizer pays that once and this cost hundreds of times.
+
+    **The result is waited on rather than merely dispatched.** JAX returns before
+    a computation has run, so timing without blocking measures the queueing of the
+    traced backend against the completion of the C++ one, and flatters the first
+    by however much of it is still outstanding. Whatever the call returns is
+    blocked on; a call returning nothing would be timed wrongly and silently.
     """
-    call()
+    jax.block_until_ready(call())
 
-    start = time.perf_counter()
+    samples = []
     for _ in range(repeats):
-        call()
+        start = time.perf_counter()
+        jax.block_until_ready(call())
+        samples.append(time.perf_counter() - start)
 
-    return (time.perf_counter() - start) / repeats
+    return float(np.median(samples))
 
 
 def scaling():
-    """What a value and a gradient cost each backend, against frame size."""
+    """
+    What a value and a gradient cost each backend, against frame size.
+
+    Notes
+    -----
+    **Two different things are timed and they answer different questions.** The
+    stage alone compares one backend's derivatives against the other's with both
+    prepared once and the traced one compiled, which is what a caller of the stage
+    pays per iterate. The whole composition runs through the Tesseracts, so it
+    also pays form finding, a sizing bisection and two boundary crossings, and
+    those dominate at these sizes whoever solves the frame.
+
+    **The composed path is compiled but not prepared once.** Its solve is compiled
+    inside the backend, so what the composed columns still carry is one assembly
+    per crossing: a boundary is stateless and keeps nothing between calls. The
+    in-process pipeline is the one that also reuses a prepared model, and
+    `experiments/03` is where that shows.
+    """
     print("=" * 78)
     print("Cost against frame size")
     print("=" * 78)
@@ -373,6 +416,7 @@ def scaling():
     pipeline = {name: [] for name in BACKENDS}
 
     print("\n  the whole composition, one value then a value and gradient")
+    print("  through the Tesseracts, warmed, the assembly rebuilt at each crossing")
     print(f"  {'members':>8} {'params':>7} {'backend':>9} {'value':>9} {'grad':>9}")
     for num_edges in MESHES:
         structure, graph_fdm, q = setup(num_edges)
@@ -385,13 +429,11 @@ def scaling():
         count = 2 * (num_edges + 1) + 2 * num_edges
         for name in BACKENDS:
             with backend(name):
-                start = time.perf_counter()
-                total(q)
-                seconds_value = time.perf_counter() - start
+                gradient = jax.grad(total)
 
-                start = time.perf_counter()
-                grads[name] = np.asarray(jax.grad(total)(q))
-                seconds_grad = time.perf_counter() - start
+                seconds_value = steady(lambda f=total: f(q))
+                seconds_grad = steady(lambda f=gradient: f(q))
+                grads[name] = np.asarray(gradient(q))
 
             pipeline[name].append(seconds_grad)
             print(
@@ -408,6 +450,7 @@ def scaling():
         gaps.append(relative(grads["opensees"], grads["smax"]))
 
     print("\n  the analysis stage alone, every derivative it can report")
+    print("  both prepared once, the traced one compiled, warm-up excluded")
     print(f"  {'members':>8} {'params':>7} {'DDM [ms]':>10} {'traced [ms]':>12}")
     for index, num_edges in enumerate(members):
         print(
@@ -425,14 +468,16 @@ def scaling():
         per = stage["opensees"][index] / parameters[index] * 1e3
         print(f"    {num_edges:>4} members   {per:.3f} ms/param")
 
-    print("\n  how many times cheaper the DDM gradient is")
+    print("\n  the traced gradient over the DDM one, below one where tracing wins")
     for index, num_edges in enumerate(members):
         alone = stage["smax"][index] / stage["opensees"][index]
         whole = pipeline["smax"][index] / pipeline["opensees"][index]
         print(
-            f"    {num_edges:>4} members   stage {alone:.1f}x"
-            f"   composition {whole:.1f}x"
+            f"    {num_edges:>4} members   stage {alone:.2f}x"
+            f"   composition {whole:.2f}x"
         )
+    print("    both are compiled; the composition prepares its assembly per")
+    print("    crossing, a boundary keeping nothing between calls")
 
     figure = figure_backends(
         np.asarray(members),
@@ -449,7 +494,21 @@ def scaling():
 
 
 def optimize():
-    """The same descent, driven by each backend in turn."""
+    """
+    The same descent, driven by each backend in turn.
+
+    Notes
+    -----
+    **Compiled before the clock starts, and the compilation reported beside the
+    search rather than inside it.** Each objective is traced once here and the
+    compiled program handed to `descend`, so the elapsed time of a descent is the
+    work it did. Leaving it inside would charge one backend a fixed cost the other
+    never pays and call the difference a solver comparison.
+
+    The compilation is a real cost and is printed, not hidden. It is paid once per
+    objective however long the search runs, so it matters on a descent of seven
+    steps and vanishes on one of several hundred.
+    """
     print("=" * 78)
     print("The same optimization, one solver swapped for the other")
     print("=" * 78)
@@ -464,15 +523,26 @@ def optimize():
     results = {}
     for name in BACKENDS:
         with backend(name):
+            gradient = value_and_gradient(total)
+
             start = time.perf_counter()
-            result = descend(total, q, bounds=bounds, iterations=ITERATIONS)
+            jax.block_until_ready(gradient(q))
+            compiling = time.perf_counter() - start
+
+            start = time.perf_counter()
+            result = descend(
+                total, q, bounds=bounds, iterations=ITERATIONS, gradient=gradient
+            )
             elapsed = time.perf_counter() - start
 
         results[name] = (result, elapsed)
+        steps = result.mass.shape[0]
         print(
             f"\n  {name:<9} mass {float(result.mass[-1]):.9f} t"
-            f"  in {result.mass.shape[0]} steps, {elapsed:.1f} s"
+            f"  in {steps} steps, {elapsed:.1f} s"
+            f"  ({elapsed / steps * 1e3:.0f} ms/step)"
         )
+        print(f"  {'':<9} compiled in {compiling:.2f} s, before the clock started")
 
     first, _ = results["smax"]
     second, _ = results["opensees"]
@@ -484,7 +554,7 @@ def optimize():
     print(f"    steps        {first.mass.shape[0]} against {second.mass.shape[0]}")
 
     speedup = results["smax"][1] / results["opensees"][1]
-    print(f"    wall clock   {speedup:.1f}x faster on the C++ backend")
+    print(f"    wall clock   {speedup:.1f}x faster on the C++ backend, compiled")
 
 
 PASSES = {

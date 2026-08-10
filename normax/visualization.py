@@ -817,7 +817,7 @@ def figure_backends(
     axes[1].set_yscale("log")
     axes[1].set_xlabel("parameters registered")
     axes[1].set_ylabel("seconds")
-    axes[1].set_title("the analysis stage alone", fontsize=10)
+    axes[1].set_title("the analysis stage alone\ncompiled, prepared once", fontsize=10)
     axes[1].grid(alpha=0.3)
     axes[1].legend(fontsize=8)
 
@@ -830,7 +830,7 @@ def figure_backends(
     axes[2].set_yscale("log")
     axes[2].set_xlabel("members")
     axes[2].set_ylabel("seconds")
-    axes[2].set_title("the whole composition", fontsize=10)
+    axes[2].set_title("the whole composition\nassembled per crossing", fontsize=10)
     axes[2].grid(alpha=0.3)
     axes[2].legend(fontsize=8)
 
