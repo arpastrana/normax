@@ -37,8 +37,8 @@ import jax.numpy as jnp
 import numpy as np
 from smax import diagnose_mechanisms
 
-from normax.analysis import forces
-from normax.analysis import frame
+from normax.analysis.smax import forces
+from normax.analysis.smax import frame
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium

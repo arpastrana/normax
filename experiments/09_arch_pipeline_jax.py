@@ -53,7 +53,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from normax.analysis import buckling
+from normax.analysis.smax import buckling
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic

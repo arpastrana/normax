@@ -44,8 +44,8 @@ from jaxtyping import Bool
 from jaxtyping import Float
 from jaxtyping import Int
 
-from normax.analysis import buckling
-from normax.analysis import forces
+from normax.analysis.smax import buckling
+from normax.analysis.smax import forces
 from normax.ec3.resistance import n_cr
 from normax.ec3.resistance import slenderness
 from normax.ec3.section import area

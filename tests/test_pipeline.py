@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from normax.analysis import buckling
+from normax.analysis.smax import buckling
 from normax.ec3.section import area
 from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.sizing import Steel

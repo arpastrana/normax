@@ -28,7 +28,7 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from normax.analysis import forces
+from normax.analysis.smax import forces
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
