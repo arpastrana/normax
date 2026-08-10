@@ -1,0 +1,648 @@
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+The OpenSees backend of the analysis stage, differentiated by DDM.
+
+A C++ finite element solver reached through `openseespy`, whose adjoints were
+hand-derived element by element and which nothing about JAX can see into. It
+computes the same contract `normax.analysis.smax` does and arrives at its
+derivatives the opposite way: forward, one parameter at a time, from rules
+compiled into the library rather than traced from the source.
+
+**Two dimensions only, and that is a property of OpenSees rather than a
+simplification here.** Its Direct Differentiation Method reaches a nodal
+coordinate in 2D and agrees with central differences to 7.4e-9; in 3D beams
+return identically zero and trusses return values that are wrong rather than
+absent, because `LinearCrdTransf3d` implements none of the shape-sensitivity
+family its 2D counterpart does. Anything three-dimensional goes through the
+other backend. See `CHANGELOG.md` under `## OpenSees DDM spike`.
+
+**Elements are `forceBeamColumn` over `section('Elastic')`, and the choice is
+not free.** `elasticBeamColumn` accepts every parameter, returns a tag, reads
+the value back, and then yields identically zero sensitivities with no warning.
+`dispBeamColumn` gets displacement sensitivities right and section-force
+sensitivities wrong by up to 12x, and section forces are what the check
+downstream consumes.
+
+**One block of the Jacobian is unreachable, and it is exactly one.** A planar
+frame's response separates: the axial force and the in-plane moment do not move
+when a node leaves the plane, and the out-of-plane moment does not move when a
+node travels within it. A model built in the plane therefore carries every
+derivative except `∂m_z_ed/∂xyz` along the normal axis, which it reports as
+zero. Form finding cannot move a planar arch out of its plane either, so the
+block is annihilated by the composition rather than merely small.
+"""
+
+from typing import Any
+from typing import NamedTuple
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import openseespy.opensees as ops
+from jaxtyping import Array
+from jaxtyping import Float
+
+from normax.analysis import MemberForces
+from normax.analysis import fixities
+from normax.ec3.section import area
+from normax.ec3.section import second_moment
+from normax.ec3.sizing import Steel
+from normax.ec3.sizing import Tube
+from normax.structures import Structure
+from normax.units import MILLIMETRE
+from normax.units import to_metres
+from normax.units import to_newton_millimetres
+from normax.units import to_pascals
+
+# Integration points along a force-based element. The first and the last sit on
+# the end sections, which is where the moments the check consumes are read.
+NUM_INTEGRATION_POINTS = 5
+
+# Degrees of freedom of a node of a plane frame: two translations and a
+# rotation.
+DOF_PER_NODE_PLANAR = 3
+
+# Component of a section's force vector, as `sensSectionForce` orders it.
+DOF_AXIAL = 1
+DOF_MOMENT = 2
+
+
+class Plane(NamedTuple):
+    """
+    The two global axes a planar frame is modelled in.
+
+    Attributes
+    ----------
+    axes :
+        Indices of the two global axes the plane spans, in increasing order.
+    normal :
+        Index of the global axis the frame has no thickness along.
+
+    Notes
+    -----
+    Increasing order rather than a right-handed pair, so the map into the
+    solver's own axes is a slice and needs no sign. A frame in the XZ plane
+    therefore reaches OpenSees with its Z along the solver's Y, which is where
+    gravity already points.
+    """
+
+    axes: tuple[int, int]
+    normal: int
+
+
+class Jacobian(NamedTuple):
+    """
+    Every derivative the solver reports, as dense blocks.
+
+    Attributes
+    ----------
+    n_ed_xyz :
+        Derivative of each member's axial force in every nodal coordinate.
+    n_ed_diameter :
+        Derivative of each member's axial force in every member's diameter.
+    m_y_ed_xyz :
+        Derivative of each end moment in every nodal coordinate.
+    m_y_ed_diameter :
+        Derivative of each end moment in every member's diameter.
+
+    Notes
+    -----
+    Dense in the members: a section is a property of one element, but changing
+    it redistributes force through the whole frame, so no block is diagonal.
+
+    The minor-axis moment has no blocks. It is identically zero in a plane
+    frame and so is every derivative of it the solver can reach; the one
+    derivative it cannot reach is named in this module's own docstring.
+    """
+
+    n_ed_xyz: Float[Array, "members nodes 3"]
+    n_ed_diameter: Float[Array, "members members"]
+    m_y_ed_xyz: Float[Array, "members ends nodes 3"]
+    m_y_ed_diameter: Float[Array, "members ends members"]
+
+
+def plane(
+    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
+    normal: int | None,
+) -> Plane:
+    """
+    The plane a frame lies in, checked rather than assumed.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the loads.
+    xyz :
+        Position of every node.
+    normal :
+        Index of the global axis the frame has no thickness along.
+
+    Returns
+    -------
+    plane :
+        The two axes spanned and the one that is not.
+
+    Raises
+    ------
+    ValueError
+        If no normal axis is given, if it is not 0, 1 or 2, if the nodes do not
+        share one coordinate along it, or if any load points along it.
+
+    Notes
+    -----
+    Every rejection here is a case the solver would otherwise accept and answer
+    wrongly: a three-dimensional frame flattened into a projection of itself, or
+    a load component silently discarded. A backend that cannot represent
+    something should say so rather than represent something else.
+    """
+    if normal is None:
+        raise ValueError("the OpenSees backend is planar; give the normal axis")
+    if normal not in (0, 1, 2):
+        raise ValueError(f"normal must be 0, 1 or 2, got {normal}")
+
+    offsets = np.asarray(xyz)[:, normal]
+    if not np.allclose(offsets, offsets[0]):
+        spread = float(np.ptp(offsets))
+        raise ValueError(f"nodes are not planar along axis {normal}; spread {spread}")
+
+    out_of_plane = np.asarray(structure.loads)[:, normal]
+    if np.any(out_of_plane != 0.0):
+        raise ValueError(f"loads have components along the normal axis {normal}")
+
+    axes = tuple(axis for axis in range(3) if axis != normal)
+
+    return Plane(axes=axes, normal=normal)
+
+
+def _build(
+    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+    spanned: Plane,
+    loads: Float[Array, "nodes 3"] | None,
+    parameters: bool,
+) -> int:
+    """
+    Assemble and solve the frame, optionally registering every DDM parameter.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity and the supports.
+    xyz :
+        Position of every node.
+    diameters :
+        Outer diameter of every member.
+    steel :
+        Material properties. Only the modulus reaches a plane frame.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+    spanned :
+        The plane the frame is modelled in.
+    loads :
+        Force applied at every node. If None, the structure's own loads.
+    parameters :
+        Whether to register the nodal coordinates and section properties.
+
+    Returns
+    -------
+    count :
+        Number of parameters registered.
+
+    Notes
+    -----
+    Every element carries its own section, so a parameter registered on one
+    element perturbs that element alone. Sharing a section across members would
+    make a correct sensitivity read as wrong.
+
+    The whole model is rebuilt per call. OpenSees holds one global model and no
+    handle to it, so there is nothing to update in place, and the solve is a few
+    milliseconds at the sizes this backend is used at.
+    """
+    coordinates = np.asarray(to_metres(xyz))[:, list(spanned.axes)]
+    edges = np.asarray(structure.edges)
+    applied = structure.loads if loads is None else loads
+    applied = np.asarray(applied)[:, list(spanned.axes)]
+    flags = fixities(structure, spanned.normal)
+
+    outer = to_metres(diameters)
+    areas = np.asarray(area(outer, tube.ratio))
+    inertias = np.asarray(second_moment(outer, tube.ratio))
+    e_mod = float(to_pascals(steel.e_mod))
+
+    num_nodes = coordinates.shape[0]
+    num_members = edges.shape[0]
+
+    ops.wipe()
+    ops.model("basic", "-ndm", 2, "-ndf", DOF_PER_NODE_PLANAR)
+
+    for node in range(num_nodes):
+        ops.node(node + 1, float(coordinates[node, 0]), float(coordinates[node, 1]))
+
+    for node in range(num_nodes):
+        restrained = [int(flags[node, axis]) for axis in spanned.axes]
+        if any(restrained):
+            ops.fix(node + 1, restrained[0], restrained[1], 0)
+
+    ops.geomTransf("Linear", 1)
+    for member in range(num_members):
+        tag = member + 1
+        ops.section(
+            "Elastic", tag, e_mod, float(areas[member]), float(inertias[member])
+        )
+        ops.beamIntegration("Lobatto", tag, tag, NUM_INTEGRATION_POINTS)
+        ops.element(
+            "forceBeamColumn",
+            tag,
+            int(edges[member, 0]) + 1,
+            int(edges[member, 1]) + 1,
+            1,
+            tag,
+        )
+
+    ops.timeSeries("Constant", 1)
+    ops.pattern("Plain", 1, 1)
+    for node in range(num_nodes):
+        if np.any(applied[node] != 0.0):
+            ops.load(node + 1, float(applied[node, 0]), float(applied[node, 1]), 0.0)
+
+    count = 0
+    if parameters:
+        for spec in _specifications(num_nodes, num_members):
+            count += 1
+            ops.parameter(count, *spec)
+
+    ops.system("FullGeneral")
+    ops.numberer("Plain")
+    ops.constraints("Plain")
+    ops.integrator("LoadControl", 1.0)
+    ops.algorithm("Linear")
+    ops.analysis("Static")
+    if count:
+        ops.sensitivityAlgorithm("-computeAtEachStep")
+    ops.analyze(1)
+
+    return count
+
+
+def _specifications(num_nodes: int, num_members: int) -> list[tuple[Any, ...]]:
+    """
+    The DDM parameter of every differentiable quantity, in tag order.
+
+    Parameters
+    ----------
+    num_nodes :
+        Number of nodes in the frame.
+    num_members :
+        Number of members in the frame.
+
+    Returns
+    -------
+    specifications :
+        Argument tuples for `parameter`, one per registered quantity.
+
+    Notes
+    -----
+    Coordinates first and sections after, so a tag can be recovered from an
+    index without a lookup. The second moment is named `I` in a two-dimensional
+    model and `Iz` in a three-dimensional one; the wrong name binds to nothing
+    and is indistinguishable from a missing derivative.
+
+    Diameters are not registered. A section is what the solver understands, so
+    the area and the second moment are the parameters and the chain rule to a
+    diameter is taken here rather than asked of OpenSees.
+    """
+    coordinates = [
+        ("node", node + 1, "coord", direction + 1)
+        for node in range(num_nodes)
+        for direction in range(2)
+    ]
+    sections = [
+        ("element", member + 1, name)
+        for member in range(num_members)
+        for name in ("A", "I")
+    ]
+
+    return coordinates + sections
+
+
+def _read(num_members: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Section forces at both ends of every member.
+
+    Parameters
+    ----------
+    num_members :
+        Number of members in the frame.
+
+    Returns
+    -------
+    forces :
+        Axial force of every member, and its moment at each end.
+
+    Notes
+    -----
+    Read at the first and last integration points, which a Lobatto rule places
+    exactly on the end sections. The axial force is taken once because nodal
+    loading leaves it constant along the span.
+    """
+    axial = np.empty(num_members)
+    moments = np.empty((num_members, 2))
+
+    for member in range(num_members):
+        first = ops.eleResponse(member + 1, "section", 1, "force")
+        last = ops.eleResponse(member + 1, "section", NUM_INTEGRATION_POINTS, "force")
+        axial[member] = first[0]
+        moments[member, 0] = first[1]
+        moments[member, 1] = last[1]
+
+    return axial, moments
+
+
+def forces(
+    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+    *,
+    normal: int | None,
+    loads: Float[Array, "nodes 3"] | None = None,
+) -> MemberForces:
+    """
+    Internal forces of a plane frame under a load case.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity and the supports.
+    xyz :
+        Position of every node, from form finding.
+    diameters :
+        Outer diameter of every member.
+    steel :
+        Material properties.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+    normal :
+        Index of the global axis the frame has no thickness along.
+    loads :
+        Force applied at every node. If None, the structure's own loads.
+
+    Returns
+    -------
+    forces :
+        Axial force and both end moments of every member.
+
+    Notes
+    -----
+    **Not differentiable by tracing.** The solve happens in C++ behind a command
+    interface, so a JAX tracer reaching this function has nothing to record. Ask
+    `jacobian` for derivatives instead, which is what the stage's endpoints do.
+
+    The minor-axis moment is returned as exact zeros. A plane frame under
+    in-plane load carries none, so this is the value rather than a placeholder.
+    """
+    spanned = plane(structure, xyz, normal)
+    _build(structure, xyz, diameters, steel, tube, spanned, loads, parameters=False)
+
+    axial, moments = _read(np.asarray(structure.edges).shape[0])
+
+    return MemberForces(
+        n_ed=jnp.asarray(axial),
+        m_y_ed=jnp.asarray(to_newton_millimetres(moments)),
+        m_z_ed=jnp.zeros_like(jnp.asarray(moments)),
+    )
+
+
+def _section_slopes(
+    diameters: Float[Array, "members"],
+    tube: Tube,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    How a member's area and second moment move with its diameter.
+
+    Parameters
+    ----------
+    diameters :
+        Outer diameter of every member.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+
+    Returns
+    -------
+    slopes :
+        Derivative of the area and of the second moment, in SI per millimetre.
+
+    Notes
+    -----
+    Taken with `jax.grad` of the closed forms the check itself uses, so the two
+    stages cannot drift apart in what a section is. The result is per millimetre
+    of diameter because the schema states diameters in millimetres while the
+    model is assembled in metres.
+    """
+    outer = to_metres(diameters)
+
+    d_area = jax.vmap(jax.grad(lambda d: area(d, tube.ratio)))(outer)
+    d_inertia = jax.vmap(jax.grad(lambda d: second_moment(d, tube.ratio)))(outer)
+
+    return (
+        np.asarray(d_area) * MILLIMETRE,
+        np.asarray(d_inertia) * MILLIMETRE,
+    )
+
+
+def _sensitivity(element: int, section: int, dof: int, tag: int) -> float:
+    """
+    One entry of a section's force sensitivity to one parameter.
+
+    Parameters
+    ----------
+    element :
+        Tag of the element to read.
+    section :
+        Index of the integration point along it, counted from one.
+    dof :
+        Component of the section force vector, counted from one.
+    tag :
+        Tag of the registered parameter.
+
+    Returns
+    -------
+    sensitivity :
+        Derivative of that component in that parameter.
+
+    Notes
+    -----
+    **The return starts at the requested component rather than being it**, so
+    the value asked for is the first entry and indexing by the component number
+    quietly returns a neighbour.
+
+    Passing a tag that was never registered does not raise: it terminates the
+    process with exit 139 and no traceback. Every tag reaching here comes from
+    the count `_build` returns for that reason.
+    """
+    reading = ops.sensSectionForce(element, section, dof, tag)
+
+    return float(reading[0]) if isinstance(reading, list) else float(reading)
+
+
+def jacobian(
+    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+    *,
+    normal: int | None,
+    loads: Float[Array, "nodes 3"] | None = None,
+) -> Jacobian:
+    """
+    Every derivative of the member forces, from one solve and a sweep.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity and the supports.
+    xyz :
+        Position of every node, from form finding.
+    diameters :
+        Outer diameter of every member.
+    steel :
+        Material properties.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+    normal :
+        Index of the global axis the frame has no thickness along.
+    loads :
+        Force applied at every node. If None, the structure's own loads.
+
+    Returns
+    -------
+    jacobian :
+        Dense derivative blocks of the axial force and the end moments.
+
+    Notes
+    -----
+    Forward mode, which is what the Direct Differentiation Method is. One
+    factorization is formed and reused, so each additional parameter costs a
+    back-substitution rather than a solve, and the whole Jacobian arrives in a
+    single sweep. Both the tangent and the cotangent rules are contractions of
+    it, which is why the expensive direction is the parameter count and not the
+    number of outputs.
+
+    The column along the normal axis is left at zero. It is the one derivative a
+    model built in the plane cannot reach, and it belongs to the minor-axis
+    moment alone, which this Jacobian does not carry.
+    """
+    spanned = plane(structure, xyz, normal)
+    count = _build(
+        structure, xyz, diameters, steel, tube, spanned, loads, parameters=True
+    )
+
+    num_nodes = np.asarray(xyz).shape[0]
+    num_members = np.asarray(structure.edges).shape[0]
+
+    axial = np.zeros((num_members, count))
+    moments = np.zeros((num_members, 2, count))
+
+    for tag in range(1, count + 1):
+        for member in range(num_members):
+            element = member + 1
+            axial[member, tag - 1] = _sensitivity(element, 1, DOF_AXIAL, tag)
+            moments[member, 0, tag - 1] = _sensitivity(element, 1, DOF_MOMENT, tag)
+            moments[member, 1, tag - 1] = _sensitivity(
+                element, NUM_INTEGRATION_POINTS, DOF_MOMENT, tag
+            )
+
+    return _assemble(axial, moments, diameters, tube, spanned, num_nodes, num_members)
+
+
+def _assemble(
+    axial: np.ndarray,
+    moments: np.ndarray,
+    diameters: Float[Array, "members"],
+    tube: Tube,
+    spanned: Plane,
+    num_nodes: int,
+    num_members: int,
+) -> Jacobian:
+    """
+    Rearrange a parameter sweep into the blocks the stage differentiates in.
+
+    Parameters
+    ----------
+    axial :
+        Derivative of every member's axial force in every parameter.
+    moments :
+        Derivative of every end moment in every parameter.
+    diameters :
+        Outer diameter of every member.
+    tube :
+        The section family, whose ratio fixes the wall thickness.
+    spanned :
+        The plane the frame is modelled in.
+    num_nodes :
+        Number of nodes in the frame.
+    num_members :
+        Number of members in the frame.
+
+    Returns
+    -------
+    jacobian :
+        The same numbers, indexed by coordinate and by diameter.
+
+    Notes
+    -----
+    Two changes of variable happen here and nowhere else. The solver's two
+    in-plane directions are scattered back into three global ones, leaving the
+    normal column zero; and its area and second moment are contracted with the
+    section slopes into one derivative per diameter, which is the variable the
+    schema actually carries.
+
+    Millimetres re-enter on both. Coordinates are differentiated per metre and
+    moments returned in newton metres, so each block is scaled once rather than
+    at every use.
+    """
+    coordinates = 2 * num_nodes
+    d_area, d_inertia = _section_slopes(diameters, tube)
+
+    n_ed_xyz = np.zeros((num_members, num_nodes, 3))
+    m_y_ed_xyz = np.zeros((num_members, 2, num_nodes, 3))
+
+    for index, axis in enumerate(spanned.axes):
+        columns = slice(index, coordinates, 2)
+        n_ed_xyz[:, :, axis] = axial[:, columns] * MILLIMETRE
+        m_y_ed_xyz[:, :, :, axis] = (
+            to_newton_millimetres(moments[:, :, columns]) * MILLIMETRE
+        )
+
+    sections = axial[:, coordinates:].reshape(num_members, num_members, 2)
+    n_ed_diameter = sections[:, :, 0] * d_area + sections[:, :, 1] * d_inertia
+
+    sections = moments[:, :, coordinates:].reshape(num_members, 2, num_members, 2)
+    m_y_ed_diameter = to_newton_millimetres(
+        sections[:, :, :, 0] * d_area + sections[:, :, :, 1] * d_inertia
+    )
+
+    return Jacobian(
+        n_ed_xyz=jnp.asarray(n_ed_xyz),
+        n_ed_diameter=jnp.asarray(n_ed_diameter),
+        m_y_ed_xyz=jnp.asarray(m_y_ed_xyz),
+        m_y_ed_diameter=jnp.asarray(m_y_ed_diameter),
+    )
