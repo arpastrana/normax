@@ -255,14 +255,15 @@ def forces(
     tube: Tube,
     *,
     normal: int | None,
+    loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberForces:
     """
-    Internal forces of a frame under the loads the structure carries.
+    Internal forces of a frame under a load case.
 
     Parameters
     ----------
     structure :
-        The structure supplying the connectivity, the supports and the loads.
+        The structure supplying the connectivity and the supports.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -274,6 +275,8 @@ def forces(
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
+    loads :
+        Force applied at every node. If None, the structure's own loads.
 
     Returns
     -------
@@ -286,6 +289,10 @@ def forces(
     assembled inside this call from those arrays rather than read off a model
     built beforehand.
 
+    The load case is an argument because a structure is form-found under one
+    case and has to be checked under several. Only the first of them leaves the
+    members free of bending, that being the case the shape was chosen for.
+
     The reference state is unstressed, so the nodes displace before any force
     appears. Those displacements are the elastic response the form-finder does
     not model, not an error, and they are the whole of the gap between these
@@ -295,9 +302,10 @@ def forces(
         frame(structure, xyz, diameters, steel, tube, normal=normal)
     )
 
+    applied_loads = structure.loads if loads is None else loads
     applied = [
-        PointLoad(node, load=structure.loads[node])
-        for node in range(structure.loads.shape[0])
+        PointLoad(node, load=applied_loads[node])
+        for node in range(applied_loads.shape[0])
     ]
     response = solve(model, LoadCase(applied, model))
 
@@ -319,6 +327,7 @@ def buckling(
     *,
     normal: int | None,
     num_modes: int = 1,
+    loads: Float[Array, "nodes 3"] | None = None,
 ) -> Buckling:
     """
     Load factors at which the frame becomes elastically unstable.
@@ -326,7 +335,7 @@ def buckling(
     Parameters
     ----------
     structure :
-        The structure supplying the connectivity, the supports and the loads.
+        The structure supplying the connectivity and the supports.
     xyz :
         Position of every node, from form finding.
     diameters :
@@ -340,6 +349,8 @@ def buckling(
         None for a structure that occupies all three dimensions.
     num_modes :
         Number of modes to return, smallest factor first. Static.
+    loads :
+        Load case the frame buckles under. If None, the structure's own loads.
 
     Returns
     -------
@@ -348,6 +359,11 @@ def buckling(
 
     Notes
     -----
+    **The factor belongs to a load case and not to a structure.** A frame sized
+    for its worst case is not necessarily least stable under that case, so a
+    factor quoted without the case it was measured under says less than it
+    appears to.
+
     **A diagnostic, never a differentiated quantity.** The eigenproblem is pure
     JAX and would trace, but an eigenvalue derivative is undefined where two
     modes cross, and a design under optimization moves modes around. Read the
@@ -368,9 +384,10 @@ def buckling(
         frame(structure, xyz, diameters, steel, tube, normal=normal)
     )
 
+    applied_loads = structure.loads if loads is None else loads
     applied = [
-        PointLoad(node, load=structure.loads[node])
-        for node in range(structure.loads.shape[0])
+        PointLoad(node, load=applied_loads[node])
+        for node in range(applied_loads.shape[0])
     ]
     response = solve_buckling(model, LoadCase(applied, model), num_modes=num_modes)
 

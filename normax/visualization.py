@@ -24,6 +24,9 @@ drawing it truthfully would show nothing; the factor is written into the axis
 label instead of being left for the reader to guess.
 """
 
+from collections.abc import Sequence
+from typing import NamedTuple
+
 import matplotlib.pyplot as plt
 import numpy as np
 from jaxtyping import Array
@@ -467,5 +470,273 @@ def figure_modes(
         ax.grid(alpha=0.3)
         ax.set_xlabel("x [mm]")
         ax.set_ylabel("z [mm]")
+
+    return figure
+
+
+class Descent(NamedTuple):
+    """
+    One run of the optimizer, for a figure to draw against the sweep.
+
+    Attributes
+    ----------
+    title :
+        Name of the run, shown in the legend.
+    mass :
+        Objective at every iterate.
+    beta :
+        Envelope sharpness each iterate was taken under.
+    """
+
+    title: str
+    mass: Float[np.ndarray, "steps"]
+    beta: Float[np.ndarray, "steps"]
+
+
+def figure_optimization(
+    scales: Float[np.ndarray, "samples"],
+    masses: Float[np.ndarray, "samples"],
+    exact: Float[np.ndarray, "samples"],
+    numeric: Float[np.ndarray, "samples"],
+    descents: Sequence[Descent],
+    start: int,
+) -> Figure:
+    """
+    The one-variable mass curve, its gradient, and what twenty variables buy.
+
+    Parameters
+    ----------
+    scales :
+        Multiple of the starting force densities at each sample of the sweep.
+    masses :
+        Total mass at each of those multiples.
+    exact :
+        Directional derivative of the mass along the sweep, from the composed
+        gradient.
+    numeric :
+        The same derivative from a central difference.
+    descents :
+        The optimizer runs to draw, the one the design is taken from last.
+    start :
+        Index of the sample the descent began from, which is the funicular
+        design rather than the first sample of the sweep.
+
+    Returns
+    -------
+    figure :
+        The sweep, the gradient check and the descents, side by side.
+
+    Notes
+    -----
+    The sweep is the best a single variable can do, so a run ending below its
+    minimum is the figure's point rather than an inconsistency: the two are
+    searching spaces of different size. **How far below is only meaningful once
+    the members are stopped from collapsing**, which is why an unconstrained run
+    is drawn beside a constrained one rather than instead of it.
+
+    The gradient panel scales its error by the largest slope of the whole
+    sweep. Dividing by the local slope would report a large error wherever the
+    curve is flat, which is exactly where the minimum is.
+    """
+    figure, axes = plt.subplots(1, 3, figsize=(14.0, 4.2), layout="constrained")
+
+    best = int(np.argmin(masses))
+    shades = ("#c0392b", "#35b779", "#31688e")
+
+    curve = axes[0]
+    curve.plot(scales, masses, "-o", color="#31688e", ms=3.5, label="single $q$")
+    curve.plot(
+        scales[best],
+        masses[best],
+        "o",
+        color="#fde725",
+        mec="0.2",
+        ms=9,
+        label=f"best single $q$, {masses[best]:.4f} t",
+        zorder=4,
+    )
+    curve.plot(
+        scales[start],
+        masses[start],
+        "s",
+        color="0.2",
+        ms=6,
+        label=f"funicular start, {masses[start]:.4f} t",
+        zorder=4,
+    )
+    for index, run in enumerate(descents):
+        curve.axhline(
+            float(run.mass[-1]),
+            color=shades[index % len(shades)],
+            ls="--",
+            lw=1.4,
+            label=f"{run.title}, {float(run.mass[-1]):.4f} t",
+        )
+    curve.set_xlabel("force density, as a multiple of the funicular value")
+    curve.set_ylabel("mass [t]")
+    curve.set_title("One variable, and twenty", fontsize=11)
+    curve.legend(frameon=False, fontsize=8)
+    curve.grid(alpha=0.3)
+
+    slope = axes[1]
+    slope.plot(scales, exact, "-", color="#31688e", lw=1.8, label="composed gradient")
+    slope.plot(
+        scales,
+        numeric,
+        "o",
+        color="#fde725",
+        mec="0.2",
+        ms=5,
+        label="central difference",
+    )
+    slope.axhline(0.0, color="0.2", lw=1.0)
+    slope.set_xlabel("force density, as a multiple of the funicular value")
+    slope.set_ylabel(r"$\partial$ mass $/ \partial k$ [t]")
+    worst = float(np.max(np.abs(exact - numeric)) / np.max(np.abs(exact)))
+    slope.set_title(f"Gradient against the sweep, worst {worst:.1e}", fontsize=11)
+    slope.legend(frameon=False, fontsize=8.5)
+    slope.grid(alpha=0.3)
+
+    descent = axes[2]
+    for index, run in enumerate(descents):
+        steps = np.arange(len(run.mass))
+        descent.plot(
+            steps,
+            run.mass,
+            "-",
+            color=shades[index % len(shades)],
+            lw=1.4,
+            label=run.title,
+        )
+        scatter = descent.scatter(
+            steps, run.mass, c=run.beta, cmap="viridis", norm="log", s=14, zorder=2
+        )
+    descent.axhline(
+        masses[best], color="#fde725", ls=":", lw=1.4, label="best single $q$"
+    )
+    descent.set_xlabel("iteration")
+    descent.set_ylabel("mass [t]")
+    kept = 1.0 - float(descents[-1].mass[-1]) / masses[start]
+    descent.set_title(f"Descent, {kept:.1%} lighter than funicular", fontsize=11)
+    descent.legend(frameon=False, fontsize=8)
+    descent.grid(alpha=0.3)
+    figure.colorbar(scatter, ax=descent, label=r"envelope sharpness $\beta$")
+
+    return figure
+
+
+class Form(NamedTuple):
+    """
+    One shape to draw, and what decided each of its members.
+
+    Attributes
+    ----------
+    title :
+        Name of the form, shown above its drawing.
+    xyz :
+        Position of every node.
+    diameters :
+        Outer diameter of every member.
+    governing :
+        Index of the load case working each member hardest.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    diameters: Float[Array, "members"]
+    governing: Int[Array, "members"]
+
+
+def figure_load_cases(
+    edges: Int[Array, "members 2"],
+    forms: Sequence[Form],
+    names: tuple[str, ...],
+) -> Figure:
+    """
+    Which load case decides each member, as the form moves.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    forms :
+        The shapes to compare, in the order they are to be drawn.
+    names :
+        Name of every load case, in index order.
+
+    Returns
+    -------
+    figure :
+        One drawing per form above a count of which case governs how many
+        members.
+
+    Notes
+    -----
+    **The picture only a differentiable code check can produce.** No member was
+    reassigned to a case; the form moved, which changed how much bending each
+    case raises where, and the pattern followed. A check that returns a verdict
+    rather than a derivative can draw the first panel but has no way to search
+    for the others.
+
+    Every drawing shares one width scale and one pair of axis limits, so a form
+    that dropped looks lower rather than merely differently framed, and a member
+    that grew looks thicker. The counts share a scale for the same reason: a bar
+    is read against its neighbours, and three independently scaled panels would
+    make an even split look like a lopsided one. On this arch that matters: an
+    unconstrained search collapses members into near-vertical clusters, which
+    independently scaled axes would hide.
+    """
+    widest = max(float(np.max(np.asarray(form.diameters))) for form in forms)
+    cases = len(names)
+    columns = len(forms)
+
+    figure, axes = plt.subplots(
+        2,
+        columns,
+        figsize=(4.6 * columns, 7.0),
+        height_ratios=[2.0, 1.0],
+        squeeze=False,
+        layout="constrained",
+    )
+    for ax in axes[1, 1:]:
+        ax.sharey(axes[1, 0])
+
+    both = np.concatenate([np.asarray(form.xyz) for form in forms])
+    margin = 0.05 * float(np.ptp(both[:, 0]))
+
+    for ax, form in zip(axes[0], forms):
+        members = draw_members(
+            ax,
+            form.xyz,
+            edges,
+            form.diameters,
+            widest,
+            colors=form.governing,
+            vmin=0.0,
+            vmax=cases - 1.0,
+        )
+        ax.set_xlim(float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
+        ax.set_ylim(float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
+        ax.set_title(form.title, fontsize=11)
+
+    bar = figure.colorbar(
+        members,
+        ax=axes[0].tolist(),
+        ticks=np.arange(cases),
+        shrink=0.7,
+        aspect=14,
+        pad=0.02,
+    )
+    bar.ax.set_yticklabels(names, fontsize=9)
+
+    for ax, form in zip(axes[1], forms):
+        decided = np.asarray(form.governing)
+        counts = [int(np.sum(decided == case)) for case in range(cases)]
+        ax.bar(np.arange(cases), counts, 0.6, color="#31688e")
+        ax.set_xticks(np.arange(cases))
+        ax.set_xticklabels(names, fontsize=8, rotation=15)
+        ax.set_ylabel("members governed")
+        ax.set_title(form.title, fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
 
     return figure

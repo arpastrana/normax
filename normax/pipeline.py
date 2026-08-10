@@ -37,10 +37,12 @@ how fast repeating the pass closes it.
 
 from typing import NamedTuple
 
+import jax.numpy as jnp
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
+from jaxtyping import Int
 
 from normax.analysis import buckling
 from normax.analysis import forces
@@ -52,6 +54,7 @@ from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter as diameter_ec3
 from normax.ec3.sizing import end_moments
+from normax.ec3.sizing import envelope as envelope_ec3
 from normax.ec3.sizing import governing as governing_ec3
 from normax.ec3.sizing import mass as mass_ec3
 from normax.ec3.sizing import utilization as utilization_ec3
@@ -63,6 +66,82 @@ from normax.ec3.stability import slenderness_global
 from normax.ec3.stability import utilization as utilization_stability
 from normax.formfinding import equilibrium
 from normax.structures import Structure
+
+
+class Actions(NamedTuple):
+    """
+    What a member carries, in the terms EN 1993-1-1 states its checks in.
+
+    Attributes
+    ----------
+    n_ed :
+        Axial force, tension positive.
+    m_y_ed :
+        Larger major-axis end moment, in magnitude.
+    m_z_ed :
+        Larger minor-axis end moment, in magnitude.
+    c_my :
+        Equivalent uniform moment factor for major-axis bending.
+    c_mz :
+        Equivalent uniform moment factor for minor-axis bending.
+
+    Notes
+    -----
+    The reduction from two end moments to a design moment and a factor is
+    EN 1993-1-1 Table B.3, so an analysis stops one step short of this and the
+    step belongs to the check. Ordered to be splatted straight into the sizing
+    map, which takes these five and then a buckling length.
+    """
+
+    n_ed: Float[Array, "members"]
+    m_y_ed: Float[Array, "members"]
+    m_z_ed: Float[Array, "members"]
+    c_my: Float[Array, "members"]
+    c_mz: Float[Array, "members"]
+
+
+def actions(
+    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    steel: Steel,
+    tube: Tube,
+    *,
+    normal: int | None,
+    loads: Float[Array, "nodes 3"] | None = None,
+) -> Actions:
+    """
+    Analyse a geometry and read the result as the check states its terms.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity and the supports.
+    xyz :
+        Position of every node, from form finding.
+    diameters :
+        Outer diameter of every member, setting the stiffness.
+    steel :
+        Material properties.
+    tube :
+        The section family every member is drawn from.
+    normal :
+        Index of the global axis a planar structure has no thickness along, or
+        None for a structure that occupies all three dimensions.
+    loads :
+        Load case to analyse under. If None, the structure's own loads.
+
+    Returns
+    -------
+    actions :
+        Axial force, both design moments and both moment factors.
+    """
+    member = forces(structure, xyz, diameters, steel, tube, normal=normal, loads=loads)
+
+    m_y_ed, c_my = end_moments(member.m_y_ed[:, 0], member.m_y_ed[:, 1])
+    m_z_ed, c_mz = end_moments(member.m_z_ed[:, 0], member.m_z_ed[:, 1])
+
+    return Actions(member.n_ed, m_y_ed, m_z_ed, c_my, c_mz)
 
 
 class Design(NamedTuple):
@@ -121,6 +200,7 @@ def design(
     plastic: bool,
     resultant: bool = True,
     l_cr: Float[Array, "members"] | None = None,
+    loads: Float[Array, "nodes 3"] | None = None,
 ) -> Design:
     """
     Form-find, analyse and size, in that order.
@@ -151,6 +231,9 @@ def design(
     l_cr :
         Buckling length of every member. If None, each member buckles over its
         own length.
+    loads :
+        Load case the frame is analysed under. If None, the structure's own
+        loads, which are also the ones it is form-found under.
 
     Returns
     -------
@@ -162,6 +245,12 @@ def design(
     Differentiable in the force densities, in the analysed diameters, and in
     every material property. The cross-section class selects a clause rather
     than scaling a number, so it stays a static Python value throughout.
+
+    **Form finding always uses the structure's own loads, and only the analysis
+    takes a case.** The shape answers to one load case by construction, that
+    being what makes it funicular, and choosing the shape again for every case
+    would mean a different structure per case rather than one structure checked
+    against several.
 
     **The default buckling length is the member's own length, and that is a
     strong assumption rather than a conservative one.** It presumes every node is
@@ -183,53 +272,26 @@ def design(
     state = equilibrium(q, structure, graph)
     lengths = state.lengths[:, 0]
 
-    member = forces(
-        structure,
-        state.xyz,
-        diameters,
-        steel,
-        tube,
-        normal=normal,
+    acting = actions(
+        structure, state.xyz, diameters, steel, tube, normal=normal, loads=loads
     )
-
-    m_ed, c_m = end_moments(member.m_y_ed[:, 0], member.m_y_ed[:, 1])
-    m_minor, c_minor = end_moments(member.m_z_ed[:, 0], member.m_z_ed[:, 1])
 
     buckling = lengths if l_cr is None else l_cr
 
     required = diameter_ec3(
-        member.n_ed,
-        m_ed,
-        m_minor,
-        c_m,
-        c_minor,
-        buckling,
-        steel,
-        tube,
-        plastic=plastic,
-        resultant=resultant,
+        *acting, buckling, steel, tube, plastic=plastic, resultant=resultant
     )
 
     used = utilization_ec3(
-        required,
-        member.n_ed,
-        m_ed,
-        m_minor,
-        c_m,
-        c_minor,
-        buckling,
-        steel,
-        tube,
-        plastic=plastic,
-        resultant=resultant,
+        required, *acting, buckling, steel, tube, plastic=plastic, resultant=resultant
     )
 
     return Design(
         xyz=state.xyz,
         lengths=lengths,
-        n_ed=member.n_ed,
-        m_ed=m_ed,
-        c_m=c_m,
+        n_ed=acting.n_ed,
+        m_ed=acting.m_y_ed,
+        c_m=acting.c_my,
         l_cr=buckling,
         diameters=required,
         utilization=used,
@@ -249,6 +311,7 @@ def mass(
     plastic: bool,
     resultant: bool = True,
     l_cr: Float[Array, "members"] | None = None,
+    loads: Float[Array, "nodes 3"] | None = None,
 ) -> Float[Array, ""]:
     """
     Total mass of the members EN 1993-1-1 requires at a set of force densities.
@@ -278,6 +341,9 @@ def mass(
     l_cr :
         Buckling length of every member. If None, each member buckles over its
         own length.
+    loads :
+        Load case the frame is analysed under. If None, the structure's own
+        loads.
 
     Returns
     -------
@@ -289,6 +355,9 @@ def mass(
     The objective the whole pipeline exists to serve, and the scalar `jax.grad`
     is taken of. One reverse pass crosses all three stages, so its cost does not
     grow with the number of force densities.
+
+    One load case only. A structure has to carry all of them, so the objective
+    an optimizer sees is `envelope` rather than this.
     """
     return design(
         q,
@@ -301,7 +370,320 @@ def mass(
         plastic=plastic,
         resultant=resultant,
         l_cr=l_cr,
+        loads=loads,
     ).mass
+
+
+class Envelope(NamedTuple):
+    """
+    One structure sized to carry every load case it is checked against.
+
+    Attributes
+    ----------
+    xyz :
+        Position of every node at equilibrium.
+    lengths :
+        Length of every member.
+    l_cr :
+        Buckling length used for every member.
+    n_ed :
+        Axial force of every member under every case, tension positive.
+    m_y_ed :
+        Larger major-axis end moment of every member under every case.
+    m_z_ed :
+        Larger minor-axis end moment of every member under every case.
+    c_my :
+        Major-axis moment factor of every member under every case.
+    c_mz :
+        Minor-axis moment factor of every member under every case.
+    required :
+        Diameter every case demands of every member on its own.
+    diameters :
+        Diameter carrying every case, being the smooth envelope of the above.
+    utilization :
+        Demand over resistance of every member under every case, at those
+        diameters. At most one everywhere, and one for the case that governs.
+    mass :
+        Total mass of the members.
+
+    Notes
+    -----
+    The geometry is shared, because a structure is form-found once and then
+    asked to survive several things. Only the actions and the sizes carry a
+    case axis.
+
+    Every field is a differentiable leaf. Which case governs each member is a
+    diagnostic and is absent for the same reason `Design` omits the limit
+    state; ask `governing_case` for it.
+
+    The actions are carried in full, rather than only the ones a report would
+    print, so the design can be checked again at a different set of sizes
+    without analysing anything a second time. `unsmoothed` is what does that.
+    """
+
+    xyz: Float[Array, "nodes 3"]
+    lengths: Float[Array, "members"]
+    l_cr: Float[Array, "members"]
+    n_ed: Float[Array, "cases members"]
+    m_y_ed: Float[Array, "cases members"]
+    m_z_ed: Float[Array, "cases members"]
+    c_my: Float[Array, "cases members"]
+    c_mz: Float[Array, "cases members"]
+    required: Float[Array, "cases members"]
+    diameters: Float[Array, "members"]
+    utilization: Float[Array, "cases members"]
+    mass: Float[Array, ""]
+
+
+def envelope(
+    q: Float[Array, "members"],
+    diameters: Float[Array, "members"],
+    structure: Structure,
+    graph: EquilibriumStructure,
+    steel: Steel,
+    tube: Tube,
+    loads: Float[Array, "cases nodes 3"],
+    beta: float | Float[Array, ""],
+    *,
+    normal: int | None,
+    plastic: bool,
+    resultant: bool = True,
+    l_cr: Float[Array, "members"] | None = None,
+) -> Envelope:
+    """
+    Form-find once, analyse every load case, and size for the worst of them.
+
+    Parameters
+    ----------
+    q :
+        Force density of every member. Negative in compression.
+    diameters :
+        Diameters the frame is analysed with, being the previous outer iterate
+        of the check. They set the stiffness, not the resistance.
+    structure :
+        The structure supplying the connectivity, the supports and the loads it
+        is form-found under.
+    graph :
+        The form-finding connectivity, from `normax.formfinding.graph`.
+    steel :
+        Material properties and partial factors.
+    tube :
+        The section family every member is drawn from.
+    loads :
+        Force applied at every node in every load case.
+    beta :
+        Sharpness of the envelope. The design approaches the smallest adequate
+        one from above as it grows.
+    normal :
+        Index of the global axis a planar structure has no thickness along, or
+        None for a structure that occupies all three dimensions.
+    plastic :
+        Whether the section is Class 1 or 2. Static, never a traced value.
+    resultant :
+        Whether the two moments combine as a resultant in the cross-section
+        check, or as a linear sum.
+    l_cr :
+        Buckling length of every member. If None, each member buckles over its
+        own length.
+
+    Returns
+    -------
+    envelope :
+        The geometry, the actions under every case, the sizes and the mass.
+
+    Notes
+    -----
+    **The objective an optimizer sees.** A member has one size and has to
+    satisfy every case, so its size is the largest any case demands. That
+    largest is not differentiable, and a gradient taken through it sees one case
+    per step and stalls; the smooth envelope of `normax.ec3.sizing` replaces it,
+    taken in the logarithm of the diameter so the sharpness is dimensionless.
+
+    The envelope never understates the true largest, so **the design is adequate
+    at every sharpness** and annealing drives it onto the smallest adequate one
+    from above. What it gives away is bounded by the number of cases raised to
+    the reciprocal of the sharpness, in diameter.
+
+    Form finding runs once, under the structure's own loads. The shape answers
+    to that case alone, which is what makes it funicular; the others are
+    departures from it, and the bending they raise is the reason the analysis
+    stage is in the pipeline at all.
+
+    Cases are looped over rather than mapped, the analysis stage not being
+    traceable through `vmap`, so the cost is linear in their number.
+    """
+    state = equilibrium(q, structure, graph)
+    lengths = state.lengths[:, 0]
+    buckling = lengths if l_cr is None else l_cr
+
+    acting = [
+        actions(structure, state.xyz, diameters, steel, tube, normal=normal, loads=case)
+        for case in loads
+    ]
+
+    required = jnp.stack(
+        [
+            diameter_ec3(
+                *case, buckling, steel, tube, plastic=plastic, resultant=resultant
+            )
+            for case in acting
+        ]
+    )
+
+    covering = envelope_ec3(required, beta)
+
+    used = jnp.stack(
+        [
+            utilization_ec3(
+                covering,
+                *case,
+                buckling,
+                steel,
+                tube,
+                plastic=plastic,
+                resultant=resultant,
+            )
+            for case in acting
+        ]
+    )
+
+    stacked = Actions(*(jnp.stack(field) for field in zip(*acting)))
+
+    return Envelope(
+        xyz=state.xyz,
+        lengths=lengths,
+        l_cr=buckling,
+        n_ed=stacked.n_ed,
+        m_y_ed=stacked.m_y_ed,
+        m_z_ed=stacked.m_z_ed,
+        c_my=stacked.c_my,
+        c_mz=stacked.c_mz,
+        required=required,
+        diameters=covering,
+        utilization=used,
+        mass=mass_ec3(covering, lengths, steel, tube),
+    )
+
+
+class Unsmoothed(NamedTuple):
+    """
+    The design the envelope is an upper bound on, taken at the true largest.
+
+    Attributes
+    ----------
+    diameters :
+        Largest diameter any case demands of each member.
+    utilization :
+        Demand over resistance of every member under every case, at those
+        diameters. Exactly one for the case that governs each member.
+    mass :
+        Total mass of the members.
+
+    Notes
+    -----
+    What the design would be with no smoothing at all, and so the number to
+    report rather than the annealed one. It is not differentiable in any useful
+    way, the largest of a set having a gradient that sees one case at a time,
+    which is the whole reason the envelope exists.
+    """
+
+    diameters: Float[Array, "members"]
+    utilization: Float[Array, "cases members"]
+    mass: Float[Array, ""]
+
+
+def unsmoothed(
+    result: Envelope,
+    steel: Steel,
+    tube: Tube,
+    *,
+    plastic: bool,
+    resultant: bool = True,
+) -> Unsmoothed:
+    """
+    Re-check an enveloped design at the smallest sizes that satisfy every case.
+
+    Parameters
+    ----------
+    result :
+        An enveloped design, from `envelope`.
+    steel :
+        Material properties and partial factors.
+    tube :
+        The section family every member is drawn from.
+    plastic :
+        Whether the section is Class 1 or 2. Static, never a traced value.
+    resultant :
+        Whether the two moments combine as a resultant in the cross-section
+        check, or as a linear sum.
+
+    Returns
+    -------
+    unsmoothed :
+        The sizes, the utilization under every case, and the mass.
+
+    Notes
+    -----
+    **What the smoothing cost, measured rather than bounded.** The envelope
+    never understates what a case demands, so this is always the lighter design
+    and the difference is what annealing is driving to zero.
+
+    Nothing is analysed again. The actions belong to the geometry and the
+    diameters the frame was analysed with, neither of which changes here, so
+    only the check is repeated.
+    """
+    sizes = jnp.max(result.required, axis=0)
+
+    used = jnp.stack(
+        [
+            utilization_ec3(
+                sizes,
+                result.n_ed[case],
+                result.m_y_ed[case],
+                result.m_z_ed[case],
+                result.c_my[case],
+                result.c_mz[case],
+                result.l_cr,
+                steel,
+                tube,
+                plastic=plastic,
+                resultant=resultant,
+            )
+            for case in range(result.required.shape[0])
+        ]
+    )
+
+    return Unsmoothed(
+        diameters=sizes,
+        utilization=used,
+        mass=mass_ec3(sizes, result.lengths, steel, tube),
+    )
+
+
+def governing_case(result: Envelope) -> Int[Array, "members"]:
+    """
+    Which load case decided each member's size.
+
+    Parameters
+    ----------
+    result :
+        An enveloped design, from `envelope`.
+
+    Returns
+    -------
+    governing_case :
+        Index of the case working each member hardest.
+
+    Notes
+    -----
+    **Non-differentiable**, and kept out of `Envelope` for that reason.
+
+    The picture only a differentiable code check can produce: as the form
+    changes, the pattern of which case governs where reorganises, and it does so
+    because the shape decides how much bending each case raises rather than
+    because any member was reassigned.
+    """
+    return jnp.argmax(result.utilization, axis=0)
 
 
 def governing(
@@ -404,6 +786,7 @@ def stability(
     normal: int | None,
     num_modes: int = 1,
     threshold: float = ALPHA_CR_ELASTIC,
+    loads: Float[Array, "nodes 3"] | None = None,
 ) -> Stability:
     """
     Check a finished design against the stability of the frame it sits in.
@@ -425,6 +808,8 @@ def stability(
         Number of critical load factors to return. Static.
     threshold :
         Factor the frame must reach for first-order analysis to be adequate.
+    loads :
+        Load case the frame buckles under. If None, the structure's own loads.
 
     Returns
     -------
@@ -459,6 +844,7 @@ def stability(
         tube,
         normal=normal,
         num_modes=num_modes,
+        loads=loads,
     )
     alpha_cr = modes.factors[0]
 

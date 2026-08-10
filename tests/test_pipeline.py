@@ -14,13 +14,27 @@ from normax.ec3.sizing import is_plastic
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
+from normax.formfinding import positions
+from normax.formfinding import positions_vertical
+from normax.pipeline import Design
 from normax.pipeline import design
+from normax.pipeline import envelope
 from normax.pipeline import governing
+from normax.pipeline import governing_case
 from normax.pipeline import mass
 from normax.pipeline import stability
+from normax.pipeline import unsmoothed
 from normax.structures import arch
+from normax.structures import crown
+from normax.structures import loads_half_span
+from normax.structures import loads_point
+from normax.structures import loads_uniform
+from normax.visualization import Descent
+from normax.visualization import Form
 from normax.visualization import figure_convergence
+from normax.visualization import figure_load_cases
 from normax.visualization import figure_modes
+from normax.visualization import figure_optimization
 from normax.visualization import figure_sections
 
 matplotlib.use("Agg")
@@ -45,6 +59,13 @@ TOLERANCE_UTILIZATION = 1e-9
 # measured there, scaled by the largest component of the gradient.
 STEP = 1e-5
 TOLERANCE_GRADIENT = 5e-8
+
+# The trough moves for the enveloped objective: three cases make the mass four
+# times larger and its arithmetic three times longer, so cancellation dominates
+# a decade sooner. Swept, not guessed — 1.8e-8 here against 4.5e-7 at 1e-5, and
+# the tolerance sits above the floor of the reference rather than on it.
+STEP_CASES = 1e-4
+TOLERANCE_GRADIENT_CASES = 2e-7
 
 # Effective length of the arch's own critical mode, as a fraction of its
 # developed length. Measured, and steady to three figures across the meshes.
@@ -535,3 +556,493 @@ def test_a_stricter_threshold_never_makes_a_frame_adequate(setup, steel):
     assert bool(lenient.adequate) is True
     assert bool(strict.adequate) is False
     assert float(strict.utilization) > float(lenient.utilization)
+
+
+# --------------------------------------------------------------------------- #
+# One structure against several load cases
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def cases(setup):
+    """
+    Three cases of equal total: funicular, half span, and a crown point load.
+    """
+    structure, _, _ = setup
+    spread = TOTAL_LOAD / (NUM_EDGES - 1)
+
+    half = loads_half_span(structure, spread, factor=0.5)
+    half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
+
+    point = loads_uniform(structure, spread * 0.75) + loads_point(
+        structure, TOTAL_LOAD * 0.25, node=crown(structure)
+    )
+
+    return jnp.stack([loads_uniform(structure, spread), half, point])
+
+
+def covered(setup, steel, cases, beta, cross_section_class=3):
+    structure, fdm, q = setup
+    tube = Tube.at_class_limit(steel.f_y, cross_section_class)
+
+    result = envelope(
+        q,
+        jnp.full(NUM_EDGES, SEED),
+        structure,
+        fdm,
+        steel,
+        tube,
+        cases,
+        beta,
+        normal=NORMAL,
+        plastic=is_plastic(cross_section_class),
+    )
+
+    return tube, result
+
+
+@pytest.mark.parametrize("beta", [10.0, 100.0, 500.0])
+def test_the_envelope_covers_every_load_case(setup, steel, cases, beta):
+    # The invariant that replaces "utilization is exactly one" once there is
+    # more than one case: adequate everywhere, and exactly adequate somewhere.
+    _, result = covered(setup, steel, cases, beta)
+
+    assert float(jnp.max(result.utilization)) <= 1.0 + 1e-12
+
+
+@pytest.mark.parametrize("beta", [10.0, 100.0, 500.0])
+def test_the_envelope_is_never_smaller_than_the_case_that_needs_most(
+    setup, steel, cases, beta
+):
+    _, result = covered(setup, steel, cases, beta)
+    largest = jnp.max(result.required, axis=0)
+
+    assert np.all(np.asarray(result.diameters) >= np.asarray(largest) - 1e-9)
+
+
+def test_a_sharper_envelope_gives_away_less(setup, steel, cases):
+    _, blunt = covered(setup, steel, cases, 10.0)
+    _, sharp = covered(setup, steel, cases, 500.0)
+
+    assert float(sharp.mass) < float(blunt.mass)
+
+
+@pytest.mark.parametrize("beta", [10.0, 100.0])
+def test_the_excess_respects_its_bound(setup, steel, cases, beta):
+    # The envelope exceeds the true largest by at most the number of cases
+    # raised to the reciprocal of the sharpness, in diameter.
+    _, result = covered(setup, steel, cases, beta)
+    largest = jnp.max(result.required, axis=0)
+
+    excess = float(jnp.max(result.diameters / largest)) - 1.0
+    bound = float(cases.shape[0] ** (1.0 / beta)) - 1.0
+
+    assert 0.0 <= excess <= bound + 1e-12
+
+
+def test_the_unsmoothed_design_is_fully_stressed(setup, steel, cases):
+    # Invariant 6.5 survives the aggregation: some case works every member to
+    # exactly one, even though no single case works all of them.
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+
+    worst = np.max(np.asarray(exact.utilization), axis=0)
+
+    assert np.allclose(worst, 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION)
+
+
+def test_the_unsmoothed_design_is_never_heavier_than_the_envelope(setup, steel, cases):
+    tube, result = covered(setup, steel, cases, 50.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+
+    assert float(exact.mass) <= float(result.mass)
+
+
+def test_one_load_case_reproduces_the_single_case_design(setup, steel, cases):
+    # An envelope over one case is that case, whatever the sharpness, so the
+    # aggregation cannot be quietly changing the answer.
+    structure, fdm, q = setup
+    tube = Tube.at_class_limit(steel.f_y, 3)
+    seeds = jnp.full(NUM_EDGES, SEED)
+
+    single = design(q, seeds, structure, fdm, steel, tube, normal=NORMAL, plastic=False)
+    covering = envelope(
+        q,
+        seeds,
+        structure,
+        fdm,
+        steel,
+        tube,
+        cases[:1],
+        25.0,
+        normal=NORMAL,
+        plastic=False,
+    )
+
+    assert np.allclose(
+        np.asarray(covering.diameters), np.asarray(single.diameters), rtol=1e-12
+    )
+    assert float(covering.mass) == pytest.approx(float(single.mass), rel=1e-12)
+
+
+def test_the_governing_case_is_the_one_working_a_member_hardest(setup, steel, cases):
+    _, result = covered(setup, steel, cases, 500.0)
+
+    decided = np.asarray(governing_case(result))
+    expected = np.argmax(np.asarray(result.utilization), axis=0)
+
+    assert np.array_equal(decided, expected)
+
+
+def test_the_funicular_case_is_not_the_one_that_decides_the_design(setup, steel, cases):
+    # The point of the second and third cases. A shape form-found under the
+    # first carries it axially, so it is the benign one and the members are
+    # sized by what the form-finder could not see.
+    _, result = covered(setup, steel, cases, 500.0)
+
+    assert 0 not in set(np.asarray(governing_case(result)).tolist())
+
+
+def test_a_load_case_reaches_the_analysis(setup, steel):
+    # The load case is an argument to the analysis alone; form finding keeps the
+    # loads the shape answers to.
+    structure, fdm, q = setup
+    tube = Tube.at_class_limit(steel.f_y, 3)
+    seeds = jnp.full(NUM_EDGES, SEED)
+
+    spread = TOTAL_LOAD / (NUM_EDGES - 1)
+    asymmetric = loads_half_span(structure, spread, factor=0.0)
+
+    funicular = design(
+        q, seeds, structure, fdm, steel, tube, normal=NORMAL, plastic=False
+    )
+    patched = design(
+        q,
+        seeds,
+        structure,
+        fdm,
+        steel,
+        tube,
+        normal=NORMAL,
+        plastic=False,
+        loads=asymmetric,
+    )
+
+    assert np.allclose(np.asarray(funicular.xyz), np.asarray(patched.xyz))
+    assert float(jnp.max(jnp.abs(patched.m_ed))) > float(
+        jnp.max(jnp.abs(funicular.m_ed))
+    )
+
+
+def test_the_enveloped_mass_gradient_matches_central_differences(setup, steel, cases):
+    structure, fdm, q = setup
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    def objective(q):
+        return envelope(
+            q,
+            jnp.full(NUM_EDGES, SEED),
+            structure,
+            fdm,
+            steel,
+            tube,
+            cases,
+            100.0,
+            normal=NORMAL,
+            plastic=False,
+        ).mass
+
+    gradient = jax.grad(objective)(q)
+    scale = float(jnp.max(jnp.abs(gradient)))
+
+    assert np.all(np.isfinite(np.asarray(gradient)))
+
+    for edge in (0, NUM_EDGES // 2, NUM_EDGES - 1):
+        step = abs(float(q[edge])) * STEP_CASES
+        plus = objective(q.at[edge].add(step))
+        minus = objective(q.at[edge].add(-step))
+        difference = float((plus - minus) / (2.0 * step))
+
+        error = abs(float(gradient[edge]) - difference) / scale
+        assert error < TOLERANCE_GRADIENT_CASES
+
+
+def test_the_critical_load_factor_belongs_to_a_load_case(setup, steel, cases):
+    # A factor quoted without the case it was measured under says less than it
+    # appears to: the case a shape was found under is not the one that sized it.
+    structure, _, _ = setup
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+
+    single = Design(
+        result.xyz,
+        result.lengths,
+        result.n_ed[0],
+        result.m_y_ed[0],
+        result.c_my[0],
+        result.l_cr,
+        exact.diameters,
+        exact.utilization[0],
+        exact.mass,
+    )
+
+    factors = [
+        float(
+            stability(
+                single,
+                structure,
+                steel,
+                tube,
+                normal=NORMAL,
+                num_modes=1,
+                loads=case,
+            ).factors[0]
+        )
+        for case in cases
+    ]
+
+    assert len(set(round(factor, 9) for factor in factors)) == len(factors)
+    assert all(np.isfinite(factors))
+
+
+def test_the_default_load_case_of_the_stability_check_is_the_structures_own(
+    setup, steel, cases
+):
+    structure, _, _ = setup
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+
+    single = Design(
+        result.xyz,
+        result.lengths,
+        result.n_ed[0],
+        result.m_y_ed[0],
+        result.c_my[0],
+        result.l_cr,
+        exact.diameters,
+        exact.utilization[0],
+        exact.mass,
+    )
+
+    implied = stability(single, structure, steel, tube, normal=NORMAL)
+    named = stability(
+        single, structure, steel, tube, normal=NORMAL, loads=structure.loads
+    )
+
+    assert float(implied.factors[0]) == pytest.approx(float(named.factors[0]))
+
+
+def descents():
+    return (
+        Descent(
+            "no floor", np.linspace(0.134, 0.051, 12), np.geomspace(10.0, 500.0, 12)
+        ),
+        Descent(
+            "floored", np.linspace(0.134, 0.092, 10), np.geomspace(10.0, 500.0, 10)
+        ),
+    )
+
+
+def test_the_optimization_figure_builds():
+    scales = np.linspace(0.4, 2.4, 9)
+    masses = 0.13 + 0.02 * (scales - 1.5) ** 2
+    exact = 0.04 * (scales - 1.5)
+
+    figure = figure_optimization(scales, masses, exact, exact, descents(), start=3)
+
+    assert len(figure.axes) == 4
+    plt.close(figure)
+
+
+def test_the_optimization_figure_draws_every_descent_it_is_given():
+    # The constrained run is the design and the unconstrained one is the
+    # evidence, so both belong on the same axes as the single-variable sweep.
+    scales = np.linspace(0.4, 2.4, 9)
+    masses = 0.13 + 0.02 * (scales - 1.5) ** 2
+    exact = 0.04 * (scales - 1.5)
+
+    figure = figure_optimization(scales, masses, exact, exact, descents(), start=3)
+    labels = [line.get_label() for line in figure.axes[0].lines]
+
+    assert any("no floor" in label for label in labels)
+    assert any("floored" in label for label in labels)
+    plt.close(figure)
+
+
+def test_the_optimization_figure_marks_the_funicular_start_and_not_the_sweep(setup):
+    # The descent begins at the funicular design, which is not the first sample
+    # of the sweep, and a figure that confused the two would overstate what the
+    # optimizer achieved.
+    scales = np.linspace(0.4, 2.4, 9)
+    masses = 0.13 + 0.02 * (scales - 1.5) ** 2
+    trajectory = np.linspace(0.134, 0.051, 5)
+
+    figure = figure_optimization(
+        scales,
+        masses,
+        0.04 * (scales - 1.5),
+        0.04 * (scales - 1.5),
+        (Descent("run", trajectory, np.full(5, 10.0)),),
+        start=3,
+    )
+
+    labels = [line.get_label() for line in figure.axes[0].lines]
+
+    assert any(f"{masses[3]:.4f}" in label for label in labels)
+    plt.close(figure)
+
+
+def test_the_load_case_figure_builds(setup, steel, cases):
+    structure, _, _ = setup
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+    decided = governing_case(result)
+
+    figure = figure_load_cases(
+        structure.edges,
+        (
+            Form("start", structure.nodes, jnp.max(result.required, axis=0), decided),
+            Form("optimized", result.xyz, exact.diameters, decided),
+        ),
+        ("LC1", "LC2", "LC3"),
+    )
+
+    assert len(figure.axes) == 5
+    plt.close(figure)
+
+
+def test_the_load_case_figure_takes_as_many_forms_as_it_is_given(setup, steel, cases):
+    structure, _, _ = setup
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+    decided = governing_case(result)
+
+    forms = tuple(
+        Form(f"form {index}", result.xyz, exact.diameters, decided)
+        for index in range(3)
+    )
+    figure = figure_load_cases(structure.edges, forms, ("LC1", "LC2", "LC3"))
+
+    assert len(figure.axes) == 7
+    plt.close(figure)
+
+
+def test_the_two_forms_are_drawn_on_the_same_axes(setup, steel, cases):
+    # A form that dropped has to look lower rather than differently framed, or
+    # a collapsed leg is invisible.
+    structure, _, _ = setup
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+    decided = governing_case(result)
+
+    figure = figure_load_cases(
+        structure.edges,
+        (
+            Form("start", structure.nodes, jnp.max(result.required, axis=0), decided),
+            Form(
+                "lowered",
+                result.xyz * jnp.asarray([1.0, 1.0, 0.5]),
+                exact.diameters,
+                decided,
+            ),
+        ),
+        ("LC1", "LC2", "LC3"),
+    )
+
+    assert figure.axes[0].get_xlim() == figure.axes[1].get_xlim()
+    assert figure.axes[0].get_ylim() == figure.axes[1].get_ylim()
+    plt.close(figure)
+
+
+# --------------------------------------------------------------------------- #
+# Holding the plan, and what it costs
+# --------------------------------------------------------------------------- #
+def test_a_uniform_force_density_leaves_the_plan_alone(setup):
+    # The full equilibrium already spaces an arch evenly under a uniform force
+    # density, so holding the plan changes nothing and the two agree exactly.
+    structure, fdm, q = setup
+
+    free = positions(q, structure, fdm)
+    held = positions_vertical(q, structure, fdm)
+
+    assert np.allclose(np.asarray(free), np.asarray(held), atol=1e-9)
+
+
+def test_holding_the_plan_never_changes_the_heights(setup):
+    # The force density system decouples per coordinate, so the vertical solve
+    # is the same equation either way. Holding the plan moves the plan alone.
+    structure, fdm, q = setup
+    varied = q * jnp.linspace(0.5, 1.8, NUM_EDGES)
+
+    free = positions(varied, structure, fdm)
+    held = positions_vertical(varied, structure, fdm)
+
+    assert np.allclose(np.asarray(free[:, 2]), np.asarray(held[:, 2]), atol=1e-9)
+    assert not np.allclose(np.asarray(free[:, 0]), np.asarray(held[:, 0]))
+
+
+def nodal_residual(structure, xyz, q):
+    """
+    Out-of-balance force at every free node, with members carrying axial force.
+    """
+    edges = np.asarray(structure.edges)
+    vectors = np.asarray(xyz)[edges[:, 1]] - np.asarray(xyz)[edges[:, 0]]
+    forces = np.asarray(q)[:, None] * vectors
+
+    residual = np.zeros_like(np.asarray(xyz))
+    np.add.at(residual, edges[:, 0], forces)
+    np.add.at(residual, edges[:, 1], -forces)
+    residual = residual + np.asarray(structure.loads)
+
+    free = np.setdiff1d(
+        np.arange(np.asarray(xyz).shape[0]), np.asarray(structure.supports)
+    )
+
+    return np.abs(residual[free]).max(axis=0)
+
+
+def test_a_held_plan_is_funicular_only_under_a_uniform_force_density(setup):
+    # Horizontal equilibrium on an evenly spaced plan forces the force densities
+    # to be equal, so the funicular part of a held plan is one parameter wide.
+    # Anything else hands the thrust to structure that is not being designed.
+    structure, fdm, q = setup
+    varied = q * jnp.linspace(0.5, 1.8, NUM_EDGES)
+
+    uniform = nodal_residual(structure, positions_vertical(q, structure, fdm), q)
+    other = nodal_residual(
+        structure, positions_vertical(varied, structure, fdm), varied
+    )
+
+    assert uniform[0] < 1e-6
+    assert other[0] > 1e3
+    assert other[2] < 1e-6
+
+
+def test_the_full_equilibrium_stays_funicular_whatever_the_force_densities(setup):
+    structure, fdm, q = setup
+    varied = q * jnp.linspace(0.5, 1.8, NUM_EDGES)
+
+    residual = nodal_residual(structure, positions(varied, structure, fdm), varied)
+
+    assert np.all(residual < 1e-6)
+
+
+def test_the_load_case_counts_share_one_scale(setup, steel, cases):
+    # A bar is read against its neighbours, so independently scaled panels would
+    # make an even split look lopsided.
+    structure, _, _ = setup
+    tube, result = covered(setup, steel, cases, 500.0)
+    exact = unsmoothed(result, steel, tube, plastic=False)
+    decided = governing_case(result)
+
+    forms = tuple(
+        Form(f"form {index}", result.xyz, exact.diameters, decided)
+        for index in range(3)
+    )
+    figure = figure_load_cases(structure.edges, forms, ("LC1", "LC2", "LC3"))
+
+    # The drawings come first, then the counts, then the colour bar.
+    counts = figure.axes[len(forms) : 2 * len(forms)]
+    limits = {ax.get_ylim() for ax in counts}
+
+    assert len(counts) == len(forms)
+    assert len(limits) == 1
+    plt.close(figure)

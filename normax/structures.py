@@ -195,6 +195,168 @@ def gridshell(
     return _structure(nodes, edges, supports, loads)
 
 
+def loads_uniform(
+    structure: Structure,
+    load: float,
+) -> Float[Array, "nodes 3"]:
+    """
+    A downward point load of the same size on every free node.
+
+    Parameters
+    ----------
+    structure :
+        The structure to load.
+    load :
+        Magnitude of the downward point load.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+
+    Notes
+    -----
+    The case a funicular structure is form-found under, so the geometry carries
+    it in pure tension or compression and the members see no bending. Every
+    other case is a departure from it, and the bending that appears is what a
+    frame analysis exists to report.
+    """
+    return _loads(structure, jnp.ones(structure.nodes.shape[0]) * load)
+
+
+def loads_half_span(
+    structure: Structure,
+    load: float,
+    *,
+    axis: int = 0,
+    factor: float = 0.0,
+) -> Float[Array, "nodes 3"]:
+    """
+    A downward point load on one half of the span and a fraction on the other.
+
+    Parameters
+    ----------
+    structure :
+        The structure to load.
+    load :
+        Magnitude of the downward point load on the loaded half.
+    axis :
+        Index of the global axis the span is measured along.
+    factor :
+        Fraction of that load carried by the other half.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+
+    Raises
+    ------
+    ValueError
+        If the axis is not 0, 1 or 2.
+
+    Notes
+    -----
+    The case that decides an arch. A funicular shape carries its design load
+    axially and nothing else, so any redistribution of that load has to be
+    carried in bending, and the members most affected are the ones the symmetric
+    case left slenderest.
+
+    The split reads the starting geometry rather than the form-found one, which
+    keeps it a property of the structure rather than of a particular set of
+    force densities. A node exactly at midspan counts as belonging to the
+    loaded half.
+    """
+    if axis not in (0, 1, 2):
+        raise ValueError(f"axis must be 0, 1 or 2, got {axis}")
+
+    along = structure.nodes[:, axis]
+    middle = 0.5 * (jnp.min(along) + jnp.max(along))
+
+    return _loads(structure, jnp.where(along <= middle, load, load * factor))
+
+
+def loads_point(
+    structure: Structure,
+    load: float,
+    *,
+    node: int,
+) -> Float[Array, "nodes 3"]:
+    """
+    A single downward point load at one node.
+
+    Parameters
+    ----------
+    structure :
+        The structure to load.
+    load :
+        Magnitude of the downward point load.
+    node :
+        Index of the node carrying it.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+
+    Notes
+    -----
+    Adds to any other case, being an array like the rest, so a concentrated
+    load on top of a distributed one is a sum and needs no separate generator.
+    A load placed on a support is discarded, since the support carries it
+    straight to ground.
+    """
+    magnitudes = jnp.zeros(structure.nodes.shape[0]).at[node].set(load)
+
+    return _loads(structure, magnitudes)
+
+
+def crown(structure: Structure) -> int:
+    """
+    Index of the highest node of a structure.
+
+    Parameters
+    ----------
+    structure :
+        The structure to search.
+
+    Returns
+    -------
+    crown :
+        Index of the node highest above the ground plane.
+
+    Notes
+    -----
+    Read from the starting geometry, so it is a static Python integer and may
+    index a load case or select a member without being traced.
+    """
+    return int(jnp.argmax(structure.nodes[:, 2]))
+
+
+def _loads(
+    structure: Structure,
+    magnitudes: Float[Array, "nodes"],
+) -> Float[Array, "nodes 3"]:
+    """
+    Downward forces of given magnitudes, zeroed at the supports.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the node count and the supported nodes.
+    magnitudes :
+        Size of the downward force at every node.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+    """
+    vertical = jnp.zeros((structure.nodes.shape[0], 3)).at[:, 2].set(-magnitudes)
+
+    return vertical.at[structure.supports, :].set(0.0)
+
+
 def _parabola(
     num_edges: int,
     span: float,
