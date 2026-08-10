@@ -129,11 +129,22 @@ class OutputSchema(BaseModel):
     wherever the catalogue minimum did. An invariant to assert on, not a goal.
     """
 
-    m_ed: Differentiable[Array[(None,), Float64]]
-    """Larger end moment of every member in magnitude, in newton-millimetres."""
+    m_y_ed: Differentiable[Array[(None,), Float64]]
+    """Larger major-axis end moment of every member, in newton-millimetres."""
 
-    c_m: Differentiable[Array[(None,), Float64]]
-    """Equivalent uniform moment factor of every member, EN 1993-1-1 Table B.3."""
+    m_z_ed: Differentiable[Array[(None,), Float64]]
+    """Larger minor-axis end moment of every member, in newton-millimetres."""
+
+    c_my: Differentiable[Array[(None,), Float64]]
+    """Major-axis moment factor of every member, EN 1993-1-1 Table B.3."""
+
+    c_mz: Differentiable[Array[(None,), Float64]]
+    """Minor-axis moment factor of every member, EN 1993-1-1 Table B.3.
+
+    Reported alongside the major axis rather than folded away, so a caller can
+    check a finished design at a size the standard did not choose without
+    analysing anything again.
+    """
 
     governing: Array[(None,), Float64]
     """Limit state that decided every member's size, as a code.
@@ -230,8 +241,10 @@ def _forward(
         "diameter": required,
         "mass": mass_of_tubes(required, lengths, steel, tube),
         "utilization": used,
-        "m_ed": m_ed,
-        "c_m": c_m,
+        "m_y_ed": m_ed,
+        "m_z_ed": m_minor,
+        "c_my": c_m,
+        "c_mz": c_minor,
     }
 
     if diagnostics:
@@ -284,8 +297,10 @@ def abstract_eval(abstract_inputs):
         "diameter": {"shape": (members,), "dtype": "float64"},
         "mass": {"shape": (), "dtype": "float64"},
         "utilization": {"shape": (members,), "dtype": "float64"},
-        "m_ed": {"shape": (members,), "dtype": "float64"},
-        "c_m": {"shape": (members,), "dtype": "float64"},
+        "m_y_ed": {"shape": (members,), "dtype": "float64"},
+        "m_z_ed": {"shape": (members,), "dtype": "float64"},
+        "c_my": {"shape": (members,), "dtype": "float64"},
+        "c_mz": {"shape": (members,), "dtype": "float64"},
         "governing": {"shape": (members,), "dtype": "float64"},
     }
 

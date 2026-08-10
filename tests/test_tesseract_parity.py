@@ -6,6 +6,7 @@ from tesseract_jax import apply_tesseract
 
 from normax.composition import STAGES
 from normax.composition import design as design_composed
+from normax.composition import envelope as envelope_composed
 from normax.composition import local
 from normax.composition import mass as mass_composed
 from normax.ec3.sizing import Steel
@@ -14,9 +15,14 @@ from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.pipeline import design as design_in_process
+from normax.pipeline import envelope as envelope_in_process
 from normax.pipeline import governing
 from normax.pipeline import mass as mass_in_process
 from normax.structures import arch
+from normax.structures import crown
+from normax.structures import loads_half_span
+from normax.structures import loads_point
+from normax.structures import loads_uniform
 
 # The same 10 m arch rising 3 m under 180 kN that the in-process pipeline is
 # tested on, so the two are compared on identical ground.
@@ -446,3 +452,127 @@ def test_a_python_list_is_refused_at_the_boundary(setup, chain):
 def test_a_chain_asked_for_a_stage_that_is_not_there_says_so(tmp_path):
     with pytest.raises(FileNotFoundError, match="formfinding"):
         local(tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# Several load cases, across the boundary
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def cases(setup):
+    """
+    Three cases of equal total: funicular, half span, and a crown point load.
+    """
+    structure, _, _ = setup
+    spread = TOTAL_LOAD / (NUM_EDGES - 1)
+
+    half = loads_half_span(structure, spread, factor=0.5)
+    half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
+
+    point = loads_uniform(structure, spread * 0.75) + loads_point(
+        structure, TOTAL_LOAD * 0.25, node=crown(structure)
+    )
+
+    return jnp.stack([loads_uniform(structure, spread), half, point])
+
+
+def enveloped(setup, chain, steel, seed, cases, beta):
+    """
+    The same enveloped design taken in process and across the Tesseracts.
+    """
+    structure, fdm, q = setup
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    oracle = envelope_in_process(
+        q, seed, structure, fdm, steel, tube, cases, beta, normal=NORMAL, plastic=False
+    )
+    composed = envelope_composed(
+        q,
+        seed,
+        structure,
+        chain,
+        steel,
+        tube,
+        cases,
+        beta,
+        normal=NORMAL,
+        plastic=False,
+    )
+
+    return oracle, composed
+
+
+@pytest.mark.parametrize("beta", [10.0, 500.0])
+def test_every_field_of_the_enveloped_design_survives_the_boundary(
+    setup, chain, steel, seed, cases, beta
+):
+    # The objective the optimizer actually minimizes, which is not the one the
+    # single-case parity test covers: three analyses and three checks per call,
+    # aggregated above the chain.
+    oracle, composed = enveloped(setup, chain, steel, seed, cases, beta)
+
+    for field in oracle._fields:
+        assert (
+            relative(getattr(oracle, field), getattr(composed, field))
+            < TOLERANCE_PARITY
+        ), field
+
+
+def test_the_enveloped_mass_gradient_survives_the_boundary(
+    setup, chain, steel, seed, cases
+):
+    structure, fdm, q = setup
+    tube = Tube.at_class_limit(steel.f_y, 3)
+
+    def in_process(q):
+        return envelope_in_process(
+            q,
+            seed,
+            structure,
+            fdm,
+            steel,
+            tube,
+            cases,
+            100.0,
+            normal=NORMAL,
+            plastic=False,
+        ).mass
+
+    def composed(q):
+        return envelope_composed(
+            q,
+            seed,
+            structure,
+            chain,
+            steel,
+            tube,
+            cases,
+            100.0,
+            normal=NORMAL,
+            plastic=False,
+        ).mass
+
+    assert (
+        relative(jax.grad(in_process)(q), jax.grad(composed)(q)) < TOLERANCE_DERIVATIVE
+    )
+
+
+def test_the_composed_envelope_form_finds_once_for_all_the_cases(
+    setup, chain, steel, seed, cases
+):
+    # The shape answers to one load case by construction, so form finding is
+    # shared and only the analysis and the check are walked per case. A geometry
+    # that differed between cases would mean a different structure per case.
+    oracle, composed = enveloped(setup, chain, steel, seed, cases, 500.0)
+
+    assert relative(oracle.xyz, composed.xyz) < TOLERANCE_PARITY
+    assert relative(oracle.lengths, composed.lengths) < TOLERANCE_PARITY
+
+
+def test_the_composed_envelope_covers_every_case(setup, chain, steel, seed, cases):
+    _, composed = enveloped(setup, chain, steel, seed, cases, 500.0)
+
+    assert float(jnp.max(composed.utilization)) <= 1.0 + 1e-12
+    assert np.all(
+        np.asarray(composed.diameters)
+        >= np.asarray(jnp.max(composed.required, axis=0)) - 1e-9
+    )
