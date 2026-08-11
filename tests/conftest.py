@@ -10,6 +10,7 @@ PIPELINE_PACKAGES = ("jax_fdm", "smax")
 # normax.analysis or normax.pipeline, belongs here. Omitting one turns CI red at
 # collection rather than passing quietly, so this list fails loudly when stale.
 PIPELINE_TESTS = (
+    "test_analysis_prepared.py",
     "test_equilibrium_consistency.py",
     "test_pipeline.py",
     "test_tesseract_parity.py",
