@@ -196,7 +196,7 @@ def frame_plane(
     something else.
 
     Loads are checked where they are applied rather than here, since a structure
-    is analysed under cases other than its own and only the case reaching the
+    is analysed under load cases other than its own and only the one reaching the
     solver can be the one vouched for.
     """
     if normal is None:

@@ -174,13 +174,44 @@ def local_chain(root: Path = TESSERACTS) -> Chain:
     )
 
 
+class ProblemSetup(NamedTuple):
+    """
+    Everything the three Tesseracts need before a force density is chosen.
+
+    Attributes
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    chain :
+        The three Tesseracts, from `local_chain` or built from images.
+    steel :
+        Material properties and partial factors.
+    catalogue :
+        The section family every member is drawn from.
+
+    Notes
+    -----
+    The same role `normax.pipeline.ProblemSetup` plays, and deliberately the same
+    name: the two are interchangeable ways to run one pipeline, and only the
+    middle field differs. There is no form-finding graph and no compiled analysis
+    model here, the connectivity being a Tesseract's own business rather than an
+    argument.
+
+    The cross-section class and the plane of a planar structure are absent for
+    the same reason they are absent there. Both select a clause or an axis map
+    rather than scaling a number, and both cross as static fields of a schema.
+    """
+
+    structure: Structure
+    chain: Chain
+    steel: SteelGrade
+    catalogue: TubeCatalogue
+
+
 def design_members(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
-    structure: Structure,
-    chain: Chain,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     normal: int | None,
     section_class: int,
@@ -198,14 +229,8 @@ def design_members(
     diameters :
         Diameters the frame is analysed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
-    chain :
-        The three Tesseracts, from `local` or built from images.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the three Tesseracts, the steel and the section family.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -229,7 +254,7 @@ def design_members(
     Notes
     -----
     A load case costs nothing at the boundary: the analysis schema already
-    carries the nodal loads, so checking a structure against several cases
+    carries the nodal loads, so checking a structure against several of them
     changes the Python signature here and no part of the frozen contract.
 
     The same design `normax.pipeline.design` returns, field for field, and the
@@ -246,19 +271,16 @@ def design_members(
     but the constraint of a schema meant to be satisfiable by a solver whose
     adjoints were written by hand.
     """
-    shape = _form_find(q, structure, chain)
+    shape = _form_find(q, problem)
     lengths = shape["lengths"]
     buckling = lengths if buckling_length is None else buckling_length
 
-    member, sized = _check_case(
+    member, sized = _check_load_case(
         shape["xyz"],
         diameters,
         buckling,
         lengths,
-        structure,
-        chain,
-        steel,
-        catalogue,
+        problem,
         normal=normal,
         section_class=section_class,
         resultant=resultant,
@@ -284,8 +306,7 @@ def design_members(
 
 def _form_find(
     q: Float[Array, "members"],
-    structure: Structure,
-    chain: Chain,
+    problem: ProblemSetup,
 ):
     """
     Cross the form-finding boundary once, whatever the load cases downstream.
@@ -294,19 +315,18 @@ def _form_find(
     ----------
     q :
         Force density of every member.
-    structure :
-        The structure supplying the connectivity, the supports and the loads it
-        is form-found under.
-    chain :
-        The three Tesseracts.
+    problem :
+        The structure, the three Tesseracts, the steel and the section family.
 
     Returns
     -------
     shape :
         The output fields of the form-finding stage.
     """
+    structure = problem.structure
+
     return apply_tesseract(
-        chain.formfinding,
+        problem.chain.formfinding,
         {
             "q": q,
             "nodes": np.asarray(structure.nodes, dtype=np.float64),
@@ -317,15 +337,12 @@ def _form_find(
     )
 
 
-def _check_case(
+def _check_load_case(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     buckling: Float[Array, "members"],
     lengths: Float[Array, "members"],
-    structure: Structure,
-    chain: Chain,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     normal: int | None,
     section_class: int,
@@ -345,14 +362,8 @@ def _check_case(
         Buckling length of every member.
     lengths :
         Length of every member, which sets the mass rather than the check.
-    structure :
-        The structure supplying the connectivity and the supports.
-    chain :
-        The three Tesseracts.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the three Tesseracts, the steel and the section family.
     normal :
         Index of the global axis a planar structure has no thickness along.
     section_class :
@@ -367,6 +378,10 @@ def _check_case(
     stages :
         The output fields of the analysis and of the check.
     """
+    structure = problem.structure
+    steel = problem.steel
+    catalogue = problem.catalogue
+
     edges = np.asarray(structure.edges, dtype=np.int64)
     supports = np.asarray(structure.supports, dtype=np.int64)
     applied = (
@@ -376,7 +391,7 @@ def _check_case(
     )
 
     member = apply_tesseract(
-        chain.analysis,
+        problem.chain.analysis,
         {
             "xyz": xyz,
             "diameter": diameters,
@@ -392,7 +407,7 @@ def _check_case(
     )
 
     sized = apply_tesseract(
-        chain.ec3,
+        problem.chain.ec3,
         {
             "axial_force": member["axial_force"],
             "end_moments_major": member["end_moments_major"],
@@ -418,10 +433,7 @@ def _check_case(
 def total_mass(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
-    structure: Structure,
-    chain: Chain,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     normal: int | None,
     section_class: int,
@@ -439,14 +451,8 @@ def total_mass(
         Force density of every member. Negative in compression.
     diameters :
         Diameters the frame is analysed with, being the previous outer iterate.
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
-    chain :
-        The three Tesseracts, from `local` or built from images.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the three Tesseracts, the steel and the section family.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -476,10 +482,7 @@ def total_mass(
     return design_members(
         q,
         diameters,
-        structure,
-        chain,
-        steel,
-        catalogue,
+        problem,
         normal=normal,
         section_class=section_class,
         resultant=resultant,
@@ -491,13 +494,10 @@ def total_mass(
 def design_envelope(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
-    structure: Structure,
-    chain: Chain,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
-    loads: Float[Array, "cases nodes 3"],
-    beta: float | Float[Array, ""],
+    problem: ProblemSetup,
+    loads: Float[Array, "load_cases nodes 3"],
     *,
+    beta: float | Float[Array, ""],
     normal: int | None,
     section_class: int,
     resultant: bool = True,
@@ -514,15 +514,8 @@ def design_envelope(
     diameters :
         Diameters the frame is analysed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
-    structure :
-        The structure supplying the connectivity, the supports and the loads it
-        is form-found under.
-    chain :
-        The three Tesseracts, from `local` or built from images.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the three Tesseracts, the steel and the section family.
     loads :
         Force applied at every node in every load case.
     beta :
@@ -542,25 +535,25 @@ def design_envelope(
     Returns
     -------
     envelope :
-        The geometry, the actions under every case, the sizes and the mass.
+        The geometry, the actions under every load case, the sizes and the mass.
 
     Notes
     -----
     The objective the optimizer of `normax.optimization` minimizes, and the same
     one `normax.pipeline.envelope` returns.
 
-    **Form finding runs once and the other two run per case.** The shape answers
-    to one load case by construction, so it is shared; what each case does to the
-    members is not, and the chain is walked again for every one of them. The cost
-    is therefore one form finding plus a case's worth of analysis and checking
-    per case, and the round trips grow with the case count while the boundary
-    itself does not.
+    **Form finding runs once and the other two run per load case.** The shape
+    answers to one load case by construction, so it is shared; what each one does
+    to the members is not, and the chain is walked again for every one of them.
+    The cost is therefore one form finding plus a load case's worth of analysis
+    and checking per load case, and the round trips grow with their count while
+    the boundary itself does not.
 
     **Two things sit above the chain rather than inside it, and neither is a
-    clause.** The envelope over cases is the optimizer's smoothing, which
+    clause.** The envelope over load cases is the optimizer's smoothing, which
     EN 1993-1-1 has no opinion on; and the mass is `ρ Σ A L`, geometry rather
-    than a resistance. What the standard actually decides — the size each case
-    demands — comes from the check, once per case.
+    than a resistance. What the standard actually decides — the size each load
+    case demands — comes from the check, once per load case.
 
     **The utilization at the enveloped size is computed here too, and that one
     is a clause.** The check is asked what size a set of actions needs, not how
@@ -569,26 +562,23 @@ def design_envelope(
     `normax.pipeline.unsmoothed` does it. An asymmetry worth naming rather than
     hiding: the sizes cross, the re-check does not.
     """
-    shape = _form_find(q, structure, chain)
+    shape = _form_find(q, problem)
     lengths = shape["lengths"]
     buckling = lengths if buckling_length is None else buckling_length
 
     stages = [
-        _check_case(
+        _check_load_case(
             shape["xyz"],
             diameters,
             buckling,
             lengths,
-            structure,
-            chain,
-            steel,
-            catalogue,
+            problem,
             normal=normal,
             section_class=section_class,
             resultant=resultant,
-            loads=case,
+            loads=load_case,
         )
-        for case in loads
+        for load_case in loads
     ]
 
     required = jnp.stack([sized["diameter"] for _, sized in stages])
@@ -607,20 +597,20 @@ def design_envelope(
     used = jnp.stack(
         [
             utilization_ec3(
-                catalogue.tube_at(covering),
+                problem.catalogue.tube_at(covering),
                 MemberActions(
-                    axial_force[case],
-                    moment_major[case],
-                    moment_minor[case],
-                    moment_factor_major[case],
-                    moment_factor_minor[case],
+                    axial_force[load_case],
+                    moment_major[load_case],
+                    moment_minor[load_case],
+                    moment_factor_major[load_case],
+                    moment_factor_minor[load_case],
                 ),
                 buckling,
-                steel,
+                problem.steel,
                 section_class=section_class,
                 resultant=resultant,
             )
-            for case in range(required.shape[0])
+            for load_case in range(required.shape[0])
         ]
     )
 
@@ -636,5 +626,5 @@ def design_envelope(
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(catalogue.tube_at(covering), lengths, steel),
+        mass=mass_ec3(problem.catalogue.tube_at(covering), lengths, problem.steel),
     )

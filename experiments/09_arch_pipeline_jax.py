@@ -161,7 +161,7 @@ def disagreement(exact, numeric, scale):
     return abs(exact - numeric) / scale
 
 
-def relaxed(q, structure, graph_fdm, model, catalogue, *, section_class, passes):
+def relaxed(q, problem, *, section_class, passes):
     """
     Repeat the staggered analysis and check, reporting how far each pass moves.
     """
@@ -173,11 +173,7 @@ def relaxed(q, structure, graph_fdm, model, catalogue, *, section_class, passes)
         result = design_members(
             q,
             diameters,
-            structure,
-            graph_fdm,
-            model,
-            STEEL,
-            catalogue,
+            problem,
             section_class=section_class,
         )
         moves.append(
@@ -204,20 +200,17 @@ def main():
     designs = {}
     for section_class in (2, 3):
         catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        problem = ProblemSetup(structure, graph_fdm, model, STEEL, catalogue)
         result = design_members(
             q,
             seed,
-            structure,
-            graph_fdm,
-            model,
-            STEEL,
-            catalogue,
+            problem,
             section_class=section_class,
         )
-        codes = governing_states(result, STEEL, catalogue, section_class=section_class)
+        codes = governing_states(result, problem, section_class=section_class)
         departure = float(jnp.max(jnp.abs(result.utilization - 1.0)))
         worst_utilization = max(worst_utilization, departure)
-        designs[section_class] = (catalogue, section_class, result)
+        designs[section_class] = (catalogue, section_class, result, problem)
 
         print(f"\nClass {section_class}, d/t = {float(catalogue.ratio):.3f}")
         print(f"  {'member':>7} {'N [kN]':>10} {'M [kNm]':>10} {'d [mm]':>9} {'u':>18}")
@@ -234,7 +227,7 @@ def main():
         limits = {LIMIT_NAMES[float(code)] for code in codes}
         print(f"  governing           {', '.join(sorted(limits))}")
 
-    catalogue, section_class, result = designs[3]
+    catalogue, section_class, result, problem = designs[3]
 
     print("\nThe central difference plateaus before it is trusted")
 
@@ -242,11 +235,7 @@ def main():
         return total_mass(
             q,
             seed,
-            structure,
-            graph_fdm,
-            model,
-            STEEL,
-            catalogue,
+            problem,
             section_class=section_class,
         )
 
@@ -276,15 +265,7 @@ def main():
         )
 
     print("\nThe staggered coupling closes geometrically")
-    _, moves, masses = relaxed(
-        q,
-        structure,
-        graph_fdm,
-        model,
-        catalogue,
-        section_class=section_class,
-        passes=PASSES,
-    )
+    _, moves, masses = relaxed(q, problem, section_class=section_class, passes=PASSES)
     print(f"  {'pass':>5} {'relative move':>15} {'mass [t]':>14} {'ratio':>8}")
     for step, (move, total) in enumerate(zip(moves, masses)):
         ratio = "" if step == 0 else f"{moves[step] / moves[step - 1]:.4f}"
@@ -303,24 +284,19 @@ def main():
     for count in MESHES:
         refined, refined_graph, refined_model, refined_q = setup(count)
         refined_seed = jnp.full(count, SEED)
+        refined_problem = ProblemSetup(
+            refined, refined_graph, refined_model, STEEL, catalogue
+        )
         free = design_members(
             refined_q,
             refined_seed,
-            refined,
-            refined_graph,
-            refined_model,
-            STEEL,
-            catalogue,
+            refined_problem,
             section_class=section_class,
         )
         held = design_members(
             refined_q,
             refined_seed,
-            refined,
-            refined_graph,
-            refined_model,
-            STEEL,
-            catalogue,
+            refined_problem,
             section_class=section_class,
             buckling_length=jnp.full(count, BUCKLING_LENGTH),
         )
@@ -347,9 +323,7 @@ def main():
     print("\nThe global stability check, EN 1993-1-1 5.2.1(3)")
     checked = frame_stability(
         result,
-        model,
-        STEEL,
-        catalogue,
+        problem,
         num_modes=NUM_MODES,
     )
     factors = np.asarray(checked.factors)
@@ -380,11 +354,7 @@ def main():
     unbraced = design_members(
         q,
         seed,
-        structure,
-        graph_fdm,
-        model,
-        STEEL,
-        catalogue,
+        problem,
         section_class=section_class,
         buckling_length=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc),
     )

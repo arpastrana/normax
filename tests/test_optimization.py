@@ -232,8 +232,8 @@ def test_the_penalty_grows_as_the_shortest_member_shrinks():
     mass = jnp.asarray(0.05)
     lengths = [LENGTHS.at[2].set(value) for value in (280.0, 200.0, 120.0)]
     inflated = [
-        float(penalized_mass(mass, case, 600.0, beta=50.0, weight=10.0))
-        for case in lengths
+        float(penalized_mass(mass, load_case, 600.0, beta=50.0, weight=10.0))
+        for load_case in lengths
     ]
 
     assert inflated[0] < inflated[1] < inflated[2]

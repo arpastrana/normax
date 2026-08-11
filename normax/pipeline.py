@@ -68,12 +68,50 @@ from normax.formfinding import equilibrium_state
 from normax.structures import Structure
 
 
+class ProblemSetup(NamedTuple):
+    """
+    Everything the three stages need before a force density is chosen.
+
+    Attributes
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    graph :
+        The form-finding connectivity, from `normax.formfinding`.
+    model :
+        The compiled analysis model, from `normax.analysis.smax.prepare_model`.
+    steel :
+        Material properties and partial factors.
+    catalogue :
+        The section family every member is drawn from.
+
+    Notes
+    -----
+    Built once on the host and reused for every call, so that only the design
+    variables enter the traced function. The first three are three views of one
+    structure and are built from it; the last two are what the standard reads.
+
+    **The material and the family travel here as well as inside the model.** The
+    model compiles them as placeholders and the analysis stage overwrites every
+    one, which is what leaves a derivative with respect to a material property
+    defined rather than silently zero.
+
+    The cross-section class is deliberately absent. It selects a clause rather
+    than scaling a number, so it stays a static keyword and never becomes a leaf
+    of a container that a tracer reaches.
+    """
+
+    structure: Structure
+    graph: EquilibriumStructure
+    model: Model
+    steel: SteelGrade
+    catalogue: TubeCatalogue
+
+
 def member_actions(
-    model: Model,
+    problem: ProblemSetup,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberActions:
@@ -82,16 +120,12 @@ def member_actions(
 
     Parameters
     ----------
-    model :
-        The prepared analysis model, from `normax.analysis.smax.prepare`.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     xyz :
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member, setting the stiffness.
-    steel :
-        Material properties.
-    catalogue :
-        The section family every member is drawn from.
     loads :
         Load case to analyse under. If None, the structure's own loads.
 
@@ -100,7 +134,14 @@ def member_actions(
     actions :
         Axial force, both design moments and both moment factors.
     """
-    member = member_forces(model, xyz, diameters, steel, catalogue, loads=loads)
+    member = member_forces(
+        problem.model,
+        xyz,
+        diameters,
+        problem.steel,
+        problem.catalogue,
+        loads=loads,
+    )
 
     moment_major, moment_factor_major = end_moments(
         member.moment_major[:, 0], member.moment_major[:, 1]
@@ -163,11 +204,7 @@ class Design(NamedTuple):
 def design_members(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
-    structure: Structure,
-    graph: EquilibriumStructure,
-    model: Model,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     section_class: int,
     resultant: bool = True,
@@ -184,16 +221,8 @@ def design_members(
     diameters :
         Diameters the frame is analysed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
-    graph :
-        The form-finding connectivity, from `normax.formfinding.graph`.
-    model :
-        The prepared analysis model, from `normax.analysis.smax.prepare`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     section_class :
         Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
@@ -218,10 +247,10 @@ def design_members(
     than scaling a number, so it stays a static Python value throughout.
 
     **Form finding always uses the structure's own loads, and only the analysis
-    takes a case.** The shape answers to one load case by construction, that
-    being what makes it funicular, and choosing the shape again for every case
-    would mean a different structure per case rather than one structure checked
-    against several.
+    takes a load case.** The shape answers to one load case by construction,
+    that being what makes it funicular, and choosing the shape again for every
+    one would mean a different structure per load case rather than one structure
+    checked against several.
 
     **The default buckling length is the member's own length, and that is a
     strong assumption rather than a conservative one.** It presumes every node is
@@ -240,27 +269,27 @@ def design_members(
     approaches one, and the mass converges to the squash limit instead of to a
     mesh-independent design.
     """
-    state = equilibrium_state(q, structure, graph)
+    state = equilibrium_state(q, problem.structure, problem.graph)
     lengths = state.lengths[:, 0]
 
-    acting = member_actions(model, state.xyz, diameters, steel, catalogue, loads=loads)
+    acting = member_actions(problem, state.xyz, diameters, loads=loads)
 
     buckling_modes = lengths if buckling_length is None else buckling_length
 
     required = diameter_ec3(
         acting,
         buckling_modes,
-        steel,
-        catalogue,
+        problem.steel,
+        problem.catalogue,
         section_class=section_class,
         resultant=resultant,
     )
 
     used = utilization_ec3(
-        catalogue.tube_at(required),
+        problem.catalogue.tube_at(required),
         acting,
         buckling_modes,
-        steel,
+        problem.steel,
         section_class=section_class,
         resultant=resultant,
     )
@@ -272,18 +301,14 @@ def design_members(
         buckling_length=buckling_modes,
         diameters=required,
         utilization=used,
-        mass=mass_ec3(catalogue.tube_at(required), lengths, steel),
+        mass=mass_ec3(problem.catalogue.tube_at(required), lengths, problem.steel),
     )
 
 
 def total_mass(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
-    structure: Structure,
-    graph: EquilibriumStructure,
-    model: Model,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     section_class: int,
     resultant: bool = True,
@@ -299,16 +324,8 @@ def total_mass(
         Force density of every member. Negative in compression.
     diameters :
         Diameters the frame is analysed with, being the previous outer iterate.
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
-    graph :
-        The form-finding connectivity, from `normax.formfinding.graph`.
-    model :
-        The prepared analysis model, from `normax.analysis.smax.prepare`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     section_class :
         Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
@@ -338,11 +355,7 @@ def total_mass(
     return design_members(
         q,
         diameters,
-        structure,
-        graph,
-        model,
-        steel,
-        catalogue,
+        problem,
         section_class=section_class,
         resultant=resultant,
         buckling_length=buckling_length,
@@ -363,22 +376,24 @@ class Envelope(NamedTuple):
     buckling_length :
         Buckling length used for every member.
     axial_force :
-        Axial force of every member under every case, tension positive.
+        Axial force of every member under every load case, tension positive.
     moment_major :
-        Larger major-axis end moment of every member under every case.
+        Larger major-axis end moment of every member under every load case.
     moment_minor :
-        Larger minor-axis end moment of every member under every case.
+        Larger minor-axis end moment of every member under every load case.
     moment_factor_major :
-        Major-axis moment factor of every member under every case.
+        Major-axis moment factor of every member under every load case.
     moment_factor_minor :
-        Minor-axis moment factor of every member under every case.
+        Minor-axis moment factor of every member under every load case.
     required :
-        Diameter every case demands of every member on its own.
+        Diameter every load case demands of every member on its own.
     diameters :
-        Diameter carrying every case, being the smooth envelope of the above.
+        Diameter carrying every load case, being the smooth envelope of the
+        above.
     utilization :
-        Demand over resistance of every member under every case, at those
-        diameters. At most one everywhere, and one for the case that governs.
+        Demand over resistance of every member under every load case, at those
+        diameters. At most one everywhere, and one for the load case that
+        governs.
     mass :
         Total mass of the members.
 
@@ -386,11 +401,11 @@ class Envelope(NamedTuple):
     -----
     The geometry is shared, because a structure is form-found once and then
     asked to survive several things. Only the actions and the sizes carry a
-    case axis.
+    load case axis.
 
-    Every field is a differentiable leaf. Which case governs each member is a
-    diagnostic and is absent for the same reason `Design` omits the limit
-    state; ask `governing_case` for it.
+    Every field is a differentiable leaf. Which load case governs each member is
+    a diagnostic and is absent for the same reason `Design` omits the limit
+    state; ask `governing_load_case` for it.
 
     The actions are carried in full, rather than only the ones a report would
     print, so the design can be checked again at a different set of sizes
@@ -400,28 +415,24 @@ class Envelope(NamedTuple):
     xyz: Float[Array, "nodes 3"]
     lengths: Float[Array, "members"]
     buckling_length: Float[Array, "members"]
-    axial_force: Float[Array, "cases members"]
-    moment_major: Float[Array, "cases members"]
-    moment_minor: Float[Array, "cases members"]
-    moment_factor_major: Float[Array, "cases members"]
-    moment_factor_minor: Float[Array, "cases members"]
-    required: Float[Array, "cases members"]
+    axial_force: Float[Array, "load_cases members"]
+    moment_major: Float[Array, "load_cases members"]
+    moment_minor: Float[Array, "load_cases members"]
+    moment_factor_major: Float[Array, "load_cases members"]
+    moment_factor_minor: Float[Array, "load_cases members"]
+    required: Float[Array, "load_cases members"]
     diameters: Float[Array, "members"]
-    utilization: Float[Array, "cases members"]
+    utilization: Float[Array, "load_cases members"]
     mass: Float[Array, ""]
 
 
 def design_envelope(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
-    structure: Structure,
-    graph: EquilibriumStructure,
-    model: Model,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
-    loads: Float[Array, "cases nodes 3"],
-    beta: float | Float[Array, ""],
+    problem: ProblemSetup,
+    loads: Float[Array, "load_cases nodes 3"],
     *,
+    beta: float | Float[Array, ""],
     section_class: int,
     resultant: bool = True,
     buckling_length: Float[Array, "members"] | None = None,
@@ -436,17 +447,8 @@ def design_envelope(
     diameters :
         Diameters the frame is analysed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
-    structure :
-        The structure supplying the connectivity, the supports and the loads it
-        is form-found under.
-    graph :
-        The form-finding connectivity, from `normax.formfinding.graph`.
-    model :
-        The prepared analysis model, from `normax.analysis.smax.prepare`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     loads :
         Force applied at every node in every load case.
     beta :
@@ -464,49 +466,49 @@ def design_envelope(
     Returns
     -------
     envelope :
-        The geometry, the actions under every case, the sizes and the mass.
+        The geometry, the actions under every load case, the sizes and the mass.
 
     Notes
     -----
     **The objective an optimizer sees.** A member has one size and has to
-    satisfy every case, so its size is the largest any case demands. That
-    largest is not differentiable, and a gradient taken through it sees one case
-    per step and stalls; the smooth envelope of `normax.ec3.sizing` replaces it,
-    taken in the logarithm of the diameter so the sharpness is dimensionless.
+    satisfy every load case, so its size is the largest any of them demands. That
+    largest is not differentiable, and a gradient taken through it sees one load
+    case per step and stalls; the smooth envelope of `normax.ec3.sizing` replaces
+    it, taken in the logarithm of the diameter so the sharpness is dimensionless.
 
     The envelope never understates the true largest, so **the design is adequate
     at every sharpness** and annealing drives it onto the smallest adequate one
-    from above. What it gives away is bounded by the number of cases raised to
-    the reciprocal of the sharpness, in diameter.
+    from above. What it gives away is bounded by the number of load cases raised
+    to the reciprocal of the sharpness, in diameter.
 
     Form finding runs once, under the structure's own loads. The shape answers
-    to that case alone, which is what makes it funicular; the others are
+    to that load case alone, which is what makes it funicular; the others are
     departures from it, and the bending they raise is the reason the analysis
     stage is in the pipeline at all.
 
-    Cases are looped over rather than mapped, the analysis stage not being
+    Load cases are looped over rather than mapped, the analysis stage not being
     traceable through `vmap`, so the cost is linear in their number.
     """
-    state = equilibrium_state(q, structure, graph)
+    state = equilibrium_state(q, problem.structure, problem.graph)
     lengths = state.lengths[:, 0]
     buckling_modes = lengths if buckling_length is None else buckling_length
 
     acting = [
-        member_actions(model, state.xyz, diameters, steel, catalogue, loads=case)
-        for case in loads
+        member_actions(problem, state.xyz, diameters, loads=load_case)
+        for load_case in loads
     ]
 
     required = jnp.stack(
         [
             diameter_ec3(
-                case,
+                load_case,
                 buckling_modes,
-                steel,
-                catalogue,
+                problem.steel,
+                problem.catalogue,
                 section_class=section_class,
                 resultant=resultant,
             )
-            for case in acting
+            for load_case in acting
         ]
     )
 
@@ -515,19 +517,19 @@ def design_envelope(
     used = jnp.stack(
         [
             utilization_ec3(
-                catalogue.tube_at(covering),
-                case,
+                problem.catalogue.tube_at(covering),
+                load_case,
                 buckling_modes,
-                steel,
+                problem.steel,
                 section_class=section_class,
                 resultant=resultant,
             )
-            for case in acting
+            for load_case in acting
         ]
     )
 
     # Stacked field by field rather than as a MemberActions, whose fields carry
-    # one member axis and not the case axis these gain.
+    # one member axis and not the load case axis these gain.
     (
         axial_force,
         moment_major,
@@ -548,7 +550,7 @@ def design_envelope(
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(catalogue.tube_at(covering), lengths, steel),
+        mass=mass_ec3(problem.catalogue.tube_at(covering), lengths, problem.steel),
     )
 
 
@@ -559,10 +561,10 @@ class Unsmoothed(NamedTuple):
     Attributes
     ----------
     diameters :
-        Largest diameter any case demands of each member.
+        Largest diameter any load case demands of each member.
     utilization :
-        Demand over resistance of every member under every case, at those
-        diameters. Exactly one for the case that governs each member.
+        Demand over resistance of every member under every load case, at those
+        diameters. Exactly one for the load case that governs each member.
     mass :
         Total mass of the members.
 
@@ -570,34 +572,31 @@ class Unsmoothed(NamedTuple):
     -----
     What the design would be with no smoothing at all, and so the number to
     report rather than the annealed one. It is not differentiable in any useful
-    way, the largest of a set having a gradient that sees one case at a time,
-    which is the whole reason the envelope exists.
+    way, the largest of a set having a gradient that sees one load case at a
+    time, which is the whole reason the envelope exists.
     """
 
     diameters: Float[Array, "members"]
-    utilization: Float[Array, "cases members"]
+    utilization: Float[Array, "load_cases members"]
     mass: Float[Array, ""]
 
 
 def unsmoothed_design(
     result: Envelope,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     section_class: int,
     resultant: bool = True,
 ) -> Unsmoothed:
     """
-    Re-check an enveloped design at the smallest sizes that satisfy every case.
+    Re-check an enveloped design at the smallest sizes satisfying every load case.
 
     Parameters
     ----------
     result :
         An enveloped design, from `envelope`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     section_class :
         Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
@@ -607,13 +606,13 @@ def unsmoothed_design(
     Returns
     -------
     unsmoothed :
-        The sizes, the utilization under every case, and the mass.
+        The sizes, the utilization under every load case, and the mass.
 
     Notes
     -----
     **What the smoothing cost, measured rather than bounded.** The envelope
-    never understates what a case demands, so this is always the lighter design
-    and the difference is what annealing is driving to zero.
+    never understates what a load case demands, so this is always the lighter
+    design and the difference is what annealing is driving to zero.
 
     Nothing is analysed again. The actions belong to the geometry and the
     diameters the frame was analysed with, neither of which changes here, so
@@ -624,31 +623,31 @@ def unsmoothed_design(
     used = jnp.stack(
         [
             utilization_ec3(
-                catalogue.tube_at(sizes),
+                problem.catalogue.tube_at(sizes),
                 MemberActions(
-                    result.axial_force[case],
-                    result.moment_major[case],
-                    result.moment_minor[case],
-                    result.moment_factor_major[case],
-                    result.moment_factor_minor[case],
+                    result.axial_force[load_case],
+                    result.moment_major[load_case],
+                    result.moment_minor[load_case],
+                    result.moment_factor_major[load_case],
+                    result.moment_factor_minor[load_case],
                 ),
                 result.buckling_length,
-                steel,
+                problem.steel,
                 section_class=section_class,
                 resultant=resultant,
             )
-            for case in range(result.required.shape[0])
+            for load_case in range(result.required.shape[0])
         ]
     )
 
     return Unsmoothed(
         diameters=sizes,
         utilization=used,
-        mass=mass_ec3(catalogue.tube_at(sizes), result.lengths, steel),
+        mass=mass_ec3(problem.catalogue.tube_at(sizes), result.lengths, problem.steel),
     )
 
 
-def governing_case(result: Envelope) -> Int[Array, "members"]:
+def governing_load_case(result: Envelope) -> Int[Array, "members"]:
     """
     Which load case decided each member's size.
 
@@ -659,25 +658,24 @@ def governing_case(result: Envelope) -> Int[Array, "members"]:
 
     Returns
     -------
-    governing_case :
-        Index of the case working each member hardest.
+    governing_load_case :
+        Index of the load case working each member hardest.
 
     Notes
     -----
     **Non-differentiable**, and kept out of `Envelope` for that reason.
 
     The picture only a differentiable code check can produce: as the form
-    changes, the pattern of which case governs where reorganises, and it does so
-    because the shape decides how much bending each case raises rather than
-    because any member was reassigned.
+    changes, the pattern of which load case governs where reorganises, and it
+    does so because the shape decides how much bending each one raises rather
+    than because any member was reassigned.
     """
     return jnp.argmax(result.utilization, axis=0)
 
 
 def governing_states(
     result: Design,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     section_class: int,
     resultant: bool = True,
@@ -689,10 +687,8 @@ def governing_states(
     ----------
     result :
         A design, from `design`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     section_class :
         Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
@@ -714,11 +710,11 @@ def governing_states(
     on a subset of them.
     """
     return governing_ec3(
-        catalogue.tube_at(result.diameters),
+        problem.catalogue.tube_at(result.diameters),
         result.actions,
         result.buckling_length,
-        steel,
-        catalogue,
+        problem.steel,
+        problem.catalogue,
         section_class=section_class,
         resultant=resultant,
     )
@@ -765,9 +761,7 @@ class Stability(NamedTuple):
 
 def frame_stability(
     result: Design,
-    model: Model,
-    steel: SteelGrade,
-    catalogue: TubeCatalogue,
+    problem: ProblemSetup,
     *,
     num_modes: int = 1,
     threshold: float = ALPHA_CR_ELASTIC,
@@ -780,12 +774,8 @@ def frame_stability(
     ----------
     result :
         A design, from `design`.
-    model :
-        The prepared analysis model, from `normax.analysis.smax.prepare`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
+    problem :
+        The structure, the compiled model, the steel and the section family.
     num_modes :
         Number of critical load factors to return. Static.
     threshold :
@@ -819,18 +809,19 @@ def frame_stability(
     say about a member the load never reaches.
     """
     modes = buckling_modes(
-        model,
+        problem.model,
         result.xyz,
         result.diameters,
-        steel,
-        catalogue,
+        problem.steel,
+        problem.catalogue,
         num_modes=num_modes,
         loads=loads,
     )
     alpha_cr = modes.factors[0]
 
-    gross = catalogue.tube_at(result.diameters).area
-    inertia = catalogue.tube_at(result.diameters).second_moment
+    steel = problem.steel
+    gross = problem.catalogue.tube_at(result.diameters).area
+    inertia = problem.catalogue.tube_at(result.diameters).second_moment
 
     return Stability(
         factors=modes.factors,

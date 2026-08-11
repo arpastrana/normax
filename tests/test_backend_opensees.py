@@ -29,6 +29,7 @@ import pytest
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
 from normax.analysis.smax import prepare_model as prepare_smax
+from normax.composition import ProblemSetup
 from normax.composition import analysis_backend
 from normax.composition import local_chain
 from normax.composition import total_mass as mass_composed
@@ -304,10 +305,7 @@ def objective(setup, diameters, steel, catalogue, chain):
         return mass_composed(
             q,
             diameters,
-            structure,
-            chain,
-            steel,
-            catalogue,
+            ProblemSetup(structure, chain, steel, catalogue),
             normal=NORMAL,
             section_class=3,
         )

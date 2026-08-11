@@ -348,7 +348,7 @@ def _load_case(
     Notes
     -----
     A compiled load case is a dense channel per node and degree of freedom, so
-    swapping a case is an array replacement rather than a second compilation. The
+    swapping a load case is an array replacement rather than a second compilation. The
     three translations are written and the three moments left at zero, loads
     being forces here.
     """
@@ -398,8 +398,8 @@ def member_forces(
     baked into it when the model was built.
 
     The load case is an argument because a structure is form-found under one
-    case and has to be checked under several. Only the first of them leaves the
-    members free of bending, that being the case the shape was chosen for.
+    load case and has to be checked under several. Only the first of them leaves
+    the members free of bending, that being the one the shape was chosen for.
 
     The reference state is unstressed, so the nodes displace before any force
     appears. Those displacements are the elastic response the form-finder does
@@ -407,9 +407,9 @@ def member_forces(
     axial forces and the product of force density and length.
     """
     compiled = _injected_assembly(model, xyz, diameters, steel, catalogue)
-    case = model.loads if loads is None else _load_case(model, loads)
+    load_case = model.loads if loads is None else _load_case(model, loads)
 
-    response = solve(compiled, case)
+    response = solve(compiled, load_case)
     field = element_forces(compiled, response, num_samples=2)
 
     return MemberForces(
@@ -457,8 +457,8 @@ def buckling_modes(
     Notes
     -----
     **The factor belongs to a load case and not to a structure.** A frame sized
-    for its worst case is not necessarily least stable under that case, so a
-    factor quoted without the case it was measured under says less than it
+    for its worst load case is not necessarily least stable under it, so a
+    factor quoted without the load case it was measured under says less than it
     appears to.
 
     **A diagnostic, never a differentiated quantity.** The eigenproblem is pure
@@ -478,9 +478,9 @@ def buckling_modes(
     check rather than with a lateral one.
     """
     compiled = _injected_assembly(model, xyz, diameters, steel, catalogue)
-    case = model.loads if loads is None else _load_case(model, loads)
+    load_case = model.loads if loads is None else _load_case(model, loads)
 
-    response = solve_buckling(compiled, case, num_modes=num_modes)
+    response = solve_buckling(compiled, load_case, num_modes=num_modes)
 
     return Buckling(
         factors=response.buckling_factors,

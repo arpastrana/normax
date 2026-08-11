@@ -245,8 +245,8 @@ def capability_matrix():
 
     print("\n" + "-" * 78)
     print("SUMMARY")
-    for case, row in verdicts.items():
-        print(f"  {case:<32} " + "  ".join(f"{k}={v}" for k, v in row.items()))
+    for load_case, row in verdicts.items():
+        print(f"  {load_case:<32} " + "  ".join(f"{k}={v}" for k, v in row.items()))
 
 
 def coord_3d_evidence():

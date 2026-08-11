@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### P9 — the pipeline argument list, and load cases named as such
+
+- **`ProblemSetup` collapses the five arguments both pipelines retyped four
+  times each.** `pipeline.py` threaded `structure, graph, model, steel,
+  catalogue` and `composition.py` threaded `structure, chain, steel, catalogue`
+  through `design_members`, `total_mass`, `design_envelope` and the helpers
+  beneath them — the same list written out seven times, which is the drift P8
+  existed to remove and which had simply migrated outward from `ec3`. One
+  `NamedTuple` per module, deliberately sharing a name the way `Model` does
+  across the two analysis backends, since the two are interchangeable ways to
+  run one pipeline. Positional counts: `pipeline.design_envelope` 9 → 4,
+  `composition._check_load_case` 8 → 5, `design_members` and `total_mass` 7 → 3
+  in process and 6 → 3 composed, `frame_stability` 4 → 2, `unsmoothed_design`
+  and `governing_states` 3 → 2.
+- **The clause selectors stayed out of it.** `section_class`, `resultant` and
+  `normal` remain keyword-only rather than joining the container. A
+  `NamedTuple` of an `int` and a `bool` is hashable, so `nondiff_argnums` and
+  `static_argnames` both accept one and it works — but the same container
+  reaching a `jnp.where` traces its bool as a leaf and returns a number with no
+  error at all, where today's `if is_plastic(section_class)` raises
+  `TracerBoolConversionError`. One argument saved is not worth removing that.
+- **The material and the section family travel in the container as well as
+  inside the compiled model.** Folding them into `Model` to shorten
+  `member_forces` would be the obvious next step and is wrong: `prepare_model`
+  holds them as placeholders and `_injected_assembly` overwrites every one, so a
+  leaf left alone keeps a constant and its gradient is silently zero rather than
+  an error.
+- **`beta` is keyword-only.** It sat eighth and ninth in a positional list
+  beside `loads`, which is the position a wrong argument goes unnoticed in.
+- **Load cases are spelled `load_case`, never `case`.** A cross-section class is
+  also numbered 1 to 4, and `cases` beside `section_class` in the same signature
+  is a genuine ambiguity. Renamed as identifiers and in the shape annotations —
+  `Float[Array, "cases members"]` is now `"load_cases members"` — with the
+  English idiom left alone: "the usual case here" and "in any case" are not load
+  cases and were not touched. `governing_case` → `governing_load_case`,
+  `_check_case` → `_check_load_case`, `sizes_per_case` → `sizes_per_load_case`.
+- Verified bitwise: grouping arguments changes no pytree leaf, so the parity
+  harness must reproduce every number exactly, and it does — **identical across
+  all 48 arrays**, mass and gradients included. 1843 tests pass, unchanged in
+  count. Experiments 01, 02, 03, 06 and 09 reproduce their published numbers
+  (the arch still 31.7% lighter with a length floor at `alpha_cr` 1.72, the
+  member-length assumption still worth 3.26x the mass); 10 still fails its own
+  1e-14 value target at 1.30e-12, exactly as it did before this work.
+- Fixed in passing: the served-container branch of `experiments/10` called
+  `total_mass` with the old signature. It is skipped without
+  `NORMAX_SERVED_OUTPUT`, so nothing ran it — pyright caught it, not the tests.
+
 ### P8 — ec3 restructuring
 
 - **Fixed: the analytic bracket read `resultant` on a branch the check ignores

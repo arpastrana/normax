@@ -119,7 +119,7 @@ def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
 
 
-def test_the_structures_own_loads_are_the_default_case(
+def test_the_structures_own_loads_are_the_default_load_case(
     structure, state, steel, catalogue, diameters
 ):
     model = prepare_model(structure, steel, catalogue, normal=NORMAL)

@@ -223,9 +223,9 @@ def loads_uniform(
 
     Notes
     -----
-    The case a funicular structure is form-found under, so the geometry carries
+    The load case a funicular structure is form-found under, so the geometry carries
     it in pure tension or compression and the members see no bending. Every
-    other case is a departure from it, and the bending that appears is what a
+    other load case is a departure from it, and the bending that appears is what a
     frame analysis exists to report.
     """
     return _nodal_loads(structure, jnp.ones(structure.nodes.shape[0]) * load)
@@ -264,10 +264,10 @@ def loads_half_span(
 
     Notes
     -----
-    The case that decides an arch. A funicular shape carries its design load
+    The load case that decides an arch. A funicular shape carries its design load
     axially and nothing else, so any redistribution of that load has to be
     carried in bending, and the members most affected are the ones the symmetric
-    case left slenderest.
+    load case left slenderest.
 
     The split reads the starting geometry rather than the form-found one, which
     keeps it a property of the structure rather than of a particular set of
@@ -308,7 +308,7 @@ def loads_point(
 
     Notes
     -----
-    Adds to any other case, being an array like the rest, so a concentrated
+    Adds to any other load case, being an array like the rest, so a concentrated
     load on top of a distributed one is a sum and needs no separate generator.
     A load placed on a support is discarded, since the support carries it
     straight to ground.

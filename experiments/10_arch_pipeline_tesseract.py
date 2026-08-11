@@ -47,6 +47,7 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import prepare_model
 from normax.composition import Chain
+from normax.composition import ProblemSetup as ComposedSetup
 from normax.composition import design_members as design_composed
 from normax.composition import local_chain
 from normax.composition import total_mass as mass_composed
@@ -54,6 +55,7 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
+from normax.pipeline import ProblemSetup
 from normax.pipeline import design_members as design_in_process
 from normax.pipeline import governing_states
 from normax.pipeline import total_mass as mass_in_process
@@ -227,7 +229,11 @@ def report_served(chain, structure, q, seed, catalogue):
 
     def objective(stages):
         return lambda q: mass_composed(
-            q, seed, structure, stages, STEEL, catalogue, normal=NORMAL, section_class=3
+            q,
+            seed,
+            ComposedSetup(structure, stages, STEEL, catalogue),
+            normal=NORMAL,
+            section_class=3,
         )
 
     reference, _ = timed(lambda: objective(chain)(q))
@@ -266,29 +272,26 @@ def main():
     for section_class in (2, 3):
         catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
         model = prepare_model(structure, STEEL, catalogue, normal=NORMAL)
+        problem = ProblemSetup(structure, graph_fdm, model, STEEL, catalogue)
+        composed_problem = ComposedSetup(structure, chain, STEEL, catalogue)
 
         oracle, seconds_oracle = timed(
-            lambda catalogue=catalogue, section_class=section_class: design_in_process(
+            lambda problem=problem, section_class=section_class: design_in_process(
                 q,
                 seed,
-                structure,
-                graph_fdm,
-                model,
-                STEEL,
-                catalogue,
+                problem,
                 section_class=section_class,
             )
         )
         composed, seconds_chain = timed(
-            lambda catalogue=catalogue, section_class=section_class: design_composed(
-                q,
-                seed,
-                structure,
-                chain,
-                STEEL,
-                catalogue,
-                normal=NORMAL,
-                section_class=section_class,
+            lambda composed_problem=composed_problem, section_class=section_class: (
+                design_composed(
+                    q,
+                    seed,
+                    composed_problem,
+                    normal=NORMAL,
+                    section_class=section_class,
+                )
             )
         )
 
@@ -304,7 +307,7 @@ def main():
                 f" {float(right.ravel()[0]):>22.14e} {scaled:>10.2e}"
             )
 
-        codes = governing_states(oracle, STEEL, catalogue, section_class=section_class)
+        codes = governing_states(oracle, problem, section_class=section_class)
         limits = {LIMIT_NAMES[float(code)] for code in codes}
         print(f"    governing    {', '.join(sorted(limits))}")
         print(f"    mass         {float(composed.mass):.12f} t")
@@ -315,26 +318,21 @@ def main():
             f" {seconds_chain:.3f} composed"
         )
 
-        def in_process(q, catalogue=catalogue, section_class=section_class):
+        def in_process(q, problem=problem, section_class=section_class):
             return mass_in_process(
                 q,
                 seed,
-                structure,
-                graph_fdm,
-                model,
-                STEEL,
-                catalogue,
+                problem,
                 section_class=section_class,
             )
 
-        def composed_mass(q, catalogue=catalogue, section_class=section_class):
+        def composed_mass(
+            q, composed_problem=composed_problem, section_class=section_class
+        ):
             return mass_composed(
                 q,
                 seed,
-                structure,
-                chain,
-                STEEL,
-                catalogue,
+                composed_problem,
                 normal=NORMAL,
                 section_class=section_class,
             )
@@ -363,7 +361,11 @@ def main():
 
     def objective(q):
         return mass_composed(
-            q, seed, structure, chain, STEEL, catalogue, normal=NORMAL, section_class=3
+            q,
+            seed,
+            ComposedSetup(structure, chain, STEEL, catalogue),
+            normal=NORMAL,
+            section_class=3,
         )
 
     direction = jnp.ones_like(q)

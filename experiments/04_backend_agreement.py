@@ -54,6 +54,7 @@ import numpy as np
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
 from normax.analysis.smax import prepare_model as prepare_smax
+from normax.composition import ProblemSetup as ComposedSetup
 from normax.composition import analysis_backend
 from normax.composition import local_chain
 from normax.composition import total_mass as mass_composed
@@ -139,10 +140,7 @@ def objective(chain, structure, num_edges):
         return mass_composed(
             q,
             seed,
-            structure,
-            chain,
-            STEEL,
-            CATALOGUE,
+            ComposedSetup(structure, chain, STEEL, CATALOGUE),
             normal=NORMAL,
             section_class=3,
         )

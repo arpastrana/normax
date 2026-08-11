@@ -66,7 +66,7 @@ MOMENTS = jnp.asarray(
 SHARPNESS = [5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]
 
 
-def sizes_per_case():
+def sizes_per_load_case():
     """
     Fully-stressed diameter of every member under every load case.
     """
@@ -84,7 +84,9 @@ def total_mass(beta):
     Mass of the structure sized by the smooth envelope at a given sharpness.
     """
     return mass_of_tubes(
-        CATALOGUE.tube_at(diameter_envelope(sizes_per_case(), beta)), LENGTHS, STEEL
+        CATALOGUE.tube_at(diameter_envelope(sizes_per_load_case(), beta)),
+        LENGTHS,
+        STEEL,
     )
 
 
@@ -92,14 +94,16 @@ def main() -> None:
     """
     Anneal the sharpness and report what the smoothing costs.
     """
-    per_case = sizes_per_case()
+    per_case = sizes_per_load_case()
     exact = jnp.max(per_case, axis=0)
     exact_mass = float(mass_of_tubes(CATALOGUE.tube_at(exact), LENGTHS, STEEL)) * 1e3
 
     print("Three load cases over four members, S355 at the Class 3 limit\n")
     print(f"  {'member':<10}{'case 1':<12}{'case 2':<12}{'case 3':<12}{'exact max'}")
     for member in range(per_case.shape[1]):
-        row = "".join(f"{float(per_case[case, member]):<12.2f}" for case in range(3))
+        row = "".join(
+            f"{float(per_case[load_case, member]):<12.2f}" for load_case in range(3)
+        )
         print(f"  {member:<10}{row}{float(exact[member]):.2f}")
 
     print(f"\n  exact mass {exact_mass:.2f} kg")

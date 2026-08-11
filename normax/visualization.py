@@ -667,14 +667,14 @@ def figure_load_cases(
     Returns
     -------
     figure :
-        One drawing per form above a count of which case governs how many
+        One drawing per form above a count of which load case governs how many
         members.
 
     Notes
     -----
     **The picture only a differentiable code check can produce.** No member was
-    reassigned to a case; the form moved, which changed how much bending each
-    case raises where, and the pattern followed. A check that returns a verdict
+    reassigned to a load case; the form moved, which changed how much bending
+    each one raises where, and the pattern followed. A check that returns a verdict
     rather than a derivative can draw the first panel but has no way to search
     for the others.
 
@@ -687,7 +687,7 @@ def figure_load_cases(
     independently scaled axes would hide.
     """
     widest = max(float(np.max(np.asarray(form.diameters))) for form in forms)
-    cases = len(names)
+    load_cases = len(names)
     columns = len(forms)
 
     figure, axes = plt.subplots(
@@ -713,7 +713,7 @@ def figure_load_cases(
             widest,
             colors=form.governing,
             vmin=0.0,
-            vmax=cases - 1.0,
+            vmax=load_cases - 1.0,
         )
         ax.set_xlim(float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
         ax.set_ylim(float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
@@ -722,7 +722,7 @@ def figure_load_cases(
     bar = figure.colorbar(
         members,
         ax=axes[0].tolist(),
-        ticks=np.arange(cases),
+        ticks=np.arange(load_cases),
         shrink=0.7,
         aspect=14,
         pad=0.02,
@@ -731,9 +731,9 @@ def figure_load_cases(
 
     for ax, form in zip(axes[1], forms):
         decided = np.asarray(form.governing)
-        counts = [int(np.sum(decided == case)) for case in range(cases)]
-        ax.bar(np.arange(cases), counts, 0.6, color="#31688e")
-        ax.set_xticks(np.arange(cases))
+        counts = [int(np.sum(decided == load_case)) for load_case in range(load_cases)]
+        ax.bar(np.arange(load_cases), counts, 0.6, color="#31688e")
+        ax.set_xticks(np.arange(load_cases))
         ax.set_xticklabels(names, fontsize=8, rotation=15)
         ax.set_ylabel("members governed")
         ax.set_title(form.title, fontsize=10)

@@ -722,7 +722,7 @@ def end_moments(
 
 
 def diameter_envelope(
-    diameters: Float[Array, "cases members"],
+    diameters: Float[Array, "load_cases members"],
     beta: float | Float[Array, ""],
 ) -> Float[Array, "members"]:
     """
@@ -738,18 +738,18 @@ def diameter_envelope(
     Returns
     -------
     diameter :
-        Diameter covering every case.
+        Diameter covering every load case.
 
     Notes
     -----
     Not EN 1993-1-1. A member must satisfy every load case, so its size is the
-    largest any case demands; that largest is not differentiable, and a gradient
-    taken through it sees one case at a time and stalls.
+    largest any load case demands; that largest is not differentiable, and a
+    gradient taken through it sees one load case at a time and stalls.
 
     The envelope is taken in the logarithm of the diameter, which makes the
     sharpness dimensionless and so comparable between structures of different
     size. It never understates the largest, and exceeds it by at most the
-    logarithm of the number of cases over the sharpness, so annealing the
+    logarithm of the number of load cases over the sharpness, so annealing the
     sharpness upward drives it onto the true largest from above. Being an upper
     bound is the safe direction: the design stays adequate throughout.
     """

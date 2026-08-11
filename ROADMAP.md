@@ -598,7 +598,7 @@ and the optimizer, and should consume that function rather than rebuild it.
 **Four prerequisites were folded into this phase**, none of which existed before
 it: load case generators in `normax/structures.py`; a `loads` argument on the
 analysis and on both pipelines, which cost **no schema change** because T2
-already carried the nodal loads; `pipeline.design_envelope`, the enveloped multi-case
+already carried the nodal loads; `pipeline.design_envelope`, the enveloped multi-load-case
 design, with `unsmoothed` to read it back at the true largest; and
 `normax/optimization.py`, the annealed L-BFGS-B driver. `scipy` is now a project
 dependency.

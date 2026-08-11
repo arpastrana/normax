@@ -7,6 +7,7 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import prepare_model
 from normax.composition import STAGES
+from normax.composition import ProblemSetup as ComposedSetup
 from normax.composition import design_envelope as envelope_composed
 from normax.composition import design_members as design_composed
 from normax.composition import local_chain
@@ -15,6 +16,7 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
+from normax.pipeline import ProblemSetup as InProcessSetup
 from normax.pipeline import design_envelope as envelope_in_process
 from normax.pipeline import design_members as design_in_process
 from normax.pipeline import governing_states
@@ -123,6 +125,19 @@ def seed():
     return jnp.full(NUM_EDGES, SEED)
 
 
+def in_process_setup(structure, fdm, steel, catalogue):
+    """
+    The problem the in-process route is run against.
+    """
+    return InProcessSetup(
+        structure,
+        fdm,
+        prepare_model(structure, steel, catalogue, normal=NORMAL),
+        steel,
+        catalogue,
+    )
+
+
 def both(setup, chain, steel, seed, section_class, **kwargs):
     """
     The same design taken in process and across the three Tesseracts.
@@ -133,21 +148,14 @@ def both(setup, chain, steel, seed, section_class, **kwargs):
     oracle = design_compiled(
         q,
         seed,
-        structure,
-        fdm,
-        prepare_model(structure, steel, catalogue, normal=NORMAL),
-        steel,
-        catalogue,
+        in_process_setup(structure, fdm, steel, catalogue),
         section_class=section_class,
         **kwargs,
     )
     composed = design_composed(
         q,
         seed,
-        structure,
-        chain,
-        steel,
-        catalogue,
+        ComposedSetup(structure, chain, steel, catalogue),
         normal=NORMAL,
         section_class=section_class,
         **kwargs,
@@ -167,11 +175,7 @@ def objectives(setup, chain, steel, seed, section_class, **kwargs):
         return mass_compiled(
             q,
             seed,
-            structure,
-            fdm,
-            prepare_model(structure, steel, catalogue, normal=NORMAL),
-            steel,
-            catalogue,
+            in_process_setup(structure, fdm, steel, catalogue),
             section_class=section_class,
             **kwargs,
         )
@@ -180,10 +184,7 @@ def objectives(setup, chain, steel, seed, section_class, **kwargs):
         return mass_composed(
             q,
             seed,
-            structure,
-            chain,
-            steel,
-            catalogue,
+            ComposedSetup(structure, chain, steel, catalogue),
             normal=NORMAL,
             section_class=section_class,
             **kwargs,
@@ -464,6 +465,7 @@ def sized_through_the_check(setup, chain, steel, seed, result, catalogue):
 
 
 def test_the_governing_limit_state_survives_the_boundary(setup, chain, steel, seed):
+    structure, fdm, _ = setup
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
     oracle, _ = both(setup, chain, steel, seed, 3)
     check, axial_force = sized_through_the_check(
@@ -471,7 +473,13 @@ def test_the_governing_limit_state_survives_the_boundary(setup, chain, steel, se
     )
 
     reported = np.asarray(check(axial_force)["governing"])
-    expected = np.asarray(governing_states(oracle, steel, catalogue, section_class=3))
+    expected = np.asarray(
+        governing_states(
+            oracle,
+            in_process_setup(structure, fdm, steel, catalogue),
+            section_class=3,
+        )
+    )
 
     assert np.array_equal(reported, expected)
 
@@ -530,7 +538,7 @@ def test_a_chain_asked_for_a_stage_that_is_not_there_says_so(tmp_path):
 # Several load cases, across the boundary
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def cases(setup):
+def load_cases(setup):
     """
     Three cases of equal total: funicular, half span, and a crown point load.
     """
@@ -547,7 +555,7 @@ def cases(setup):
     return jnp.stack([loads_uniform(structure, spread), half, point])
 
 
-def enveloped(setup, chain, steel, seed, cases, beta):
+def enveloped(setup, chain, steel, seed, load_cases, beta):
     """
     The same enveloped design taken in process and across the Tesseracts.
     """
@@ -557,24 +565,17 @@ def enveloped(setup, chain, steel, seed, cases, beta):
     oracle = envelope_compiled(
         q,
         seed,
-        structure,
-        fdm,
-        prepare_model(structure, steel, catalogue, normal=NORMAL),
-        steel,
-        catalogue,
-        cases,
-        beta,
+        in_process_setup(structure, fdm, steel, catalogue),
+        load_cases,
+        beta=beta,
         section_class=3,
     )
     composed = envelope_composed(
         q,
         seed,
-        structure,
-        chain,
-        steel,
-        catalogue,
-        cases,
-        beta,
+        ComposedSetup(structure, chain, steel, catalogue),
+        load_cases,
+        beta=beta,
         normal=NORMAL,
         section_class=3,
     )
@@ -584,12 +585,12 @@ def enveloped(setup, chain, steel, seed, cases, beta):
 
 @pytest.mark.parametrize("beta", [10.0, 500.0])
 def test_every_field_of_the_enveloped_design_survives_the_boundary(
-    setup, chain, steel, seed, cases, beta
+    setup, chain, steel, seed, load_cases, beta
 ):
     # The objective the optimizer actually minimizes, which is not the one the
     # single-case parity test covers: three analyses and three checks per call,
     # aggregated above the chain.
-    oracle, composed = enveloped(setup, chain, steel, seed, cases, beta)
+    oracle, composed = enveloped(setup, chain, steel, seed, load_cases, beta)
 
     for field in oracle._fields:
         limit = (
@@ -600,7 +601,7 @@ def test_every_field_of_the_enveloped_design_survives_the_boundary(
 
 
 def test_the_enveloped_mass_gradient_survives_the_boundary(
-    setup, chain, steel, seed, cases
+    setup, chain, steel, seed, load_cases
 ):
     structure, fdm, q = setup
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
@@ -609,13 +610,9 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
         return envelope_compiled(
             q,
             seed,
-            structure,
-            fdm,
-            prepare_model(structure, steel, catalogue, normal=NORMAL),
-            steel,
-            catalogue,
-            cases,
-            100.0,
+            in_process_setup(structure, fdm, steel, catalogue),
+            load_cases,
+            beta=100.0,
             section_class=3,
         ).mass
 
@@ -623,12 +620,9 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
         return envelope_composed(
             q,
             seed,
-            structure,
-            chain,
-            steel,
-            catalogue,
-            cases,
-            100.0,
+            ComposedSetup(structure, chain, steel, catalogue),
+            load_cases,
+            beta=100.0,
             normal=NORMAL,
             section_class=3,
         ).mass
@@ -638,20 +632,22 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
     )
 
 
-def test_the_composed_envelope_form_finds_once_for_all_the_cases(
-    setup, chain, steel, seed, cases
+def test_the_composed_envelope_form_finds_once_for_all_the_load_cases(
+    setup, chain, steel, seed, load_cases
 ):
     # The shape answers to one load case by construction, so form finding is
     # shared and only the analysis and the check are walked per case. A geometry
     # that differed between cases would mean a different structure per case.
-    oracle, composed = enveloped(setup, chain, steel, seed, cases, 500.0)
+    oracle, composed = enveloped(setup, chain, steel, seed, load_cases, 500.0)
 
     assert relative(oracle.xyz, composed.xyz) < TOLERANCE_PARITY
     assert relative(oracle.lengths, composed.lengths) < TOLERANCE_PARITY
 
 
-def test_the_composed_envelope_covers_every_case(setup, chain, steel, seed, cases):
-    _, composed = enveloped(setup, chain, steel, seed, cases, 500.0)
+def test_the_composed_envelope_covers_every_load_case(
+    setup, chain, steel, seed, load_cases
+):
+    _, composed = enveloped(setup, chain, steel, seed, load_cases, 500.0)
 
     assert float(jnp.max(composed.utilization)) <= 1.0 + 1e-12
     assert np.all(

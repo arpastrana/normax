@@ -22,7 +22,7 @@ over a size per member, and it is why box bounds are the only constraint here.
 
 Two things are annealed rather than fixed. The envelope over load cases is
 smooth, and its sharpness rises geometrically so the design approaches the
-smallest adequate one from above instead of chattering between cases. Nothing
+smallest adequate one from above instead of chattering between load cases. Nothing
 else about the problem is relaxed: the check is exact at every iterate, and the
 utilization the final design reports is the standard's own.
 
@@ -405,7 +405,7 @@ def optimize_annealed(
     its iterations rediscovering what the blunt round already found.
 
     The design stays adequate throughout, since the envelope never understates
-    what any case demands. Annealing therefore approaches the answer from the
+    what any load case demands. Annealing therefore approaches the answer from the
     safe side, and stopping early leaves a heavier structure rather than an
     inadequate one.
 
