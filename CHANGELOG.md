@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### P9c — experiment 10, and why it had been failing
+
+Three causes, only one of which was a tolerance.
+
+- **It compared a container as one array.** The loop ran over `Design._fields`
+  and called `np.asarray` on `actions`, stacking an axial force in newtons with
+  two moments in newton-millimetres and two dimensionless factors, then divided
+  the worst difference by the largest element of the lot. That ratio is not a
+  relative error of anything: the moment's disagreement was being scaled by the
+  axial force, which happens to be 1.8x larger, so the reported figure was also
+  understated. The table's own columns gave it away, printing `axial_force[0]`
+  under the label `actions`. It now walks leaves with the same `named_fields`
+  helper the parity test uses, so every number is measured against the quantity
+  it belongs to.
+- **The oracle was not compiled, and that was the real defect.** Every other
+  consumer — the parity test, experiment 09, the README — runs the in-process
+  pipeline under `filter_jit`, and the Tesseract stages compile internally, so
+  the comparison had two different fusion schedules either side of it and
+  charged the difference to the boundary. Compiling it moves the required
+  diameter from 3.23e-14 to **5.05e-15** and the end moment from 2.29e-12 to
+  3.58e-13. **The 1e-14 target is unchanged and now passes on its own merits.**
+  It also corrects a claim the experiment was making backwards: the seconds read
+  0.140 in process against 0.062 composed, implying three schema crossings were
+  faster than calling Python. Compiled, it is 0.0003 against 0.0613.
+- **The end moments needed a tolerance of their own, and the tests already said
+  so.** A funicular arch carries its design case axially, so the moment is the
+  residual — measured at 3.9e-4 of the axial action times the length — and a
+  last-bit difference in the analysis inputs is amplified by the reciprocal of
+  that ratio before it reaches the moment. `tests/test_tesseract_parity.py` has
+  carried `TOLERANCE_MOMENT = 1e-11` and that argument since P8; experiment 10
+  predates `Design.actions` and was never given the same treatment. It has it
+  now, at the same value, against a measured 3.58e-13.
+- The diameter inherits the moment's error attenuated by an elasticity of
+  **0.02**, measured with `jax.jacfwd` rather than assumed: the moment is worth
+  about a fiftieth of the utilization at the root. That predicts 4.7e-14 for the
+  eager oracle against 3.23e-14 observed, which is what identified compilation
+  rather than conditioning as the cause.
+
 ### P9 — the pipeline argument list, and load cases named as such
 
 - **`ProblemSetup` collapses the five arguments both pipelines retyped four

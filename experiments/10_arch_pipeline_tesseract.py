@@ -29,9 +29,11 @@ Four things are reported.
 **The in-process pipeline is the oracle, and that is the point rather than an
 apology.** Pasteur's own caveat is that a single developer with a single stack
 might not need Tesseracts, and the honest answer to it is not that the boundary
-is convenient. It is that the boundary is free — measured here — and that a
-second analysis backend which JAX cannot trace at all slots in behind the same
-schema without anything above it changing.
+is convenient. It is that the boundary is free in the answer — measured here to
+the last bits — and that a second analysis backend which JAX cannot trace at all
+slots in behind the same schema without anything above it changing. It is not
+free in wall clock, and the seconds below say so: both sides are compiled, and
+crossing three schemas still costs what serializing and reassembling costs.
 
 Run with `uv run --group pipeline python experiments/10_arch_pipeline_tesseract.py`.
 """
@@ -39,6 +41,7 @@ Run with `uv run --group pipeline python experiments/10_arch_pipeline_tesseract.
 import os
 import time
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -61,6 +64,13 @@ from normax.pipeline import governing_states
 from normax.pipeline import total_mass as mass_in_process
 from normax.structures import arch_2d
 
+# The oracle is compiled, as experiment 09, the parity test and the README all
+# run it. The Tesseract stages compile internally, so an eager oracle would put
+# two different fusion schedules either side of the comparison and charge the
+# difference to the boundary.
+design_compiled = eqx.filter_jit(design_in_process)
+mass_compiled = eqx.filter_jit(mass_in_process)
+
 # The arch of experiment 09, unchanged, so the two are comparable.
 SPAN = 10_000.0
 RISE = 3_000.0
@@ -78,6 +88,22 @@ SEED = 100.0
 # together in process, so the same sum accumulates in a different order.
 TOLERANCE_PARITY = 1e-14
 TOLERANCE_DERIVATIVE = 1e-12
+
+# The end moments are the exception, and the arch is the reason rather than the
+# boundary. A funicular shape carries its design case axially, so the moment is
+# what is left over: measured here it is 3.9e-4 of the axial action times the
+# length. A last-bit difference in the analysis inputs is amplified by the
+# reciprocal of that ratio before it reaches the moment, so the floor sits three
+# orders above the axial force it came from — 3.6e-13 against 7e-16. The moment
+# factors read a ratio of the two end moments and inherit it, and the diameter
+# inherits a fiftieth of it, the moment being worth that much of the utilization.
+TOLERANCE_MOMENT = 1e-11
+MOMENT_FIELDS = (
+    "moment_major",
+    "moment_minor",
+    "moment_factor_major",
+    "moment_factor_minor",
+)
 
 # Serializing across a socket costs a few more digits than importing the module
 # does, so the containers are held to a looser bound than the in-process chain.
@@ -110,6 +136,23 @@ def setup():
     reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
 
     return structure, graph_fdm, trial * reached / RISE
+
+
+def named_fields(container):
+    """
+    Every field of a result, with a nested container expanded one level.
+
+    A container holds quantities of different units, so comparing one as a
+    single array scales a moment by an axial force and reports a ratio of no
+    physical meaning. Each leaf is measured against itself instead.
+    """
+    for field in container._fields:
+        value = getattr(container, field)
+        if hasattr(value, "_fields"):
+            for inner in value._fields:
+                yield f"{field}.{inner}", getattr(value, inner)
+        else:
+            yield field, value
 
 
 def relative(oracle, composed):
@@ -267,6 +310,7 @@ def main():
 
     print("\nThe same design, taken twice")
     worst_value = 0.0
+    worst_moment = 0.0
     worst_gradient = 0.0
 
     for section_class in (2, 3):
@@ -276,7 +320,7 @@ def main():
         composed_problem = ComposedSetup(structure, chain, STEEL, catalogue)
 
         oracle, seconds_oracle = timed(
-            lambda problem=problem, section_class=section_class: design_in_process(
+            lambda problem=problem, section_class=section_class: design_compiled(
                 q,
                 seed,
                 problem,
@@ -296,15 +340,29 @@ def main():
         )
 
         print(f"\n  Class {section_class}, d/t = {float(catalogue.ratio):.3f}")
-        print(f"    {'field':>12} {'in process':>22} {'composed':>22} {'scaled':>10}")
-        for field in oracle._fields:
-            left = np.asarray(getattr(oracle, field), dtype=np.float64)
-            right = np.asarray(getattr(composed, field), dtype=np.float64)
+        print(
+            f"    {'field':>27} {'in process':>22} {'composed':>22}"
+            f" {'scaled':>10} {'held to':>9}"
+        )
+        for (label, oracle_leaf), (_, composed_leaf) in zip(
+            named_fields(oracle), named_fields(composed)
+        ):
+            left = np.asarray(oracle_leaf, dtype=np.float64)
+            right = np.asarray(composed_leaf, dtype=np.float64)
             scaled = relative(left, right)
-            worst_value = max(worst_value, scaled)
+
+            leaf = label.rpartition(".")[2]
+            if leaf in MOMENT_FIELDS:
+                limit = TOLERANCE_MOMENT
+                worst_moment = max(worst_moment, scaled)
+            else:
+                limit = TOLERANCE_PARITY
+                worst_value = max(worst_value, scaled)
+
             print(
-                f"    {field:>12} {float(left.ravel()[0]):>22.14e}"
+                f"    {label:>27} {float(left.ravel()[0]):>22.14e}"
                 f" {float(right.ravel()[0]):>22.14e} {scaled:>10.2e}"
+                f" {limit:>9.0e}"
             )
 
         codes = governing_states(oracle, problem, section_class=section_class)
@@ -314,12 +372,12 @@ def main():
         departure = float(jnp.max(jnp.abs(composed.utilization - 1.0)))
         print(f"    worst |u-1|  {departure:.2e}")
         print(
-            f"    seconds      {seconds_oracle:.3f} in process,"
-            f" {seconds_chain:.3f} composed"
+            f"    seconds      {seconds_oracle:.4f} in process,"
+            f" {seconds_chain:.4f} composed, both compiled"
         )
 
         def in_process(q, problem=problem, section_class=section_class):
-            return mass_in_process(
+            return mass_compiled(
                 q,
                 seed,
                 problem,
@@ -352,8 +410,8 @@ def main():
             )
         print(f"    sum          {float(jnp.sum(crossed)):.14e}")
         print(
-            f"    seconds      {seconds_oracle:.3f} in process,"
-            f" {seconds_chain:.3f} composed"
+            f"    seconds      {seconds_oracle:.4f} in process,"
+            f" {seconds_chain:.4f} composed, both compiled"
         )
 
     print("\nForward mode and reverse mode, through all three stages")
@@ -387,6 +445,9 @@ def main():
         f"  worst value error       {worst_value:.2e}  (target {TOLERANCE_PARITY:.0e})"
     )
     print(
+        f"  worst end moment error  {worst_moment:.2e}  (target {TOLERANCE_MOMENT:.0e})"
+    )
+    print(
         f"  worst gradient error    {worst_gradient:.2e}"
         f"  (target {TOLERANCE_DERIVATIVE:.0e})"
     )
@@ -398,6 +459,7 @@ def main():
 
     passed = (
         worst_value < TOLERANCE_PARITY
+        and worst_moment < TOLERANCE_MOMENT
         and worst_gradient < TOLERANCE_DERIVATIVE
         and modes < TOLERANCE_DERIVATIVE
         and (served is None or served < TOLERANCE_SERVED)
