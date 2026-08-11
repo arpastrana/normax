@@ -3,12 +3,12 @@ import math
 import pytest
 
 from normax.ec3.resistance import IMPERFECTION_FACTORS
-from normax.ec3.resistance import chi
-from normax.ec3.resistance import n_b_rd
-from normax.ec3.resistance import n_c_rd
-from normax.ec3.resistance import n_cr
-from normax.ec3.resistance import phi
-from normax.ec3.resistance import slenderness
+from normax.ec3.resistance import buckling_auxiliary
+from normax.ec3.resistance import force_critical
+from normax.ec3.resistance import reduction_buckling
+from normax.ec3.resistance import resistance_buckling
+from normax.ec3.resistance import resistance_compression
+from normax.ec3.resistance import slenderness_from_force
 
 # Gardner, L. and Nethercot, D. (2011), Designers' Guide to Eurocode 3, 2nd edn,
 # ICE Publishing. Worked Examples 6.9 (pp. 78-85), 6.10 (pp. 86-93), 6.8
@@ -45,16 +45,16 @@ CURVE_C = IMPERFECTION_FACTORS["c"]
 
 
 def buckling_chain(area, second_moment, length_buckling, f_y, alpha):
-    critical = n_cr(second_moment, length_buckling, MODULUS)
-    non_dimensional = slenderness(area, f_y, critical)
-    reduction = chi(non_dimensional, alpha)
+    critical = force_critical(second_moment, length_buckling, MODULUS)
+    non_dimensional = slenderness_from_force(area, f_y, critical)
+    reduction = reduction_buckling(non_dimensional, alpha)
 
     return {
         "n_cr": critical,
         "slenderness": non_dimensional,
-        "phi": phi(non_dimensional, alpha),
+        "phi": buckling_auxiliary(non_dimensional, alpha),
         "chi": reduction,
-        "n_b_rd": n_b_rd(reduction, area, f_y, GAMMA_M1),
+        "n_b_rd": resistance_buckling(reduction, area, f_y, GAMMA_M1),
     }
 
 
@@ -130,7 +130,7 @@ def test_rhs_matches_the_guide(rhs, axis, quantity):
 
 
 def test_rhs_cross_section_resistance():
-    resistance = n_c_rd(RHS_AREA, RHS_YIELD, GAMMA_M0)
+    resistance = resistance_compression(RHS_AREA, RHS_YIELD, GAMMA_M0)
 
     assert resistance * 1e-3 == pytest.approx(2946.5, rel=TOLERANCE_EXACT)
 
@@ -219,7 +219,7 @@ def test_ukc_matches_the_guide(ukc, axis, quantity):
 def test_ukc_cross_section_resistance():
     # The guide later writes this as 8415 kN, which is the same area at 275
     # rather than 265. See the errata in docs/clauses.md.
-    resistance = n_c_rd(UKC_AREA, UKC_YIELD, GAMMA_M0)
+    resistance = resistance_compression(UKC_AREA, UKC_YIELD, GAMMA_M0)
 
     assert resistance * 1e-3 == pytest.approx(8109.0, rel=TOLERANCE_EXACT)
 
@@ -255,21 +255,21 @@ CHANNEL_N_CR_TORSIONAL_FLEXURAL = 114e3
 
 
 def test_channel_flexural_critical_forces():
-    critical_y = n_cr(CHANNEL_INERTIA_Y, CHANNEL_LENGTH, MODULUS)
-    critical_z = n_cr(CHANNEL_INERTIA_Z, CHANNEL_LENGTH, MODULUS)
+    critical_y = force_critical(CHANNEL_INERTIA_Y, CHANNEL_LENGTH, MODULUS)
+    critical_z = force_critical(CHANNEL_INERTIA_Z, CHANNEL_LENGTH, MODULUS)
 
     assert critical_y * 1e-3 == pytest.approx(787.0, rel=TOLERANCE_GUIDE)
     assert critical_z * 1e-3 == pytest.approx(127.0, rel=TOLERANCE_GUIDE)
 
 
 def test_channel_buckling_chain():
-    non_dimensional = slenderness(
+    non_dimensional = slenderness_from_force(
         CHANNEL_AREA_EFFECTIVE,
         CHANNEL_YIELD,
         CHANNEL_N_CR_TORSIONAL_FLEXURAL,
     )
-    auxiliary = phi(non_dimensional, CURVE_C)
-    reduction = chi(non_dimensional, CURVE_C)
+    auxiliary = buckling_auxiliary(non_dimensional, CURVE_C)
+    reduction = reduction_buckling(non_dimensional, CURVE_C)
 
     assert non_dimensional == pytest.approx(1.161215, rel=TOLERANCE_EXACT)
     assert auxiliary == pytest.approx(1.409708, rel=TOLERANCE_EXACT)
@@ -283,8 +283,10 @@ def test_channel_buckling_chain():
 def test_channel_buckling_resistance():
     # The guide prints 69.2 kN, which it reaches by carrying its own rounded
     # reduction factor of 0.45 forward. The unrounded factor gives 69.6 kN.
-    reduction = chi(1.161215, CURVE_C)
-    resistance = n_b_rd(reduction, CHANNEL_AREA_EFFECTIVE, CHANNEL_YIELD, GAMMA_M1)
+    reduction = reduction_buckling(1.161215, CURVE_C)
+    resistance = resistance_buckling(
+        reduction, CHANNEL_AREA_EFFECTIVE, CHANNEL_YIELD, GAMMA_M1
+    )
 
     assert resistance * 1e-3 == pytest.approx(69.2, rel=TOLERANCE_GUIDE)
     assert 0.45 * CHANNEL_AREA_EFFECTIVE * CHANNEL_YIELD * 1e-3 == pytest.approx(
@@ -312,8 +314,12 @@ LATERAL_TORSIONAL = [(0.54, 0.70, 0.87), (0.62, 0.76, 0.83)]
 def test_lateral_torsional_curve_shares_the_flexural_algebra(
     lam, expected_phi, expected_chi
 ):
-    assert phi(lam, CURVE_B) == pytest.approx(expected_phi, rel=TOLERANCE_GUIDE)
-    assert chi(lam, CURVE_B) == pytest.approx(expected_chi, rel=TOLERANCE_GUIDE)
+    assert buckling_auxiliary(lam, CURVE_B) == pytest.approx(
+        expected_phi, rel=TOLERANCE_GUIDE
+    )
+    assert reduction_buckling(lam, CURVE_B) == pytest.approx(
+        expected_chi, rel=TOLERANCE_GUIDE
+    )
 
 
 # ---- Coverage of the curve, taken as a whole ---- #
@@ -332,7 +338,9 @@ PUBLISHED_POINTS = [
 
 @pytest.mark.parametrize("label, alpha, lam, expected", PUBLISHED_POINTS)
 def test_every_published_point(label, alpha, lam, expected):
-    assert chi(lam, alpha) == pytest.approx(expected, rel=TOLERANCE_EXACT), label
+    assert reduction_buckling(lam, alpha) == pytest.approx(
+        expected, rel=TOLERANCE_EXACT
+    ), label
 
 
 def test_the_published_points_span_the_curve():

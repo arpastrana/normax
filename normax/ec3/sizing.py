@@ -43,17 +43,17 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.classification import class_limits
-from normax.ec3.interaction import c_m_linear
 from normax.ec3.interaction import governing_equation
-from normax.ec3.interaction import utilization as utilization_member
+from normax.ec3.interaction import moment_factor_linear
+from normax.ec3.interaction import utilization_member
 from normax.ec3.resistance import E_MODULUS
 from normax.ec3.resistance import GAMMA_M0
 from normax.ec3.resistance import GAMMA_M1
 from normax.ec3.resistance import IMPERFECTION_FACTORS
-from normax.ec3.resistance import chi
+from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import moment_combined
-from normax.ec3.resistance import n_cr
-from normax.ec3.resistance import slenderness
+from normax.ec3.resistance import reduction_buckling
+from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.resistance import utilization_cross_section
 from normax.ec3.section import area
 from normax.ec3.section import modulus_elastic
@@ -246,7 +246,7 @@ def _modulus(
     return modulus_elastic(diameter, ratio)
 
 
-def utilization(
+def utilization_design(
     diameter: Float[Array, "members"],
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
@@ -355,9 +355,9 @@ def _demands(
     gross = area(diameter, tube.ratio)
     modulus = _modulus(diameter, tube.ratio, plastic=plastic)
 
-    critical = n_cr(second_moment(diameter, tube.ratio), l_cr, steel.e_mod)
-    lam = slenderness(gross, steel.f_y, critical)
-    reduction = chi(lam, tube.alpha)
+    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel.e_mod)
+    lam = slenderness_from_force(gross, steel.f_y, critical)
+    reduction = reduction_buckling(lam, tube.alpha)
 
     axial = jnp.asarray(n_ed)
     member = utilization_member(
@@ -391,7 +391,7 @@ def _demands(
     return jnp.where(axial < 0.0, member, 0.0), section
 
 
-def bracket(
+def diameter_bracket(
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
     m_z_ed: Float[Array, "members"],
@@ -501,7 +501,7 @@ def _solve(
         jnp.shape(c_mz),
         jnp.shape(l_cr),
     )
-    lower = bracket(
+    lower = diameter_bracket(
         n_ed, m_y_ed, m_z_ed, steel, tube, plastic=plastic, resultant=resultant
     )
     under = jnp.broadcast_to(jnp.log(lower), shape)
@@ -514,7 +514,7 @@ def _solve(
         small, large = bounds
         middle = 0.5 * (small + large)
         exceeded = (
-            utilization(
+            utilization_design(
                 jnp.exp(middle),
                 n_ed,
                 m_y_ed,
@@ -534,7 +534,7 @@ def _solve(
 
     ceiling = jnp.exp(over)
     bracketed = (
-        utilization(
+        utilization_design(
             ceiling,
             n_ed,
             m_y_ed,
@@ -620,7 +620,9 @@ def _diameter_jvp(
     solved = _solve(plastic, resultant, *primals)
 
     def check(size: Float[Array, "members"]) -> Float[Array, ""]:
-        demand = utilization(size, *primals, plastic=plastic, resultant=resultant)
+        demand = utilization_design(
+            size, *primals, plastic=plastic, resultant=resultant
+        )
         if jnp.shape(demand) != jnp.shape(size):
             raise ValueError(
                 f"the check broadcast to {jnp.shape(demand)} against a diameter "
@@ -630,7 +632,9 @@ def _diameter_jvp(
         return jnp.sum(demand)
 
     def at_root(*actions: Float[Array, "members"]) -> Float[Array, "members"]:
-        return utilization(solved, *actions, plastic=plastic, resultant=resultant)
+        return utilization_design(
+            solved, *actions, plastic=plastic, resultant=resultant
+        )
 
     slope = jax.grad(check)(solved)
     _, drift = jax.jvp(at_root, primals, tangents)
@@ -641,7 +645,7 @@ def _diameter_jvp(
     return solved, tangent
 
 
-def diameter(
+def diameter_required(
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
     m_z_ed: Float[Array, "members"],
@@ -736,7 +740,7 @@ def mass(
     return steel.density * jnp.sum(area(diameter, tube.ratio) * lengths)
 
 
-def governing(
+def governing_limit_state(
     diameter: Float[Array, "members"],
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
@@ -810,9 +814,9 @@ def governing(
 
     gross = area(diameter, tube.ratio)
     modulus = _modulus(diameter, tube.ratio, plastic=plastic)
-    critical = n_cr(second_moment(diameter, tube.ratio), l_cr, steel.e_mod)
-    lam = slenderness(gross, steel.f_y, critical)
-    reduction = chi(lam, tube.alpha)
+    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel.e_mod)
+    lam = slenderness_from_force(gross, steel.f_y, critical)
+    reduction = reduction_buckling(lam, tube.alpha)
 
     equation = governing_equation(
         jnp.maximum(-jnp.asarray(n_ed), 0.0),
@@ -882,10 +886,10 @@ def end_moments(
     ratio = jnp.sign(jnp.asarray(m_first) * jnp.asarray(m_second)) * smaller
     psi = jnp.where(bent, ratio / jnp.where(bent, larger, 1.0), 1.0)
 
-    return larger, c_m_linear(psi)
+    return larger, moment_factor_linear(psi)
 
 
-def envelope(
+def diameter_envelope(
     diameters: Float[Array, "cases members"],
     beta: float | Float[Array, ""],
 ) -> Float[Array, "members"]:

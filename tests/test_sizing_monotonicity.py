@@ -2,18 +2,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.ec3.classification import epsilon
-from normax.ec3.interaction import utilization
+from normax.ec3.classification import material_factor
+from normax.ec3.interaction import utilization_member
 from normax.ec3.resistance import E_MODULUS
 from normax.ec3.resistance import IMPERFECTION_FACTORS
-from normax.ec3.resistance import chi
-from normax.ec3.resistance import m_el_rd
-from normax.ec3.resistance import m_n_rd
-from normax.ec3.resistance import m_pl_rd
+from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import moment_resultant
-from normax.ec3.resistance import n_cr
-from normax.ec3.resistance import n_pl_rd
-from normax.ec3.resistance import slenderness
+from normax.ec3.resistance import reduction_buckling
+from normax.ec3.resistance import resistance_bending_elastic
+from normax.ec3.resistance import resistance_bending_plastic
+from normax.ec3.resistance import resistance_bending_reduced
+from normax.ec3.resistance import resistance_yielding
+from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import modulus_elastic
 from normax.ec3.section import modulus_plastic
@@ -35,8 +35,8 @@ LENGTH_BUCKLING = 4000.0
 ALPHA = IMPERFECTION_FACTORS["a"]
 C_M = 0.9
 
-RATIO_PLASTIC = 70.0 * float(epsilon(YIELD)) ** 2
-RATIO_ELASTIC = 90.0 * float(epsilon(YIELD)) ** 2
+RATIO_PLASTIC = 70.0 * float(material_factor(YIELD)) ** 2
+RATIO_ELASTIC = 90.0 * float(material_factor(YIELD)) ** 2
 
 DIAMETERS = jnp.linspace(60.0, 900.0, 400)
 
@@ -51,12 +51,12 @@ def member_utilization(diameter, n_ed, m_y_ed, m_z_ed, *, plastic):
         else modulus_elastic(diameter, ratio)
     )
 
-    non_dimensional = slenderness(
-        gross, YIELD, n_cr(inertia, LENGTH_BUCKLING, E_MODULUS)
+    non_dimensional = slenderness_from_force(
+        gross, YIELD, force_critical(inertia, LENGTH_BUCKLING, E_MODULUS)
     )
-    reduction = chi(non_dimensional, ALPHA)
+    reduction = reduction_buckling(non_dimensional, ALPHA)
 
-    return utilization(
+    return utilization_member(
         n_ed,
         m_y_ed,
         m_z_ed,
@@ -75,10 +75,12 @@ def member_utilization(diameter, n_ed, m_y_ed, m_z_ed, *, plastic):
 def cross_section_utilization(diameter, n_ed, m_y_ed, m_z_ed):
     ratio = RATIO_PLASTIC
     gross = area(diameter, ratio)
-    plastic_moment = m_pl_rd(modulus_plastic(diameter, ratio), YIELD)
-    axial = n_ed / n_pl_rd(gross, YIELD)
+    plastic_moment = resistance_bending_plastic(modulus_plastic(diameter, ratio), YIELD)
+    axial = n_ed / resistance_yielding(gross, YIELD)
 
-    return moment_resultant(m_y_ed, m_z_ed) / m_n_rd(plastic_moment, axial)
+    return moment_resultant(m_y_ed, m_z_ed) / resistance_bending_reduced(
+        plastic_moment, axial
+    )
 
 
 ACTIONS = [
@@ -146,8 +148,12 @@ def test_cross_section_utilization_strictly_decreases_with_diameter(actions):
 def test_reduced_moment_grows_with_diameter():
     diameters = jnp.linspace(150.0, 900.0, 300)
     gross = area(diameters, RATIO_PLASTIC)
-    plastic_moment = m_pl_rd(modulus_plastic(diameters, RATIO_PLASTIC), YIELD)
-    reduced = m_n_rd(plastic_moment, 500e3 / n_pl_rd(gross, YIELD))
+    plastic_moment = resistance_bending_plastic(
+        modulus_plastic(diameters, RATIO_PLASTIC), YIELD
+    )
+    reduced = resistance_bending_reduced(
+        plastic_moment, 500e3 / resistance_yielding(gross, YIELD)
+    )
 
     assert jnp.all(jnp.diff(reduced) > 0.0)
 
@@ -158,8 +164,11 @@ def test_reduced_moment_grows_with_diameter():
 def test_the_reduction_factor_grows_with_diameter():
     gross = area(DIAMETERS, RATIO_PLASTIC)
     inertia = second_moment(DIAMETERS, RATIO_PLASTIC)
-    reduction = chi(
-        slenderness(gross, YIELD, n_cr(inertia, LENGTH_BUCKLING, E_MODULUS)), ALPHA
+    reduction = reduction_buckling(
+        slenderness_from_force(
+            gross, YIELD, force_critical(inertia, LENGTH_BUCKLING, E_MODULUS)
+        ),
+        ALPHA,
     )
 
     assert jnp.all(jnp.diff(reduction) >= 0.0)
@@ -168,8 +177,8 @@ def test_the_reduction_factor_grows_with_diameter():
 def test_slenderness_falls_with_diameter():
     gross = area(DIAMETERS, RATIO_PLASTIC)
     inertia = second_moment(DIAMETERS, RATIO_PLASTIC)
-    non_dimensional = slenderness(
-        gross, YIELD, n_cr(inertia, LENGTH_BUCKLING, E_MODULUS)
+    non_dimensional = slenderness_from_force(
+        gross, YIELD, force_critical(inertia, LENGTH_BUCKLING, E_MODULUS)
     )
 
     assert jnp.all(jnp.diff(non_dimensional) < 0.0)
@@ -194,6 +203,6 @@ def test_elastic_and_plastic_moduli_differ_by_the_shape_factor():
     plastic = modulus_plastic(244.5, 24.45)
     elastic = modulus_elastic(244.5, 24.45)
 
-    assert m_pl_rd(plastic, YIELD) / m_el_rd(elastic, YIELD) == pytest.approx(
-        1.326, rel=1e-3
-    )
+    assert resistance_bending_plastic(plastic, YIELD) / resistance_bending_elastic(
+        elastic, YIELD
+    ) == pytest.approx(1.326, rel=1e-3)

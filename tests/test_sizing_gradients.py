@@ -4,16 +4,16 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
-from normax.ec3.adjoint import chi_derivative
 from normax.ec3.adjoint import derivative_force
 from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
 from normax.ec3.adjoint import diameter_tension
+from normax.ec3.adjoint import reduction_buckling_derivative
 from normax.ec3.resistance import IMPERFECTION_FACTORS
-from normax.ec3.resistance import chi
+from normax.ec3.resistance import reduction_buckling
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter
+from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 
@@ -43,7 +43,7 @@ METRE = 1e3
 
 
 def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, c_m=0.9):
-    return diameter(
+    return diameter_required(
         force_kn * KILONEWTON,
         moment_y_knm * KILONEWTON_METRE,
         moment_z_knm * KILONEWTON_METRE,
@@ -57,7 +57,9 @@ def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, c_m=0.9):
 
 
 def raw(n_ed=FORCE, m_y_ed=0.0, m_z_ed=0.0, l_cr=LENGTH, c_m=0.9, tube=TUBE):
-    return diameter(n_ed, m_y_ed, m_z_ed, c_m, c_m, l_cr, STEEL, tube, plastic=PLASTIC)
+    return diameter_required(
+        n_ed, m_y_ed, m_z_ed, c_m, c_m, l_cr, STEEL, tube, plastic=PLASTIC
+    )
 
 
 def central(f, x, step):
@@ -72,19 +74,19 @@ def central(f, x, step):
 def test_the_closed_form_slope_matches_autodiff(lam, curve):
     alpha = IMPERFECTION_FACTORS[curve]
 
-    assert float(chi_derivative(lam, alpha)) == pytest.approx(
-        float(jax.grad(chi)(lam, alpha)), rel=1e-10
+    assert float(reduction_buckling_derivative(lam, alpha)) == pytest.approx(
+        float(jax.grad(reduction_buckling)(lam, alpha)), rel=1e-10
     )
 
 
 @pytest.mark.parametrize("lam", [0.05, 0.1, 0.19])
 def test_the_slope_vanishes_below_the_offset(lam):
     # 6.3.1.2(3) caps the factor at one, so the curve is flat there.
-    assert float(chi_derivative(lam, 0.21)) == 0.0
+    assert float(reduction_buckling_derivative(lam, 0.21)) == 0.0
 
 
 def test_the_slope_is_never_positive():
-    values = chi_derivative(jnp.linspace(0.21, 5.0, 500), 0.21)
+    values = reduction_buckling_derivative(jnp.linspace(0.21, 5.0, 500), 0.21)
 
     assert jnp.all(values < 0.0)
 
@@ -285,7 +287,7 @@ def test_the_mass_gradient_is_finite_and_signed():
     lengths = jnp.asarray([4000.0, 6000.0, 3000.0])
 
     def objective(n_ed):
-        sizes = diameter(
+        sizes = diameter_required(
             n_ed, 4e7, 1.5e7, 0.9, 0.9, lengths, STEEL, TUBE, plastic=PLASTIC
         )
 
@@ -305,7 +307,7 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
     lengths = jnp.asarray([4000.0, 4000.0])
 
     def objective(n_ed):
-        sizes = diameter(
+        sizes = diameter_required(
             n_ed, 0.0, 0.0, 0.9, 0.9, lengths, STEEL, TUBE, plastic=PLASTIC
         )
 
@@ -320,7 +322,9 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
 def test_a_member_with_no_actions_has_no_gradient():
     def objective(n_ed):
         return jnp.sum(
-            diameter(n_ed, 0.0, 0.0, 0.9, 0.9, LENGTH, STEEL, TUBE, plastic=PLASTIC)
+            diameter_required(
+                n_ed, 0.0, 0.0, 0.9, 0.9, LENGTH, STEEL, TUBE, plastic=PLASTIC
+            )
         )
 
     gradient = jax.grad(objective)(0.0)
@@ -336,7 +340,7 @@ def test_the_map_is_differentiable_in_the_yield_strength():
     def at(f_y):
         steel = Steel(f_y, STEEL.e_mod, STEEL.density, STEEL.gamma_m0, STEEL.gamma_m1)
 
-        return diameter(
+        return diameter_required(
             FORCE, 4e7, 1.5e7, 0.9, 0.9, LENGTH, steel, TUBE, plastic=PLASTIC
         )
 
@@ -351,7 +355,7 @@ def test_the_map_is_differentiable_in_the_wall_proportion():
     # The experiment that frees the diameter-to-thickness ratio needs this, and
     # it comes free from differentiating the check rather than the solver.
     def at(ratio):
-        return diameter(
+        return diameter_required(
             FORCE,
             4e7,
             1.5e7,

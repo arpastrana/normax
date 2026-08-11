@@ -886,7 +886,7 @@ but **Figure 6.20 is captioned `N_Ed = 1630 kN`**. Use 2110.
    thickness: `A_v = 2A/π`"* (the π is lost in the text extraction; 2/π is the
    thin-ring shear form factor). The half-resistance threshold is **§6.2.8(2)**
    for bending and shear and **§6.2.10** once axial force is present too — the
-   latter governs here. `area_shear` and `v_pl_rd` are implemented; the ratio is
+   latter governs here. `area_shear` and `resistance_shear` are implemented; the ratio is
    swept in `experiments/05_class_ratio_sweep.py`, where it peaks at 0.12 on a
    plausible worst pairing. **Still verify post hoc on the converged design.**
 0e. **Table B.3 row 3c** — the two books disagree on a sign

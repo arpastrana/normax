@@ -3,23 +3,23 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.ec3.classification import classify
+from normax.ec3.classification import classify_section
 from normax.ec3.resistance import IMPERFECTION_FACTORS
-from normax.ec3.resistance import chi
-from normax.ec3.resistance import n_b_rd
-from normax.ec3.resistance import n_cr
-from normax.ec3.resistance import n_pl_rd
-from normax.ec3.resistance import slenderness
+from normax.ec3.resistance import force_critical
+from normax.ec3.resistance import reduction_buckling
+from normax.ec3.resistance import resistance_buckling
+from normax.ec3.resistance import resistance_yielding
+from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
 from normax.ec3.sizing import DIAMETER_MINIMUM
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import bracket
-from normax.ec3.sizing import diameter
+from normax.ec3.sizing import diameter_bracket
+from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
-from normax.ec3.sizing import utilization
+from normax.ec3.sizing import utilization_design
 
 # Step 1 of P2: the fully-stressed map with no bending. Every action here has
 # zero moment, so the member check collapses to the buckling check of 6.3.1 and
@@ -40,11 +40,15 @@ LENGTHS = [2000.0, 4000.0, 12000.0, 40000.0]
 
 
 def sized(n_ed, l_cr=LENGTH, *, plastic=PLASTIC, tube=TUBE):
-    return diameter(n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, tube, plastic=plastic)
+    return diameter_required(
+        n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, tube, plastic=plastic
+    )
 
 
 def used(d, n_ed, l_cr=LENGTH, *, plastic=PLASTIC, tube=TUBE):
-    return utilization(d, n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, tube, plastic=plastic)
+    return utilization_design(
+        d, n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, tube, plastic=plastic
+    )
 
 
 # ---- Defaults ---- #
@@ -75,7 +79,7 @@ def test_the_class_limit_constructor_lands_on_its_own_class(cross_section_class)
     # so the section classifies as the class it was built for.
     tube = Tube.at_class_limit(355.0, cross_section_class)
 
-    assert int(classify(tube.ratio, 355.0)) == cross_section_class
+    assert int(classify_section(tube.ratio, 355.0)) == cross_section_class
 
 
 def test_the_class_limit_constructor_reproduces_the_documented_ratios():
@@ -96,7 +100,7 @@ def test_only_the_first_two_classes_are_plastic():
 @pytest.mark.parametrize("l_cr", LENGTHS)
 @pytest.mark.parametrize("n_ed", FORCES)
 def test_the_bracket_is_never_above_the_root(n_ed, l_cr):
-    lower = bracket(n_ed, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
+    lower = diameter_bracket(n_ed, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
 
     assert float(sized(n_ed, l_cr)) >= float(lower) - 1e-9
 
@@ -105,7 +109,7 @@ def test_the_bracket_is_never_above_the_root(n_ed, l_cr):
 def test_the_bracket_is_at_or_beyond_full_utilization(n_ed):
     # The lower bound is the squash diameter, where the axial force alone
     # exhausts the section. Buckling can only make that worse.
-    lower = bracket(n_ed, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
+    lower = diameter_bracket(n_ed, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
 
     assert float(used(lower, n_ed)) >= 1.0 - 1e-9
 
@@ -115,7 +119,7 @@ def test_the_bracket_does_not_carry_the_catalogue_minimum():
     # check. Folding it into the search would stop the search at a diameter
     # where the check is unsatisfied, which is where the implicit derivative
     # stops being valid, so it is applied to the answer instead.
-    lower = bracket(0.0, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
+    lower = diameter_bracket(0.0, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
 
     assert float(lower) < DIAMETER_MINIMUM
     assert float(sized(0.0)) == pytest.approx(DIAMETER_MINIMUM)
@@ -126,9 +130,9 @@ def test_the_bracket_is_the_closed_form_squash_diameter():
     unit = float(area(1.0, TUBE.ratio))
     expected = float(jnp.sqrt(5e5 * STEEL.gamma_m0 / (STEEL.f_y * unit)))
 
-    assert bracket(-5e5, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC) == pytest.approx(
-        expected, rel=1e-12
-    )
+    assert diameter_bracket(
+        -5e5, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC
+    ) == pytest.approx(expected, rel=1e-12)
 
 
 # ---- The map ---- #
@@ -149,8 +153,12 @@ def test_the_sized_member_reproduces_the_buckling_resistance(n_ed, l_cr):
     # diameter and check it carries the force.
     d = sized(n_ed, l_cr)
     gross = area(d, TUBE.ratio)
-    lam = slenderness(gross, STEEL.f_y, n_cr(second_moment(d, TUBE.ratio), l_cr))
-    resistance = n_b_rd(chi(lam, TUBE.alpha), gross, STEEL.f_y)
+    lam = slenderness_from_force(
+        gross, STEEL.f_y, force_critical(second_moment(d, TUBE.ratio), l_cr)
+    )
+    resistance = resistance_buckling(
+        reduction_buckling(lam, TUBE.alpha), gross, STEEL.f_y
+    )
 
     assert float(resistance) == pytest.approx(abs(n_ed), rel=1e-9)
 
@@ -219,7 +227,7 @@ def test_a_tension_member_is_smaller_than_the_same_force_in_compression():
 def test_a_sized_tension_member_reaches_its_plastic_resistance(n_ed):
     d = sized(n_ed)
 
-    assert float(n_pl_rd(area(d, TUBE.ratio), STEEL.f_y)) == pytest.approx(
+    assert float(resistance_yielding(area(d, TUBE.ratio), STEEL.f_y)) == pytest.approx(
         n_ed, rel=1e-9
     )
 
@@ -241,7 +249,9 @@ def test_nothing_is_ever_sized_below_the_floor():
     forces = jnp.asarray([-1e-3, -1.0, -1e3, 0.0, 1.0, 1e3])
 
     assert jnp.all(
-        diameter(forces, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC)
+        diameter_required(
+            forces, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC
+        )
         >= DIAMETER_MINIMUM - 1e-12
     )
 
@@ -304,7 +314,9 @@ def test_the_map_vectorizes_over_members():
     forces = jnp.asarray(FORCES)
     lengths = jnp.full_like(forces, LENGTH)
 
-    sizes = diameter(forces, 0.0, 0.0, 1.0, 1.0, lengths, STEEL, TUBE, plastic=PLASTIC)
+    sizes = diameter_required(
+        forces, 0.0, 0.0, 1.0, 1.0, lengths, STEEL, TUBE, plastic=PLASTIC
+    )
 
     assert sizes.shape == forces.shape
     assert np.asarray(sizes) == pytest.approx(
@@ -315,13 +327,15 @@ def test_the_map_vectorizes_over_members():
 def test_the_map_broadcasts_a_scalar_force_over_many_lengths():
     lengths = jnp.asarray(LENGTHS)
 
-    sizes = diameter(-5e5, 0.0, 0.0, 1.0, 1.0, lengths, STEEL, TUBE, plastic=PLASTIC)
+    sizes = diameter_required(
+        -5e5, 0.0, 0.0, 1.0, 1.0, lengths, STEEL, TUBE, plastic=PLASTIC
+    )
 
     assert sizes.shape == lengths.shape
 
 
 def test_the_map_is_jittable():
-    jitted = jax.jit(diameter, static_argnames=("plastic", "resultant"))
+    jitted = jax.jit(diameter_required, static_argnames=("plastic", "resultant"))
 
     assert jitted(
         -5e5, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC, resultant=True
@@ -332,7 +346,9 @@ def test_the_map_is_vmappable():
     forces = jnp.asarray(FORCES)
 
     def one(force):
-        return diameter(force, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC)
+        return diameter_required(
+            force, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC
+        )
 
     assert np.asarray(jax.vmap(one)(forces)) == pytest.approx(
         [float(sized(force)) for force in FORCES], rel=1e-9

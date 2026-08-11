@@ -1,9 +1,9 @@
 import pytest
 
-from normax.ec3.resistance import n_c_rd
-from normax.ec3.resistance import n_pl_rd
-from normax.ec3.resistance import n_t_rd
-from normax.ec3.resistance import n_u_rd
+from normax.ec3.resistance import resistance_compression
+from normax.ec3.resistance import resistance_fracture
+from normax.ec3.resistance import resistance_tension
+from normax.ec3.resistance import resistance_yielding
 
 # Gardner, L. and Nethercot, D. (2011), Designers' Guide to Eurocode 3, 2nd edn,
 # ICE Publishing. Worked Examples 6.1 (tension, p. 38) and 6.2 (compression in
@@ -34,19 +34,19 @@ GAMMA_M2_BAR = 1.10
 
 
 def test_tension_gross_section_yielding():
-    resistance = n_pl_rd(AREA_GROSS, YIELD_BAR, GAMMA_M0_BAR)
+    resistance = resistance_yielding(AREA_GROSS, YIELD_BAR, GAMMA_M0_BAR)
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(1325.0, rel=TOLERANCE)
 
 
 def test_tension_net_section_fracture():
-    resistance = n_u_rd(AREA_NET, ULTIMATE_BAR, GAMMA_M2_BAR)
+    resistance = resistance_fracture(AREA_NET, ULTIMATE_BAR, GAMMA_M2_BAR)
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(1550.0, rel=TOLERANCE)
 
 
 def test_tension_resistance_is_the_smaller_of_the_two():
-    resistance = n_t_rd(
+    resistance = resistance_tension(
         AREA_GROSS,
         AREA_NET,
         YIELD_BAR,
@@ -59,8 +59,8 @@ def test_tension_resistance_is_the_smaller_of_the_two():
 
 
 def test_gross_section_yielding_governs_this_tie():
-    gross = n_pl_rd(AREA_GROSS, YIELD_BAR, GAMMA_M0_BAR)
-    net = n_u_rd(AREA_NET, ULTIMATE_BAR, GAMMA_M2_BAR)
+    gross = resistance_yielding(AREA_GROSS, YIELD_BAR, GAMMA_M0_BAR)
+    net = resistance_fracture(AREA_NET, ULTIMATE_BAR, GAMMA_M2_BAR)
 
     assert gross < net
 
@@ -78,14 +78,14 @@ GAMMA_M0_UKC = 1.00
 
 
 def test_compression_cross_section_resistance():
-    resistance = n_c_rd(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
+    resistance = resistance_compression(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(3305.0, rel=TOLERANCE)
 
 
 def test_compression_and_tension_clauses_agree_on_the_gross_section():
     # Eq. 6.6 and Eq. 6.10 are the same expression under different clauses.
-    compression = n_c_rd(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
-    tension = n_pl_rd(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
+    compression = resistance_compression(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
+    tension = resistance_yielding(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
 
     assert compression == pytest.approx(tension)

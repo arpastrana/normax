@@ -35,11 +35,11 @@ from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter
-from normax.ec3.sizing import governing
+from normax.ec3.sizing import diameter_required
+from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
-from normax.ec3.sizing import utilization
+from normax.ec3.sizing import utilization_design
 
 STEEL = Steel()
 TARGET = 1e-6
@@ -73,7 +73,9 @@ def size(n_ed, m_y_ed, m_z_ed, l_cr, tube, plastic):
     """
     Fully-stressed diameter under the full interaction.
     """
-    return diameter(n_ed, m_y_ed, m_z_ed, 0.9, 0.9, l_cr, STEEL, tube, plastic=plastic)
+    return diameter_required(
+        n_ed, m_y_ed, m_z_ed, 0.9, 0.9, l_cr, STEEL, tube, plastic=plastic
+    )
 
 
 def central(f, x, step):
@@ -151,7 +153,9 @@ def main() -> None:
         plastic = is_plastic(cross_section_class)
         with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, tube, plastic))
         axial_only = float(
-            diameter(-5e5, 0.0, 0.0, 1.0, 1.0, 4000.0, STEEL, tube, plastic=plastic)
+            diameter_required(
+                -5e5, 0.0, 0.0, 1.0, 1.0, 4000.0, STEEL, tube, plastic=plastic
+            )
         )
         print(
             f"  Class {cross_section_class}   {with_moment:.12f}  vs  "
@@ -164,12 +168,14 @@ def main() -> None:
     for actions in CASES:
         d = size(*actions, tube, False)
         demand = float(
-            utilization(
+            utilization_design(
                 d, *actions[:3], 0.9, 0.9, actions[3], STEEL, tube, plastic=False
             )
         )
         code = float(
-            governing(d, *actions[:3], 0.9, 0.9, actions[3], STEEL, tube, plastic=False)
+            governing_limit_state(
+                d, *actions[:3], 0.9, 0.9, actions[3], STEEL, tube, plastic=False
+            )
         )
         worst_check = max(worst_check, abs(demand - 1.0))
         name = (
@@ -183,7 +189,7 @@ def main() -> None:
     lengths = jnp.asarray([4000.0, 12000.0, 4000.0, 8000.0])
 
     def objective(n_ed):
-        sizes = diameter(
+        sizes = diameter_required(
             n_ed, 4e7, 1.5e7, 0.9, 0.9, lengths, STEEL, tube, plastic=False
         )
 

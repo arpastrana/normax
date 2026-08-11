@@ -31,11 +31,11 @@ import jax.numpy as jnp
 
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
-from normax.ec3.resistance import v_pl_rd
+from normax.ec3.resistance import resistance_shear
 from normax.ec3.section import area
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter
+from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 
@@ -56,7 +56,7 @@ def sized(cross_section_class, m_y_ed, m_z_ed=0.0):
     """
     tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
 
-    return diameter(
+    return diameter_required(
         FORCE,
         m_y_ed,
         m_z_ed,
@@ -132,7 +132,9 @@ def main() -> None:
     for moment in MOMENTS[1:]:
         d = sized(3, moment)
         tube = Tube.at_class_limit(STEEL.f_y, 3)
-        resistance = v_pl_rd(area_shear(area(d, tube.ratio)), STEEL.f_y, STEEL.gamma_m0)
+        resistance = resistance_shear(
+            area_shear(area(d, tube.ratio)), STEEL.f_y, STEEL.gamma_m0
+        )
         # A simply supported span carrying that end moment has a shear of about
         # four moments over its length, which is the worst plausible pairing.
         shear = 4.0 * float(moment) / LENGTH
@@ -163,7 +165,7 @@ def main() -> None:
     for moment in MOMENTS[1:]:
         readings = [
             float(
-                diameter(
+                diameter_required(
                     FORCE,
                     moment,
                     moment,

@@ -7,14 +7,14 @@ from normax.ec3.interaction import C_M_MINIMUM
 from normax.ec3.interaction import GOVERNING_MAJOR
 from normax.ec3.interaction import GOVERNING_MINOR
 from normax.ec3.interaction import axial_ratio
-from normax.ec3.interaction import c_m_linear
 from normax.ec3.interaction import cap_is_active
 from normax.ec3.interaction import governing_equation
 from normax.ec3.interaction import k_yy
 from normax.ec3.interaction import k_yz
 from normax.ec3.interaction import k_zy
 from normax.ec3.interaction import k_zz
-from normax.ec3.interaction import utilization
+from normax.ec3.interaction import moment_factor_linear
+from normax.ec3.interaction import utilization_member
 
 # EN 1993-1-1 Annex B, method 2. See docs/clauses.md for the two interpretations
 # taken here: a circular hollow section reads the RHS row of Table B.1, which
@@ -32,21 +32,21 @@ RATIOS = [0.0, 0.05, 0.2, 0.5, 0.9]
 
 @pytest.mark.parametrize("psi", [-1.0, -0.5, 0.0, 0.5, 1.0])
 def test_c_m_follows_the_linear_row(psi):
-    assert c_m_linear(psi) == pytest.approx(max(0.6 + 0.4 * psi, C_M_MINIMUM))
+    assert moment_factor_linear(psi) == pytest.approx(max(0.6 + 0.4 * psi, C_M_MINIMUM))
 
 
 def test_c_m_is_one_for_a_uniform_moment():
-    assert c_m_linear(1.0) == pytest.approx(1.0)
+    assert moment_factor_linear(1.0) == pytest.approx(1.0)
 
 
 def test_c_m_floors_at_four_tenths():
     # 0.6 + 0.4psi would give 0.2 at psi = -1.
-    assert c_m_linear(-1.0) == pytest.approx(C_M_MINIMUM)
-    assert jnp.all(c_m_linear(jnp.linspace(-1.0, 1.0, 200)) >= C_M_MINIMUM)
+    assert moment_factor_linear(-1.0) == pytest.approx(C_M_MINIMUM)
+    assert jnp.all(moment_factor_linear(jnp.linspace(-1.0, 1.0, 200)) >= C_M_MINIMUM)
 
 
 def test_c_m_is_non_decreasing_in_psi():
-    values = c_m_linear(jnp.linspace(-1.0, 1.0, 200))
+    values = moment_factor_linear(jnp.linspace(-1.0, 1.0, 200))
 
     assert jnp.all(jnp.diff(values) >= 0.0)
 
@@ -131,7 +131,7 @@ ECCS_PSI = -33.8 / 67.5
 
 
 def test_eccs_example_moment_factor():
-    assert c_m_linear(ECCS_PSI) == pytest.approx(0.40, rel=TOLERANCE)
+    assert moment_factor_linear(ECCS_PSI) == pytest.approx(0.40, rel=TOLERANCE)
 
 
 def test_eccs_example_axial_ratio():
@@ -142,7 +142,7 @@ def test_eccs_example_axial_ratio():
 
 def test_eccs_example_k_yy():
     ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK)
-    factor = k_yy(c_m_linear(ECCS_PSI), ECCS_LAMBDA_Y, ratio, plastic=True)
+    factor = k_yy(moment_factor_linear(ECCS_PSI), ECCS_LAMBDA_Y, ratio, plastic=True)
 
     assert factor == pytest.approx(0.53, rel=TOLERANCE)
 
@@ -151,7 +151,7 @@ def test_eccs_example_utilization():
     # The book reports 0.90 for eq. 6.61. Its 6.62 uses the Table B.1 footnote
     # k_zy = 0, which is permissive; we do not take it, so our 6.62 is higher
     # and 6.61 still governs.
-    value = utilization(
+    value = utilization_member(
         ECCS_N_ED,
         ECCS_M_Y_ED,
         0.0,
@@ -161,8 +161,8 @@ def test_eccs_example_utilization():
         ECCS_M_Y_RK,
         ECCS_LAMBDA_Y,
         ECCS_LAMBDA_Y,
-        c_m_linear(ECCS_PSI),
-        c_m_linear(ECCS_PSI),
+        moment_factor_linear(ECCS_PSI),
+        moment_factor_linear(ECCS_PSI),
         plastic=True,
     )
 
@@ -173,7 +173,7 @@ def test_eccs_example_utilization():
 
 
 def test_reduces_to_pure_compression_when_moments_vanish():
-    value = utilization(
+    value = utilization_member(
         965e3,
         0.0,
         0.0,
@@ -193,7 +193,7 @@ def test_reduces_to_pure_compression_when_moments_vanish():
 
 
 def test_reduces_to_pure_bending_when_the_axial_force_vanishes():
-    value = utilization(
+    value = utilization_member(
         0.0,
         67.5e6,
         0.0,
@@ -227,9 +227,9 @@ def test_the_two_equations_agree_only_when_the_moments_are_equal():
         c_my=0.9,
         c_mz=0.9,
     )
-    balanced = utilization(500e3, 100e6, 100e6, plastic=True, **common)
-    swapped = utilization(500e3, 100e6, 20e6, plastic=True, **common)
-    mirrored = utilization(500e3, 20e6, 100e6, plastic=True, **common)
+    balanced = utilization_member(500e3, 100e6, 100e6, plastic=True, **common)
+    swapped = utilization_member(500e3, 100e6, 20e6, plastic=True, **common)
+    mirrored = utilization_member(500e3, 20e6, 100e6, plastic=True, **common)
 
     # Symmetric in the two moments, because we take the worse of the pair.
     assert swapped == pytest.approx(mirrored)
@@ -249,9 +249,9 @@ def test_utilization_is_symmetric_in_the_two_moments():
         c_mz=0.8,
     )
     for m_y, m_z in ((80e6, 10e6), (10e6, 80e6), (45e6, 45e6)):
-        assert utilization(400e3, m_y, m_z, plastic=True, **common) == pytest.approx(
-            utilization(400e3, m_z, m_y, plastic=True, **common)
-        )
+        assert utilization_member(
+            400e3, m_y, m_z, plastic=True, **common
+        ) == pytest.approx(utilization_member(400e3, m_z, m_y, plastic=True, **common))
 
 
 # ---- Monotonicity, which is what keeps the sizing bisection valid ---- #
@@ -259,7 +259,7 @@ def test_utilization_is_symmetric_in_the_two_moments():
 
 def test_utilization_falls_as_the_reduction_factor_rises():
     values = [
-        utilization(
+        utilization_member(
             500e3, 60e6, 20e6, chi, chi, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
         )
         for chi in (0.4, 0.6, 0.8, 1.0)
@@ -270,7 +270,7 @@ def test_utilization_falls_as_the_reduction_factor_rises():
 
 def test_utilization_falls_as_the_resistances_rise():
     values = [
-        utilization(
+        utilization_member(
             500e3,
             60e6,
             20e6,
@@ -291,17 +291,17 @@ def test_utilization_falls_as_the_resistances_rise():
 
 
 def test_utilization_rises_with_every_action():
-    base = utilization(
+    base = utilization_member(
         400e3, 40e6, 10e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
     )
     for bumped in (
-        utilization(
+        utilization_member(
             500e3, 40e6, 10e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
         ),
-        utilization(
+        utilization_member(
             400e3, 50e6, 10e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
         ),
-        utilization(
+        utilization_member(
             400e3, 40e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
         ),
     ):
@@ -311,7 +311,7 @@ def test_utilization_rises_with_every_action():
 def test_elastic_first_equation_never_falls_below_the_second():
     # Elastic couplings are k_yz = k_zz and k_zy = 0.8 k_yy, so 6.61 dominates.
     for m_y, m_z in ((60e6, 20e6), (20e6, 60e6), (40e6, 40e6)):
-        value = utilization(
+        value = utilization_member(
             500e3, m_y, m_z, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=False
         )
 
@@ -359,8 +359,8 @@ def test_equal_moments_resolve_to_the_major_axis_equation():
 def test_the_governing_code_is_consistent_with_the_utilization(plastic, m_y, m_z):
     # Whichever equation is reported must be the one whose value was taken.
     code = governing_equation(500e3, m_y, m_z, plastic=plastic, **DIAGNOSTIC)
-    value = utilization(500e3, m_y, m_z, plastic=plastic, **DIAGNOSTIC)
-    swapped = utilization(500e3, m_z, m_y, plastic=plastic, **DIAGNOSTIC)
+    value = utilization_member(500e3, m_y, m_z, plastic=plastic, **DIAGNOSTIC)
+    swapped = utilization_member(500e3, m_z, m_y, plastic=plastic, **DIAGNOSTIC)
 
     assert value == pytest.approx(swapped)
     assert code in (GOVERNING_MAJOR, GOVERNING_MINOR)
@@ -415,7 +415,7 @@ def test_the_cap_marks_exactly_where_the_factor_stops_rising(plastic):
 
 
 def test_utilization_is_float64():
-    value = utilization(
+    value = utilization_member(
         500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
     )
 
@@ -425,7 +425,7 @@ def test_utilization_is_float64():
 def test_utilization_vectorizes_over_members():
     forces = jnp.asarray([300e3, 500e3, 700e3])
 
-    values = utilization(
+    values = utilization_member(
         forces, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
     )
 
@@ -434,20 +434,20 @@ def test_utilization_vectorizes_over_members():
 
 
 def test_utilization_is_jittable():
-    jitted = jax.jit(utilization, static_argnames=("plastic",))
+    jitted = jax.jit(utilization_member, static_argnames=("plastic",))
     value = jitted(
         500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
     )
 
     assert value == pytest.approx(
-        utilization(
+        utilization_member(
             500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
         )
     )
 
 
 def test_utilization_is_differentiable():
-    gradient = jax.grad(utilization)(
+    gradient = jax.grad(utilization_member)(
         500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
     )
 

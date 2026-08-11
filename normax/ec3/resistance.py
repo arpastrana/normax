@@ -68,7 +68,7 @@ MOMENT_EXPONENT = 1.7
 SHEAR_THRESHOLD = 0.5
 
 
-def n_pl_rd(
+def resistance_yielding(
     area: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     gamma_m0: float | Float[Array, ""] = GAMMA_M0,
@@ -87,8 +87,8 @@ def n_pl_rd(
 
     Returns
     -------
-    n_pl_rd :
-        Resistance to yielding of the gross cross-section.
+    resistance_yielding :
+        Resistance to yielding of the gross cross-section, N_pl,Rd.
 
     Notes
     -----
@@ -99,7 +99,7 @@ def n_pl_rd(
     return gross * f_y / gamma_m0
 
 
-def n_u_rd(
+def resistance_fracture(
     area_net: Float[Array, "members"],
     f_u: float | Float[Array, ""],
     gamma_m2: float | Float[Array, ""] = GAMMA_M2,
@@ -118,8 +118,8 @@ def n_u_rd(
 
     Returns
     -------
-    n_u_rd :
-        Resistance to fracture across the net section.
+    resistance_fracture :
+        Resistance to fracture across the net section, N_u,Rd.
 
     Notes
     -----
@@ -131,7 +131,7 @@ def n_u_rd(
     return 0.9 * net * f_u / gamma_m2
 
 
-def n_t_rd(
+def resistance_tension(
     area: Float[Array, "members"],
     area_net: Float[Array, "members"],
     f_y: float | Float[Array, ""],
@@ -159,21 +159,21 @@ def n_t_rd(
 
     Returns
     -------
-    n_t_rd :
-        The lesser of gross-section yielding and net-section fracture.
+    resistance_tension :
+        The lesser of gross-section yielding and net-section fracture, N_t,Rd.
 
     Notes
     -----
     EN 1993-1-1 6.2.3. With no holes the net area equals the gross area and
     yielding governs, so this collapses to Eq. 6.6.
     """
-    yielding = n_pl_rd(area, f_y, gamma_m0)
-    fracture = n_u_rd(area_net, f_u, gamma_m2)
+    yielding = resistance_yielding(area, f_y, gamma_m0)
+    fracture = resistance_fracture(area_net, f_u, gamma_m2)
 
     return jnp.minimum(yielding, fracture)
 
 
-def n_c_rd(
+def resistance_compression(
     area: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     gamma_m0: float | Float[Array, ""] = GAMMA_M0,
@@ -192,8 +192,8 @@ def n_c_rd(
 
     Returns
     -------
-    n_c_rd :
-        Squash resistance of the cross-section.
+    resistance_compression :
+        Squash resistance of the cross-section, N_c,Rd.
 
     Notes
     -----
@@ -206,7 +206,7 @@ def n_c_rd(
     return gross * f_y / gamma_m0
 
 
-def m_pl_rd(
+def resistance_bending_plastic(
     w_pl: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     gamma_m0: float | Float[Array, ""] = GAMMA_M0,
@@ -225,8 +225,8 @@ def m_pl_rd(
 
     Returns
     -------
-    m_pl_rd :
-        Plastic moment resistance.
+    resistance_bending_plastic :
+        Plastic moment resistance, M_pl,Rd.
 
     Notes
     -----
@@ -237,7 +237,7 @@ def m_pl_rd(
     return modulus * f_y / gamma_m0
 
 
-def m_el_rd(
+def resistance_bending_elastic(
     w_el: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     gamma_m0: float | Float[Array, ""] = GAMMA_M0,
@@ -256,8 +256,8 @@ def m_el_rd(
 
     Returns
     -------
-    m_el_rd :
-        Elastic moment resistance.
+    resistance_bending_elastic :
+        Elastic moment resistance, M_el,Rd.
 
     Notes
     -----
@@ -292,7 +292,7 @@ def area_shear(area: Float[Array, "members"]) -> Float[Array, "members"]:
     return 2.0 * gross / jnp.pi
 
 
-def v_pl_rd(
+def resistance_shear(
     area_shear: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     gamma_m0: float | Float[Array, ""] = GAMMA_M0,
@@ -311,8 +311,8 @@ def v_pl_rd(
 
     Returns
     -------
-    v_pl_rd :
-        Plastic shear resistance.
+    resistance_shear :
+        Plastic shear resistance, V_pl,Rd.
 
     Notes
     -----
@@ -326,7 +326,7 @@ def v_pl_rd(
     return shear * f_y / (jnp.sqrt(3.0) * gamma_m0)
 
 
-def m_n_rd(
+def resistance_bending_reduced(
     m_plastic: Float[Array, "members"],
     n: Float[Array, "members"],
 ) -> Float[Array, "members"]:
@@ -342,8 +342,8 @@ def m_n_rd(
 
     Returns
     -------
-    m_n_rd :
-        Reduced plastic moment resistance.
+    resistance_bending_reduced :
+        Reduced plastic moment resistance, M_N,Rd.
 
     Notes
     -----
@@ -509,8 +509,8 @@ def utilization_plastic(
     """
     combined = moment_combined(m_y_ed, m_z_ed, plastic=True)
 
-    axial = jnp.abs(jnp.asarray(n_ed)) / n_pl_rd(area, f_y, gamma_m0)
-    bending = combined / m_pl_rd(w_pl, f_y, gamma_m0)
+    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, f_y, gamma_m0)
+    bending = combined / resistance_bending_plastic(w_pl, f_y, gamma_m0)
 
     return axial**MOMENT_EXPONENT + bending
 
@@ -580,9 +580,9 @@ def utilization_elastic(
     """
     combined = moment_combined(m_y_ed, m_z_ed, plastic=False, resultant=resultant)
 
-    axial = jnp.abs(jnp.asarray(n_ed)) / n_pl_rd(area, f_y, gamma_m0)
+    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, f_y, gamma_m0)
 
-    return axial + combined / m_el_rd(w_el, f_y, gamma_m0)
+    return axial + combined / resistance_bending_elastic(w_el, f_y, gamma_m0)
 
 
 def utilization_cross_section(
@@ -648,7 +648,7 @@ def utilization_cross_section(
     )
 
 
-def n_cr(
+def force_critical(
     second_moment: Float[Array, "members"],
     l_cr: Float[Array, "members"],
     e_mod: float | Float[Array, ""] = E_MODULUS,
@@ -667,8 +667,8 @@ def n_cr(
 
     Returns
     -------
-    n_cr :
-        Euler critical force.
+    force_critical :
+        Euler critical force, N_cr.
 
     Notes
     -----
@@ -680,7 +680,7 @@ def n_cr(
     return jnp.pi**2 * e_mod * inertia / l_cr**2
 
 
-def lambda_1(
+def slenderness_reference(
     f_y: float | Float[Array, ""],
     e_mod: float | Float[Array, ""] = E_MODULUS,
 ) -> Float[Array, ""]:
@@ -696,8 +696,8 @@ def lambda_1(
 
     Returns
     -------
-    lambda_1 :
-        Slenderness at which the Euler stress equals the yield strength.
+    slenderness_reference :
+        Slenderness at which the Euler stress equals the yield strength, lambda_1.
 
     Notes
     -----
@@ -707,7 +707,7 @@ def lambda_1(
     return jnp.pi * jnp.sqrt(jnp.asarray(e_mod) / f_y)
 
 
-def slenderness(
+def slenderness_from_force(
     area: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     n_critical: Float[Array, "members"],
@@ -739,7 +739,7 @@ def slenderness(
     return jnp.sqrt(gross * f_y / n_critical)
 
 
-def slenderness_gyration(
+def slenderness_from_gyration(
     l_cr: Float[Array, "members"],
     radius_gyration: Float[Array, "members"],
     f_y: float | Float[Array, ""],
@@ -771,10 +771,10 @@ def slenderness_gyration(
     """
     geometric = jnp.asarray(l_cr) / radius_gyration
 
-    return geometric / lambda_1(f_y, e_mod)
+    return geometric / slenderness_reference(f_y, e_mod)
 
 
-def phi(
+def buckling_auxiliary(
     lam: Float[Array, "members"],
     alpha: float | Float[Array, ""],
 ) -> Float[Array, "members"]:
@@ -790,8 +790,8 @@ def phi(
 
     Returns
     -------
-    phi :
-        Auxiliary term.
+    buckling_auxiliary :
+        Auxiliary term, Phi.
 
     Notes
     -----
@@ -804,7 +804,7 @@ def phi(
     return 0.5 * (1.0 + alpha * (slender - SLENDERNESS_OFFSET) + slender**2)
 
 
-def chi(
+def reduction_buckling(
     lam: Float[Array, "members"],
     alpha: float | Float[Array, ""],
 ) -> Float[Array, "members"]:
@@ -820,8 +820,8 @@ def chi(
 
     Returns
     -------
-    chi :
-        Reduction factor, capped at one.
+    reduction_buckling :
+        Reduction factor chi, capped at one.
 
     Notes
     -----
@@ -835,13 +835,13 @@ def chi(
     the gradient.
     """
     slender = jnp.asarray(lam)
-    auxiliary = phi(slender, alpha)
+    auxiliary = buckling_auxiliary(slender, alpha)
     reduction = 1.0 / (auxiliary + jnp.sqrt(auxiliary**2 - slender**2))
 
     return jnp.minimum(reduction, 1.0)
 
 
-def n_b_rd(
+def resistance_buckling(
     reduction: Float[Array, "members"],
     area: Float[Array, "members"],
     f_y: float | Float[Array, ""],
@@ -863,8 +863,8 @@ def n_b_rd(
 
     Returns
     -------
-    n_b_rd :
-        Buckling resistance.
+    resistance_buckling :
+        Buckling resistance, N_b,Rd.
 
     Notes
     -----

@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 
 from normax.ec3.resistance import MOMENT_EXPONENT
-from normax.ec3.resistance import m_el_rd
-from normax.ec3.resistance import m_n_rd
-from normax.ec3.resistance import m_pl_rd
 from normax.ec3.resistance import moment_resultant
-from normax.ec3.resistance import n_pl_rd
+from normax.ec3.resistance import resistance_bending_elastic
+from normax.ec3.resistance import resistance_bending_plastic
+from normax.ec3.resistance import resistance_bending_reduced
+from normax.ec3.resistance import resistance_yielding
 from normax.ec3.resistance import utilization_cross_section
 from normax.ec3.resistance import utilization_elastic
 from normax.ec3.resistance import utilization_plastic
@@ -39,24 +39,28 @@ def exact_reduction(n):
 
 
 def test_plastic_moment_is_the_modulus_times_the_strength():
-    assert m_pl_rd(550236.0, 355.0, 1.0) == pytest.approx(550236.0 * 355.0)
+    assert resistance_bending_plastic(550236.0, 355.0, 1.0) == pytest.approx(
+        550236.0 * 355.0
+    )
 
 
 def test_elastic_moment_is_the_modulus_times_the_strength():
-    assert m_el_rd(414981.0, 355.0, 1.0) == pytest.approx(414981.0 * 355.0)
+    assert resistance_bending_elastic(414981.0, 355.0, 1.0) == pytest.approx(
+        414981.0 * 355.0
+    )
 
 
 def test_the_plastic_moment_exceeds_the_elastic_one():
     # Shape factor of a CHS 244.5 x 10, about 1.33.
-    plastic = m_pl_rd(550236.0, 355.0, 1.0)
-    elastic = m_el_rd(414981.0, 355.0, 1.0)
+    plastic = resistance_bending_plastic(550236.0, 355.0, 1.0)
+    elastic = resistance_bending_elastic(414981.0, 355.0, 1.0)
 
     assert plastic / elastic == pytest.approx(1.326, rel=1e-3)
 
 
 def test_partial_factor_divides():
-    assert m_pl_rd(550236.0, 355.0, 1.1) == pytest.approx(
-        m_pl_rd(550236.0, 355.0, 1.0) / 1.1
+    assert resistance_bending_plastic(550236.0, 355.0, 1.1) == pytest.approx(
+        resistance_bending_plastic(550236.0, 355.0, 1.0) / 1.1
     )
 
 
@@ -69,37 +73,41 @@ def test_the_exponent_is_one_point_seven():
 
 @pytest.mark.parametrize("n", AXIAL_RATIOS)
 def test_reduced_moment_follows_the_clause(n):
-    assert m_n_rd(100.0, n) == pytest.approx(100.0 * (1.0 - n**1.7))
+    assert resistance_bending_reduced(100.0, n) == pytest.approx(100.0 * (1.0 - n**1.7))
 
 
 def test_reduced_moment_is_the_plastic_moment_without_axial_force():
-    assert m_n_rd(127.4, 0.0) == pytest.approx(127.4)
+    assert resistance_bending_reduced(127.4, 0.0) == pytest.approx(127.4)
 
 
 def test_reduced_moment_vanishes_at_full_axial_force():
-    assert m_n_rd(127.4, 1.0) == pytest.approx(0.0, abs=1e-12)
+    assert resistance_bending_reduced(127.4, 1.0) == pytest.approx(0.0, abs=1e-12)
 
 
 @pytest.mark.parametrize("n", AXIAL_RATIOS)
 def test_reduced_moment_never_exceeds_the_plastic_moment(n):
-    assert m_n_rd(127.4, n) <= 127.4 + 1e-12
+    assert resistance_bending_reduced(127.4, n) <= 127.4 + 1e-12
 
 
 def test_reduced_moment_strictly_decreases_with_axial_force():
-    values = m_n_rd(127.4, jnp.linspace(0.0, 1.0, 500))
+    values = resistance_bending_reduced(127.4, jnp.linspace(0.0, 1.0, 500))
 
     assert jnp.all(jnp.diff(values) < 0.0)
 
 
 def test_reduced_moment_is_never_negative():
-    assert jnp.all(m_n_rd(127.4, jnp.linspace(0.0, 1.0, 500)) >= 0.0)
+    assert jnp.all(
+        resistance_bending_reduced(127.4, jnp.linspace(0.0, 1.0, 500)) >= 0.0
+    )
 
 
 @pytest.mark.parametrize("n", [0.1, 0.3, 0.5, 0.7, 0.9])
 def test_reduced_moment_tracks_the_closed_form_solution(n):
     # Independent of the code: the exact circular-tube interaction. The
     # codified expression stays within 5% of it across the range.
-    assert m_n_rd(1.0, n) == pytest.approx(exact_reduction(n), abs=0.05)
+    assert resistance_bending_reduced(1.0, n) == pytest.approx(
+        exact_reduction(n), abs=0.05
+    )
 
 
 def test_the_codified_form_is_not_a_bound_on_the_exact_one():
@@ -109,8 +117,12 @@ def test_the_codified_form_is_not_a_bound_on_the_exact_one():
     below = [n / 1000 for n in range(1, 692)]
     above = [n / 1000 for n in range(693, 1000)]
 
-    assert all(float(m_n_rd(1.0, n)) < exact_reduction(n) for n in below)
-    assert all(float(m_n_rd(1.0, n)) > exact_reduction(n) for n in above)
+    assert all(
+        float(resistance_bending_reduced(1.0, n)) < exact_reduction(n) for n in below
+    )
+    assert all(
+        float(resistance_bending_reduced(1.0, n)) > exact_reduction(n) for n in above
+    )
 
 
 # ---- 6.2.9.1(6), biaxial bending, alpha = beta = 2 ---- #
@@ -152,10 +164,10 @@ def test_resultant_ignores_the_sign_of_either_moment():
 def test_the_reduction_applies_at_every_axial_force():
     # 6.2.9.1(4) exempts I/H and rectangular hollow sections at small axial
     # force. CHS appears in neither list, so the reduction always bites.
-    small = n_pl_rd(7367.0, 355.0, 1.0) * 0.01
-    ratio = small / n_pl_rd(7367.0, 355.0, 1.0)
+    small = resistance_yielding(7367.0, 355.0, 1.0) * 0.01
+    ratio = small / resistance_yielding(7367.0, 355.0, 1.0)
 
-    assert m_n_rd(127.4, ratio) < 127.4
+    assert resistance_bending_reduced(127.4, ratio) < 127.4
 
 
 # ---- 6.2.9 as a utilization ---- #
@@ -171,7 +183,7 @@ def test_the_plastic_check_recovers_the_squash_check_without_moment():
     # reaches one exactly at squash. Writing the clause as a quotient instead
     # would report a fully squashed section as completely unutilized, losing
     # 6.2.4 altogether.
-    squash = float(n_pl_rd(AREA, YIELD))
+    squash = float(resistance_yielding(AREA, YIELD))
 
     assert utilization_plastic(
         -squash, 0.0, 0.0, AREA, MODULUS_PLASTIC, YIELD
@@ -182,7 +194,7 @@ def test_the_plastic_check_recovers_the_squash_check_without_moment():
 
 
 def test_the_plastic_check_is_the_axial_ratio_to_the_exponent_without_moment():
-    axial = 0.955 * float(n_pl_rd(AREA, YIELD))
+    axial = 0.955 * float(resistance_yielding(AREA, YIELD))
 
     value = utilization_plastic(-axial, 0.0, 0.0, AREA, MODULUS_PLASTIC, YIELD)
 
@@ -193,8 +205,12 @@ def test_the_plastic_check_is_the_clause_rearranged_not_a_different_check():
     # The clause bounds the resultant by a reduced plastic moment. Dividing
     # through by the unreduced one gives the sum. Same inequality, so the two
     # cross unity together, which is all the sizing map ever asks of it.
-    axial = 0.4 * float(n_pl_rd(AREA, YIELD))
-    reduced = float(m_n_rd(m_pl_rd(MODULUS_PLASTIC, YIELD), 0.4))
+    axial = 0.4 * float(resistance_yielding(AREA, YIELD))
+    reduced = float(
+        resistance_bending_reduced(
+            resistance_bending_plastic(MODULUS_PLASTIC, YIELD), 0.4
+        )
+    )
 
     for factor in (0.5, 0.9, 1.0, 1.1, 2.0):
         quotient = factor * reduced / reduced
@@ -211,7 +227,7 @@ def test_the_plastic_check_is_the_clause_rearranged_not_a_different_check():
 def test_the_plastic_check_stays_finite_beyond_the_squash_load():
     # The quotient form is singular at squash and negative beyond it, reporting
     # a section overloaded three times over as safe. The sum is monotone there.
-    overloaded = jnp.linspace(0.9, 3.0, 200) * float(n_pl_rd(AREA, YIELD))
+    overloaded = jnp.linspace(0.9, 3.0, 200) * float(resistance_yielding(AREA, YIELD))
     values = utilization_plastic(-overloaded, 40e6, 0.0, AREA, MODULUS_PLASTIC, YIELD)
 
     assert jnp.all(jnp.isfinite(values))
@@ -220,7 +236,7 @@ def test_the_plastic_check_stays_finite_beyond_the_squash_load():
 
 
 def test_the_elastic_check_reduces_to_the_axial_ratio_without_moment():
-    axial = 0.955 * float(n_pl_rd(AREA, YIELD))
+    axial = 0.955 * float(resistance_yielding(AREA, YIELD))
 
     value = utilization_elastic(-axial, 0.0, 0.0, AREA, MODULUS_ELASTIC, YIELD)
 
@@ -228,8 +244,10 @@ def test_the_elastic_check_reduces_to_the_axial_ratio_without_moment():
 
 
 def test_the_plastic_check_sums_the_axial_and_bending_terms():
-    axial = 0.2 * float(n_pl_rd(AREA, YIELD))
-    bending = moment_resultant(40e6, 15e6) / m_pl_rd(MODULUS_PLASTIC, YIELD)
+    axial = 0.2 * float(resistance_yielding(AREA, YIELD))
+    bending = moment_resultant(40e6, 15e6) / resistance_bending_plastic(
+        MODULUS_PLASTIC, YIELD
+    )
 
     value = utilization_plastic(-axial, 40e6, 15e6, AREA, MODULUS_PLASTIC, YIELD)
 
@@ -290,8 +308,12 @@ def test_the_checks_ignore_the_sign_of_either_moment(plastic):
 def test_the_plastic_check_is_unity_on_the_reduced_moment(n):
     # The sum stays conditioned right up to squash, where the quotient form
     # divides by a vanishing resistance and drifts off unity.
-    reduced = float(m_n_rd(m_pl_rd(MODULUS_PLASTIC, YIELD), n))
-    axial = n * float(n_pl_rd(AREA, YIELD))
+    reduced = float(
+        resistance_bending_reduced(
+            resistance_bending_plastic(MODULUS_PLASTIC, YIELD), n
+        )
+    )
+    axial = n * float(resistance_yielding(AREA, YIELD))
 
     value = utilization_plastic(-axial, reduced, 0.0, AREA, MODULUS_PLASTIC, YIELD)
 
@@ -299,8 +321,8 @@ def test_the_plastic_check_is_unity_on_the_reduced_moment(n):
 
 
 def test_the_elastic_check_is_unity_on_the_yield_stress():
-    axial = 0.3 * float(n_pl_rd(AREA, YIELD))
-    moment = 0.7 * float(m_el_rd(MODULUS_ELASTIC, YIELD))
+    axial = 0.3 * float(resistance_yielding(AREA, YIELD))
+    moment = 0.7 * float(resistance_bending_elastic(MODULUS_ELASTIC, YIELD))
 
     value = utilization_elastic(-axial, moment, 0.0, AREA, MODULUS_ELASTIC, YIELD)
 
@@ -320,7 +342,7 @@ def test_the_dispatcher_selects_the_branch(plastic):
 @pytest.mark.parametrize("plastic", [True, False])
 def test_the_checks_grow_with_the_axial_force(plastic):
     modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
-    forces = -jnp.linspace(1e3, 0.9 * float(n_pl_rd(AREA, YIELD)), 300)
+    forces = -jnp.linspace(1e3, 0.9 * float(resistance_yielding(AREA, YIELD)), 300)
     values = utilization_cross_section(
         forces, 40e6, 15e6, AREA, modulus, YIELD, plastic=plastic
     )
@@ -363,7 +385,7 @@ def test_the_partial_factor_raises_the_plastic_check_faster_than_linearly():
 
 def test_the_reduced_moment_has_a_finite_gradient_away_from_the_origin():
     for n in (0.05, 0.3, 0.6, 0.9):
-        gradient = jax.grad(m_n_rd, argnums=1)(127.4, n)
+        gradient = jax.grad(resistance_bending_reduced, argnums=1)(127.4, n)
 
         assert jnp.isfinite(gradient)
         assert gradient < 0.0
@@ -372,7 +394,7 @@ def test_the_reduced_moment_has_a_finite_gradient_away_from_the_origin():
 def test_the_first_derivative_stays_finite_at_zero_axial_force():
     # d/dn (1 - n^1.7) = -1.7 n^0.7 -> 0. It is the SECOND derivative that
     # diverges, so first-order gradients are safe at pure bending.
-    gradient = jax.grad(m_n_rd, argnums=1)(127.4, 0.0)
+    gradient = jax.grad(resistance_bending_reduced, argnums=1)(127.4, 0.0)
 
     assert jnp.isfinite(gradient)
     assert gradient == pytest.approx(0.0, abs=1e-12)
@@ -412,20 +434,22 @@ def test_the_gradient_at_the_origin_survives_a_comparison_it_loses():
 
 
 def test_values_are_float64():
-    assert m_pl_rd(550236.0, 355.0, 1.0).dtype == jnp.float64
-    assert m_n_rd(127.4, 0.4).dtype == jnp.float64
+    assert resistance_bending_plastic(550236.0, 355.0, 1.0).dtype == jnp.float64
+    assert resistance_bending_reduced(127.4, 0.4).dtype == jnp.float64
     assert moment_resultant(30.0, 40.0).dtype == jnp.float64
 
 
 def test_vectorizes_over_members():
     ratios = jnp.asarray([0.1, 0.3, 0.6])
 
-    values = m_n_rd(127.4, ratios)
+    values = resistance_bending_reduced(127.4, ratios)
 
     assert values.shape == (3,)
     assert np.all(np.diff(np.asarray(values)) < 0.0)
 
 
 def test_is_jittable():
-    assert jax.jit(m_n_rd)(127.4, 0.4) == pytest.approx(m_n_rd(127.4, 0.4))
+    assert jax.jit(resistance_bending_reduced)(127.4, 0.4) == pytest.approx(
+        resistance_bending_reduced(127.4, 0.4)
+    )
     assert jax.jit(moment_resultant)(30.0, 40.0) == pytest.approx(50.0)

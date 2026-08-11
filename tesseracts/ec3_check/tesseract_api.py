@@ -47,11 +47,11 @@ from tesseract_core.runtime import Float64
 
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter as diameter_required
+from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
-from normax.ec3.sizing import governing as governing_limit
+from normax.ec3.sizing import governing_limit_state as governing_limit
 from normax.ec3.sizing import mass as mass_of_tubes
-from normax.ec3.sizing import utilization as utilization_of_tubes
+from normax.ec3.sizing import utilization_design as utilization_of_tubes
 
 jax.config.update("jax_enable_x64", True)
 

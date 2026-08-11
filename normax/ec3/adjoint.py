@@ -35,15 +35,15 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.resistance import SLENDERNESS_OFFSET
-from normax.ec3.resistance import chi
-from normax.ec3.resistance import phi
+from normax.ec3.resistance import buckling_auxiliary
+from normax.ec3.resistance import reduction_buckling
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 
 
-def chi_derivative(
+def reduction_buckling_derivative(
     lam: Float[Array, "members"],
     alpha: float | Float[Array, ""],
 ) -> Float[Array, "members"]:
@@ -73,7 +73,7 @@ def chi_derivative(
     and it is where a member stops caring how long it is.
     """
     slender = jnp.asarray(lam)
-    auxiliary = phi(slender, alpha)
+    auxiliary = buckling_auxiliary(slender, alpha)
     root = jnp.sqrt(auxiliary**2 - slender**2)
 
     uncapped = 1.0 / (auxiliary + root)
@@ -154,11 +154,11 @@ def utilization_slope(
     both counts. Those are the two terms.
     """
     lam = slenderness_unit(steel, tube) * l_cr / diameter
-    reduction = chi(lam, tube.alpha)
+    reduction = reduction_buckling(lam, tube.alpha)
     demand = _buckling_check(diameter, n_ed, l_cr, steel, tube)
 
     return (demand / diameter) * (
-        lam * chi_derivative(lam, tube.alpha) / reduction - 2.0
+        lam * reduction_buckling_derivative(lam, tube.alpha) / reduction - 2.0
     )
 
 
@@ -178,7 +178,7 @@ def _buckling_check(
         Axial force over buckling resistance.
     """
     lam = slenderness_unit(steel, tube) * l_cr / diameter
-    reduction = chi(lam, tube.alpha)
+    reduction = reduction_buckling(lam, tube.alpha)
     resistance = reduction * area(diameter, tube.ratio) * steel.f_y / steel.gamma_m1
 
     return jnp.abs(n_ed) / resistance
@@ -263,10 +263,15 @@ def derivative_length(
     long it is.
     """
     lam = slenderness_unit(steel, tube) * l_cr / diameter
-    reduction = chi(lam, tube.alpha)
+    reduction = reduction_buckling(lam, tube.alpha)
     demand = _buckling_check(diameter, n_ed, l_cr, steel, tube)
 
-    slope_length = -demand * chi_derivative(lam, tube.alpha) * lam / (reduction * l_cr)
+    slope_length = (
+        -demand
+        * reduction_buckling_derivative(lam, tube.alpha)
+        * lam
+        / (reduction * l_cr)
+    )
 
     return -slope_length / utilization_slope(diameter, n_ed, l_cr, steel, tube)
 

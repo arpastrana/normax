@@ -5,7 +5,7 @@ import pytest
 from normax.ec3.interaction import InteractionFactors
 from normax.ec3.interaction import checks
 from normax.ec3.interaction import interaction_factors
-from normax.ec3.interaction import utilization
+from normax.ec3.interaction import utilization_member
 
 # Simões da Silva, Simões & Gervásio, *Design of Steel Structures* (ECCS).
 # Design Example 2, a 47 m single-span pitched-roof portal frame in S355J2,
@@ -199,7 +199,7 @@ def test_supplying_the_factors_agrees_with_deriving_them():
         M_PL_Y_RD,
         factors,
     )
-    derived = utilization(
+    derived = utilization_member(
         480.3e3,
         344.5e6,
         0.0,

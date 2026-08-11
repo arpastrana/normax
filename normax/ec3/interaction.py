@@ -75,7 +75,7 @@ class InteractionFactors(NamedTuple):
     zz: Float[Array, "members"]
 
 
-def c_m_linear(psi: Float[Array, "members"]) -> Float[Array, "members"]:
+def moment_factor_linear(psi: Float[Array, "members"]) -> Float[Array, "members"]:
     """
     Equivalent uniform moment factor for a linear moment diagram.
 
@@ -87,7 +87,7 @@ def c_m_linear(psi: Float[Array, "members"]) -> Float[Array, "members"]:
 
     Returns
     -------
-    c_m :
+    moment_factor_linear :
         Equivalent uniform moment factor, floored at 0.4.
 
     Notes
@@ -150,7 +150,7 @@ def _k_axial(
 
     Parameters
     ----------
-    c_m :
+    moment_factor_linear :
         Equivalent uniform moment factor.
     slope :
         Coefficient multiplying the axial ratio in the unbounded expression.
@@ -314,7 +314,7 @@ def k_zy(
     return 0.8 * jnp.asarray(k_yy_value)
 
 
-def utilization(
+def utilization_member(
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
     m_z_ed: Float[Array, "members"],
@@ -610,7 +610,7 @@ def cap_is_active(
 
     Parameters
     ----------
-    c_m :
+    moment_factor_linear :
         Equivalent uniform moment factor.
     lam :
         Non-dimensional slenderness about the relevant axis.

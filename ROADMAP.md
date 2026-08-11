@@ -253,9 +253,9 @@ diameter, so `sizing.py` is the layer that composes them.
 | Module | What to call |
 |---|---|
 | `section` | `area`, `second_moment`, `modulus_elastic`, `modulus_plastic`, `radius_of_gyration`, all `(diameter, ratio)` |
-| `classification` | `epsilon`, `class_limits`, `classify` |
-| `resistance` | `n_c_rd`, `n_t_rd`, `n_cr`, `slenderness`, `phi`, `chi`, `n_b_rd`, `m_pl_rd`, `m_el_rd`, `m_n_rd`, `moment_resultant` |
-| `interaction` | `c_m_linear`, `axial_ratio`, `interaction_factors`, `checks`, `utilization`, `governing_equation`, `cap_is_active` |
+| `classification` | `material_factor`, `class_limits`, `classify_section` |
+| `resistance` | `resistance_compression`, `resistance_tension`, `force_critical`, `slenderness_from_force`, `buckling_auxiliary`, `reduction_buckling`, `resistance_buckling`, `resistance_bending_plastic`, `resistance_bending_elastic`, `resistance_bending_reduced`, `moment_resultant` |
+| `interaction` | `moment_factor_linear`, `axial_ratio`, `interaction_factors`, `checks`, `utilization_member`, `governing_equation`, `cap_is_active` |
 
 **The residual already exists in test form.** `member_utilization` in
 `tests/test_sizing_monotonicity.py` composes section → resistance →
@@ -274,7 +274,7 @@ and `cap_is_active` (whether an interaction factor is bounded). Both
 non-differentiable. Pop them before `jax.grad`: a concrete cotangent on a
 non-differentiable output raises `ValueError`, and only a symbolic zero is accepted.
 
-**Gradient order.** `m_n_rd`'s `1 − n^1.7` has a finite, continuous *first*
+**Gradient order.** `resistance_bending_reduced`'s `1 − n^1.7` has a finite, continuous *first*
 derivative at `n = 0`; only the second diverges. So `check_grads(order=1)` is
 safe at pure bending and `order=2` is not. Guard `n` only if second-order
 accuracy is ever needed — the earlier note that gradients would be "noisy"
@@ -1004,7 +1004,7 @@ per-edge search honest, and it is a penalty rather than a guarantee.
 
 **A is the headline. B is an extension if time permits, and then the two get
 compared.** They differ in what is a variable, not in what EN 1993-1-1 says: both
-call the same `sizing.utilization`, so the comparison is like for like.
+call the same `sizing.utilization_design`, so the comparison is like for like.
 
 | | **A — nested, fully-stressed** | **B — simultaneous** |
 |---|---|---|
@@ -1165,7 +1165,7 @@ written**; these counts move with every commit.
 **Eq. 6.42, how the two moments combine** — deferred 2026-08-09, revisit after P4.
 
 Both readings are implemented and selected by `resultant=` on
-`normax.ec3.sizing.diameter`; the default is the resultant. The disagreement is
+`normax.ec3.sizing.diameter_required`; the default is the resultant. The disagreement is
 recorded in `docs/clauses.md` under §6.2.9.2 with both citations, what each
 third-party implementation says, and the measured gap.
 

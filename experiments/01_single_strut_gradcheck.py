@@ -35,9 +35,9 @@ from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter
+from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
-from normax.ec3.sizing import utilization
+from normax.ec3.sizing import utilization_design
 
 STEEL = Steel()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
@@ -61,14 +61,18 @@ def size(n_ed, l_cr):
     """
     Fully-stressed diameter under axial force alone.
     """
-    return diameter(n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, TUBE, plastic=PLASTIC)
+    return diameter_required(
+        n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, TUBE, plastic=PLASTIC
+    )
 
 
 def used(d, n_ed, l_cr):
     """
     Utilization at a diameter, from the exact clause functions.
     """
-    return utilization(d, n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, TUBE, plastic=PLASTIC)
+    return utilization_design(
+        d, n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, TUBE, plastic=PLASTIC
+    )
 
 
 def central(f, x, step):

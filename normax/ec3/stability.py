@@ -92,7 +92,7 @@ def slenderness_global(
     return jnp.sqrt(alpha_ult_k / alpha_cr)
 
 
-def resistance_factor(
+def amplifier_resistance(
     area: Float[Array, "members"],
     f_y: float | Float[Array, ""],
     n_ed: Float[Array, "members"],
@@ -137,7 +137,7 @@ def resistance_factor(
     return jnp.where(loaded, area * f_y / safe, jnp.nan)
 
 
-def critical_force(
+def force_critical_global(
     alpha_cr: Float[Array, "members"],
     n_ed: Float[Array, "members"],
 ) -> Float[Array, "members"]:
@@ -153,7 +153,7 @@ def critical_force(
 
     Returns
     -------
-    n_cr :
+    force_critical :
         Elastic critical force.
 
     Notes
@@ -164,7 +164,7 @@ def critical_force(
     return alpha_cr * jnp.abs(n_ed)
 
 
-def buckling_length(
+def buckling_length_global(
     alpha_cr: Float[Array, "members"],
     n_ed: Float[Array, "members"],
     second_moment: Float[Array, "members"],
@@ -201,14 +201,14 @@ def buckling_length(
     `resistance_factor` does: a factor scaling the whole load says nothing about a
     member the load never reaches.
     """
-    critical = critical_force(alpha_cr, n_ed)
+    critical = force_critical_global(alpha_cr, n_ed)
     loaded = critical > 0.0
     safe = jnp.where(loaded, critical, 1.0)
 
     return jnp.where(loaded, jnp.pi * jnp.sqrt(e_mod * second_moment / safe), jnp.nan)
 
 
-def utilization(
+def utilization_frame(
     alpha_cr: float | Float[Array, ""],
     threshold: float = ALPHA_CR_ELASTIC,
 ) -> Float[Array, ""]:
@@ -264,10 +264,10 @@ def is_adequate(
     EN 1993-1-1 §5.2.1(3). **Non-differentiable**, being a verdict rather than a
     magnitude; read `utilization` when a gradient is wanted.
     """
-    return utilization(alpha_cr, threshold) <= 1.0
+    return utilization_frame(alpha_cr, threshold) <= 1.0
 
 
-def amplification(alpha_cr: float | Float[Array, ""]) -> Float[Array, ""]:
+def amplification_sway(alpha_cr: float | Float[Array, ""]) -> Float[Array, ""]:
     """
     Factor by which sway effects are magnified in a second-order response.
 
@@ -278,7 +278,7 @@ def amplification(alpha_cr: float | Float[Array, ""]) -> Float[Array, ""]:
 
     Returns
     -------
-    amplification :
+    amplification_sway :
         Multiplier on the first-order sway effects.
 
     Notes

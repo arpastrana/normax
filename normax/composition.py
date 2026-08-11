@@ -54,9 +54,9 @@ from tesseract_jax import apply_tesseract
 
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import envelope as envelope_ec3
+from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import mass as mass_ec3
-from normax.ec3.sizing import utilization as utilization_ec3
+from normax.ec3.sizing import utilization_design as utilization_ec3
 from normax.pipeline import Design
 from normax.pipeline import Envelope
 from normax.structures import Structure

@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### P8 — ec3 restructuring
+
+- **Fixed: the analytic bracket read `resultant` on a branch the check ignores
+  it on, and silently oversized every plastic member.**
+  `utilization_cross_section` routes Classes 1 and 2 to `utilization_plastic`,
+  which always combines the two moments as a resultant — Eq. 6.41 takes both
+  exponents as two for an axisymmetric section, so the collapse is exact algebra
+  and there is nothing to choose. `bracket` applied the flag regardless. Its
+  "lower bound" then landed *above* the root, every midpoint of the bisection
+  satisfied the check, and the search returned the top of an interval it had
+  never needed to narrow. At `plastic=True, resultant=False`, `n_ed = 0`,
+  `M_y = M_z = 40 kNm`: diameter 199.400 mm against the correct 177.646 mm, a
+  utilization of 0.7071 rather than 1, and a member 12.2% oversized — the factor
+  is `2^(1/6)`, the cube root of the ratio between the summed and resultant
+  moments. Worse for the gradient: the implicit function theorem was being
+  applied where the utilization was 0.71, so `∂d/∂M_y` came back 20.5% off
+  central differences (1.2858e-6 against 1.0666e-6). It broke CLAUDE.md
+  invariant 5 and was reachable from `pipeline.design` and from the Tesseract,
+  both of which read `plastic` and `resultant` independently. It hid because
+  `test_the_plastic_branch_ignores_the_reading` sizes at `n_ed = -5e5`, where
+  6.3.3 governs and sums the moments linearly anyway, and
+  `test_both_readings_are_exactly_fully_stressed` only ran the elastic branch.
+  The three-way combination — cloned in `utilization_elastic`,
+  `utilization_cross_section` and `bracket` — is now one `moment_combined`
+  helper the check and the bound both call, so a fourth copy cannot appear.
+- **`resultant` belongs in `static_argnames`.** It selects a clause exactly as
+  `plastic` does. Both jit tests omitted it and passed only because they relied
+  on its default; passing it explicitly raised `TracerBoolConversionError`.
+- **`interaction_factors` returns an `InteractionFactors` rather than a bare
+  4-tuple.** The tuple was splatted positionally into `checks`'s
+  `factor_yy, factor_yz, factor_zy, factor_zz`, where a `yz`/`zy` transposition
+  produces a plausible wrong number that no check can refuse.
+- **The clause layer is renamed from EN 1993-1-1's symbols to English.**
+  `n_pl_rd` → `resistance_yielding`, `m_n_rd` → `resistance_bending_reduced`,
+  `chi` → `reduction_buckling`, `phi` → `buckling_auxiliary`, `epsilon` →
+  `material_factor`, `classify` → `classify_section`, `c_m_linear` →
+  `moment_factor_linear`, and the rest. The symbol
+  each function returns now appears in its `Returns` description, so the tie to
+  the standard survives; the clause number in `Notes` was already there. Three
+  modules defined a function called `utilization` and `sizing` had to import one
+  of them aliased: they are now `utilization_frame` (§5.2.1, the whole frame),
+  `utilization_member` (6.3.3, one member) and `utilization_design` (the larger
+  of the two checks). Renaming also killed two shadowings, `v_pl_rd`'s
+  `area_shear` parameter against the function of that name and `n_cr`'s
+  `second_moment` against `section.second_moment`.
+- **373 identifiers were moved from the AST, not by regex.** `diameter` has 318
+  textual occurrences and `governing` 84, nearly all parameters and prose; only
+  names actually bound to the renamed imports were touched. The one case the
+  first pass got wrong is worth recording: in `sizing.py` five functions take a
+  parameter named `diameter` while the module also defines the function, so
+  body references to the *parameter* were rewritten to the new function name.
+  Renaming by binding, not by spelling, is the only safe way to do this.
+
 ### P1 — EC3 core
 
 - **`normax/ec3/section.py`**: closed-form circular-hollow-section geometry —

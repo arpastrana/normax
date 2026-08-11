@@ -3,15 +3,15 @@ import numpy as np
 import pytest
 
 from normax.ec3.classification import class_limits
-from normax.ec3.classification import classify
-from normax.ec3.classification import epsilon
+from normax.ec3.classification import classify_section
+from normax.ec3.classification import material_factor
 from normax.ec3.resistance import IMPERFECTION_FACTORS
-from normax.ec3.resistance import chi
-from normax.ec3.resistance import n_b_rd
-from normax.ec3.resistance import n_c_rd
-from normax.ec3.resistance import n_cr
-from normax.ec3.resistance import phi
-from normax.ec3.resistance import slenderness
+from normax.ec3.resistance import buckling_auxiliary
+from normax.ec3.resistance import force_critical
+from normax.ec3.resistance import reduction_buckling
+from normax.ec3.resistance import resistance_buckling
+from normax.ec3.resistance import resistance_compression
+from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import modulus_elastic
 from normax.ec3.section import modulus_plastic
@@ -84,24 +84,24 @@ TOLERANCE_GUIDE = 1e-2
 def chain():
     gross = area(DIAMETER, RATIO)
     inertia = second_moment(DIAMETER, RATIO)
-    critical = n_cr(inertia, LENGTH_BUCKLING, MODULUS)
-    non_dimensional = slenderness(gross, YIELD, critical)
-    reduction = chi(non_dimensional, ALPHA)
+    critical = force_critical(inertia, LENGTH_BUCKLING, MODULUS)
+    non_dimensional = slenderness_from_force(gross, YIELD, critical)
+    reduction = reduction_buckling(non_dimensional, ALPHA)
 
     return {
         "area": gross,
         "second_moment": inertia,
         "modulus_elastic": modulus_elastic(DIAMETER, RATIO),
         "modulus_plastic": modulus_plastic(DIAMETER, RATIO),
-        "epsilon": epsilon(YIELD),
+        "epsilon": material_factor(YIELD),
         "ratio": DIAMETER / thickness(DIAMETER, RATIO),
         "class_limit_1": class_limits(YIELD)[0],
-        "n_c_rd": n_c_rd(gross, YIELD, GAMMA_M0),
+        "n_c_rd": resistance_compression(gross, YIELD, GAMMA_M0),
         "n_cr": critical,
         "slenderness": non_dimensional,
-        "phi": phi(non_dimensional, ALPHA),
+        "phi": buckling_auxiliary(non_dimensional, ALPHA),
         "chi": reduction,
-        "n_b_rd": n_b_rd(reduction, gross, YIELD, GAMMA_M1),
+        "n_b_rd": resistance_buckling(reduction, gross, YIELD, GAMMA_M1),
     }
 
 
@@ -124,7 +124,7 @@ def test_section_properties_come_from_the_figure(chain):
 
 
 def test_section_is_class_one(chain):
-    assert classify(RATIO, YIELD) == 1
+    assert classify_section(RATIO, YIELD) == 1
 
 
 def test_class_one_limit_is_fifty_epsilon_squared(chain):

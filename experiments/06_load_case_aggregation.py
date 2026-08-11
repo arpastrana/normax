@@ -35,8 +35,8 @@ import jax.numpy as jnp
 
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter
-from normax.ec3.sizing import envelope
+from normax.ec3.sizing import diameter_envelope
+from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 
@@ -70,7 +70,7 @@ def sizes_per_case():
     """
     Fully-stressed diameter of every member under every load case.
     """
-    return diameter(
+    return diameter_required(
         FORCES, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
     )
 
@@ -79,7 +79,7 @@ def total_mass(beta):
     """
     Mass of the structure sized by the smooth envelope at a given sharpness.
     """
-    return mass(envelope(sizes_per_case(), beta), LENGTHS, STEEL, TUBE)
+    return mass(diameter_envelope(sizes_per_case(), beta), LENGTHS, STEEL, TUBE)
 
 
 def main() -> None:
@@ -110,8 +110,8 @@ def main() -> None:
         bound = float(jnp.log(per_case.shape[0]) / beta) * 100.0
         gradient = jax.grad(
             lambda f: mass(
-                envelope(
-                    diameter(
+                diameter_envelope(
+                    diameter_required(
                         f, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
                     ),
                     beta,
@@ -134,14 +134,14 @@ def main() -> None:
     beta = 50.0
 
     def objective(forces):
-        sizes = diameter(
+        sizes = diameter_required(
             forces, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
         )
 
-        return mass(envelope(sizes, beta), LENGTHS, STEEL, TUBE)
+        return mass(diameter_envelope(sizes, beta), LENGTHS, STEEL, TUBE)
 
     def hard(forces):
-        sizes = diameter(
+        sizes = diameter_required(
             forces, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
         )
 

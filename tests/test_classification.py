@@ -6,8 +6,8 @@ import pytest
 from normax.ec3.classification import CLASS_LIMIT_FACTORS
 from normax.ec3.classification import CLASS_LIMIT_TOLERANCE
 from normax.ec3.classification import class_limits
-from normax.ec3.classification import classify
-from normax.ec3.classification import epsilon
+from normax.ec3.classification import classify_section
+from normax.ec3.classification import material_factor
 from normax.ec3.section import thickness
 
 # EN 1993-1-1 Table 5.2, the epsilon row, rounded to 2 d.p. in the standard.
@@ -28,21 +28,21 @@ ROUNDING = 5e-3
 
 @pytest.mark.parametrize("f_y, eps, eps_squared", TABLE_5_2)
 def test_epsilon_matches_the_table(f_y, eps, eps_squared):
-    assert epsilon(f_y) == pytest.approx(eps, abs=ROUNDING)
+    assert material_factor(f_y) == pytest.approx(eps, abs=ROUNDING)
 
 
 @pytest.mark.parametrize("f_y, eps, eps_squared", TABLE_5_2)
 def test_epsilon_squared_matches_the_table(f_y, eps, eps_squared):
-    assert epsilon(f_y) ** 2 == pytest.approx(eps_squared, abs=ROUNDING)
+    assert material_factor(f_y) ** 2 == pytest.approx(eps_squared, abs=ROUNDING)
 
 
 @pytest.mark.parametrize("f_y, eps, eps_squared", TABLE_5_2)
 def test_epsilon_is_its_definition(f_y, eps, eps_squared):
-    assert epsilon(f_y) == pytest.approx(np.sqrt(235.0 / f_y))
+    assert material_factor(f_y) == pytest.approx(np.sqrt(235.0 / f_y))
 
 
 def test_epsilon_is_one_at_the_reference_grade():
-    assert epsilon(235.0) == pytest.approx(1.0)
+    assert material_factor(235.0) == pytest.approx(1.0)
 
 
 def test_class_limit_factors_are_the_tabulated_ones():
@@ -77,10 +77,10 @@ def test_class_limits_shrink_with_strength(f_y):
 def test_classify_spans_all_four_classes(f_y):
     lower, middle, upper = np.asarray(class_limits(f_y))
 
-    assert classify(0.5 * lower, f_y) == 1
-    assert classify(0.5 * (lower + middle), f_y) == 2
-    assert classify(0.5 * (middle + upper), f_y) == 3
-    assert classify(2.0 * upper, f_y) == 4
+    assert classify_section(0.5 * lower, f_y) == 1
+    assert classify_section(0.5 * (lower + middle), f_y) == 2
+    assert classify_section(0.5 * (middle + upper), f_y) == 3
+    assert classify_section(2.0 * upper, f_y) == 4
 
 
 @pytest.mark.parametrize("f_y", GRADES)
@@ -90,23 +90,23 @@ def test_a_ratio_on_a_limit_takes_the_lower_class(f_y):
     limits = class_limits(f_y)
 
     for index, limit in enumerate(np.asarray(limits)):
-        assert classify(limit, f_y) == index + 1
+        assert classify_section(limit, f_y) == index + 1
 
 
 @pytest.mark.parametrize("f_y", GRADES)
 def test_the_fixed_ratio_sits_on_the_class_three_boundary(f_y):
     # CLAUDE.md section 3: d/t is pinned at 90 eps^2 so classification is exact
     # by construction and never needs smoothing.
-    assert classify(90.0 * epsilon(f_y) ** 2, f_y) == 3
+    assert classify_section(90.0 * material_factor(f_y) ** 2, f_y) == 3
 
 
 def test_the_worked_example_section_is_class_one():
     # CHS 244.5 x 10, S355.
-    assert classify(244.5 / 10.0, 355.0) == 1
+    assert classify_section(244.5 / 10.0, 355.0) == 1
 
 
 def test_classify_returns_integers():
-    assert jnp.issubdtype(classify(24.45, 355.0).dtype, jnp.integer)
+    assert jnp.issubdtype(classify_section(24.45, 355.0).dtype, jnp.integer)
 
 
 def test_classify_vectorizes_over_members():
@@ -115,7 +115,7 @@ def test_classify_vectorizes_over_members():
         [0.5 * lower, 0.5 * (lower + middle), 0.5 * (middle + upper), 2.0 * upper]
     )
 
-    classes = classify(ratios, 355.0)
+    classes = classify_section(ratios, 355.0)
 
     assert classes.shape == (4,)
     assert np.asarray(classes) == pytest.approx([1, 2, 3, 4])
@@ -123,7 +123,7 @@ def test_classify_vectorizes_over_members():
 
 def test_classify_is_jittable():
     # No Python branch on a traced value, so this must trace cleanly.
-    assert jax.jit(classify)(24.45, 355.0) == 1
+    assert jax.jit(classify_section)(24.45, 355.0) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -140,7 +140,7 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
     diameters = jnp.linspace(21.3, 500.0, 64)
     ratios = diameters / thickness(diameters, limit)
 
-    assert np.all(np.asarray(classify(ratios, f_y)) == index + 1)
+    assert np.all(np.asarray(classify_section(ratios, f_y)) == index + 1)
 
 
 @pytest.mark.parametrize("f_y", GRADES)
@@ -170,12 +170,12 @@ def test_the_tolerance_does_not_reach_a_neighbouring_class(f_y):
     # Widening the bound must not swallow any ratio geometry would separate.
     lower, middle, upper = np.asarray(class_limits(f_y))
 
-    assert classify(lower * (1.0 + 1e-6), f_y) == 2
-    assert classify(middle * (1.0 + 1e-6), f_y) == 3
-    assert classify(upper * (1.0 + 1e-6), f_y) == 4
+    assert classify_section(lower * (1.0 + 1e-6), f_y) == 2
+    assert classify_section(middle * (1.0 + 1e-6), f_y) == 3
+    assert classify_section(upper * (1.0 + 1e-6), f_y) == 4
 
 
 def test_a_real_thin_walled_tube_is_still_class_four():
     # CHS 508 x 8, S355: d/t = 63.5 against a limit of 59.58. Geometry, not
     # rounding, so the tolerance leaves it alone.
-    assert classify(508.0 / 8.0, 355.0) == 4
+    assert classify_section(508.0 / 8.0, 355.0) == 4

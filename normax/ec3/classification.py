@@ -39,7 +39,7 @@ CLASS_LIMIT_FACTORS = (50.0, 70.0, 90.0)
 CLASS_LIMIT_TOLERANCE = 1e-12
 
 
-def epsilon(f_y: float | Float[Array, ""]) -> Float[Array, ""]:
+def material_factor(f_y: float | Float[Array, ""]) -> Float[Array, ""]:
     """
     Material factor for the slenderness limits.
 
@@ -50,9 +50,9 @@ def epsilon(f_y: float | Float[Array, ""]) -> Float[Array, ""]:
 
     Returns
     -------
-    epsilon :
-        Material factor, one at the 235 reference grade and falling as the
-        grade rises.
+    material_factor :
+        Material factor epsilon, one at the 235 reference grade and falling as
+        the grade rises.
 
     Notes
     -----
@@ -85,10 +85,10 @@ def class_limits(f_y: float | Float[Array, ""]) -> Float[Array, "3"]:
     """
     factors = jnp.asarray(CLASS_LIMIT_FACTORS)
 
-    return factors * epsilon(f_y) ** 2
+    return factors * material_factor(f_y) ** 2
 
 
-def classify(
+def classify_section(
     ratio: Float[Array, "members"],
     f_y: float | Float[Array, ""],
 ) -> Int[Array, "members"]:

@@ -47,24 +47,24 @@ from jaxtyping import Int
 from normax.analysis.smax import Model
 from normax.analysis.smax import buckling
 from normax.analysis.smax import forces
-from normax.ec3.resistance import n_cr
-from normax.ec3.resistance import slenderness
+from normax.ec3.resistance import force_critical
+from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
 from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
-from normax.ec3.sizing import diameter as diameter_ec3
+from normax.ec3.sizing import diameter_envelope as envelope_ec3
+from normax.ec3.sizing import diameter_required as diameter_ec3
 from normax.ec3.sizing import end_moments
-from normax.ec3.sizing import envelope as envelope_ec3
-from normax.ec3.sizing import governing as governing_ec3
+from normax.ec3.sizing import governing_limit_state as governing_ec3
 from normax.ec3.sizing import mass as mass_ec3
-from normax.ec3.sizing import utilization as utilization_ec3
+from normax.ec3.sizing import utilization_design as utilization_ec3
 from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.ec3.stability import buckling_length as buckling_length_global
+from normax.ec3.stability import amplifier_resistance
+from normax.ec3.stability import buckling_length_global
 from normax.ec3.stability import is_adequate
-from normax.ec3.stability import resistance_factor
 from normax.ec3.stability import slenderness_global
-from normax.ec3.stability import utilization as utilization_stability
+from normax.ec3.stability import utilization_frame as utilization_stability
 from normax.formfinding import equilibrium
 from normax.structures import Structure
 
@@ -841,11 +841,11 @@ def stability(
         factors=modes.factors,
         utilization=utilization_stability(alpha_cr, threshold),
         adequate=is_adequate(alpha_cr, threshold),
-        slenderness_member=slenderness(
-            gross, steel.f_y, n_cr(inertia, result.l_cr, steel.e_mod)
+        slenderness_member=slenderness_from_force(
+            gross, steel.f_y, force_critical(inertia, result.l_cr, steel.e_mod)
         ),
         slenderness_global=slenderness_global(
-            resistance_factor(gross, steel.f_y, result.n_ed), alpha_cr
+            amplifier_resistance(gross, steel.f_y, result.n_ed), alpha_cr
         ),
         l_cr_global=buckling_length_global(alpha_cr, result.n_ed, inertia, steel.e_mod),
     )
