@@ -42,7 +42,7 @@ from normax.analysis import MemberForces
 from normax.analysis.smax import Model
 from normax.analysis.smax import forces
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
 
@@ -52,7 +52,7 @@ def _member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
 ) -> MemberForces:
     """
@@ -143,7 +143,7 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         loads=jnp.asarray(inputs["loads"]),
     )
 
-    steel = Steel(
+    steel = SteelGrade(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],

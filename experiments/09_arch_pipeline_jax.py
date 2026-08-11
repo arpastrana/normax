@@ -55,7 +55,7 @@ import numpy as np
 
 from normax.analysis.smax import buckling
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass as mass_of_tubes
@@ -113,7 +113,7 @@ TOLERANCE_ORDER = 0.15
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
+STEEL = SteelGrade()
 
 # Preparing the analysis model needs a section family to stand up a frame, and
 # every property of it is replaced per call, so one seed serves both classes.

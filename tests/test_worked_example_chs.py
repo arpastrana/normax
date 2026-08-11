@@ -5,7 +5,8 @@ import pytest
 from normax.ec3.classification import class_limits
 from normax.ec3.classification import classify_section
 from normax.ec3.classification import material_factor
-from normax.ec3.resistance import IMPERFECTION_FACTORS
+from normax.ec3.material import IMPERFECTION_FACTORS
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import buckling_auxiliary
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import reduction_buckling
@@ -84,8 +85,8 @@ TOLERANCE_GUIDE = 1e-2
 def chain():
     gross = area(DIAMETER, RATIO)
     inertia = second_moment(DIAMETER, RATIO)
-    critical = force_critical(inertia, LENGTH_BUCKLING, MODULUS)
-    non_dimensional = slenderness_from_force(gross, YIELD, critical)
+    critical = force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=MODULUS))
+    non_dimensional = slenderness_from_force(gross, SteelGrade(f_y=YIELD), critical)
     reduction = reduction_buckling(non_dimensional, ALPHA)
 
     return {
@@ -96,12 +97,16 @@ def chain():
         "epsilon": material_factor(YIELD),
         "ratio": DIAMETER / thickness(DIAMETER, RATIO),
         "class_limit_1": class_limits(YIELD)[0],
-        "n_c_rd": resistance_compression(gross, YIELD, GAMMA_M0),
+        "n_c_rd": resistance_compression(
+            gross, SteelGrade(f_y=YIELD, gamma_m0=GAMMA_M0)
+        ),
         "n_cr": critical,
         "slenderness": non_dimensional,
         "phi": buckling_auxiliary(non_dimensional, ALPHA),
         "chi": reduction,
-        "n_b_rd": resistance_buckling(reduction, gross, YIELD, GAMMA_M1),
+        "n_b_rd": resistance_buckling(
+            reduction, gross, SteelGrade(f_y=YIELD, gamma_m1=GAMMA_M1)
+        ),
     }
 
 

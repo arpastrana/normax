@@ -30,6 +30,7 @@ from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.f
 )
 from blueprints.structural_sections.steel.standard_profiles import chs
 
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import moment_resultant
 from normax.ec3.resistance import resistance_bending_elastic
@@ -105,7 +106,9 @@ def test_eq_6_6_agrees(gross, f_y, gamma_m0):
         gamma_m0=gamma_m0,
     )
 
-    assert resistance_yielding(gross, f_y, gamma_m0) == pytest.approx(float(oracle))
+    assert resistance_yielding(
+        gross, SteelGrade(f_y=f_y, gamma_m0=gamma_m0)
+    ) == pytest.approx(float(oracle))
 
 
 @pytest.mark.parametrize("gamma_m2", PARTIAL_FACTORS)
@@ -118,7 +121,9 @@ def test_eq_6_7_agrees(net, f_u, gamma_m2):
         gamma_m2=gamma_m2,
     )
 
-    assert resistance_fracture(net, f_u, gamma_m2) == pytest.approx(float(oracle))
+    assert resistance_fracture(
+        net, SteelGrade(f_u=f_u, gamma_m2=gamma_m2)
+    ) == pytest.approx(float(oracle))
 
 
 @pytest.mark.parametrize("gamma_m0", PARTIAL_FACTORS)
@@ -127,7 +132,9 @@ def test_eq_6_7_agrees(net, f_u, gamma_m2):
 def test_eq_6_10_agrees(gross, f_y, gamma_m0):
     oracle = Form6Dot10NcRdClass1And2And3(a=gross, f_y=f_y, gamma_m0=gamma_m0)
 
-    assert resistance_compression(gross, f_y, gamma_m0) == pytest.approx(float(oracle))
+    assert resistance_compression(
+        gross, SteelGrade(f_y=f_y, gamma_m0=gamma_m0)
+    ) == pytest.approx(float(oracle))
 
 
 @pytest.mark.parametrize("f_u", ULTIMATES)
@@ -147,7 +154,9 @@ def test_tension_resistance_min_agrees(f_y, f_u):
     )
     oracle = min(float(yielding), float(fracture))
 
-    resistance = resistance_tension(gross, net, f_y, f_u, gamma_m0, gamma_m2)
+    resistance = resistance_tension(
+        gross, net, SteelGrade(f_y=f_y, f_u=f_u, gamma_m0=gamma_m0, gamma_m2=gamma_m2)
+    )
 
     assert resistance == pytest.approx(oracle)
 
@@ -165,24 +174,30 @@ def test_worked_example_6_1_tension_agrees():
 
     assert float(yielding) * 1e-3 == pytest.approx(1325.0, rel=1e-3)
     assert float(fracture) * 1e-3 == pytest.approx(1550.0, rel=1e-3)
-    assert resistance_yielding(5000.0, 265.0, 1.0) == pytest.approx(float(yielding))
-    assert resistance_fracture(4406.0, 430.0, 1.1) == pytest.approx(float(fracture))
+    assert resistance_yielding(
+        5000.0, SteelGrade(f_y=265.0, gamma_m0=1.0)
+    ) == pytest.approx(float(yielding))
+    assert resistance_fracture(
+        4406.0, SteelGrade(f_u=430.0, gamma_m2=1.1)
+    ) == pytest.approx(float(fracture))
 
 
 def test_worked_example_6_2_compression_agrees():
     oracle = Form6Dot10NcRdClass1And2And3(a=9310.0, f_y=355.0, gamma_m0=1.0)
 
     assert float(oracle) * 1e-3 == pytest.approx(3305.0, rel=1e-3)
-    assert resistance_compression(9310.0, 355.0, 1.0) == pytest.approx(float(oracle))
+    assert resistance_compression(
+        9310.0, SteelGrade(f_y=355.0, gamma_m0=1.0)
+    ) == pytest.approx(float(oracle))
 
 
 def test_worked_example_chs_compression_agrees():
     oracle = Form6Dot10NcRdClass1And2And3(a=7367.034773, f_y=355.0, gamma_m0=1.0)
 
     assert float(oracle) * 1e-3 == pytest.approx(2616.0, rel=1e-2)
-    assert resistance_compression(7367.034773, 355.0, 1.0) == pytest.approx(
-        float(oracle)
-    )
+    assert resistance_compression(
+        7367.034773, SteelGrade(f_y=355.0, gamma_m0=1.0)
+    ) == pytest.approx(float(oracle))
 
 
 # ---- CHS geometry against the standard profile table ---- #
@@ -278,9 +293,9 @@ MODULI = [214.2e3, 335.9e3, 414981.0, 550236.0, 2194e3]
 def test_eq_6_13_agrees(modulus, f_y, gamma_m0):
     oracle = Form6Dot13MCRdClass1And2(w_pl=modulus, f_y=f_y, gamma_m0=gamma_m0)
 
-    assert resistance_bending_plastic(modulus, f_y, gamma_m0) == pytest.approx(
-        float(oracle)
-    )
+    assert resistance_bending_plastic(
+        modulus, SteelGrade(f_y=f_y, gamma_m0=gamma_m0)
+    ) == pytest.approx(float(oracle))
 
 
 @pytest.mark.parametrize("gamma_m0", PARTIAL_FACTORS)
@@ -289,9 +304,9 @@ def test_eq_6_13_agrees(modulus, f_y, gamma_m0):
 def test_eq_6_14_agrees(modulus, f_y, gamma_m0):
     oracle = Form6Dot14MCRdClass3(w_el_min=modulus, f_y=f_y, gamma_m0=gamma_m0)
 
-    assert resistance_bending_elastic(modulus, f_y, gamma_m0) == pytest.approx(
-        float(oracle)
-    )
+    assert resistance_bending_elastic(
+        modulus, SteelGrade(f_y=f_y, gamma_m0=gamma_m0)
+    ) == pytest.approx(float(oracle))
 
 
 BIAXIAL = [
@@ -374,7 +389,7 @@ def test_the_fixture_section_is_in_the_profile_table(profiles):
 
 @pytest.mark.parametrize("area", [1e3, 4690.0, 7367.03, 2e4])
 def test_shear_resistance_agrees(area):
-    ours = resistance_shear(area_shear(area), 355.0, 1.0)
+    ours = resistance_shear(area_shear(area), SteelGrade(f_y=355.0, gamma_m0=1.0))
     oracle = Form6Dot18DesignPlasticShearResistance(
         a_v=float(area_shear(area)), f_y=355.0, gamma_m0=1.0
     )
@@ -384,7 +399,7 @@ def test_shear_resistance_agrees(area):
 
 @pytest.mark.parametrize("gamma_m0", [1.0, 1.1, 1.25])
 def test_shear_resistance_agrees_across_partial_factors(gamma_m0):
-    ours = resistance_shear(4690.0, 355.0, gamma_m0)
+    ours = resistance_shear(4690.0, SteelGrade(f_y=355.0, gamma_m0=gamma_m0))
     oracle = Form6Dot18DesignPlasticShearResistance(
         a_v=4690.0, f_y=355.0, gamma_m0=gamma_m0
     )
@@ -414,7 +429,13 @@ ELASTIC_ACTIONS = [
 def test_the_linear_sum_reading_agrees_with_equation_6_44(n_ed, m_y_ed, m_z_ed):
     area, modulus = 7367.03, 414981.0
     ours = utilization_elastic(
-        n_ed, m_y_ed, m_z_ed, area, modulus, 355.0, 1.0, resultant=False
+        n_ed,
+        m_y_ed,
+        m_z_ed,
+        area,
+        modulus,
+        SteelGrade(f_y=355.0, gamma_m0=1.0),
+        resultant=False,
     )
     oracle = Form6Dot44CombinedCompressionBendingClass4CrossSections(
         n_ed=abs(n_ed),
@@ -453,10 +474,22 @@ def test_the_resultant_reading_never_exceeds_the_linear_sum(n_ed, m_y_ed, m_z_ed
     # conservative one, by at most the square root of two in the moment term.
     area, modulus = 7367.03, 414981.0
     summed = utilization_elastic(
-        n_ed, m_y_ed, m_z_ed, area, modulus, 355.0, 1.0, resultant=False
+        n_ed,
+        m_y_ed,
+        m_z_ed,
+        area,
+        modulus,
+        SteelGrade(f_y=355.0, gamma_m0=1.0),
+        resultant=False,
     )
     resultant = utilization_elastic(
-        n_ed, m_y_ed, m_z_ed, area, modulus, 355.0, 1.0, resultant=True
+        n_ed,
+        m_y_ed,
+        m_z_ed,
+        area,
+        modulus,
+        SteelGrade(f_y=355.0, gamma_m0=1.0),
+        resultant=True,
     )
 
     assert float(resultant) <= float(summed) + 1e-12
@@ -470,7 +503,9 @@ def test_the_elastic_check_is_the_stress_limit_of_equation_6_42():
     # the normalization rather than the assembly: our utilization times the
     # design strength is the stress its comparison accepts at exactly unity.
     area, modulus = 7367.03, 414981.0
-    ours = utilization_elastic(-5e5, 4e7, 1.5e7, area, modulus, 355.0, 1.0)
+    ours = utilization_elastic(
+        -5e5, 4e7, 1.5e7, area, modulus, SteelGrade(f_y=355.0, gamma_m0=1.0)
+    )
     stress = float(ours) * 355.0 / 1.0
 
     assert bool(

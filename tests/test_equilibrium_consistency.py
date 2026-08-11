@@ -15,7 +15,7 @@ from normax.analysis import fixities
 from normax.analysis.smax import forces
 from normax.analysis.smax import frame
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -49,7 +49,7 @@ def structure():
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")

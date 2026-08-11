@@ -28,12 +28,12 @@ Run with `uv run python experiments/02_pipeline_gradcheck.py`.
 import jax
 import jax.numpy as jnp
 
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
 from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.sizing import LIMIT_MINIMUM_SIZE
 from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import governing_limit_state
@@ -41,7 +41,7 @@ from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 from normax.ec3.sizing import utilization_design
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TARGET = 1e-6
 
 NAMES = {

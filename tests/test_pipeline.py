@@ -7,9 +7,9 @@ import pytest
 
 from normax.analysis.smax import buckling
 from normax.analysis.smax import prepare
+from normax.ec3.material import SteelGrade
 from normax.ec3.section import area
 from normax.ec3.sizing import LIMIT_MAJOR
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
 from normax.ec3.stability import ALPHA_CR_ELASTIC
@@ -75,7 +75,7 @@ GLOBAL_MODE_FACTOR = 0.576
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")

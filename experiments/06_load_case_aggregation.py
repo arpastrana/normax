@@ -33,14 +33,14 @@ Run with `uv run python experiments/06_load_case_aggregation.py`.
 import jax
 import jax.numpy as jnp
 
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 

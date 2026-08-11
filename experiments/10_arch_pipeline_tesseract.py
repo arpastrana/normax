@@ -49,7 +49,7 @@ from normax.composition import Chain
 from normax.composition import design as design_composed
 from normax.composition import local
 from normax.composition import mass as mass_composed
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
@@ -85,7 +85,7 @@ TOLERANCE_SERVED = 1e-11
 IMAGES = ("normax-formfinding", "normax-ec3-check")
 VERSION = "0.1.0"
 
-STEEL = Steel()
+STEEL = SteelGrade()
 
 LIMIT_NAMES = {
     0.0: "catalogue minimum",
@@ -192,7 +192,7 @@ def refusal(chain, structure, seed, tube):
                 "gamma_m0": STEEL.gamma_m0,
                 "gamma_m1": STEEL.gamma_m1,
                 "ratio": tube.ratio,
-                "alpha": tube.alpha,
+                "alpha": steel.alpha,
                 "diameter_min": tube.diameter_min,
                 "plastic": False,
                 "resultant": True,

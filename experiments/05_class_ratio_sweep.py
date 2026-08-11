@@ -29,17 +29,17 @@ Run with `uv run python experiments/05_class_ratio_sweep.py`.
 
 import jax.numpy as jnp
 
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import resistance_shear
 from normax.ec3.section import area
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 
-STEEL = Steel()
+STEEL = SteelGrade()
 LENGTH = 6000.0
 
 # A demand mix swept from pure compression to pure bending, holding the axial
@@ -133,7 +133,8 @@ def main() -> None:
         d = sized(3, moment)
         tube = Tube.at_class_limit(STEEL.f_y, 3)
         resistance = resistance_shear(
-            area_shear(area(d, tube.ratio)), STEEL.f_y, STEEL.gamma_m0
+            area_shear(area(d, tube.ratio)),
+            SteelGrade(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0),
         )
         # A simply supported span carrying that end moment has a shear of about
         # four moments over its length, which is the worst plausible pairing.

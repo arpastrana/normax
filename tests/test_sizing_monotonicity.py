@@ -4,8 +4,9 @@ import pytest
 
 from normax.ec3.classification import material_factor
 from normax.ec3.interaction import utilization_member
-from normax.ec3.resistance import E_MODULUS
-from normax.ec3.resistance import IMPERFECTION_FACTORS
+from normax.ec3.material import E_MODULUS
+from normax.ec3.material import IMPERFECTION_FACTORS
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import moment_resultant
 from normax.ec3.resistance import reduction_buckling
@@ -52,7 +53,9 @@ def member_utilization(diameter, n_ed, m_y_ed, m_z_ed, *, plastic):
     )
 
     non_dimensional = slenderness_from_force(
-        gross, YIELD, force_critical(inertia, LENGTH_BUCKLING, E_MODULUS)
+        gross,
+        SteelGrade(f_y=YIELD),
+        force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=E_MODULUS)),
     )
     reduction = reduction_buckling(non_dimensional, ALPHA)
 
@@ -75,8 +78,10 @@ def member_utilization(diameter, n_ed, m_y_ed, m_z_ed, *, plastic):
 def cross_section_utilization(diameter, n_ed, m_y_ed, m_z_ed):
     ratio = RATIO_PLASTIC
     gross = area(diameter, ratio)
-    plastic_moment = resistance_bending_plastic(modulus_plastic(diameter, ratio), YIELD)
-    axial = n_ed / resistance_yielding(gross, YIELD)
+    plastic_moment = resistance_bending_plastic(
+        modulus_plastic(diameter, ratio), SteelGrade(f_y=YIELD)
+    )
+    axial = n_ed / resistance_yielding(gross, SteelGrade(f_y=YIELD))
 
     return moment_resultant(m_y_ed, m_z_ed) / resistance_bending_reduced(
         plastic_moment, axial
@@ -149,10 +154,10 @@ def test_reduced_moment_grows_with_diameter():
     diameters = jnp.linspace(150.0, 900.0, 300)
     gross = area(diameters, RATIO_PLASTIC)
     plastic_moment = resistance_bending_plastic(
-        modulus_plastic(diameters, RATIO_PLASTIC), YIELD
+        modulus_plastic(diameters, RATIO_PLASTIC), SteelGrade(f_y=YIELD)
     )
     reduced = resistance_bending_reduced(
-        plastic_moment, 500e3 / resistance_yielding(gross, YIELD)
+        plastic_moment, 500e3 / resistance_yielding(gross, SteelGrade(f_y=YIELD))
     )
 
     assert jnp.all(jnp.diff(reduced) > 0.0)
@@ -166,7 +171,9 @@ def test_the_reduction_factor_grows_with_diameter():
     inertia = second_moment(DIAMETERS, RATIO_PLASTIC)
     reduction = reduction_buckling(
         slenderness_from_force(
-            gross, YIELD, force_critical(inertia, LENGTH_BUCKLING, E_MODULUS)
+            gross,
+            SteelGrade(f_y=YIELD),
+            force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=E_MODULUS)),
         ),
         ALPHA,
     )
@@ -178,7 +185,9 @@ def test_slenderness_falls_with_diameter():
     gross = area(DIAMETERS, RATIO_PLASTIC)
     inertia = second_moment(DIAMETERS, RATIO_PLASTIC)
     non_dimensional = slenderness_from_force(
-        gross, YIELD, force_critical(inertia, LENGTH_BUCKLING, E_MODULUS)
+        gross,
+        SteelGrade(f_y=YIELD),
+        force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=E_MODULUS)),
     )
 
     assert jnp.all(jnp.diff(non_dimensional) < 0.0)
@@ -203,6 +212,8 @@ def test_elastic_and_plastic_moduli_differ_by_the_shape_factor():
     plastic = modulus_plastic(244.5, 24.45)
     elastic = modulus_elastic(244.5, 24.45)
 
-    assert resistance_bending_plastic(plastic, YIELD) / resistance_bending_elastic(
-        elastic, YIELD
-    ) == pytest.approx(1.326, rel=1e-3)
+    assert resistance_bending_plastic(
+        plastic, SteelGrade(f_y=YIELD)
+    ) / resistance_bending_elastic(elastic, SteelGrade(f_y=YIELD)) == pytest.approx(
+        1.326, rel=1e-3
+    )

@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from normax.ec3.classification import classify_section
-from normax.ec3.resistance import IMPERFECTION_FACTORS
+from normax.ec3.material import IMPERFECTION_FACTORS
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import reduction_buckling
 from normax.ec3.resistance import resistance_buckling
@@ -13,7 +14,6 @@ from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
 from normax.ec3.sizing import DIAMETER_MINIMUM
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_bracket
 from normax.ec3.sizing import diameter_required
@@ -26,7 +26,7 @@ from normax.ec3.sizing import utilization_design
 # the cross-section check to the squash check of 6.2.4. Both have closed forms,
 # which is what makes this the fixture that de-risks the machinery.
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 
@@ -66,7 +66,7 @@ def test_the_default_density_is_steel_in_tonnes_per_cubic_millimetre():
 
 
 def test_the_default_curve_is_a_for_a_hot_finished_tube():
-    assert TUBE.alpha == IMPERFECTION_FACTORS["a"]
+    assert STEEL.alpha == IMPERFECTION_FACTORS["a"]
 
 
 def test_the_minimum_diameter_is_the_smallest_standard_tube():
@@ -154,10 +154,12 @@ def test_the_sized_member_reproduces_the_buckling_resistance(n_ed, l_cr):
     d = sized(n_ed, l_cr)
     gross = area(d, TUBE.ratio)
     lam = slenderness_from_force(
-        gross, STEEL.f_y, force_critical(second_moment(d, TUBE.ratio), l_cr)
+        gross,
+        SteelGrade(f_y=STEEL.f_y),
+        force_critical(second_moment(d, TUBE.ratio), l_cr, SteelGrade()),
     )
     resistance = resistance_buckling(
-        reduction_buckling(lam, TUBE.alpha), gross, STEEL.f_y
+        reduction_buckling(lam, STEEL.alpha), gross, SteelGrade(f_y=STEEL.f_y)
     )
 
     assert float(resistance) == pytest.approx(abs(n_ed), rel=1e-9)
@@ -227,9 +229,9 @@ def test_a_tension_member_is_smaller_than_the_same_force_in_compression():
 def test_a_sized_tension_member_reaches_its_plastic_resistance(n_ed):
     d = sized(n_ed)
 
-    assert float(resistance_yielding(area(d, TUBE.ratio), STEEL.f_y)) == pytest.approx(
-        n_ed, rel=1e-9
-    )
+    assert float(
+        resistance_yielding(area(d, TUBE.ratio), SteelGrade(f_y=STEEL.f_y))
+    ) == pytest.approx(n_ed, rel=1e-9)
 
 
 # ---- The minimum size ---- #

@@ -45,7 +45,7 @@ from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
@@ -156,7 +156,7 @@ class OutputSchema(BaseModel):
     """
 
 
-def _material(inputs: dict[str, Any]) -> tuple[Steel, Tube]:
+def _material(inputs: dict[str, Any]) -> tuple[SteelGrade, Tube]:
     """
     The material and the section family, from the flat fields of the schema.
 
@@ -170,16 +170,16 @@ def _material(inputs: dict[str, Any]) -> tuple[Steel, Tube]:
     material :
         The steel and the tube family.
     """
-    steel = Steel(
+    steel = SteelGrade(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],
         gamma_m0=inputs["gamma_m0"],
         gamma_m1=inputs["gamma_m1"],
+        alpha=inputs["alpha"],
     )
     tube = Tube(
         ratio=inputs["ratio"],
-        alpha=inputs["alpha"],
         diameter_min=inputs["diameter_min"],
     )
 

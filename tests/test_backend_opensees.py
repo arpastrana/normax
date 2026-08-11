@@ -32,7 +32,7 @@ from normax.analysis.smax import prepare as prepare_smax
 from normax.composition import backend
 from normax.composition import local
 from normax.composition import mass as mass_composed
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -63,7 +63,7 @@ TOLERANCE_GRADIENT = 1e-9
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")

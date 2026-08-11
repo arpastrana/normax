@@ -47,11 +47,11 @@ from jaxtyping import Int
 from normax.analysis.smax import Model
 from normax.analysis.smax import buckling
 from normax.analysis.smax import forces
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import diameter_required as diameter_ec3
@@ -105,7 +105,7 @@ def actions(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
@@ -191,7 +191,7 @@ def design(
     structure: Structure,
     graph: EquilibriumStructure,
     model: Model,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -299,7 +299,7 @@ def mass(
     structure: Structure,
     graph: EquilibriumStructure,
     model: Model,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -434,7 +434,7 @@ def envelope(
     structure: Structure,
     graph: EquilibriumStructure,
     model: Model,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     loads: Float[Array, "cases nodes 3"],
     beta: float | Float[Array, ""],
@@ -585,7 +585,7 @@ class Unsmoothed(NamedTuple):
 
 def unsmoothed(
     result: Envelope,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -679,7 +679,7 @@ def governing_case(result: Envelope) -> Int[Array, "members"]:
 
 def governing(
     result: Design,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -771,7 +771,7 @@ class Stability(NamedTuple):
 def stability(
     result: Design,
     model: Model,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     num_modes: int = 1,
@@ -842,10 +842,10 @@ def stability(
         utilization=utilization_stability(alpha_cr, threshold),
         adequate=is_adequate(alpha_cr, threshold),
         slenderness_member=slenderness_from_force(
-            gross, steel.f_y, force_critical(inertia, result.l_cr, steel.e_mod)
+            gross, steel, force_critical(inertia, result.l_cr, steel)
         ),
         slenderness_global=slenderness_global(
-            amplifier_resistance(gross, steel.f_y, result.n_ed), alpha_cr
+            amplifier_resistance(gross, steel, result.n_ed), alpha_cr
         ),
-        l_cr_global=buckling_length_global(alpha_cr, result.n_ed, inertia, steel.e_mod),
+        l_cr_global=buckling_length_global(alpha_cr, result.n_ed, inertia, steel),
     )

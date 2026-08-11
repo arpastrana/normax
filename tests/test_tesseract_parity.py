@@ -11,7 +11,7 @@ from normax.composition import design as design_composed
 from normax.composition import envelope as envelope_composed
 from normax.composition import local
 from normax.composition import mass as mass_composed
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
@@ -91,7 +91,7 @@ TOLERANCE_GRADIENT = 5e-8
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")
@@ -425,7 +425,7 @@ def sized_through_the_check(setup, chain, steel, seed, result, tube):
             "gamma_m0": steel.gamma_m0,
             "gamma_m1": steel.gamma_m1,
             "ratio": tube.ratio,
-            "alpha": tube.alpha,
+            "alpha": steel.alpha,
             "diameter_min": tube.diameter_min,
             "plastic": False,
             "resultant": True,

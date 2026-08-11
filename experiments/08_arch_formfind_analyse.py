@@ -40,7 +40,7 @@ from smax import diagnose_mechanisms
 from normax.analysis.smax import forces
 from normax.analysis.smax import frame
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -72,7 +72,7 @@ TOLERANCE_GRADIENT = 1e-7
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
 
 

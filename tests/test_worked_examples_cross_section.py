@@ -1,5 +1,6 @@
 import pytest
 
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import resistance_compression
 from normax.ec3.resistance import resistance_fracture
 from normax.ec3.resistance import resistance_tension
@@ -34,13 +35,17 @@ GAMMA_M2_BAR = 1.10
 
 
 def test_tension_gross_section_yielding():
-    resistance = resistance_yielding(AREA_GROSS, YIELD_BAR, GAMMA_M0_BAR)
+    resistance = resistance_yielding(
+        AREA_GROSS, SteelGrade(f_y=YIELD_BAR, gamma_m0=GAMMA_M0_BAR)
+    )
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(1325.0, rel=TOLERANCE)
 
 
 def test_tension_net_section_fracture():
-    resistance = resistance_fracture(AREA_NET, ULTIMATE_BAR, GAMMA_M2_BAR)
+    resistance = resistance_fracture(
+        AREA_NET, SteelGrade(f_u=ULTIMATE_BAR, gamma_m2=GAMMA_M2_BAR)
+    )
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(1550.0, rel=TOLERANCE)
 
@@ -49,18 +54,24 @@ def test_tension_resistance_is_the_smaller_of_the_two():
     resistance = resistance_tension(
         AREA_GROSS,
         AREA_NET,
-        YIELD_BAR,
-        ULTIMATE_BAR,
-        GAMMA_M0_BAR,
-        GAMMA_M2_BAR,
+        SteelGrade(
+            f_y=YIELD_BAR,
+            f_u=ULTIMATE_BAR,
+            gamma_m0=GAMMA_M0_BAR,
+            gamma_m2=GAMMA_M2_BAR,
+        ),
     )
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(1325.0, rel=TOLERANCE)
 
 
 def test_gross_section_yielding_governs_this_tie():
-    gross = resistance_yielding(AREA_GROSS, YIELD_BAR, GAMMA_M0_BAR)
-    net = resistance_fracture(AREA_NET, ULTIMATE_BAR, GAMMA_M2_BAR)
+    gross = resistance_yielding(
+        AREA_GROSS, SteelGrade(f_y=YIELD_BAR, gamma_m0=GAMMA_M0_BAR)
+    )
+    net = resistance_fracture(
+        AREA_NET, SteelGrade(f_u=ULTIMATE_BAR, gamma_m2=GAMMA_M2_BAR)
+    )
 
     assert gross < net
 
@@ -78,14 +89,20 @@ GAMMA_M0_UKC = 1.00
 
 
 def test_compression_cross_section_resistance():
-    resistance = resistance_compression(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
+    resistance = resistance_compression(
+        AREA_UKC, SteelGrade(f_y=YIELD_UKC, gamma_m0=GAMMA_M0_UKC)
+    )
 
     assert resistance * NEWTON_TO_KILONEWTON == pytest.approx(3305.0, rel=TOLERANCE)
 
 
 def test_compression_and_tension_clauses_agree_on_the_gross_section():
     # Eq. 6.6 and Eq. 6.10 are the same expression under different clauses.
-    compression = resistance_compression(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
-    tension = resistance_yielding(AREA_UKC, YIELD_UKC, GAMMA_M0_UKC)
+    compression = resistance_compression(
+        AREA_UKC, SteelGrade(f_y=YIELD_UKC, gamma_m0=GAMMA_M0_UKC)
+    )
+    tension = resistance_yielding(
+        AREA_UKC, SteelGrade(f_y=YIELD_UKC, gamma_m0=GAMMA_M0_UKC)
+    )
 
     assert compression == pytest.approx(tension)

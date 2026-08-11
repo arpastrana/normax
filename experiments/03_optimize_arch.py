@@ -70,7 +70,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
@@ -161,7 +161,7 @@ FLOOR_WEIGHT = 50.0
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 

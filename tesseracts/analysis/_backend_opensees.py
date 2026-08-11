@@ -33,7 +33,7 @@ from normax.analysis.opensees import Jacobian
 from normax.analysis.opensees import forces
 from normax.analysis.opensees import jacobian
 from normax.analysis.opensees import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
 
@@ -52,7 +52,7 @@ BLOCKS = {
 OUTPUT_RANK = {"n_ed": 1, "m_y_ed": 2, "m_z_ed": 2}
 
 
-def _model(inputs: dict[str, Any]) -> tuple[Structure, Steel, Tube]:
+def _model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, Tube]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -80,7 +80,7 @@ def _model(inputs: dict[str, Any]) -> tuple[Structure, Steel, Tube]:
         loads=jnp.asarray(inputs["loads"]),
     )
 
-    steel = Steel(
+    steel = SteelGrade(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],

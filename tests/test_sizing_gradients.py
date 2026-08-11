@@ -9,9 +9,9 @@ from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
 from normax.ec3.adjoint import diameter_tension
 from normax.ec3.adjoint import reduction_buckling_derivative
-from normax.ec3.resistance import IMPERFECTION_FACTORS
+from normax.ec3.material import IMPERFECTION_FACTORS
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import reduction_buckling
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
@@ -25,7 +25,7 @@ from normax.ec3.sizing import mass
 # reverse transposition of it, the closed forms of adjoint.py, and central
 # differences.
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 
@@ -338,7 +338,9 @@ def test_a_member_with_no_actions_has_no_gradient():
 
 def test_the_map_is_differentiable_in_the_yield_strength():
     def at(f_y):
-        steel = Steel(f_y, STEEL.e_mod, STEEL.density, STEEL.gamma_m0, STEEL.gamma_m1)
+        steel = SteelGrade(
+            f_y, STEEL.e_mod, STEEL.density, STEEL.gamma_m0, STEEL.gamma_m1
+        )
 
         return diameter_required(
             FORCE, 4e7, 1.5e7, 0.9, 0.9, LENGTH, steel, TUBE, plastic=PLASTIC
@@ -363,7 +365,7 @@ def test_the_map_is_differentiable_in_the_wall_proportion():
             0.9,
             LENGTH,
             STEEL,
-            Tube(ratio, TUBE.alpha, TUBE.diameter_min),
+            Tube(ratio, TUBE.diameter_min),
             plastic=PLASTIC,
         )
 

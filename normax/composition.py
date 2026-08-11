@@ -52,7 +52,7 @@ from jaxtyping import Float
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import mass as mass_ec3
@@ -178,7 +178,7 @@ def design(
     diameters: Float[Array, "members"],
     structure: Structure,
     chain: Chain,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     normal: int | None,
@@ -319,7 +319,7 @@ def _check(
     lengths: Float[Array, "members"],
     structure: Structure,
     chain: Chain,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     normal: int | None,
@@ -400,7 +400,7 @@ def _check(
             "gamma_m0": steel.gamma_m0,
             "gamma_m1": steel.gamma_m1,
             "ratio": tube.ratio,
-            "alpha": tube.alpha,
+            "alpha": steel.alpha,
             "diameter_min": tube.diameter_min,
             "plastic": plastic,
             "resultant": resultant,
@@ -415,7 +415,7 @@ def mass(
     diameters: Float[Array, "members"],
     structure: Structure,
     chain: Chain,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     normal: int | None,
@@ -488,7 +488,7 @@ def envelope(
     diameters: Float[Array, "members"],
     structure: Structure,
     chain: Chain,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     loads: Float[Array, "cases nodes 3"],
     beta: float | Float[Array, ""],

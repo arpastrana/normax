@@ -36,7 +36,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.ec3.resistance import GAMMA_M1
+from normax.ec3.material import GAMMA_M1
 
 # EN 1993-1-1 Table B.3, the lower bound on the linear row.
 C_M_MINIMUM = 0.4

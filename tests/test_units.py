@@ -2,8 +2,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.ec3.resistance import E_MODULUS
-from normax.ec3.sizing import DENSITY
+from normax.ec3.material import DENSITY
+from normax.ec3.material import E_MODULUS
 from normax.units import to_kilograms_per_cubic_metre
 from normax.units import to_metres
 from normax.units import to_millimetres

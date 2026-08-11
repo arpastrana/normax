@@ -65,9 +65,9 @@ from smax import solve_buckling
 from normax.analysis import Buckling
 from normax.analysis import MemberForces
 from normax.analysis import fixities
+from normax.ec3.material import SteelGrade
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_metre
@@ -116,7 +116,7 @@ def frame(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     normal: int | None,
@@ -189,7 +189,7 @@ def frame(
 
 def prepare(
     structure: Structure,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     normal: int | None,
@@ -244,7 +244,7 @@ def _injected(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
 ) -> CompiledStructure:
     """
@@ -363,7 +363,7 @@ def forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
@@ -423,7 +423,7 @@ def buckling(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     num_modes: int = 1,

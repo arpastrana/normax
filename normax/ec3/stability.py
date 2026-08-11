@@ -51,6 +51,8 @@ from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
 
+from normax.ec3.material import SteelGrade
+
 # EN 1993-1-1 §5.2.1(3): the critical load factor above which second-order
 # effects need not be accounted for. UK NA clause NA.2.9 moves only the plastic.
 ALPHA_CR_ELASTIC = 10.0
@@ -94,7 +96,7 @@ def slenderness_global(
 
 def amplifier_resistance(
     area: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
+    steel: SteelGrade,
     n_ed: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
@@ -104,8 +106,8 @@ def amplifier_resistance(
     ----------
     area :
         Gross cross-sectional area.
-    f_y :
-        Yield strength.
+    steel :
+        Material properties and partial factors.
     n_ed :
         Design axial force, tension positive.
 
@@ -134,7 +136,7 @@ def amplifier_resistance(
     loaded = jnp.abs(n_ed) > 0.0
     safe = jnp.where(loaded, jnp.abs(n_ed), 1.0)
 
-    return jnp.where(loaded, area * f_y / safe, jnp.nan)
+    return jnp.where(loaded, area * steel.f_y / safe, jnp.nan)
 
 
 def force_critical_global(
@@ -168,7 +170,7 @@ def buckling_length_global(
     alpha_cr: Float[Array, "members"],
     n_ed: Float[Array, "members"],
     second_moment: Float[Array, "members"],
-    e_mod: float | Float[Array, ""],
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Buckling length a critical load factor is equivalent to.
@@ -181,8 +183,8 @@ def buckling_length_global(
         Design axial force, tension positive.
     second_moment :
         Second moment of area.
-    e_mod :
-        Modulus of elasticity.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -198,14 +200,16 @@ def buckling_length_global(
     is not.
 
     **Returns nan for a member carrying no axial force**, for the reason
-    `resistance_factor` does: a factor scaling the whole load says nothing about a
+    `amplifier_resistance` does: a factor scaling the whole load says nothing about a
     member the load never reaches.
     """
     critical = force_critical_global(alpha_cr, n_ed)
     loaded = critical > 0.0
     safe = jnp.where(loaded, critical, 1.0)
 
-    return jnp.where(loaded, jnp.pi * jnp.sqrt(e_mod * second_moment / safe), jnp.nan)
+    return jnp.where(
+        loaded, jnp.pi * jnp.sqrt(steel.e_mod * second_moment / safe), jnp.nan
+    )
 
 
 def utilization_frame(

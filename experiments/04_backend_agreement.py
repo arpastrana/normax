@@ -57,7 +57,7 @@ from normax.analysis.smax import prepare as prepare_smax
 from normax.composition import backend
 from normax.composition import local
 from normax.composition import mass as mass_composed
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -98,7 +98,7 @@ ITERATIONS = 60
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
+STEEL = SteelGrade()
 TUBE = Tube.at_class_limit(STEEL.f_y, 3)
 
 BACKENDS = ("smax", "opensees")

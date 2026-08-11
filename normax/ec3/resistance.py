@@ -36,25 +36,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
-# EN 1993-1-1 6.1. Nationally determined; these are the values the UK National
-# Annex sets in clause NA.2.15.
-GAMMA_M0 = 1.0
-GAMMA_M1 = 1.0
-GAMMA_M2 = 1.25
-
-# EN 1993-1-1 3.2.6.
-E_MODULUS = 210000.0
-
-# EN 1993-1-1 Table 6.1. Table 6.2 selects the curve: hollow sections are
-# curve a hot finished and curve c cold formed, and a0 or c respectively at
-# the 460 grade.
-IMPERFECTION_FACTORS = {
-    "a0": 0.13,
-    "a": 0.21,
-    "b": 0.34,
-    "c": 0.49,
-    "d": 0.76,
-}
+from normax.ec3.material import SteelGrade
 
 # EN 1993-1-1 6.3.1.2(3). At or below this slenderness there is no reduction.
 SLENDERNESS_OFFSET = 0.2
@@ -70,8 +52,7 @@ SHEAR_THRESHOLD = 0.5
 
 def resistance_yielding(
     area: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design plastic resistance of the gross cross-section in tension.
@@ -80,10 +61,8 @@ def resistance_yielding(
     ----------
     area :
         Gross cross-sectional area.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -96,13 +75,12 @@ def resistance_yielding(
     """
     gross = jnp.asarray(area)
 
-    return gross * f_y / gamma_m0
+    return gross * steel.f_y / steel.gamma_m0
 
 
 def resistance_fracture(
     area_net: Float[Array, "members"],
-    f_u: float | Float[Array, ""],
-    gamma_m2: float | Float[Array, ""] = GAMMA_M2,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design ultimate resistance of the net cross-section in tension.
@@ -111,10 +89,8 @@ def resistance_fracture(
     ----------
     area_net :
         Net cross-sectional area at holes for fasteners.
-    f_u :
-        Ultimate tensile strength.
-    gamma_m2 :
-        Partial factor for resistance to fracture in tension.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -128,16 +104,13 @@ def resistance_fracture(
     """
     net = jnp.asarray(area_net)
 
-    return 0.9 * net * f_u / gamma_m2
+    return 0.9 * net * steel.f_u / steel.gamma_m2
 
 
 def resistance_tension(
     area: Float[Array, "members"],
     area_net: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    f_u: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
-    gamma_m2: float | Float[Array, ""] = GAMMA_M2,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design tension resistance.
@@ -148,14 +121,8 @@ def resistance_tension(
         Gross cross-sectional area.
     area_net :
         Net cross-sectional area at holes for fasteners.
-    f_y :
-        Yield strength.
-    f_u :
-        Ultimate tensile strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
-    gamma_m2 :
-        Partial factor for resistance to fracture in tension.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -167,16 +134,15 @@ def resistance_tension(
     EN 1993-1-1 6.2.3. With no holes the net area equals the gross area and
     yielding governs, so this collapses to Eq. 6.6.
     """
-    yielding = resistance_yielding(area, f_y, gamma_m0)
-    fracture = resistance_fracture(area_net, f_u, gamma_m2)
+    yielding = resistance_yielding(area, steel)
+    fracture = resistance_fracture(area_net, steel)
 
     return jnp.minimum(yielding, fracture)
 
 
 def resistance_compression(
     area: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design resistance of the cross-section to uniform compression.
@@ -185,10 +151,8 @@ def resistance_compression(
     ----------
     area :
         Gross cross-sectional area.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -203,13 +167,12 @@ def resistance_compression(
     """
     gross = jnp.asarray(area)
 
-    return gross * f_y / gamma_m0
+    return gross * steel.f_y / steel.gamma_m0
 
 
 def resistance_bending_plastic(
     w_pl: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design plastic resistance of the cross-section to bending.
@@ -218,10 +181,8 @@ def resistance_bending_plastic(
     ----------
     w_pl :
         Plastic section modulus about the bending axis.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -234,13 +195,12 @@ def resistance_bending_plastic(
     """
     modulus = jnp.asarray(w_pl)
 
-    return modulus * f_y / gamma_m0
+    return modulus * steel.f_y / steel.gamma_m0
 
 
 def resistance_bending_elastic(
     w_el: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design elastic resistance of the cross-section to bending.
@@ -249,10 +209,8 @@ def resistance_bending_elastic(
     ----------
     w_el :
         Elastic section modulus about the bending axis.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -265,7 +223,7 @@ def resistance_bending_elastic(
     """
     modulus = jnp.asarray(w_el)
 
-    return modulus * f_y / gamma_m0
+    return modulus * steel.f_y / steel.gamma_m0
 
 
 def area_shear(area: Float[Array, "members"]) -> Float[Array, "members"]:
@@ -294,8 +252,7 @@ def area_shear(area: Float[Array, "members"]) -> Float[Array, "members"]:
 
 def resistance_shear(
     area_shear: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design plastic shear resistance.
@@ -304,10 +261,8 @@ def resistance_shear(
     ----------
     area_shear :
         Area mobilised to resist shear.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -323,7 +278,7 @@ def resistance_shear(
     """
     shear = jnp.asarray(area_shear)
 
-    return shear * f_y / (jnp.sqrt(3.0) * gamma_m0)
+    return shear * steel.f_y / (jnp.sqrt(3.0) * steel.gamma_m0)
 
 
 def resistance_bending_reduced(
@@ -453,8 +408,7 @@ def utilization_plastic(
     m_z_ed: Float[Array, "members"],
     area: Float[Array, "members"],
     w_pl: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Cross-section utilization under bending and axial force, Classes 1 and 2.
@@ -471,10 +425,8 @@ def utilization_plastic(
         Gross cross-sectional area.
     w_pl :
         Plastic section modulus.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -509,8 +461,8 @@ def utilization_plastic(
     """
     combined = moment_combined(m_y_ed, m_z_ed, plastic=True)
 
-    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, f_y, gamma_m0)
-    bending = combined / resistance_bending_plastic(w_pl, f_y, gamma_m0)
+    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, steel)
+    bending = combined / resistance_bending_plastic(w_pl, steel)
 
     return axial**MOMENT_EXPONENT + bending
 
@@ -521,8 +473,7 @@ def utilization_elastic(
     m_z_ed: Float[Array, "members"],
     area: Float[Array, "members"],
     w_el: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
     *,
     resultant: bool = True,
 ) -> Float[Array, "members"]:
@@ -541,10 +492,8 @@ def utilization_elastic(
         Gross cross-sectional area.
     w_el :
         Elastic section modulus.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
     resultant :
         Whether to combine the two moments into a resultant rather than summing
         them. Static, never a traced value. See the note below: the sources
@@ -580,9 +529,9 @@ def utilization_elastic(
     """
     combined = moment_combined(m_y_ed, m_z_ed, plastic=False, resultant=resultant)
 
-    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, f_y, gamma_m0)
+    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, steel)
 
-    return axial + combined / resistance_bending_elastic(w_el, f_y, gamma_m0)
+    return axial + combined / resistance_bending_elastic(w_el, steel)
 
 
 def utilization_cross_section(
@@ -591,8 +540,7 @@ def utilization_cross_section(
     m_z_ed: Float[Array, "members"],
     area: Float[Array, "members"],
     modulus: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0,
+    steel: SteelGrade,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -612,10 +560,8 @@ def utilization_cross_section(
         Gross cross-sectional area.
     modulus :
         Section modulus about either axis, plastic or elastic to match the class.
-    f_y :
-        Yield strength.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
+    steel :
+        Material properties and partial factors.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
     resultant :
@@ -641,17 +587,17 @@ def utilization_cross_section(
     is then exact algebra rather than an interpretation.
     """
     if plastic:
-        return utilization_plastic(n_ed, m_y_ed, m_z_ed, area, modulus, f_y, gamma_m0)
+        return utilization_plastic(n_ed, m_y_ed, m_z_ed, area, modulus, steel)
 
     return utilization_elastic(
-        n_ed, m_y_ed, m_z_ed, area, modulus, f_y, gamma_m0, resultant=resultant
+        n_ed, m_y_ed, m_z_ed, area, modulus, steel, resultant=resultant
     )
 
 
 def force_critical(
     second_moment: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    e_mod: float | Float[Array, ""] = E_MODULUS,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Elastic critical force for flexural buckling.
@@ -662,8 +608,8 @@ def force_critical(
         Second moment of area about the buckling axis.
     l_cr :
         Buckling length.
-    e_mod :
-        Modulus of elasticity.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -677,22 +623,19 @@ def force_critical(
     """
     inertia = jnp.asarray(second_moment)
 
-    return jnp.pi**2 * e_mod * inertia / l_cr**2
+    return jnp.pi**2 * steel.e_mod * inertia / l_cr**2
 
 
 def slenderness_reference(
-    f_y: float | Float[Array, ""],
-    e_mod: float | Float[Array, ""] = E_MODULUS,
+    steel: SteelGrade,
 ) -> Float[Array, ""]:
     """
     Reference slenderness.
 
     Parameters
     ----------
-    f_y :
-        Yield strength.
-    e_mod :
-        Modulus of elasticity.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -704,12 +647,12 @@ def slenderness_reference(
     EN 1993-1-1 6.3.1.3. Appears in the code's tables as 93.9 times the
     material factor.
     """
-    return jnp.pi * jnp.sqrt(jnp.asarray(e_mod) / f_y)
+    return jnp.pi * jnp.sqrt(jnp.asarray(steel.e_mod) / steel.f_y)
 
 
 def slenderness_from_force(
     area: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
+    steel: SteelGrade,
     n_critical: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
@@ -719,8 +662,8 @@ def slenderness_from_force(
     ----------
     area :
         Gross cross-sectional area.
-    f_y :
-        Yield strength.
+    steel :
+        Material properties and partial factors.
     n_critical :
         Elastic critical force.
 
@@ -736,14 +679,13 @@ def slenderness_from_force(
     """
     gross = jnp.asarray(area)
 
-    return jnp.sqrt(gross * f_y / n_critical)
+    return jnp.sqrt(gross * steel.f_y / n_critical)
 
 
 def slenderness_from_gyration(
     l_cr: Float[Array, "members"],
     radius_gyration: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    e_mod: float | Float[Array, ""] = E_MODULUS,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Non-dimensional slenderness, from the geometric slenderness.
@@ -754,10 +696,8 @@ def slenderness_from_gyration(
         Buckling length.
     radius_gyration :
         Radius of gyration about the buckling axis.
-    f_y :
-        Yield strength.
-    e_mod :
-        Modulus of elasticity.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -771,7 +711,7 @@ def slenderness_from_gyration(
     """
     geometric = jnp.asarray(l_cr) / radius_gyration
 
-    return geometric / slenderness_reference(f_y, e_mod)
+    return geometric / slenderness_reference(steel)
 
 
 def buckling_auxiliary(
@@ -844,8 +784,7 @@ def reduction_buckling(
 def resistance_buckling(
     reduction: Float[Array, "members"],
     area: Float[Array, "members"],
-    f_y: float | Float[Array, ""],
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Design buckling resistance of a compression member.
@@ -856,10 +795,8 @@ def resistance_buckling(
         Reduction factor for the relevant buckling mode.
     area :
         Gross cross-sectional area.
-    f_y :
-        Yield strength.
-    gamma_m1 :
-        Partial factor for member instability.
+    steel :
+        Material properties and partial factors.
 
     Returns
     -------
@@ -872,4 +809,4 @@ def resistance_buckling(
     """
     gross = jnp.asarray(area)
 
-    return reduction * gross * f_y / gamma_m1
+    return reduction * gross * steel.f_y / steel.gamma_m1

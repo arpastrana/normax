@@ -56,9 +56,9 @@ from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.analysis import fixities
+from normax.ec3.material import SteelGrade
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Steel
 from normax.ec3.sizing import Tube
 from normax.structures import Structure
 from normax.units import MILLIMETRE
@@ -218,7 +218,7 @@ def plane(
 
 def prepare(
     structure: Structure,
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     normal: int | None,
@@ -266,7 +266,7 @@ def _build(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     loads: Float[Array, "nodes 3"] | None,
     parameters: bool,
@@ -471,7 +471,7 @@ def forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
@@ -595,7 +595,7 @@ def jacobian(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     loads: Float[Array, "nodes 3"] | None = None,

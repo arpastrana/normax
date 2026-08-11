@@ -6,7 +6,7 @@ import pytest
 
 from normax.analysis.smax import forces
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel
+from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -54,7 +54,7 @@ def relative(actual, expected):
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")
@@ -106,8 +106,8 @@ def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
     # smallest size is larger than anything the arch uses.
     absurd = prepare(
         structure._replace(nodes=state.xyz * 3.0),
-        Steel(f_y=1.0, e_mod=1.0, density=1.0),
-        Tube(ratio=tube.ratio, alpha=tube.alpha, diameter_min=999.0),
+        SteelGrade(f_y=1.0, e_mod=1.0, density=1.0),
+        Tube(ratio=tube.ratio, diameter_min=999.0),
         normal=NORMAL,
     )
     honest = prepare(structure, steel, tube, normal=NORMAL)

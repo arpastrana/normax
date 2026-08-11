@@ -46,10 +46,7 @@ from normax.ec3.classification import class_limits
 from normax.ec3.interaction import governing_equation
 from normax.ec3.interaction import moment_factor_linear
 from normax.ec3.interaction import utilization_member
-from normax.ec3.resistance import E_MODULUS
-from normax.ec3.resistance import GAMMA_M0
-from normax.ec3.resistance import GAMMA_M1
-from normax.ec3.resistance import IMPERFECTION_FACTORS
+from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import moment_combined
 from normax.ec3.resistance import reduction_buckling
@@ -59,10 +56,6 @@ from normax.ec3.section import area
 from normax.ec3.section import modulus_elastic
 from normax.ec3.section import modulus_plastic
 from normax.ec3.section import second_moment
-
-# Density of structural steel, in tonnes per cubic millimetre, so that a mass
-# in tonnes follows from millimetres and newtons.
-DENSITY = 7.85e-9
 
 # EN 10210 lists no smaller hot-finished tube, so a member is never sized below
 # this however light its actions.
@@ -93,37 +86,6 @@ LIMIT_MAJOR = 3.0
 LIMIT_MINOR = 4.0
 
 
-class Steel(NamedTuple):
-    """
-    Material properties and partial factors.
-
-    Attributes
-    ----------
-    f_y :
-        Yield strength.
-    e_mod :
-        Modulus of elasticity.
-    density :
-        Density.
-    gamma_m0 :
-        Partial factor for cross-section resistance.
-    gamma_m1 :
-        Partial factor for member instability.
-
-    Notes
-    -----
-    The defaults are S355 with the partial factors of the UK National Annex,
-    clause NA.2.15. Every field is a leaf, so a gradient may be taken with
-    respect to any of them.
-    """
-
-    f_y: float | Float[Array, ""] = 355.0
-    e_mod: float | Float[Array, ""] = E_MODULUS
-    density: float | Float[Array, ""] = DENSITY
-    gamma_m0: float | Float[Array, ""] = GAMMA_M0
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1
-
-
 class Tube(NamedTuple):
     """
     The family of circular hollow sections a member is drawn from.
@@ -133,23 +95,20 @@ class Tube(NamedTuple):
     ratio :
         Diameter-to-thickness ratio, fixed so that a member carries a single
         size variable.
-    alpha :
-        Imperfection factor of the buckling curve, EN 1993-1-1 Table 6.1.
     diameter_min :
         Smallest diameter the family offers.
 
     Notes
     -----
-    The default curve is a, which EN 1993-1-1 Table 6.2 gives to hot-finished
-    hollow sections below the 460 grade. Cold-formed tubes take curve c.
-
     The ratio fixes the cross-section class, but the class itself is not held
     here: it selects between two clauses and so must stay a static Python value,
     while every field of this container is a traceable leaf.
+
+    The buckling curve is not held here either. It follows the fabrication
+    route rather than the shape, so it belongs to the grade.
     """
 
     ratio: float | Float[Array, ""]
-    alpha: float | Float[Array, ""] = IMPERFECTION_FACTORS["a"]
     diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM
 
     @classmethod
@@ -157,7 +116,6 @@ class Tube(NamedTuple):
         cls,
         f_y: float | Float[Array, ""],
         cross_section_class: int,
-        alpha: float | Float[Array, ""] = IMPERFECTION_FACTORS["a"],
         diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM,
     ) -> "Tube":
         """
@@ -169,8 +127,6 @@ class Tube(NamedTuple):
             Yield strength.
         cross_section_class :
             Class 1, 2 or 3.
-        alpha :
-            Imperfection factor of the buckling curve.
         diameter_min :
             Smallest diameter the family offers.
 
@@ -199,7 +155,7 @@ class Tube(NamedTuple):
 
         limit = class_limits(f_y)[cross_section_class - 1]
 
-        return cls(limit, alpha, diameter_min)
+        return cls(limit, diameter_min)
 
 
 def is_plastic(cross_section_class: int) -> bool:
@@ -254,7 +210,7 @@ def utilization_design(
     c_my: Float[Array, "members"],
     c_mz: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -332,7 +288,7 @@ def _demands(
     c_my: Float[Array, "members"],
     c_mz: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -355,9 +311,9 @@ def _demands(
     gross = area(diameter, tube.ratio)
     modulus = _modulus(diameter, tube.ratio, plastic=plastic)
 
-    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel.e_mod)
-    lam = slenderness_from_force(gross, steel.f_y, critical)
-    reduction = reduction_buckling(lam, tube.alpha)
+    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel)
+    lam = slenderness_from_force(gross, steel, critical)
+    reduction = reduction_buckling(lam, steel.alpha)
 
     axial = jnp.asarray(n_ed)
     member = utilization_member(
@@ -382,8 +338,7 @@ def _demands(
         m_z_ed,
         gross,
         modulus,
-        steel.f_y,
-        steel.gamma_m0,
+        steel,
         plastic=plastic,
         resultant=resultant,
     )
@@ -395,7 +350,7 @@ def diameter_bracket(
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
     m_z_ed: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -458,7 +413,7 @@ def _solve(
     c_my: Float[Array, "members"],
     c_mz: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
 ) -> Float[Array, "members"]:
     """
@@ -565,7 +520,7 @@ def _diameter(
     c_my: Float[Array, "members"],
     c_mz: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
 ) -> Float[Array, "members"]:
     """
@@ -652,7 +607,7 @@ def diameter_required(
     c_my: Float[Array, "members"],
     c_mz: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -711,7 +666,7 @@ def diameter_required(
 def mass(
     diameter: Float[Array, "members"],
     lengths: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
 ) -> Float[Array, ""]:
     """
@@ -748,7 +703,7 @@ def governing_limit_state(
     c_my: Float[Array, "members"],
     c_mz: Float[Array, "members"],
     l_cr: Float[Array, "members"],
-    steel: Steel,
+    steel: SteelGrade,
     tube: Tube,
     *,
     plastic: bool,
@@ -814,9 +769,9 @@ def governing_limit_state(
 
     gross = area(diameter, tube.ratio)
     modulus = _modulus(diameter, tube.ratio, plastic=plastic)
-    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel.e_mod)
-    lam = slenderness_from_force(gross, steel.f_y, critical)
-    reduction = reduction_buckling(lam, tube.alpha)
+    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel)
+    lam = slenderness_from_force(gross, steel, critical)
+    reduction = reduction_buckling(lam, steel.alpha)
 
     equation = governing_equation(
         jnp.maximum(-jnp.asarray(n_ed), 0.0),

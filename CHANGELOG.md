@@ -47,6 +47,23 @@
   of the two checks). Renaming also killed two shadowings, `v_pl_rd`'s
   `area_shear` parameter against the function of that name and `n_cr`'s
   `second_moment` against `section.second_moment`.
+- **`normax/ec3/material.py`, a pure leaf holding `SteelGrade` and the material
+  constants.** `Steel` moves out of the sizing module, so the analysis backends
+  and the composition no longer import a bisection and a `custom_jvp` to name a
+  material. The constants travel with it because a NamedTuple's defaults are
+  evaluated when the class body runs, so a grade defined apart from the
+  constants it defaults from closes an import cycle no deferred import can open.
+  `resistance.py` and `stability.py` now take the grade rather than loose
+  `f_y`/`e_mod`/`gamma_m*`: 17 signatures, `resistance_tension` falling from six
+  parameters to three.
+- **`SteelGrade` gains `f_u`, `gamma_m2` and `alpha`.** The first two make
+  `resistance.py` uniform — `resistance_fracture` and `resistance_tension` could
+  not otherwise take a grade — at the cost of two leaves the sizing map never
+  reads and whose tangents are zero. `alpha` moves off `Tube`, which held a
+  buckling curve, a sizing rule and a catalogue floor in one box: EN 1993-1-1
+  Table 6.2 assigns the curve by fabrication route, so the same grade drawn hot
+  and cold is two grades, not two shapes. `Tube` is down to `ratio` and
+  `diameter_min`.
 - **373 identifiers were moved from the AST, not by regex.** `diameter` has 318
   textual occurrences and `governing` 84, nearly all parameters and prose; only
   names actually bound to the renamed imports were touched. The one case the
