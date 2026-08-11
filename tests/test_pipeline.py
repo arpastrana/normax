@@ -32,6 +32,11 @@ from normax.structures import loads_point
 from normax.structures import loads_uniform
 from normax.visualization import Descent
 from normax.visualization import Form
+from normax.visualization import GradientCheck
+from normax.visualization import MassSweep
+from normax.visualization import MeshRefinement
+from normax.visualization import SizedMembers
+from normax.visualization import StaggeredPasses
 from normax.visualization import figure_convergence
 from normax.visualization import figure_load_cases
 from normax.visualization import figure_modes
@@ -394,10 +399,8 @@ def test_the_section_figure_builds(setup, steel, seed):
     figure = figure_sections(
         result.xyz,
         structure.edges,
-        seed,
-        result.diameters,
-        assumed,
-        float(result.mass),
+        SizedMembers(seed, assumed),
+        SizedMembers(result.diameters, float(result.mass)),
     )
 
     assert len(figure.axes) == 5
@@ -411,7 +414,8 @@ def test_the_convergence_figure_builds():
     moves = np.array([3.8e-1, 1.2e-2, 3.1e-4, 7.9e-6])
 
     figure = figure_convergence(
-        counts, member, fixed, 0.0274, np.arange(len(moves)), moves
+        MeshRefinement(counts, member, fixed, 0.0274),
+        StaggeredPasses(np.arange(len(moves)), moves),
     )
 
     assert len(figure.axes) == 3
@@ -427,7 +431,10 @@ def test_the_section_figure_reports_a_lighter_design(setup, steel, seed):
     )
 
     figure = figure_sections(
-        result.xyz, structure.edges, seed, result.diameters, assumed, float(result.mass)
+        result.xyz,
+        structure.edges,
+        SizedMembers(seed, assumed),
+        SizedMembers(result.diameters, float(result.mass)),
     )
     labels = [text.get_text() for text in figure.axes[1].texts]
 
@@ -953,7 +960,9 @@ def test_the_optimization_figure_builds():
     masses = 0.13 + 0.02 * (scales - 1.5) ** 2
     exact = 0.04 * (scales - 1.5)
 
-    figure = figure_optimization(scales, masses, exact, exact, descents(), start=3)
+    figure = figure_optimization(
+        MassSweep(scales, masses, 3), GradientCheck(exact, exact), descents()
+    )
 
     assert len(figure.axes) == 4
     plt.close(figure)
@@ -966,7 +975,9 @@ def test_the_optimization_figure_draws_every_descent_it_is_given():
     masses = 0.13 + 0.02 * (scales - 1.5) ** 2
     exact = 0.04 * (scales - 1.5)
 
-    figure = figure_optimization(scales, masses, exact, exact, descents(), start=3)
+    figure = figure_optimization(
+        MassSweep(scales, masses, 3), GradientCheck(exact, exact), descents()
+    )
     labels = [line.get_label() for line in figure.axes[0].lines]
 
     assert any("no floor" in label for label in labels)
@@ -983,12 +994,9 @@ def test_the_optimization_figure_marks_the_funicular_start_and_not_the_sweep(set
     trajectory = np.linspace(0.134, 0.051, 5)
 
     figure = figure_optimization(
-        scales,
-        masses,
-        0.04 * (scales - 1.5),
-        0.04 * (scales - 1.5),
+        MassSweep(scales, masses, 3),
+        GradientCheck(0.04 * (scales - 1.5), 0.04 * (scales - 1.5)),
         (Descent("run", trajectory, np.full(5, 10.0)),),
-        start=3,
     )
 
     labels = [line.get_label() for line in figure.axes[0].lines]

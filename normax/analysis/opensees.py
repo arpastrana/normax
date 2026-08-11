@@ -268,6 +268,7 @@ def _build_model(
     diameters: Float[Array, "members"],
     steel: SteelGrade,
     catalogue: TubeCatalogue,
+    *,
     loads: Float[Array, "nodes 3"] | None,
     parameters: bool,
 ) -> int:
@@ -510,7 +511,7 @@ def member_forces(
     The minor-axis moment is returned as exact zeros. A plane frame under
     in-plane load carries none, so this is the value rather than a placeholder.
     """
-    _build_model(model, xyz, diameters, steel, catalogue, loads, parameters=False)
+    _build_model(model, xyz, diameters, steel, catalogue, loads=loads, parameters=False)
 
     axial, moments = _read_forces(np.asarray(model.structure.edges).shape[0])
 
@@ -639,7 +640,7 @@ def force_jacobian(
     moment alone, which this Jacobian does not carry.
     """
     count = _build_model(
-        model, xyz, diameters, steel, catalogue, loads, parameters=True
+        model, xyz, diameters, steel, catalogue, loads=loads, parameters=True
     )
 
     num_nodes = np.asarray(xyz).shape[0]
@@ -660,38 +661,55 @@ def force_jacobian(
             )
 
     return _assemble_blocks(
-        axial, moments, diameters, catalogue, model.spanned, num_nodes, num_members
+        ParameterSweep(axial, moments, num_nodes), diameters, catalogue, model.spanned
     )
 
 
+class ParameterSweep(NamedTuple):
+    """
+    A direct-differentiation sweep, and the layout of its parameter columns.
+
+    Attributes
+    ----------
+    axial :
+        Derivative of every member's axial force in every parameter.
+    moments :
+        Derivative of every end moment in every parameter.
+    num_nodes :
+        Number of nodes in the frame.
+
+    Notes
+    -----
+    The node count belongs here rather than beside it, being what says where the
+    coordinate columns end and the section columns begin. The member count is
+    not carried: it is the leading axis of `axial`, and a second copy of a number
+    already present is a chance for the two to disagree.
+    """
+
+    axial: np.ndarray
+    moments: np.ndarray
+    num_nodes: int
+
+
 def _assemble_blocks(
-    axial: np.ndarray,
-    moments: np.ndarray,
+    sweep: ParameterSweep,
     diameters: Float[Array, "members"],
     catalogue: TubeCatalogue,
     spanned: Plane,
-    num_nodes: int,
-    num_members: int,
 ) -> Jacobian:
     """
     Rearrange a parameter sweep into the blocks the stage differentiates in.
 
     Parameters
     ----------
-    axial :
-        Derivative of every member's axial force in every parameter.
-    moments :
-        Derivative of every end moment in every parameter.
+    sweep :
+        The raw derivatives, and the node count laying out their columns.
     diameters :
         Outer diameter of every member.
     catalogue :
         The section family, whose ratio fixes the wall thickness.
     spanned :
         The plane the frame is modelled in.
-    num_nodes :
-        Number of nodes in the frame.
-    num_members :
-        Number of members in the frame.
 
     Returns
     -------
@@ -710,6 +728,11 @@ def _assemble_blocks(
     moments returned in newton metres, so each block is scaled once rather than
     at every use.
     """
+    axial = sweep.axial
+    moments = sweep.moments
+    num_nodes = sweep.num_nodes
+    num_members = axial.shape[0]
+
     coordinates = 2 * num_nodes
     d_area, d_inertia = _section_slopes(diameters, catalogue)
 

@@ -92,6 +92,8 @@ from normax.structures import loads_point
 from normax.structures import loads_uniform
 from normax.visualization import Descent
 from normax.visualization import Form
+from normax.visualization import GradientCheck
+from normax.visualization import MassSweep
 from normax.visualization import figure_load_cases
 from normax.visualization import figure_optimization
 
@@ -470,25 +472,21 @@ def main():
     reduction = 1.0 - float(sized.mass) / masses[funicular]
     against_best = 1.0 - float(sized.mass) / masses[best]
 
-    floored, _ = report_descent(structure, graph_fdm, model, cases, q, floor=FLOOR)
+    floored, _ = report_descent(problem, load_cases, q, floor=FLOOR)
     held, held_sized, decided_held, _, held_alpha, held_lengths = report_final(
-        structure, graph_fdm, model, cases, floored, bounds, f"a {FLOOR:.0f} mm floor"
+        problem, load_cases, floored, bounds, f"a {FLOOR:.0f} mm floor"
     )
 
     # The best the single force density can do, which is the design the twenty
     # variables have to beat and the one the figures compare against.
-    single = build(q * SCALES[best], structure, graph_fdm, model, cases, BETA_STOP)
-    single_sized = unsmoothed_design(
-        single, STEEL, CATALOGUE, section_class=SECTION_CLASS
-    )
-    decided_single = np.asarray(governing_case(single))
+    single = build(q * SCALES[best], problem, load_cases, BETA_STOP)
+    single_sized = unsmoothed_design(single, problem, section_class=SECTION_CLASS)
+    decided_single = np.asarray(governing_load_case(single))
 
     FIGURES.mkdir(exist_ok=True)
     figure_optimization(
-        SCALES,
-        masses,
-        exact,
-        numeric,
+        MassSweep(SCALES, masses, funicular),
+        GradientCheck(exact, numeric),
         (
             Descent(
                 "no length floor",

@@ -65,6 +65,8 @@ from normax.formfinding import equilibrium_state
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
 from normax.structures import arch_2d
+from normax.visualization import BackendAgreement
+from normax.visualization import BackendTimings
 from normax.visualization import figure_backends
 
 # A 10 m arch rising 3 m, carrying 180 kN. The same one the rest of the
@@ -174,11 +176,11 @@ def agreement():
     )
 
     print("\nmember forces, DDM backend against the traced one")
-    for name in ("axial_force", "end_moments_major"):
+    for name in ("axial_force", "moment_major"):
         gap = relative(getattr(mine, name), getattr(theirs, name))
-        print(f"  {name:<10} worst relative {gap:.3e}")
+        print(f"  {name:<12} worst relative {gap:.3e}")
     minor = float(np.max(np.abs(np.asarray(mine.moment_minor))))
-    print(f"  {'m_z_ed':<10} exactly zero in a plane frame, max {minor:.1e}")
+    print(f"  {'moment_minor':<12} exactly zero in a plane frame, max {minor:.1e}")
 
     blocks = backend_opensees.force_jacobian(
         backend_opensees.prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL),
@@ -506,12 +508,12 @@ def scaling():
     print("    crossing, a boundary keeping nothing between calls")
 
     figure = figure_backends(
-        np.asarray(members),
-        np.asarray(parameters),
-        np.asarray(gaps),
-        {name: np.asarray(series) for name, series in stage.items()},
-        {name: np.asarray(series) for name, series in pipeline.items()},
-        TOLERANCE_ASKED,
+        BackendAgreement(np.asarray(members), np.asarray(gaps), TOLERANCE_ASKED),
+        BackendTimings(
+            np.asarray(parameters),
+            {name: np.asarray(series) for name, series in stage.items()},
+            {name: np.asarray(series) for name, series in pipeline.items()},
+        ),
     )
     FIGURES.mkdir(exist_ok=True)
     path = FIGURES / "04_backends.png"

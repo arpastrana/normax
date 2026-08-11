@@ -45,6 +45,9 @@ from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
 from normax.structures import arch_2d
+from normax.visualization import GapScaling
+from normax.visualization import GradientCheck
+from normax.visualization import HandoffForces
 from normax.visualization import figure_handoff
 
 # A 10 m arch of ten members under a 20 kN load at every free node. Units are
@@ -192,15 +195,18 @@ def main():
 
     FIGURES.mkdir(exist_ok=True)
     handoff = figure_handoff(
-        state.lengths[:, 0],
-        axial,
-        member.axial_force,
-        jnp.max(jnp.abs(member.moment_major), axis=1),
-        np.asarray(DIAMETERS),
-        np.asarray([gap(diameter, STEEL)[0] for diameter in DIAMETERS]),
-        DIAMETER,
-        gradient,
-        np.asarray(differences),
+        HandoffForces(
+            state.lengths[:, 0],
+            axial,
+            member.axial_force,
+            jnp.max(jnp.abs(member.moment_major), axis=1),
+        ),
+        GapScaling(
+            np.asarray(DIAMETERS),
+            np.asarray([gap(diameter, STEEL)[0] for diameter in DIAMETERS]),
+            DIAMETER,
+        ),
+        GradientCheck(gradient, np.asarray(differences)),
     )
     handoff.savefig(FIGURES / "08_handoff.png", dpi=160, bbox_inches="tight")
     print(f"\nfigure written to {FIGURES / '08_handoff.png'}")

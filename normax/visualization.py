@@ -43,15 +43,57 @@ WIDTH_MAX = 9.0
 GREY = "0.55"
 
 
+class DrawnStructure(NamedTuple):
+    """
+    A structure, and the widths its members are to be drawn at.
+
+    Attributes
+    ----------
+    xyz :
+        Position of every node. The X and Z coordinates are drawn.
+    edges :
+        The two node indices spanned by every member.
+    diameters :
+        Outer diameter of every member, setting its drawn width.
+    widest :
+        Diameter drawn at the full width. Shared between drawings, so that two
+        of them may be compared rather than each being normalised to itself.
+    """
+
+    xyz: Float[Array, "nodes 3"]
+    edges: Int[Array, "members 2"]
+    diameters: Float[Array, "members"]
+    widest: float
+
+
+class ColorRange(NamedTuple):
+    """
+    What members are coloured by, and the range the colours span.
+
+    Attributes
+    ----------
+    values :
+        Quantity to colour members by. If None, the diameters are used.
+    vmin :
+        Lower end of the range. If None, taken from the data.
+    vmax :
+        Upper end of the range. If None, taken from the data.
+
+    Notes
+    -----
+    Every field defaults, so a drawing that has no opinion about colour passes
+    nothing. Fixing the ends is what lets two drawings share one colour bar.
+    """
+
+    values: Float[Array, "members"] | None = None
+    vmin: float | None = None
+    vmax: float | None = None
+
+
 def draw_members(
     ax: Axes,
-    xyz: Float[Array, "nodes 3"],
-    edges: Int[Array, "members 2"],
-    diameters: Float[Array, "members"],
-    widest: float,
-    colors: Float[Array, "members"] | None = None,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    drawn: DrawnStructure,
+    coloring: ColorRange = ColorRange(),
 ) -> LineCollection:
     """
     Draw a planar structure with every member as wide as its diameter.
@@ -60,47 +102,36 @@ def draw_members(
     ----------
     ax :
         The axis to draw on.
-    xyz :
-        Position of every node. The X and Z coordinates are used.
-    edges :
-        The two node indices spanned by every member.
-    diameters :
-        Outer diameter of every member, setting its drawn width.
-    widest :
-        Diameter that is drawn at the full width, shared between drawings so
-        that two of them may be compared.
-    colors :
-        Quantity to colour members by. If None, the diameters are used.
-    vmin :
-        Lower end of the colour range. If None, taken from the data.
-    vmax :
-        Upper end of the colour range. If None, taken from the data.
+    drawn :
+        The structure and the widths its members are drawn at.
+    coloring :
+        What to colour members by, and over what range.
 
     Returns
     -------
     members :
         The drawn collection, for a colour bar to be attached to.
     """
-    nodes = np.asarray(xyz)
-    pairs = np.asarray(edges)
-    sizes = np.asarray(diameters)
+    nodes = np.asarray(drawn.xyz)
+    pairs = np.asarray(drawn.edges)
+    sizes = np.asarray(drawn.diameters)
 
     segments = np.stack(
         [nodes[pairs[:, 0]][:, [0, 2]], nodes[pairs[:, 1]][:, [0, 2]]],
         axis=1,
     )
-    values = sizes if colors is None else np.asarray(colors)
+    values = sizes if coloring.values is None else np.asarray(coloring.values)
 
     members = LineCollection(
         segments,
-        linewidths=WIDTH_MAX * sizes / widest,
+        linewidths=WIDTH_MAX * sizes / drawn.widest,
         array=values,
         cmap="viridis",
         capstyle="round",
     )
     members.set_clim(
-        values.min() if vmin is None else vmin,
-        values.max() if vmax is None else vmax,
+        values.min() if coloring.vmin is None else coloring.vmin,
+        values.max() if coloring.vmax is None else coloring.vmax,
     )
     ax.add_collection(members)
 
@@ -113,13 +144,27 @@ def draw_members(
     return members
 
 
+class SizedMembers(NamedTuple):
+    """
+    One set of member sizes, and the mass they come to.
+
+    Attributes
+    ----------
+    diameters :
+        Outer diameter of every member.
+    mass :
+        Total mass at those diameters.
+    """
+
+    diameters: Float[Array, "members"]
+    mass: float
+
+
 def figure_sections(
     xyz: Float[Array, "nodes 3"],
     edges: Int[Array, "members 2"],
-    before: Float[Array, "members"],
-    after: Float[Array, "members"],
-    mass_before: float,
-    mass_after: float,
+    before: SizedMembers,
+    after: SizedMembers,
 ) -> Figure:
     """
     The same arch before and after EN 1993-1-1 has decided its members.
@@ -131,13 +176,9 @@ def figure_sections(
     edges :
         The two node indices spanned by every member.
     before :
-        Diameter every member was assumed to have.
+        Sizes every member was assumed to have, and their mass.
     after :
-        Diameter EN 1993-1-1 requires of every member.
-    mass_before :
-        Total mass at the assumed diameters.
-    mass_after :
-        Total mass at the required diameters.
+        Sizes EN 1993-1-1 requires of every member, and their mass.
 
     Returns
     -------
@@ -149,8 +190,12 @@ def figure_sections(
     The two drawings share one width scale and one colour range, so a member
     that shrank looks thinner rather than merely differently normalised.
     """
-    widest = float(max(np.max(np.asarray(before)), np.max(np.asarray(after))))
-    narrowest = float(min(np.min(np.asarray(before)), np.min(np.asarray(after))))
+    assumed = np.asarray(before.diameters)
+    required = np.asarray(after.diameters)
+
+    widest = float(max(np.max(assumed), np.max(required)))
+    narrowest = float(min(np.min(assumed), np.min(required)))
+    coloring = ColorRange(vmin=narrowest, vmax=widest)
 
     figure, axes = plt.subplots(
         2,
@@ -161,18 +206,16 @@ def figure_sections(
     )
 
     titles = (
-        f"Assumed, uniform — {mass_before:.4f} t",
-        f"Required by EN 1993-1-1 — {mass_after:.4f} t",
+        f"Assumed, uniform — {before.mass:.4f} t",
+        f"Required by EN 1993-1-1 — {after.mass:.4f} t",
     )
-    for ax, sizes, title in zip(axes[0], (before, after), titles):
-        members = draw_members(
-            ax, xyz, edges, sizes, widest, vmin=narrowest, vmax=widest
-        )
+    for ax, sizes, title in zip(axes[0], (before.diameters, after.diameters), titles):
+        members = draw_members(ax, DrawnStructure(xyz, edges, sizes, widest), coloring)
         ax.set_title(title, fontsize=11)
 
     figure.colorbar(members, ax=axes[0].tolist(), label="diameter [mm]", shrink=0.85)
 
-    shift = mass_after / mass_before - 1.0
+    shift = after.mass / before.mass - 1.0
     axes[0, 1].text(
         0.02,
         0.95,
@@ -183,9 +226,9 @@ def figure_sections(
     )
 
     span = axes[1, 0]
-    index = np.arange(len(np.asarray(after)))
-    span.bar(index - 0.2, np.asarray(before), 0.4, label="assumed", color=GREY)
-    span.bar(index + 0.2, np.asarray(after), 0.4, label="required", color="#31688e")
+    index = np.arange(len(required))
+    span.bar(index - 0.2, assumed, 0.4, label="assumed", color=GREY)
+    span.bar(index + 0.2, required, 0.4, label="required", color="#31688e")
     span.set_xlabel("member")
     span.set_ylabel("diameter [mm]")
     span.set_xticks(index)
@@ -193,7 +236,7 @@ def figure_sections(
     span.grid(axis="y", alpha=0.3)
 
     ratios = axes[1, 1]
-    ratios.bar(index, np.asarray(after) / np.asarray(before), 0.6, color="#35b779")
+    ratios.bar(index, required / assumed, 0.6, color="#35b779")
     ratios.axhline(1.0, color="0.2", lw=1.0)
     ratios.set_xlabel("member")
     ratios.set_ylabel("required / assumed")
@@ -209,18 +252,11 @@ def figure_sections(
     return figure
 
 
-def figure_convergence(
-    counts: Int[np.ndarray, "meshes"],
-    mass_member: Float[np.ndarray, "meshes"],
-    mass_fixed: Float[np.ndarray, "meshes"],
-    limit: float,
-    passes: Int[np.ndarray, "passes"],
-    moves: Float[np.ndarray, "passes"],
-) -> Figure:
+class MeshRefinement(NamedTuple):
     """
-    How the mass settles as the mesh refines, and as the staggering is repeated.
+    How the mass settles as the mesh is refined.
 
-    Parameters
+    Attributes
     ----------
     counts :
         Number of members in each mesh.
@@ -230,10 +266,43 @@ def figure_convergence(
         Total mass with a buckling length held independent of the mesh.
     limit :
         Mass the mesh-independent sequence extrapolates to.
+    """
+
+    counts: Int[np.ndarray, "meshes"]
+    mass_member: Float[np.ndarray, "meshes"]
+    mass_fixed: Float[np.ndarray, "meshes"]
+    limit: float
+
+
+class StaggeredPasses(NamedTuple):
+    """
+    How far each repetition of the analysis and the check moves the sizes.
+
+    Attributes
+    ----------
     passes :
         Index of each pass through the staggered analysis and check.
     moves :
         Largest relative change in diameter produced by each pass.
+    """
+
+    passes: Int[np.ndarray, "passes"]
+    moves: Float[np.ndarray, "passes"]
+
+
+def figure_convergence(
+    refinement: MeshRefinement,
+    staggering: StaggeredPasses,
+) -> Figure:
+    """
+    How the mass settles as the mesh refines, and as the staggering is repeated.
+
+    Parameters
+    ----------
+    refinement :
+        The mass under mesh refinement, and the limit it extrapolates to.
+    staggering :
+        How far each repetition of the analysis and the check moves the sizes.
 
     Returns
     -------
@@ -245,13 +314,17 @@ def figure_convergence(
     The middle panel carries a first-order reference line rather than a fitted
     slope, so the reader compares against a claim instead of against a fit.
     """
+    counts = refinement.counts
+    mass_member = refinement.mass_member
+    mass_fixed = refinement.mass_fixed
+
     figure, axes = plt.subplots(1, 3, figsize=(15.0, 4.4), layout="constrained")
 
     ax = axes[0]
     ax.plot(counts, mass_member, "o-", color="#440154", label=r"$L_{cr}$ = member")
     ax.plot(counts, mass_fixed, "s-", color="#31688e", label=r"$L_{cr}$ fixed")
     ax.axhline(
-        limit,
+        refinement.limit,
         color="#31688e",
         ls="--",
         lw=1.0,
@@ -284,7 +357,7 @@ def figure_convergence(
     ax.grid(alpha=0.3, which="both")
 
     ax = axes[2]
-    ax.semilogy(passes, moves, "o-", color="#35b779")
+    ax.semilogy(staggering.passes, staggering.moves, "o-", color="#35b779")
     ax.set_xlabel("pass through analysis and check")
     ax.set_ylabel("largest relative move in diameter")
     ax.set_title("The staggered coupling", fontsize=11)
@@ -293,21 +366,11 @@ def figure_convergence(
     return figure
 
 
-def figure_handoff(
-    lengths: Float[Array, "members"],
-    funicular: Float[Array, "members"],
-    analysed: Float[Array, "members"],
-    moments: Float[Array, "members"],
-    diameters: Float[np.ndarray, "sizes"],
-    gaps: Float[np.ndarray, "sizes"],
-    reference: float,
-    autodiff: Float[Array, "members"],
-    central: Float[np.ndarray, "members"],
-) -> Figure:
+class HandoffForces(NamedTuple):
     """
-    Whether form finding and the frame analysis agree, and why they cannot quite.
+    What the two stages say a member carries, and how much bending it sees.
 
-    Parameters
+    Attributes
     ----------
     lengths :
         Length of every member.
@@ -317,22 +380,76 @@ def figure_handoff(
         Axial force the frame analysis reports.
     moments :
         Largest end moment of every member, in magnitude.
+    """
+
+    lengths: Float[Array, "members"]
+    funicular: Float[Array, "members"]
+    analysed: Float[Array, "members"]
+    moments: Float[Array, "members"]
+
+
+class GapScaling(NamedTuple):
+    """
+    How the disagreement between the two stages grows with the section.
+
+    Attributes
+    ----------
     diameters :
         Diameters the disagreement was measured at.
     gaps :
         Worst relative disagreement at each of those diameters.
     reference :
         Diameter the quadratic reference line is anchored at.
-    autodiff :
-        Gradient of a scalar of the analysis with respect to force density.
-    central :
-        The same gradient by central differences.
+    """
+
+    diameters: Float[np.ndarray, "sizes"]
+    gaps: Float[np.ndarray, "sizes"]
+    reference: float
+
+
+class GradientCheck(NamedTuple):
+    """
+    A derivative taken exactly, beside the same one taken numerically.
+
+    Attributes
+    ----------
+    exact :
+        Derivative from the composed gradient.
+    numeric :
+        The same derivative from a central difference.
+    """
+
+    exact: Float[Array, "members"]
+    numeric: Float[np.ndarray, "members"]
+
+
+def figure_handoff(
+    forces: HandoffForces,
+    scaling: GapScaling,
+    gradient: GradientCheck,
+) -> Figure:
+    """
+    Whether form finding and the frame analysis agree, and why they cannot quite.
+
+    Parameters
+    ----------
+    forces :
+        What each stage says the members carry, and the bending they see.
+    scaling :
+        How the disagreement grows with the section it was measured at.
+    gradient :
+        The gradient across both stages, exactly and by central differences.
 
     Returns
     -------
     figure :
         Four panels: the forces, the disagreement, its law, and the gradient.
     """
+    lengths = forces.lengths
+    funicular = forces.funicular
+    analysed = forces.analysed
+    moments = forces.moments
+
     figure, axes = plt.subplots(2, 2, figsize=(12.0, 8.0), layout="constrained")
 
     ax = axes[0, 0]
@@ -361,13 +478,13 @@ def figure_handoff(
     ax.grid(alpha=0.3, which="both")
 
     ax = axes[1, 0]
-    sizes = np.asarray(diameters)
-    measured = np.asarray(gaps)
-    anchor = measured[np.argmin(np.abs(sizes - reference))]
+    sizes = np.asarray(scaling.diameters)
+    measured = np.asarray(scaling.gaps)
+    anchor = measured[np.argmin(np.abs(sizes - scaling.reference))]
     ax.loglog(sizes, measured, "o-", color="#440154", label="measured")
     ax.loglog(
         sizes,
-        anchor * (sizes / reference) ** 2,
+        anchor * (sizes / scaling.reference) ** 2,
         ls="--",
         color=GREY,
         lw=1.0,
@@ -380,8 +497,8 @@ def figure_handoff(
     ax.grid(alpha=0.3, which="both")
 
     ax = axes[1, 1]
-    exact = np.asarray(autodiff)
-    numeric = np.asarray(central)
+    exact = np.asarray(gradient.exact)
+    numeric = np.asarray(gradient.numeric)
     ax.plot(index, exact, "o", color="#440154", label="autodiff")
     ax.plot(index, numeric, "x", color="#fde725", markersize=9, label="central")
     ax.set_xlabel("edge")
@@ -493,33 +610,43 @@ class Descent(NamedTuple):
     beta: Float[np.ndarray, "steps"]
 
 
+class MassSweep(NamedTuple):
+    """
+    The mass along a one-variable sweep, and where the descent started on it.
+
+    Attributes
+    ----------
+    scales :
+        Multiple of the starting force densities at each sample of the sweep.
+    masses :
+        Total mass at each of those multiples.
+    start :
+        Index of the sample the descent began from, which is the funicular
+        design rather than the first sample of the sweep.
+    """
+
+    scales: Float[np.ndarray, "samples"]
+    masses: Float[np.ndarray, "samples"]
+    start: int
+
+
 def figure_optimization(
-    scales: Float[np.ndarray, "samples"],
-    masses: Float[np.ndarray, "samples"],
-    exact: Float[np.ndarray, "samples"],
-    numeric: Float[np.ndarray, "samples"],
+    sweep: MassSweep,
+    gradient: GradientCheck,
     descents: Sequence[Descent],
-    start: int,
 ) -> Figure:
     """
     The one-variable mass curve, its gradient, and what twenty variables buy.
 
     Parameters
     ----------
-    scales :
-        Multiple of the starting force densities at each sample of the sweep.
-    masses :
-        Total mass at each of those multiples.
-    exact :
-        Directional derivative of the mass along the sweep, from the composed
-        gradient.
-    numeric :
-        The same derivative from a central difference.
+    sweep :
+        The mass along the sweep, and the sample the descent began from.
+    gradient :
+        The directional derivative along the sweep, exactly and by a central
+        difference.
     descents :
         The optimizer runs to draw, the one the design is taken from last.
-    start :
-        Index of the sample the descent began from, which is the funicular
-        design rather than the first sample of the sweep.
 
     Returns
     -------
@@ -538,6 +665,12 @@ def figure_optimization(
     sweep. Dividing by the local slope would report a large error wherever the
     curve is flat, which is exactly where the minimum is.
     """
+    scales = sweep.scales
+    masses = sweep.masses
+    start = sweep.start
+    exact = gradient.exact
+    numeric = gradient.numeric
+
     figure, axes = plt.subplots(1, 3, figsize=(14.0, 4.2), layout="constrained")
 
     best = int(np.argmin(masses))
@@ -707,13 +840,8 @@ def figure_load_cases(
     for ax, form in zip(axes[0], forms):
         members = draw_members(
             ax,
-            form.xyz,
-            edges,
-            form.diameters,
-            widest,
-            colors=form.governing,
-            vmin=0.0,
-            vmax=load_cases - 1.0,
+            DrawnStructure(form.xyz, edges, form.diameters, widest),
+            ColorRange(form.governing, 0.0, load_cases - 1.0),
         )
         ax.set_xlim(float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
         ax.set_ylim(float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
@@ -742,32 +870,58 @@ def figure_load_cases(
     return figure
 
 
+class BackendAgreement(NamedTuple):
+    """
+    How closely two solvers agree on the mass gradient, and at what sizes.
+
+    Attributes
+    ----------
+    members :
+        Number of members in each frame measured.
+    gaps :
+        Worst relative disagreement in the mass gradient at each size.
+    tolerance :
+        Agreement the roadmap asked for, drawn as a reference.
+    """
+
+    members: Int[np.ndarray, "sizes"]
+    gaps: Float[np.ndarray, "sizes"]
+    tolerance: float
+
+
+class BackendTimings(NamedTuple):
+    """
+    What each solver's derivatives cost, alone and inside the composition.
+
+    Attributes
+    ----------
+    parameters :
+        Number of quantities the direct differentiation sweep registers.
+    stage :
+        Seconds the analysis stage alone spends on its derivatives, by backend.
+    pipeline :
+        Seconds the whole composition spends on a value and gradient, by
+        backend.
+    """
+
+    parameters: Int[np.ndarray, "sizes"]
+    stage: dict[str, Float[np.ndarray, "sizes"]]
+    pipeline: dict[str, Float[np.ndarray, "sizes"]]
+
+
 def figure_backends(
-    members: Int[np.ndarray, "sizes"],
-    parameters: Int[np.ndarray, "sizes"],
-    gaps: Float[np.ndarray, "sizes"],
-    stage: dict[str, Float[np.ndarray, "sizes"]],
-    pipeline: dict[str, Float[np.ndarray, "sizes"]],
-    tolerance: float,
+    agreement: BackendAgreement,
+    timings: BackendTimings,
 ) -> Figure:
     """
     Two solvers agreeing on a gradient, and disagreeing about what it costs.
 
     Parameters
     ----------
-    members :
-        Number of members in each frame measured.
-    parameters :
-        Number of quantities the direct differentiation sweep registers.
-    gaps :
-        Worst relative disagreement in the mass gradient at each size.
-    stage :
-        Seconds the analysis stage alone spends on its derivatives, by backend.
-    pipeline :
-        Seconds the whole composition spends on a value and gradient, by
-        backend.
-    tolerance :
-        Agreement the roadmap asked for, drawn as a reference.
+    agreement :
+        How closely the two solvers agree on the mass gradient.
+    timings :
+        What each solver's derivatives cost, alone and in the composition.
 
     Returns
     -------
@@ -787,6 +941,9 @@ def figure_backends(
     Every cost axis is logarithmic, the two backends differing by more than an
     order of magnitude, and a linear axis would draw one of them flat.
     """
+    members = agreement.members
+    tolerance = agreement.tolerance
+
     figure, axes = plt.subplots(1, 3, figsize=(WIDTH_MAX, 3.4), layout="constrained")
 
     axes[0].axhline(tolerance, color=GREY, linestyle="--", linewidth=1.0)
@@ -798,7 +955,7 @@ def figure_backends(
         color=GREY,
         fontsize=8,
     )
-    axes[0].plot(members, gaps, "o-", color="#31688e", markersize=4)
+    axes[0].plot(members, agreement.gaps, "o-", color="#31688e", markersize=4)
     axes[0].set_yscale("log")
     axes[0].set_ylim(top=tolerance * 30.0)
     axes[0].set_xlabel("members")
@@ -808,10 +965,15 @@ def figure_backends(
 
     styles = {"smax": ("#440154", "o"), "opensees": ("#35b779", "s")}
 
-    for name, series in stage.items():
+    for name, series in timings.stage.items():
         color, marker = styles[name]
         axes[1].plot(
-            parameters, series, marker + "-", color=color, markersize=4, label=name
+            timings.parameters,
+            series,
+            marker + "-",
+            color=color,
+            markersize=4,
+            label=name,
         )
 
     axes[1].set_yscale("log")
@@ -821,7 +983,7 @@ def figure_backends(
     axes[1].grid(alpha=0.3)
     axes[1].legend(fontsize=8)
 
-    for name, series in pipeline.items():
+    for name, series in timings.pipeline.items():
         color, marker = styles[name]
         axes[2].plot(
             members, series, marker + "-", color=color, markersize=4, label=name

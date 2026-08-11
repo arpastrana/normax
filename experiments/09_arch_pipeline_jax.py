@@ -61,11 +61,15 @@ from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
+from normax.pipeline import ProblemSetup
 from normax.pipeline import design_members
 from normax.pipeline import frame_stability
 from normax.pipeline import governing_states
 from normax.pipeline import total_mass
 from normax.structures import arch_2d
+from normax.visualization import MeshRefinement
+from normax.visualization import SizedMembers
+from normax.visualization import StaggeredPasses
 from normax.visualization import figure_convergence
 from normax.visualization import figure_modes
 from normax.visualization import figure_sections
@@ -382,20 +386,14 @@ def main():
     sections = figure_sections(
         result.xyz,
         structure.edges,
-        seed,
-        result.diameters,
-        assumed_mass,
-        float(result.mass),
+        SizedMembers(seed, assumed_mass),
+        SizedMembers(result.diameters, float(result.mass)),
     )
     sections.savefig(FIGURES / "09_sections.png", dpi=160, bbox_inches="tight")
 
     convergence = figure_convergence(
-        np.asarray(MESHES),
-        by_member,
-        by_fixed,
-        limit,
-        np.arange(len(moves)),
-        moves,
+        MeshRefinement(np.asarray(MESHES), by_member, by_fixed, limit),
+        StaggeredPasses(np.arange(len(moves)), moves),
     )
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
 

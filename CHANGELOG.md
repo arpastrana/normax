@@ -49,6 +49,40 @@
   `total_mass` with the old signature. It is skipped without
   `NORMAX_SERVED_OUTPUT`, so nothing ran it — pyright caught it, not the tests.
 
+### P9b — the figures and the OpenSees internals
+
+- **`visualization.py` is off the wide-signature list entirely.** Six functions
+  took between six and nine plot series each, which is the shape that invites a
+  transposed pair no assertion can catch. Eleven small containers replace them,
+  in the idiom the module already had with `Descent` and `Form`:
+  `DrawnStructure` and `ColorRange` for `draw_members` (8 → 2 and a default),
+  `SizedMembers` for `figure_sections` (6 → 4), `MeshRefinement` and
+  `StaggeredPasses` for `figure_convergence` (6 → 2), `HandoffForces`,
+  `GapScaling` and `GradientCheck` for `figure_handoff` (9 → 3), `MassSweep`
+  with `GradientCheck` again for `figure_optimization` (6 → 3), and
+  `BackendAgreement` with `BackendTimings` for `figure_backends` (6 → 2).
+- **`_assemble_blocks` lost an argument rather than gaining a container.**
+  `num_members` was the leading axis of `axial` two lines above the only call
+  site, and a second copy of a number already present is a chance for the two to
+  disagree. What is left travels as a `ParameterSweep`, which carries the node
+  count because that is what says where the coordinate columns end and the
+  section columns begin: 7 → 4.
+- `_build_model`'s `loads` and `parameters` are keyword-only, leaving 5
+  positional. Taking it lower means a container for `steel` and `catalogue`
+  across both backends and `ProblemSetup`, which is a separate decision about
+  the gradient-injection path rather than a tidy-up.
+- Fixed in passing: **`experiments/04`'s agreement section has been dead since
+  P8** — it read `end_moments_major` off a `MemberForces`, whose fields were
+  renamed to `moment_major`, and crashed before every number it prints. The
+  stale spelling was a string inside a loop over field names, so nothing static
+  could see it and the traceback came only from running the file. It now
+  reproduces the backend agreement end to end: member forces to 2.7e-15, the
+  Jacobian blocks to 2.4e-11, and the mass gradient to 7.2e-12 against a 1e-6
+  target.
+- Verified: 1843 tests pass, the parity harness is still identical across all 48
+  arrays, and every figure was regenerated and read back rather than merely
+  built — 03, 04, 08 and 09 all reproduce their published panels.
+
 ### P8 — ec3 restructuring
 
 - **Fixed: the analytic bracket read `resultant` on a branch the check ignores
