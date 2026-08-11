@@ -43,7 +43,7 @@ from normax.analysis.smax import Model
 from normax.analysis.smax import forces
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.structures import Structure
 
 
@@ -53,7 +53,7 @@ def _member_forces(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> MemberForces:
     """
     The analysis, compiled, from a model the caller prepared.
@@ -68,7 +68,7 @@ def _member_forces(
         Outer diameter of every member.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
 
     Returns
@@ -97,7 +97,7 @@ def _member_forces(
     including the loads, which reach here inside the model as ordinary leaves
     rather than as constants folded into the program.
     """
-    return forces(model, xyz, diameters, steel, tube)
+    return forces(model, xyz, diameters, steel, catalogue)
 
 
 def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -148,11 +148,13 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
-    tube = Tube(ratio=inputs["ratio"])
+    catalogue = TubeCatalogue(ratio=inputs["ratio"])
 
-    model = prepare(structure, steel, tube, normal=inputs["normal"])
+    model = prepare(structure, steel, catalogue, normal=inputs["normal"])
 
-    member = _member_forces(model, xyz, jnp.asarray(inputs["diameter"]), steel, tube)
+    member = _member_forces(
+        model, xyz, jnp.asarray(inputs["diameter"]), steel, catalogue
+    )
 
     return {
         "n_ed": member.n_ed,

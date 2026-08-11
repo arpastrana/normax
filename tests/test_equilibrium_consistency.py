@@ -16,7 +16,7 @@ from normax.analysis.smax import forces
 from normax.analysis.smax import frame
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.structures import arch
@@ -53,13 +53,13 @@ def steel():
 
 
 @pytest.fixture(scope="module")
-def tube(steel):
-    return Tube.at_class_limit(steel.f_y, 3)
+def catalogue(steel):
+    return TubeCatalogue.at_class_limit(steel.f_y, 3)
 
 
 @pytest.fixture(scope="module")
-def model(structure, steel, tube):
-    return prepare(structure, steel, tube, normal=NORMAL)
+def model(structure, steel, catalogue):
+    return prepare(structure, steel, catalogue, normal=NORMAL)
 
 
 @pytest.fixture(scope="module")
@@ -73,17 +73,17 @@ def state(q, structure):
 
 
 @pytest.fixture(scope="module")
-def member(model, state, steel, tube):
+def member(model, state, steel, catalogue):
     return forces(
         model,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
         steel,
-        tube,
+        catalogue,
     )
 
 
-def deviation(diameter, steel, tube, load=LOAD, force_density=FORCE_DENSITY):
+def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY):
     """
     Largest relative gap between the analysed and the funicular axial force.
     """
@@ -93,22 +93,29 @@ def deviation(diameter, steel, tube, load=LOAD, force_density=FORCE_DENSITY):
 
     funicular = q * state.lengths[:, 0]
     member = forces(
-        prepare(structure, steel, tube, normal=NORMAL),
+        prepare(structure, steel, catalogue, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
         steel,
-        tube,
+        catalogue,
     )
 
     return float(jnp.max(jnp.abs(member.n_ed - funicular) / jnp.abs(funicular)))
 
 
-def span_field(structure, xyz, steel, tube):
+def span_field(structure, xyz, steel, catalogue):
     """
     The whole span field, to check the assumptions `forces` collapses it under.
     """
     compiled = compile_structure(
-        frame(structure, xyz, jnp.full(NUM_EDGES, DIAMETER), steel, tube, normal=NORMAL)
+        frame(
+            structure,
+            xyz,
+            jnp.full(NUM_EDGES, DIAMETER),
+            steel,
+            catalogue,
+            normal=NORMAL,
+        )
     )
     applied = [
         PointLoad(node, load=structure.loads[node])
@@ -123,14 +130,14 @@ def span_field(structure, xyz, steel, tube):
 # The model the analysis runs on
 # --------------------------------------------------------------------------- #
 def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
-    structure, state, steel, tube
+    structure, state, steel, catalogue
 ):
     model = frame(
         structure,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
         steel,
-        tube,
+        catalogue,
         normal=NORMAL,
     )
 
@@ -138,14 +145,14 @@ def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
 
 
 def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
-    structure, state, steel, tube
+    structure, state, steel, catalogue
 ):
     model = frame(
         structure,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
         steel,
-        tube,
+        catalogue,
         normal=None,
     )
     unrestrained = Frame(
@@ -237,16 +244,18 @@ def test_bending_is_secondary_to_axial_action(q, state, member):
     assert float(jnp.max(ratio)) < TOLERANCE_BENDING
 
 
-def test_the_axial_force_does_not_vary_along_a_member(structure, state, steel, tube):
-    field = span_field(structure, state.xyz, steel, tube)
+def test_the_axial_force_does_not_vary_along_a_member(
+    structure, state, steel, catalogue
+):
+    field = span_field(structure, state.xyz, steel, catalogue)
 
     assert np.allclose(field.nx[:, 0], field.nx[:, 1], rtol=1e-12)
 
 
 def test_the_reported_axial_force_is_the_one_the_solver_recovered(
-    structure, state, steel, tube, member
+    structure, state, steel, catalogue, member
 ):
-    field = span_field(structure, state.xyz, steel, tube)
+    field = span_field(structure, state.xyz, steel, catalogue)
 
     assert np.allclose(member.n_ed, field.nx[:, 0], rtol=1e-15)
 
@@ -269,49 +278,49 @@ def test_the_arch_carries_no_moment_at_a_pinned_base(member):
 # Why the gap is what it is
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("diameter", [50.0, 100.0, 200.0])
-def test_the_gap_is_quadratic_in_the_diameter(diameter, steel, tube):
+def test_the_gap_is_quadratic_in_the_diameter(diameter, steel, catalogue):
     # A beam chain through a funicular polygon cannot turn a kink on axial force
     # alone, and the bending it needs instead scales as the square of the radius
     # of gyration over the length. So the gap closes as the members thin, and it
     # is a property of their slenderness rather than of the load or the steel.
-    reference = deviation(100.0, steel, tube)
+    reference = deviation(100.0, steel, catalogue)
     scaled = reference * (diameter / 100.0) ** 2
 
-    assert deviation(diameter, steel, tube) == pytest.approx(scaled, rel=0.01)
+    assert deviation(diameter, steel, catalogue) == pytest.approx(scaled, rel=0.01)
 
 
 @pytest.mark.parametrize("e_mod", [70_000.0, 400_000.0])
-def test_the_gap_does_not_depend_on_the_modulus(e_mod, steel, tube):
-    softer = deviation(DIAMETER, steel._replace(e_mod=e_mod), tube)
+def test_the_gap_does_not_depend_on_the_modulus(e_mod, steel, catalogue):
+    softer = deviation(DIAMETER, steel._replace(e_mod=e_mod), catalogue)
 
-    assert softer == pytest.approx(deviation(DIAMETER, steel, tube), rel=1e-9)
+    assert softer == pytest.approx(deviation(DIAMETER, steel, catalogue), rel=1e-9)
 
 
 @pytest.mark.parametrize("scale", [0.1, 10.0])
-def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, tube):
+def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, catalogue):
     scaled = deviation(
         DIAMETER,
         steel,
-        tube,
+        catalogue,
         load=LOAD * scale,
         force_density=FORCE_DENSITY * scale,
     )
 
-    assert scaled == pytest.approx(deviation(DIAMETER, steel, tube), rel=1e-9)
+    assert scaled == pytest.approx(deviation(DIAMETER, steel, catalogue), rel=1e-9)
 
 
 # --------------------------------------------------------------------------- #
 # The gradient crosses both stages
 # --------------------------------------------------------------------------- #
 def test_the_gradient_through_both_stages_matches_central_differences(
-    q, structure, model, steel, tube
+    q, structure, model, steel, catalogue
 ):
     fdm = graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
 
     def objective(q):
         state = equilibrium(q, structure, fdm)
-        member = forces(model, state.xyz, diameters, steel, tube)
+        member = forces(model, state.xyz, diameters, steel, catalogue)
         return jnp.sum(member.n_ed**2)
 
     gradient = jax.grad(objective)(q)
@@ -325,13 +334,15 @@ def test_the_gradient_through_both_stages_matches_central_differences(
         assert float(gradient[edge]) == pytest.approx(float(central), rel=1e-7)
 
 
-def test_the_gradient_through_both_stages_is_finite(q, structure, model, steel, tube):
+def test_the_gradient_through_both_stages_is_finite(
+    q, structure, model, steel, catalogue
+):
     fdm = graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
 
     def objective(q):
         state = equilibrium(q, structure, fdm)
-        member = forces(model, state.xyz, diameters, steel, tube)
+        member = forces(model, state.xyz, diameters, steel, catalogue)
         return jnp.sum(member.n_ed**2)
 
     gradient = jax.grad(objective)(q)

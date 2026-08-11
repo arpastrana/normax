@@ -47,7 +47,7 @@ from tesseract_core.runtime import Float64
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state as governing_limit
@@ -157,7 +157,7 @@ class OutputSchema(BaseModel):
     """
 
 
-def _material(inputs: dict[str, Any]) -> tuple[SteelGrade, Tube]:
+def _material(inputs: dict[str, Any]) -> tuple[SteelGrade, TubeCatalogue]:
     """
     The material and the section family, from the flat fields of the schema.
 
@@ -179,12 +179,12 @@ def _material(inputs: dict[str, Any]) -> tuple[SteelGrade, Tube]:
         gamma_m1=inputs["gamma_m1"],
         alpha=inputs["alpha"],
     )
-    tube = Tube(
+    catalogue = TubeCatalogue(
         ratio=inputs["ratio"],
         diameter_min=inputs["diameter_min"],
     )
 
-    return steel, tube
+    return steel, catalogue
 
 
 def _forward(
@@ -215,7 +215,7 @@ def _forward(
     is a clause of the standard and not a product of an analysis. That is what
     keeps the analysis schema free of anything a solver has no opinion on.
     """
-    steel, tube = _material(inputs)
+    steel, catalogue = _material(inputs)
     plastic = inputs["plastic"]
     resultant = inputs["resultant"]
 
@@ -230,7 +230,7 @@ def _forward(
     lengths = jnp.asarray(inputs["lengths"])
 
     actions = MemberActions(n_ed, m_ed, m_minor, c_m, c_minor)
-    arguments = (actions, l_cr, steel, tube)
+    arguments = (actions, l_cr, steel, catalogue)
 
     required = diameter_required(*arguments, plastic=plastic, resultant=resultant)
     used = utilization_of_tubes(
@@ -239,7 +239,7 @@ def _forward(
 
     outputs = {
         "diameter": required,
-        "mass": mass_of_tubes(required, lengths, steel, tube),
+        "mass": mass_of_tubes(required, lengths, steel, catalogue),
         "utilization": used,
         "m_y_ed": m_ed,
         "m_z_ed": m_minor,

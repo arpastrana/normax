@@ -58,7 +58,7 @@ from normax.composition import backend
 from normax.composition import local
 from normax.composition import mass as mass_composed
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.optimization import descend
@@ -99,7 +99,7 @@ ITERATIONS = 60
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = SteelGrade()
-TUBE = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
 BACKENDS = ("smax", "opensees")
 
@@ -142,7 +142,7 @@ def objective(chain, structure, num_edges):
             structure,
             chain,
             STEEL,
-            TUBE,
+            CATALOGUE,
             normal=NORMAL,
             plastic=False,
         )
@@ -161,18 +161,18 @@ def agreement():
     diameters = jnp.full(NUM_EDGES, SEED)
 
     mine = backend_opensees.forces(
-        backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL),
+        backend_opensees.prepare(structure, STEEL, CATALOGUE, normal=NORMAL),
         xyz,
         diameters,
         STEEL,
-        TUBE,
+        CATALOGUE,
     )
     theirs = forces_smax(
-        prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+        prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL),
         xyz,
         diameters,
         STEEL,
-        TUBE,
+        CATALOGUE,
     )
 
     print("\nmember forces, DDM backend against the traced one")
@@ -183,20 +183,20 @@ def agreement():
     print(f"  {'m_z_ed':<10} exactly zero in a plane frame, max {minor:.1e}")
 
     blocks = backend_opensees.jacobian(
-        backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL),
+        backend_opensees.prepare(structure, STEEL, CATALOGUE, normal=NORMAL),
         xyz,
         diameters,
         STEEL,
-        TUBE,
+        CATALOGUE,
     )
 
     def run(coords, sizes):
         member = forces_smax(
-            prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+            prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL),
             coords,
             sizes,
             STEEL,
-            TUBE,
+            CATALOGUE,
         )
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
@@ -249,11 +249,11 @@ def blind():
 
     def run(coords):
         member = forces_smax(
-            prepare_smax(structure, STEEL, TUBE, normal=NORMAL),
+            prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL),
             coords,
             diameters,
             STEEL,
-            TUBE,
+            CATALOGUE,
         )
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed, "m_z_ed": member.m_z_ed}
@@ -315,14 +315,14 @@ def stage_cost(structure, xyz, diameters):
     fixed cost per frame size and the warm-up excludes it, exactly as it excludes
     the kernel the section slopes need on the other side.
     """
-    prepared_ddm = backend_opensees.prepare(structure, STEEL, TUBE, normal=NORMAL)
-    prepared_smax = prepare_smax(structure, STEEL, TUBE, normal=NORMAL)
+    prepared_ddm = backend_opensees.prepare(structure, STEEL, CATALOGUE, normal=NORMAL)
+    prepared_smax = prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL)
 
     def ddm():
-        return backend_opensees.jacobian(prepared_ddm, xyz, diameters, STEEL, TUBE)
+        return backend_opensees.jacobian(prepared_ddm, xyz, diameters, STEEL, CATALOGUE)
 
     def run(coords, sizes):
-        member = forces_smax(prepared_smax, coords, sizes, STEEL, TUBE)
+        member = forces_smax(prepared_smax, coords, sizes, STEEL, CATALOGUE)
 
         return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
 

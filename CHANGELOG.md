@@ -87,11 +87,33 @@
   permits, so a member given no factor is checked conservatively. `Envelope`
   keeps its flat fields, its per-case arrays carrying a case axis a container
   annotated `"members"` cannot honestly hold.
+- **The section family is `TubeCatalogue`, and it is renamed on a commit of its
+  own so the name `Tube` is free before it is reused.** The section object
+  arriving next is a `Tube(diameter, thickness)`, which is what the old name
+  ought to have meant — the type holding it carried a ratio and a floor and
+  never a diameter. Renaming both in one pass would have left `Tube` bound to
+  the *family* at every site a sweep missed, and that code compiles, runs, and
+  is silently wrong; renaming first makes any survivor a `NameError`. 707
+  identifiers moved by token, plus 35 numpydoc labels, and the parameter is
+  `catalogue` rather than `tube` everywhere, so nothing reads as a section that
+  is not one. Verified afterwards that no binding named `Tube` or `tube` remains
+  anywhere in the tree.
+- **Renaming by spelling was safe here, and only here.** The usual rule is to
+  rename by binding, but a scan first established that every `Tube`/`tube`
+  binding in the tree referred to the family: no shadowing, no `.tube`
+  attribute, no string key. `tokenize` then separates identifiers from strings
+  and comments for free, which an AST-span rewrite does not.
+- **The README's usage snippet had been broken since the grade moved**, importing
+  `Steel` from `normax.ec3.sizing`. It is now correct, one import per line, and
+  it was run: 0.0336 t on the twenty-member arch with a finite gradient in every
+  force density.
 - **Two AST traps recurred and both were caught by tests, not review.** A call
   through a variable (`branch = utilization_plastic if plastic else ...`) and a
   call through `jax.jit(diameter_required, ...)` are invisible to a sweep that
   matches on the callee's name. Seventy call sites moved mechanically; three
-  needed hands.
+  needed hands. A fourth escaped the suite entirely — `experiments/03` builds a
+  `Design` positionally and nothing imports it, so only running the experiment
+  found it. **Experiments are not covered by `pytest` and have to be run.**
 - **373 identifiers were moved from the AST, not by regex.** `diameter` has 318
   textual occurrences and `governing` 84, nearly all parameters and prose; only
   names actually bound to the renamed imports were touched. The one case the

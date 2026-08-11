@@ -35,7 +35,7 @@ from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.sizing import LIMIT_MINIMUM_SIZE
 from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import is_plastic
@@ -70,7 +70,7 @@ STEPS = (1e-6, 1e-6, 1e-6, 1e-6)
 LABELS = ("force", "major moment", "minor moment", "length")
 
 
-def size(n_ed, m_y_ed, m_z_ed, l_cr, tube, plastic):
+def size(n_ed, m_y_ed, m_z_ed, l_cr, catalogue, plastic):
     """
     Fully-stressed diameter under the full interaction.
     """
@@ -78,7 +78,7 @@ def size(n_ed, m_y_ed, m_z_ed, l_cr, tube, plastic):
         MemberActions(n_ed, m_y_ed, m_z_ed, 0.9, 0.9),
         l_cr,
         STEEL,
-        tube,
+        catalogue,
         plastic=plastic,
     )
 
@@ -98,10 +98,11 @@ def main() -> None:
 
     worst = 0.0
     for cross_section_class in (2, 3):
-        tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
         plastic = is_plastic(cross_section_class)
         branch = "plastic" if plastic else "elastic"
-        print(f"Class {cross_section_class} ({branch}), d/t = {float(tube.ratio):.2f}")
+        ratio = float(catalogue.ratio)
+        print(f"Class {cross_section_class} ({branch}), d/t = {ratio:.2f}")
         print(
             f"  {'case':<26}{'argument':<15}{'reverse':<22}"
             f"{'central diff':<22}{'rel':<10}"
@@ -114,7 +115,7 @@ def main() -> None:
                     probed = list(actions)
                     probed[index] = x
 
-                    return size(*probed, tube, plastic)
+                    return size(*probed, catalogue, plastic)
 
                 value = actions[index]
                 if value == 0.0:
@@ -138,14 +139,14 @@ def main() -> None:
         print()
 
     print("Forward and reverse are the same derivative")
-    tube = Tube.at_class_limit(STEEL.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
     for actions in CASES[:3]:
 
         def at(x, actions=actions):
             probed = list(actions)
             probed[0] = x
 
-            return size(*probed, tube, False)
+            return size(*probed, catalogue, False)
 
         forward = float(jax.jacfwd(at)(actions[0]))
         reverse = float(jax.grad(at)(actions[0]))
@@ -154,15 +155,15 @@ def main() -> None:
 
     print("\nRemoving the moments reproduces the axial answer")
     for cross_section_class in (2, 3):
-        tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
         plastic = is_plastic(cross_section_class)
-        with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, tube, plastic))
+        with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, catalogue, plastic))
         axial_only = float(
             diameter_required(
                 MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0),
                 4000.0,
                 STEEL,
-                tube,
+                catalogue,
                 plastic=plastic,
             )
         )
@@ -172,17 +173,17 @@ def main() -> None:
         )
 
     print("\nUtilization and governing limit state at the solved diameter")
-    tube = Tube.at_class_limit(STEEL.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
     worst_check = 0.0
     for actions in CASES:
-        d = size(*actions, tube, False)
+        d = size(*actions, catalogue, False)
         demand = float(
             utilization_design(
                 d,
                 MemberActions(*actions[:3], 0.9, 0.9),
                 actions[3],
                 STEEL,
-                tube,
+                catalogue,
                 plastic=False,
             )
         )
@@ -192,7 +193,7 @@ def main() -> None:
                 MemberActions(*actions[:3], 0.9, 0.9),
                 actions[3],
                 STEEL,
-                tube,
+                catalogue,
                 plastic=False,
             )
         )
@@ -212,11 +213,11 @@ def main() -> None:
             MemberActions(n_ed, 4e7, 1.5e7, 0.9, 0.9),
             lengths,
             STEEL,
-            tube,
+            catalogue,
             plastic=False,
         )
 
-        return mass(sizes, lengths, STEEL, tube)
+        return mass(sizes, lengths, STEEL, catalogue)
 
     total = float(objective(forces))
     gradient = jax.grad(objective)(forces)

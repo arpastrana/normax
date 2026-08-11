@@ -12,7 +12,7 @@ from normax.composition import envelope as envelope_composed
 from normax.composition import local
 from normax.composition import mass as mass_composed
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -124,7 +124,7 @@ def both(setup, chain, steel, seed, cross_section_class, **kwargs):
     The same design taken in process and across the three Tesseracts.
     """
     structure, fdm, q = setup
-    tube = Tube.at_class_limit(steel.f_y, cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
     plastic = is_plastic(cross_section_class)
 
     oracle = design_compiled(
@@ -132,14 +132,22 @@ def both(setup, chain, steel, seed, cross_section_class, **kwargs):
         seed,
         structure,
         fdm,
-        prepare(structure, steel, tube, normal=NORMAL),
+        prepare(structure, steel, catalogue, normal=NORMAL),
         steel,
-        tube,
+        catalogue,
         plastic=plastic,
         **kwargs,
     )
     composed = design_composed(
-        q, seed, structure, chain, steel, tube, normal=NORMAL, plastic=plastic, **kwargs
+        q,
+        seed,
+        structure,
+        chain,
+        steel,
+        catalogue,
+        normal=NORMAL,
+        plastic=plastic,
+        **kwargs,
     )
 
     return oracle, composed
@@ -150,7 +158,7 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
     The mass as a function of the force densities, by both routes.
     """
     structure, fdm, _ = setup
-    tube = Tube.at_class_limit(steel.f_y, cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
     plastic = is_plastic(cross_section_class)
 
     def in_process(q):
@@ -159,9 +167,9 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
             seed,
             structure,
             fdm,
-            prepare(structure, steel, tube, normal=NORMAL),
+            prepare(structure, steel, catalogue, normal=NORMAL),
             steel,
-            tube,
+            catalogue,
             plastic=plastic,
             **kwargs,
         )
@@ -173,7 +181,7 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
             structure,
             chain,
             steel,
-            tube,
+            catalogue,
             normal=NORMAL,
             plastic=plastic,
             **kwargs,
@@ -400,7 +408,7 @@ def test_the_check_never_offers_a_derivative_in_the_governing_limit_state(chain)
 # --------------------------------------------------------------------------- #
 # The diagnostic that must not be differentiated
 # --------------------------------------------------------------------------- #
-def sized_through_the_check(setup, chain, steel, seed, result, tube):
+def sized_through_the_check(setup, chain, steel, seed, result, catalogue):
     """
     The check alone, called across its own boundary with a finished geometry.
     """
@@ -420,7 +428,7 @@ def sized_through_the_check(setup, chain, steel, seed, result, tube):
             "f_y": steel.f_y,
             "e_mod": steel.e_mod,
             "density": steel.density,
-            "ratio": tube.ratio,
+            "ratio": catalogue.ratio,
             "normal": NORMAL,
         },
     )
@@ -438,9 +446,9 @@ def sized_through_the_check(setup, chain, steel, seed, result, tube):
             "density": steel.density,
             "gamma_m0": steel.gamma_m0,
             "gamma_m1": steel.gamma_m1,
-            "ratio": tube.ratio,
+            "ratio": catalogue.ratio,
             "alpha": steel.alpha,
-            "diameter_min": tube.diameter_min,
+            "diameter_min": catalogue.diameter_min,
             "plastic": False,
             "resultant": True,
         },
@@ -448,12 +456,12 @@ def sized_through_the_check(setup, chain, steel, seed, result, tube):
 
 
 def test_the_governing_limit_state_survives_the_boundary(setup, chain, steel, seed):
-    tube = Tube.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
     oracle, _ = both(setup, chain, steel, seed, 3)
-    check, n_ed = sized_through_the_check(setup, chain, steel, seed, oracle, tube)
+    check, n_ed = sized_through_the_check(setup, chain, steel, seed, oracle, catalogue)
 
     reported = np.asarray(check(n_ed)["governing"])
-    expected = np.asarray(governing(oracle, steel, tube, plastic=False))
+    expected = np.asarray(governing(oracle, steel, catalogue, plastic=False))
 
     assert np.array_equal(reported, expected)
 
@@ -463,9 +471,9 @@ def test_differentiating_the_governing_limit_state_is_refused(
 ):
     # A concrete cotangent on a non-differentiable output raises rather than
     # returning a zero, which is the whole reason the composition drops it.
-    tube = Tube.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
     oracle, _ = both(setup, chain, steel, seed, 3)
-    check, n_ed = sized_through_the_check(setup, chain, steel, seed, oracle, tube)
+    check, n_ed = sized_through_the_check(setup, chain, steel, seed, oracle, catalogue)
 
     with pytest.raises(ValueError, match="governing"):
         jax.grad(lambda forces: jnp.sum(check(forces)["governing"]))(n_ed)
@@ -532,16 +540,16 @@ def enveloped(setup, chain, steel, seed, cases, beta):
     The same enveloped design taken in process and across the Tesseracts.
     """
     structure, fdm, q = setup
-    tube = Tube.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     oracle = envelope_compiled(
         q,
         seed,
         structure,
         fdm,
-        prepare(structure, steel, tube, normal=NORMAL),
+        prepare(structure, steel, catalogue, normal=NORMAL),
         steel,
-        tube,
+        catalogue,
         cases,
         beta,
         plastic=False,
@@ -552,7 +560,7 @@ def enveloped(setup, chain, steel, seed, cases, beta):
         structure,
         chain,
         steel,
-        tube,
+        catalogue,
         cases,
         beta,
         normal=NORMAL,
@@ -583,7 +591,7 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
     setup, chain, steel, seed, cases
 ):
     structure, fdm, q = setup
-    tube = Tube.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     def in_process(q):
         return envelope_compiled(
@@ -591,9 +599,9 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
             seed,
             structure,
             fdm,
-            prepare(structure, steel, tube, normal=NORMAL),
+            prepare(structure, steel, catalogue, normal=NORMAL),
             steel,
-            tube,
+            catalogue,
             cases,
             100.0,
             plastic=False,
@@ -606,7 +614,7 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
             structure,
             chain,
             steel,
-            tube,
+            catalogue,
             cases,
             100.0,
             normal=NORMAL,

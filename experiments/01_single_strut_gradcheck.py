@@ -35,13 +35,13 @@ from normax.ec3.adjoint import derivative_force
 from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import utilization_design
 
 STEEL = SteelGrade()
-TUBE = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 
 TARGET = 1e-8
@@ -63,7 +63,7 @@ def size(n_ed, l_cr):
     Fully-stressed diameter under axial force alone.
     """
     return diameter_required(
-        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, TUBE, plastic=PLASTIC
+        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, CATALOGUE, plastic=PLASTIC
     )
 
 
@@ -72,7 +72,12 @@ def used(d, n_ed, l_cr):
     Utilization at a diameter, from the exact clause functions.
     """
     return utilization_design(
-        d, MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, TUBE, plastic=PLASTIC
+        d,
+        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0),
+        l_cr,
+        STEEL,
+        CATALOGUE,
+        plastic=PLASTIC,
     )
 
 
@@ -113,9 +118,8 @@ def main() -> None:
     Tabulate the four derivatives over a range of struts.
     """
     print(__doc__.strip().splitlines()[0])
-    print(
-        f"\nS355 hot-finished tube at the Class 3 limit, d/t = {float(TUBE.ratio):.2f}"
-    )
+    ratio = float(CATALOGUE.ratio)
+    print(f"\nS355 hot-finished tube at the Class 3 limit, d/t = {ratio:.2f}")
     print(f"agreement target {TARGET:.0e}\n")
 
     header = (
@@ -130,7 +134,7 @@ def main() -> None:
         solved = size(n_ed, l_cr)
         forward = float(jax.jacfwd(size)(n_ed, l_cr))
         reverse = float(jax.grad(size)(n_ed, l_cr))
-        closed = float(derivative_force(solved, n_ed, l_cr, STEEL, TUBE))
+        closed = float(derivative_force(solved, n_ed, l_cr, STEEL, CATALOGUE))
         numeric = float(central(lambda x: float(size(x, l_cr)), n_ed, abs(n_ed) * 1e-6))
         label = f"{n_ed / 1e3:.0f} kN, {l_cr / 1e3:.0f} m"
         worst_overall = max(
@@ -143,7 +147,7 @@ def main() -> None:
         solved = size(n_ed, l_cr)
         forward = float(jax.jacfwd(size, argnums=1)(n_ed, l_cr))
         reverse = float(jax.grad(size, argnums=1)(n_ed, l_cr))
-        closed = float(derivative_length(solved, n_ed, l_cr, STEEL, TUBE))
+        closed = float(derivative_length(solved, n_ed, l_cr, STEEL, CATALOGUE))
         numeric = float(central(lambda x: float(size(n_ed, x)), l_cr, l_cr * 1e-6))
         label = f"{n_ed / 1e3:.0f} kN, {l_cr / 1e3:.0f} m"
         worst_overall = max(
@@ -155,7 +159,7 @@ def main() -> None:
     for n_ed in TENSION:
         forward = float(jax.jacfwd(size)(n_ed, 4000.0))
         reverse = float(jax.grad(size)(n_ed, 4000.0))
-        closed = float(derivative_force_tension(n_ed, STEEL, TUBE))
+        closed = float(derivative_force_tension(n_ed, STEEL, CATALOGUE))
         numeric = float(central(lambda x: float(size(x, 4000.0)), n_ed, n_ed * 1e-6))
         label = f"{n_ed / 1e3:.0f} kN"
         worst_overall = max(

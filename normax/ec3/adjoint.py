@@ -40,7 +40,7 @@ from normax.ec3.resistance import buckling_auxiliary
 from normax.ec3.resistance import reduction_buckling
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 
 
 def reduction_buckling_derivative(
@@ -87,7 +87,7 @@ def reduction_buckling_derivative(
 
 def slenderness_unit(
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, ""]:
     """
     Slenderness of a member one long and one across.
@@ -96,7 +96,7 @@ def slenderness_unit(
     ----------
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
 
     Returns
@@ -112,8 +112,8 @@ def slenderness_unit(
     by the wall proportion and the grade. Collecting that constant once is what
     reduces every derivative below to a rational expression.
     """
-    unit_area = area(1.0, tube.ratio)
-    unit_inertia = second_moment(1.0, tube.ratio)
+    unit_area = area(1.0, catalogue.ratio)
+    unit_inertia = second_moment(1.0, catalogue.ratio)
 
     return jnp.sqrt(unit_area * steel.f_y / (jnp.pi**2 * steel.e_mod * unit_inertia))
 
@@ -123,7 +123,7 @@ def utilization_slope(
     n_ed: Float[Array, "members"],
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     Slope of the buckling check in the diameter.
@@ -138,7 +138,7 @@ def utilization_slope(
         Buckling length.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
 
     Returns
@@ -153,9 +153,9 @@ def utilization_slope(
     reduction factor grows too, since slenderness falls, so the check falls on
     both counts. Those are the two terms.
     """
-    lam = slenderness_unit(steel, tube) * l_cr / diameter
+    lam = slenderness_unit(steel, catalogue) * l_cr / diameter
     reduction = reduction_buckling(lam, steel.alpha)
-    demand = _buckling_check(diameter, n_ed, l_cr, steel, tube)
+    demand = _buckling_check(diameter, n_ed, l_cr, steel, catalogue)
 
     return (demand / diameter) * (
         lam * reduction_buckling_derivative(lam, steel.alpha) / reduction - 2.0
@@ -167,7 +167,7 @@ def _buckling_check(
     n_ed: Float[Array, "members"],
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     The buckling check written out, without going through the clause modules.
@@ -177,9 +177,11 @@ def _buckling_check(
     utilization :
         Axial force over buckling resistance.
     """
-    lam = slenderness_unit(steel, tube) * l_cr / diameter
+    lam = slenderness_unit(steel, catalogue) * l_cr / diameter
     reduction = reduction_buckling(lam, steel.alpha)
-    resistance = reduction * area(diameter, tube.ratio) * steel.f_y / steel.gamma_m1
+    resistance = (
+        reduction * area(diameter, catalogue.ratio) * steel.f_y / steel.gamma_m1
+    )
 
     return jnp.abs(n_ed) / resistance
 
@@ -189,7 +191,7 @@ def derivative_force(
     n_ed: Float[Array, "members"],
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     Sensitivity of the fully-stressed diameter to the axial force.
@@ -204,7 +206,7 @@ def derivative_force(
         Buckling length.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
 
     Returns
@@ -220,10 +222,10 @@ def derivative_force(
     the check over the force, and dividing by the slope in the diameter gives
     the result.
     """
-    demand = _buckling_check(diameter, n_ed, l_cr, steel, tube)
+    demand = _buckling_check(diameter, n_ed, l_cr, steel, catalogue)
     slope_force = -demand / jnp.abs(n_ed)
 
-    return -slope_force / utilization_slope(diameter, n_ed, l_cr, steel, tube)
+    return -slope_force / utilization_slope(diameter, n_ed, l_cr, steel, catalogue)
 
 
 def derivative_length(
@@ -231,7 +233,7 @@ def derivative_length(
     n_ed: Float[Array, "members"],
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     Sensitivity of the fully-stressed diameter to the buckling length.
@@ -246,7 +248,7 @@ def derivative_length(
         Buckling length.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
 
     Returns
@@ -262,9 +264,9 @@ def derivative_length(
     capped, its slope is zero and so is this: a stocky member does not care how
     long it is.
     """
-    lam = slenderness_unit(steel, tube) * l_cr / diameter
+    lam = slenderness_unit(steel, catalogue) * l_cr / diameter
     reduction = reduction_buckling(lam, steel.alpha)
-    demand = _buckling_check(diameter, n_ed, l_cr, steel, tube)
+    demand = _buckling_check(diameter, n_ed, l_cr, steel, catalogue)
 
     slope_length = (
         -demand
@@ -273,13 +275,13 @@ def derivative_length(
         / (reduction * l_cr)
     )
 
-    return -slope_length / utilization_slope(diameter, n_ed, l_cr, steel, tube)
+    return -slope_length / utilization_slope(diameter, n_ed, l_cr, steel, catalogue)
 
 
 def diameter_tension(
     n_ed: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     Fully-stressed diameter of a member in tension, in closed form.
@@ -290,7 +292,7 @@ def diameter_tension(
         Design axial tension, positive.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
 
     Returns
@@ -304,7 +306,7 @@ def diameter_tension(
     length in the answer, and the area is quadratic in the diameter, so the
     root needs no search at all. The catalogue minimum is not applied here.
     """
-    unit_area = area(1.0, tube.ratio)
+    unit_area = area(1.0, catalogue.ratio)
 
     return jnp.sqrt(jnp.abs(n_ed) * steel.gamma_m0 / (steel.f_y * unit_area))
 
@@ -312,7 +314,7 @@ def diameter_tension(
 def derivative_force_tension(
     n_ed: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     Sensitivity of a tension member's diameter to the axial force.
@@ -323,7 +325,7 @@ def derivative_force_tension(
         Design axial tension, positive.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
 
     Returns
@@ -336,4 +338,4 @@ def derivative_force_tension(
     The closed form differentiated directly: the diameter goes as the square
     root of the force, so this is half the diameter over the force.
     """
-    return diameter_tension(n_ed, steel, tube) / (2.0 * jnp.abs(n_ed))
+    return diameter_tension(n_ed, steel, catalogue) / (2.0 * jnp.abs(n_ed))

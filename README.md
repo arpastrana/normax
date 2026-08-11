@@ -36,24 +36,26 @@ import jax
 import jax.numpy as jnp
 
 from normax.analysis.smax import prepare
-from normax.ec3.sizing import Steel, Tube, is_plastic
+from normax.ec3.material import SteelGrade
+from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.sizing import is_plastic
 from normax.formfinding import graph
 from normax.pipeline import mass
 from normax.structures import arch
 
-steel = Steel()
-tube = Tube.at_class_limit(steel.f_y, 3)
+steel = SteelGrade()
+catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
 structure = arch(num_edges=20, span=10_000.0, rise=3_000.0, load=9_474.0)
 connectivity = graph(structure)
-model = prepare(structure, steel, tube, normal=1)
+model = prepare(structure, steel, catalogue, normal=1)
 
 seed = jnp.full(20, 100.0)
 
 
 def total(q):
     return mass(
-        q, seed, structure, connectivity, model, steel, tube,
+        q, seed, structure, connectivity, model, steel, catalogue,
         plastic=is_plastic(3),
     )
 

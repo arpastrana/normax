@@ -41,7 +41,7 @@ from normax.analysis.smax import forces
 from normax.analysis.smax import frame
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.structures import arch
@@ -73,7 +73,7 @@ TOLERANCE_GRADIENT = 1e-7
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = SteelGrade()
-TUBE = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
 
 def funicular(load, force_density):
@@ -94,11 +94,11 @@ def gap(diameter, steel, load=LOAD, force_density=FORCE_DENSITY):
     """
     structure, _, state, axial = funicular(load, force_density)
     member = forces(
-        prepare(structure, steel, TUBE, normal=NORMAL),
+        prepare(structure, steel, CATALOGUE, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
         steel,
-        TUBE,
+        CATALOGUE,
     )
 
     deviation = jnp.max(jnp.abs(member.n_ed - axial) / jnp.abs(axial))
@@ -118,10 +118,10 @@ def central(f, x, index, step):
 def main():
     structure, fdm, state, axial = funicular(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    prepared = prepare(structure, STEEL, TUBE, normal=NORMAL)
-    member = forces(prepared, state.xyz, diameters, STEEL, TUBE)
+    prepared = prepare(structure, STEEL, CATALOGUE, normal=NORMAL)
+    member = forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
 
-    model = frame(structure, state.xyz, diameters, STEEL, TUBE, normal=NORMAL)
+    model = frame(structure, state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL)
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
     rise = float(jnp.max(state.xyz[:, 2]))
@@ -168,7 +168,7 @@ def main():
 
     def objective(q):
         state = equilibrium(q, structure, fdm)
-        member = forces(prepared, state.xyz, diameters, STEEL, TUBE)
+        member = forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
 
         return jnp.sum(member.n_ed**2)
 

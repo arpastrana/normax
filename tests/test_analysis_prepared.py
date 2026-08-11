@@ -7,7 +7,7 @@ import pytest
 from normax.analysis.smax import forces
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.structures import arch
@@ -58,8 +58,8 @@ def steel():
 
 
 @pytest.fixture(scope="module")
-def tube(steel):
-    return Tube.at_class_limit(steel.f_y, 3)
+def catalogue(steel):
+    return TubeCatalogue.at_class_limit(steel.f_y, 3)
 
 
 @pytest.fixture(scope="module")
@@ -83,49 +83,49 @@ def diameters():
 # Nothing about the placeholder survives into a result
 # --------------------------------------------------------------------------- #
 def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
-    structure, state, steel, tube, diameters
+    structure, state, steel, catalogue, diameters
 ):
     # The placeholder geometry differs from the analysed one by the whole of form
     # finding, so if it reached the assembly the two would not agree at all.
-    from_start = prepare(structure, steel, tube, normal=NORMAL)
+    from_start = prepare(structure, steel, catalogue, normal=NORMAL)
     from_found = prepare(
-        structure._replace(nodes=state.xyz), steel, tube, normal=NORMAL
+        structure._replace(nodes=state.xyz), steel, catalogue, normal=NORMAL
     )
 
-    a = forces(from_start, state.xyz, diameters, steel, tube)
-    b = forces(from_found, state.xyz, diameters, steel, tube)
+    a = forces(from_start, state.xyz, diameters, steel, catalogue)
+    b = forces(from_found, state.xyz, diameters, steel, catalogue)
 
     assert np.all(np.asarray(a.n_ed) == np.asarray(b.n_ed))
     assert np.all(np.asarray(a.m_y_ed) == np.asarray(b.m_y_ed))
 
 
 def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
-    structure, state, steel, tube, diameters
+    structure, state, steel, catalogue, diameters
 ):
     # An absurd placeholder: a unit modulus, a unit density and a tube whose
     # smallest size is larger than anything the arch uses.
     absurd = prepare(
         structure._replace(nodes=state.xyz * 3.0),
         SteelGrade(f_y=1.0, e_mod=1.0, density=1.0),
-        Tube(ratio=tube.ratio, diameter_min=999.0),
+        TubeCatalogue(ratio=catalogue.ratio, diameter_min=999.0),
         normal=NORMAL,
     )
-    honest = prepare(structure, steel, tube, normal=NORMAL)
+    honest = prepare(structure, steel, catalogue, normal=NORMAL)
 
-    a = forces(absurd, state.xyz, diameters, steel, tube)
-    b = forces(honest, state.xyz, diameters, steel, tube)
+    a = forces(absurd, state.xyz, diameters, steel, catalogue)
+    b = forces(honest, state.xyz, diameters, steel, catalogue)
 
     assert np.all(np.asarray(a.n_ed) == np.asarray(b.n_ed))
     assert np.all(np.asarray(a.m_y_ed) == np.asarray(b.m_y_ed))
 
 
 def test_the_structures_own_loads_are_the_default_case(
-    structure, state, steel, tube, diameters
+    structure, state, steel, catalogue, diameters
 ):
-    model = prepare(structure, steel, tube, normal=NORMAL)
+    model = prepare(structure, steel, catalogue, normal=NORMAL)
 
-    implied = forces(model, state.xyz, diameters, steel, tube)
-    named = forces(model, state.xyz, diameters, steel, tube, loads=structure.loads)
+    implied = forces(model, state.xyz, diameters, steel, catalogue)
+    named = forces(model, state.xyz, diameters, steel, catalogue, loads=structure.loads)
 
     assert np.all(np.asarray(implied.n_ed) == np.asarray(named.n_ed))
 
@@ -133,11 +133,11 @@ def test_the_structures_own_loads_are_the_default_case(
 # --------------------------------------------------------------------------- #
 # Every leaf a derivative might be taken through stays live
 # --------------------------------------------------------------------------- #
-def test_the_geometry_is_a_live_leaf(structure, state, steel, tube, diameters):
-    model = prepare(structure, steel, tube, normal=NORMAL)
+def test_the_geometry_is_a_live_leaf(structure, state, steel, catalogue, diameters):
+    model = prepare(structure, steel, catalogue, normal=NORMAL)
 
     def total(xyz):
-        return jnp.sum(forces(model, xyz, diameters, steel, tube).n_ed ** 2)
+        return jnp.sum(forces(model, xyz, diameters, steel, catalogue).n_ed ** 2)
 
     gradient = jax.grad(total)(state.xyz)
 
@@ -145,11 +145,11 @@ def test_the_geometry_is_a_live_leaf(structure, state, steel, tube, diameters):
     assert float(jnp.max(jnp.abs(gradient))) > 0.0
 
 
-def test_the_diameters_are_a_live_leaf(structure, state, steel, tube, diameters):
-    model = prepare(structure, steel, tube, normal=NORMAL)
+def test_the_diameters_are_a_live_leaf(structure, state, steel, catalogue, diameters):
+    model = prepare(structure, steel, catalogue, normal=NORMAL)
 
     def total(sizes):
-        return jnp.sum(forces(model, state.xyz, sizes, steel, tube).m_y_ed ** 2)
+        return jnp.sum(forces(model, state.xyz, sizes, steel, catalogue).m_y_ed ** 2)
 
     gradient = jax.grad(total)(diameters)
 
@@ -157,15 +157,17 @@ def test_the_diameters_are_a_live_leaf(structure, state, steel, tube, diameters)
     assert float(jnp.max(jnp.abs(gradient))) > 0.0
 
 
-def test_the_modulus_is_a_live_leaf(structure, state, steel, tube, diameters):
+def test_the_modulus_is_a_live_leaf(structure, state, steel, catalogue, diameters):
     # Member forces of a uniform-E linear frame are E-independent, so the axial
     # force cannot distinguish an injected modulus from a baked one. A
     # displacement can, and its derivative is checked against the difference
     # quotient rather than against zero.
-    model = prepare(structure, steel, tube, normal=NORMAL)
+    model = prepare(structure, steel, catalogue, normal=NORMAL)
 
     def compliance(e_mod):
-        member = forces(model, state.xyz, diameters, steel._replace(e_mod=e_mod), tube)
+        member = forces(
+            model, state.xyz, diameters, steel._replace(e_mod=e_mod), catalogue
+        )
 
         return jnp.sum(member.m_y_ed**2) / e_mod
 
@@ -181,11 +183,11 @@ def test_the_modulus_is_a_live_leaf(structure, state, steel, tube, diameters):
 # --------------------------------------------------------------------------- #
 # The stage is jittable, which is what preparing once buys
 # --------------------------------------------------------------------------- #
-def test_the_analysis_traces_under_jit(structure, state, steel, tube, diameters):
-    model = prepare(structure, steel, tube, normal=NORMAL)
+def test_the_analysis_traces_under_jit(structure, state, steel, catalogue, diameters):
+    model = prepare(structure, steel, catalogue, normal=NORMAL)
 
     def run(xyz, sizes):
-        member = forces(model, xyz, sizes, steel, tube)
+        member = forces(model, xyz, sizes, steel, catalogue)
 
         return member.n_ed, member.m_y_ed
 
@@ -197,12 +199,12 @@ def test_the_analysis_traces_under_jit(structure, state, steel, tube, diameters)
 
 
 def test_the_gradient_of_the_analysis_traces_under_jit(
-    structure, state, steel, tube, diameters
+    structure, state, steel, catalogue, diameters
 ):
-    model = prepare(structure, steel, tube, normal=NORMAL)
+    model = prepare(structure, steel, catalogue, normal=NORMAL)
 
     def total(xyz):
-        return jnp.sum(forces(model, xyz, diameters, steel, tube).n_ed ** 2)
+        return jnp.sum(forces(model, xyz, diameters, steel, catalogue).n_ed ** 2)
 
     eager = jax.grad(total)(state.xyz)
     jitted = eqx.filter_jit(jax.grad(total))(state.xyz)

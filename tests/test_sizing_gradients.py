@@ -13,7 +13,7 @@ from normax.ec3.adjoint import reduction_buckling_derivative
 from normax.ec3.material import IMPERFECTION_FACTORS
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import reduction_buckling
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
@@ -27,7 +27,7 @@ from normax.ec3.sizing import mass
 # differences.
 
 STEEL = SteelGrade()
-TUBE = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 
 LENGTH = 4000.0
@@ -54,17 +54,17 @@ def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, c_m=0.9):
         ),
         length_m * METRE,
         STEEL,
-        TUBE,
+        CATALOGUE,
         plastic=PLASTIC,
     )
 
 
-def raw(n_ed=FORCE, m_y_ed=0.0, m_z_ed=0.0, l_cr=LENGTH, c_m=0.9, tube=TUBE):
+def raw(n_ed=FORCE, m_y_ed=0.0, m_z_ed=0.0, l_cr=LENGTH, c_m=0.9, catalogue=CATALOGUE):
     return diameter_required(
         MemberActions(n_ed, m_y_ed, m_z_ed, c_m, c_m),
         l_cr,
         STEEL,
-        tube,
+        catalogue,
         plastic=PLASTIC,
     )
 
@@ -108,7 +108,7 @@ def test_the_force_sensitivity_matches_the_closed_form(n_ed, l_cr):
     # expression was derived on paper instead. They must agree.
     d = raw(n_ed=n_ed, l_cr=l_cr)
     automatic = jax.grad(lambda force: raw(n_ed=force, l_cr=l_cr))(n_ed)
-    closed = derivative_force(d, n_ed, l_cr, STEEL, TUBE)
+    closed = derivative_force(d, n_ed, l_cr, STEEL, CATALOGUE)
 
     assert float(automatic) == pytest.approx(float(closed), rel=1e-9)
 
@@ -118,7 +118,7 @@ def test_the_force_sensitivity_matches_the_closed_form(n_ed, l_cr):
 def test_the_length_sensitivity_matches_the_closed_form(n_ed, l_cr):
     d = raw(n_ed=n_ed, l_cr=l_cr)
     automatic = jax.grad(lambda length: raw(n_ed=n_ed, l_cr=length))(l_cr)
-    closed = derivative_length(d, n_ed, l_cr, STEEL, TUBE)
+    closed = derivative_length(d, n_ed, l_cr, STEEL, CATALOGUE)
 
     assert float(automatic) == pytest.approx(float(closed), rel=1e-9)
 
@@ -126,13 +126,13 @@ def test_the_length_sensitivity_matches_the_closed_form(n_ed, l_cr):
 @pytest.mark.parametrize("n_ed", [1e4, 1e5, 5e5, 5e6])
 def test_the_tension_branch_matches_its_closed_form(n_ed):
     assert float(raw(n_ed=n_ed)) == pytest.approx(
-        float(diameter_tension(n_ed, STEEL, TUBE)), rel=1e-12
+        float(diameter_tension(n_ed, STEEL, CATALOGUE)), rel=1e-12
     )
 
     automatic = jax.grad(lambda force: raw(n_ed=force))(n_ed)
 
     assert float(automatic) == pytest.approx(
-        float(derivative_force_tension(n_ed, STEEL, TUBE)), rel=1e-9
+        float(derivative_force_tension(n_ed, STEEL, CATALOGUE)), rel=1e-9
     )
 
 
@@ -254,7 +254,7 @@ def test_check_grads_passes_through_the_mass_objective():
     def objective(force_kn, length_m):
         sizes = scaled(force_kn, 40.0, 15.0, length_m)
 
-        return mass(sizes, length_m * METRE, STEEL, TUBE)
+        return mass(sizes, length_m * METRE, STEEL, CATALOGUE)
 
     check_grads(objective, (-500.0, 4.0), order=1, modes=("rev",))
 
@@ -298,11 +298,11 @@ def test_the_mass_gradient_is_finite_and_signed():
             MemberActions(n_ed, 4e7, 1.5e7, 0.9, 0.9),
             lengths,
             STEEL,
-            TUBE,
+            CATALOGUE,
             plastic=PLASTIC,
         )
 
-        return mass(sizes, lengths, STEEL, TUBE)
+        return mass(sizes, lengths, STEEL, CATALOGUE)
 
     gradient = jax.grad(objective)(forces)
 
@@ -322,11 +322,11 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
             MemberActions(n_ed, 0.0, 0.0, 0.9, 0.9),
             lengths,
             STEEL,
-            TUBE,
+            CATALOGUE,
             plastic=PLASTIC,
         )
 
-        return mass(sizes, lengths, STEEL, TUBE)
+        return mass(sizes, lengths, STEEL, CATALOGUE)
 
     gradient = jax.grad(objective)(forces)
 
@@ -341,7 +341,7 @@ def test_a_member_with_no_actions_has_no_gradient():
                 MemberActions(n_ed, 0.0, 0.0, 0.9, 0.9),
                 LENGTH,
                 STEEL,
-                TUBE,
+                CATALOGUE,
                 plastic=PLASTIC,
             )
         )
@@ -365,7 +365,7 @@ def test_the_map_is_differentiable_in_the_yield_strength():
             MemberActions(FORCE, 4e7, 1.5e7, 0.9, 0.9),
             LENGTH,
             steel,
-            TUBE,
+            CATALOGUE,
             plastic=PLASTIC,
         )
 
@@ -384,15 +384,15 @@ def test_the_map_is_differentiable_in_the_wall_proportion():
             MemberActions(FORCE, 4e7, 1.5e7, 0.9, 0.9),
             LENGTH,
             STEEL,
-            Tube(ratio, TUBE.diameter_min),
+            TubeCatalogue(ratio, CATALOGUE.diameter_min),
             plastic=PLASTIC,
         )
 
-    gradient = float(jax.grad(at)(float(TUBE.ratio)))
+    gradient = float(jax.grad(at)(float(CATALOGUE.ratio)))
 
     assert np.isfinite(gradient)
     assert gradient == pytest.approx(
-        float(central(at, float(TUBE.ratio), 1e-4)), rel=1e-6
+        float(central(at, float(CATALOGUE.ratio), 1e-4)), rel=1e-6
     )
 
 

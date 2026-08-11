@@ -68,7 +68,7 @@ from normax.analysis import fixities
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_metre
 from normax.units import to_metres
@@ -117,7 +117,7 @@ def frame(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     normal: int | None,
 ) -> Frame:
@@ -134,7 +134,7 @@ def frame(
         Outer diameter of every member.
     steel :
         Material properties. Only the modulus and the density reach the model.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     normal :
         Index of the global axis a planar structure has no thickness along, or
@@ -164,7 +164,7 @@ def frame(
     nodes = [Node(index, xyz=positions[index]) for index in range(xyz.shape[0])]
 
     outer = to_metres(diameters)
-    wall = outer / tube.ratio
+    wall = outer / catalogue.ratio
     edges = np.asarray(structure.edges)
     elements = [
         BeamElement(
@@ -190,7 +190,7 @@ def frame(
 def prepare(
     structure: Structure,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     normal: int | None,
 ) -> Model:
@@ -203,7 +203,7 @@ def prepare(
         The structure supplying the connectivity, the supports and the loads.
     steel :
         Material properties. Placeholders only, replaced at every call.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     normal :
         Index of the global axis a planar structure has no thickness along, or
@@ -226,10 +226,10 @@ def prepare(
     assembled, so what they are cannot reach a result — only their shapes can,
     and those come from the structure.
     """
-    placeholder = jnp.full(structure.edges.shape[0], tube.diameter_min)
+    placeholder = jnp.full(structure.edges.shape[0], catalogue.diameter_min)
 
     compiled = compile_structure(
-        frame(structure, structure.nodes, placeholder, steel, tube, normal=normal)
+        frame(structure, structure.nodes, placeholder, steel, catalogue, normal=normal)
     )
 
     applied = [
@@ -245,7 +245,7 @@ def _injected(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> CompiledStructure:
     """
     A compiled assembly with every traced leaf replaced.
@@ -260,7 +260,7 @@ def _injected(
         Outer diameter of every member.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
 
     Returns
@@ -287,8 +287,8 @@ def _injected(
     every member being a beam.
     """
     outer = to_metres(diameters)
-    gross = area(outer, tube.ratio)
-    inertia = second_moment(outer, tube.ratio)
+    gross = area(outer, catalogue.ratio)
+    inertia = second_moment(outer, catalogue.ratio)
 
     e_mod = to_pascals(jnp.asarray(steel.e_mod))
     f_y = to_pascals(jnp.asarray(steel.f_y))
@@ -364,7 +364,7 @@ def forces(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberForces:
@@ -381,7 +381,7 @@ def forces(
         Outer diameter of every member.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
         Force applied at every node. If None, the structure's own loads.
@@ -406,7 +406,7 @@ def forces(
     not model, not an error, and they are the whole of the gap between these
     axial forces and the product of force density and length.
     """
-    compiled = _injected(model, xyz, diameters, steel, tube)
+    compiled = _injected(model, xyz, diameters, steel, catalogue)
     case = model.loads if loads is None else _load_case(model, loads)
 
     response = solve(compiled, case)
@@ -424,7 +424,7 @@ def buckling(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     num_modes: int = 1,
     loads: Float[Array, "nodes 3"] | None = None,
@@ -442,7 +442,7 @@ def buckling(
         Outer diameter of every member.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     num_modes :
         Number of modes to return, smallest factor first. Static.
@@ -477,7 +477,7 @@ def buckling(
     plane, which is what makes the factor comparable with an in-plane member
     check rather than with a lateral one.
     """
-    compiled = _injected(model, xyz, diameters, steel, tube)
+    compiled = _injected(model, xyz, diameters, steel, catalogue)
     case = model.loads if loads is None else _load_case(model, loads)
 
     response = solve_buckling(compiled, case, num_modes=num_modes)

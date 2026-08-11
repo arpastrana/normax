@@ -35,14 +35,14 @@ import jax.numpy as jnp
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
 
 STEEL = SteelGrade()
-TUBE = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 
 LENGTHS = jnp.asarray([4000.0, 6000.0, 5000.0, 4500.0])
@@ -75,7 +75,7 @@ def sizes_per_case():
         MemberActions(FORCES, MOMENTS, 0.0, 0.9, 0.9),
         LENGTHS,
         STEEL,
-        TUBE,
+        CATALOGUE,
         plastic=PLASTIC,
     )
 
@@ -84,7 +84,7 @@ def total_mass(beta):
     """
     Mass of the structure sized by the smooth envelope at a given sharpness.
     """
-    return mass(diameter_envelope(sizes_per_case(), beta), LENGTHS, STEEL, TUBE)
+    return mass(diameter_envelope(sizes_per_case(), beta), LENGTHS, STEEL, CATALOGUE)
 
 
 def main() -> None:
@@ -93,7 +93,7 @@ def main() -> None:
     """
     per_case = sizes_per_case()
     exact = jnp.max(per_case, axis=0)
-    exact_mass = float(mass(exact, LENGTHS, STEEL, TUBE)) * 1e3
+    exact_mass = float(mass(exact, LENGTHS, STEEL, CATALOGUE)) * 1e3
 
     print("Three load cases over four members, S355 at the Class 3 limit\n")
     print(f"  {'member':<10}{'case 1':<12}{'case 2':<12}{'case 3':<12}{'exact max'}")
@@ -120,14 +120,14 @@ def main() -> None:
                         MemberActions(f, MOMENTS, 0.0, 0.9, 0.9),
                         LENGTHS,
                         STEEL,
-                        TUBE,
+                        CATALOGUE,
                         plastic=PLASTIC,
                     ),
                     beta,
                 ),
                 LENGTHS,
                 STEEL,
-                TUBE,
+                CATALOGUE,
             )
         )(FORCES)
         finite = bool(jnp.all(jnp.isfinite(gradient)))
@@ -147,22 +147,22 @@ def main() -> None:
             MemberActions(forces, MOMENTS, 0.0, 0.9, 0.9),
             LENGTHS,
             STEEL,
-            TUBE,
+            CATALOGUE,
             plastic=PLASTIC,
         )
 
-        return mass(diameter_envelope(sizes, beta), LENGTHS, STEEL, TUBE)
+        return mass(diameter_envelope(sizes, beta), LENGTHS, STEEL, CATALOGUE)
 
     def hard(forces):
         sizes = diameter_required(
             MemberActions(forces, MOMENTS, 0.0, 0.9, 0.9),
             LENGTHS,
             STEEL,
-            TUBE,
+            CATALOGUE,
             plastic=PLASTIC,
         )
 
-        return mass(jnp.max(sizes, axis=0), LENGTHS, STEEL, TUBE)
+        return mass(jnp.max(sizes, axis=0), LENGTHS, STEEL, CATALOGUE)
 
     smooth_gradient = jax.grad(objective)(FORCES)
     hard_gradient = jax.grad(hard)(FORCES)

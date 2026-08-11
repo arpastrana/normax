@@ -54,7 +54,7 @@ from tesseract_jax import apply_tesseract
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import mass as mass_ec3
 from normax.ec3.sizing import utilization_design as utilization_ec3
@@ -180,7 +180,7 @@ def design(
     structure: Structure,
     chain: Chain,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     normal: int | None,
     plastic: bool,
@@ -204,7 +204,7 @@ def design(
         The three Tesseracts, from `local` or built from images.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     normal :
         Index of the global axis a planar structure has no thickness along, or
@@ -258,7 +258,7 @@ def design(
         structure,
         chain,
         steel,
-        tube,
+        catalogue,
         normal=normal,
         plastic=plastic,
         resultant=resultant,
@@ -325,7 +325,7 @@ def _check(
     structure: Structure,
     chain: Chain,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     normal: int | None,
     plastic: bool,
@@ -351,7 +351,7 @@ def _check(
         The three Tesseracts.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     normal :
         Index of the global axis a planar structure has no thickness along.
@@ -386,7 +386,7 @@ def _check(
             "f_y": steel.f_y,
             "e_mod": steel.e_mod,
             "density": steel.density,
-            "ratio": tube.ratio,
+            "ratio": catalogue.ratio,
             "normal": normal,
         },
     )
@@ -404,9 +404,9 @@ def _check(
             "density": steel.density,
             "gamma_m0": steel.gamma_m0,
             "gamma_m1": steel.gamma_m1,
-            "ratio": tube.ratio,
+            "ratio": catalogue.ratio,
             "alpha": steel.alpha,
-            "diameter_min": tube.diameter_min,
+            "diameter_min": catalogue.diameter_min,
             "plastic": plastic,
             "resultant": resultant,
         },
@@ -421,7 +421,7 @@ def mass(
     structure: Structure,
     chain: Chain,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     normal: int | None,
     plastic: bool,
@@ -445,7 +445,7 @@ def mass(
         The three Tesseracts, from `local` or built from images.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     normal :
         Index of the global axis a planar structure has no thickness along, or
@@ -479,7 +479,7 @@ def mass(
         structure,
         chain,
         steel,
-        tube,
+        catalogue,
         normal=normal,
         plastic=plastic,
         resultant=resultant,
@@ -494,7 +494,7 @@ def envelope(
     structure: Structure,
     chain: Chain,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     loads: Float[Array, "cases nodes 3"],
     beta: float | Float[Array, ""],
     *,
@@ -521,7 +521,7 @@ def envelope(
         The three Tesseracts, from `local` or built from images.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     loads :
         Force applied at every node in every load case.
@@ -582,7 +582,7 @@ def envelope(
             structure,
             chain,
             steel,
-            tube,
+            catalogue,
             normal=normal,
             plastic=plastic,
             resultant=resultant,
@@ -609,7 +609,7 @@ def envelope(
                 ),
                 buckling,
                 steel,
-                tube,
+                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -629,5 +629,5 @@ def envelope(
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(covering, lengths, steel, tube),
+        mass=mass_ec3(covering, lengths, steel, catalogue),
     )

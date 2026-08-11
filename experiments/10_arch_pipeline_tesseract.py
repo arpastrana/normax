@@ -50,7 +50,7 @@ from normax.composition import design as design_composed
 from normax.composition import local
 from normax.composition import mass as mass_composed
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -152,7 +152,7 @@ def report_schemas(chain):
         print(f"    not diff    {', '.join(sorted(set(outputs) - set(of))) or '-'}")
 
 
-def refusal(chain, structure, seed, tube):
+def refusal(chain, structure, seed, catalogue):
     """
     What the check says when asked to differentiate its own diagnostic.
     """
@@ -167,7 +167,7 @@ def refusal(chain, structure, seed, tube):
             "f_y": STEEL.f_y,
             "e_mod": STEEL.e_mod,
             "density": STEEL.density,
-            "ratio": tube.ratio,
+            "ratio": catalogue.ratio,
             "normal": NORMAL,
         },
     )
@@ -191,9 +191,9 @@ def refusal(chain, structure, seed, tube):
                 "density": STEEL.density,
                 "gamma_m0": STEEL.gamma_m0,
                 "gamma_m1": STEEL.gamma_m1,
-                "ratio": tube.ratio,
+                "ratio": catalogue.ratio,
                 "alpha": steel.alpha,
-                "diameter_min": tube.diameter_min,
+                "diameter_min": catalogue.diameter_min,
                 "plastic": False,
                 "resultant": True,
             },
@@ -209,7 +209,7 @@ def refusal(chain, structure, seed, tube):
     return "nothing was refused, which means the diagnostic is differentiable"
 
 
-def report_served(chain, structure, q, seed, tube):
+def report_served(chain, structure, q, seed, catalogue):
     """
     The same mass and gradient with two stages in containers, if asked for.
 
@@ -227,7 +227,7 @@ def report_served(chain, structure, q, seed, tube):
 
     def objective(stages):
         return lambda q: mass_composed(
-            q, seed, structure, stages, STEEL, tube, normal=NORMAL, plastic=False
+            q, seed, structure, stages, STEEL, catalogue, normal=NORMAL, plastic=False
         )
 
     reference, _ = timed(lambda: objective(chain)(q))
@@ -264,28 +264,35 @@ def main():
     worst_gradient = 0.0
 
     for cross_section_class in (2, 3):
-        tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
         plastic = is_plastic(cross_section_class)
 
         oracle, seconds_oracle = timed(
-            lambda tube=tube, plastic=plastic: design_in_process(
+            lambda catalogue=catalogue, plastic=plastic: design_in_process(
                 q,
                 seed,
                 structure,
                 graph_fdm,
                 STEEL,
-                tube,
+                catalogue,
                 normal=NORMAL,
                 plastic=plastic,
             )
         )
         composed, seconds_chain = timed(
-            lambda tube=tube, plastic=plastic: design_composed(
-                q, seed, structure, chain, STEEL, tube, normal=NORMAL, plastic=plastic
+            lambda catalogue=catalogue, plastic=plastic: design_composed(
+                q,
+                seed,
+                structure,
+                chain,
+                STEEL,
+                catalogue,
+                normal=NORMAL,
+                plastic=plastic,
             )
         )
 
-        print(f"\n  Class {cross_section_class}, d/t = {float(tube.ratio):.3f}")
+        print(f"\n  Class {cross_section_class}, d/t = {float(catalogue.ratio):.3f}")
         print(f"    {'field':>12} {'in process':>22} {'composed':>22} {'scaled':>10}")
         for field in oracle._fields:
             left = np.asarray(getattr(oracle, field), dtype=np.float64)
@@ -297,7 +304,7 @@ def main():
                 f" {float(right.ravel()[0]):>22.14e} {scaled:>10.2e}"
             )
 
-        codes = governing(oracle, STEEL, tube, plastic=plastic)
+        codes = governing(oracle, STEEL, catalogue, plastic=plastic)
         limits = {LIMIT_NAMES[float(code)] for code in codes}
         print(f"    governing    {', '.join(sorted(limits))}")
         print(f"    mass         {float(composed.mass):.12f} t")
@@ -308,21 +315,28 @@ def main():
             f" {seconds_chain:.3f} composed"
         )
 
-        def in_process(q, tube=tube, plastic=plastic):
+        def in_process(q, catalogue=catalogue, plastic=plastic):
             return mass_in_process(
                 q,
                 seed,
                 structure,
                 graph_fdm,
                 STEEL,
-                tube,
+                catalogue,
                 normal=NORMAL,
                 plastic=plastic,
             )
 
-        def composed_mass(q, tube=tube, plastic=plastic):
+        def composed_mass(q, catalogue=catalogue, plastic=plastic):
             return mass_composed(
-                q, seed, structure, chain, STEEL, tube, normal=NORMAL, plastic=plastic
+                q,
+                seed,
+                structure,
+                chain,
+                STEEL,
+                catalogue,
+                normal=NORMAL,
+                plastic=plastic,
             )
 
         exact, seconds_oracle = timed(lambda: jax.grad(in_process)(q))
@@ -345,11 +359,11 @@ def main():
         )
 
     print("\nForward mode and reverse mode, through all three stages")
-    tube = Tube.at_class_limit(STEEL.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
     def objective(q):
         return mass_composed(
-            q, seed, structure, chain, STEEL, tube, normal=NORMAL, plastic=False
+            q, seed, structure, chain, STEEL, catalogue, normal=NORMAL, plastic=False
         )
 
     direction = jnp.ones_like(q)
@@ -361,10 +375,10 @@ def main():
     print(f"  scaled difference   {modes:.2e}")
 
     print("\nA cotangent on a non-differentiable output is refused")
-    refused = refusal(chain, structure, seed, tube)
+    refused = refusal(chain, structure, seed, catalogue)
     print(f"  {refused}")
 
-    served = report_served(chain, structure, q, seed, tube)
+    served = report_served(chain, structure, q, seed, catalogue)
 
     print("\nSummary")
     print(

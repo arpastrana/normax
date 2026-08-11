@@ -53,7 +53,7 @@ from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import diameter_required as diameter_ec3
 from normax.ec3.sizing import end_moments
@@ -75,7 +75,7 @@ def actions(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberActions:
@@ -92,7 +92,7 @@ def actions(
         Outer diameter of every member, setting the stiffness.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     loads :
         Load case to analyse under. If None, the structure's own loads.
@@ -102,7 +102,7 @@ def actions(
     actions :
         Axial force, both design moments and both moment factors.
     """
-    member = forces(model, xyz, diameters, steel, tube, loads=loads)
+    member = forces(model, xyz, diameters, steel, catalogue, loads=loads)
 
     m_y_ed, c_my = end_moments(member.m_y_ed[:, 0], member.m_y_ed[:, 1])
     m_z_ed, c_mz = end_moments(member.m_z_ed[:, 0], member.m_z_ed[:, 1])
@@ -159,7 +159,7 @@ def design(
     graph: EquilibriumStructure,
     model: Model,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -184,7 +184,7 @@ def design(
         The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -235,16 +235,22 @@ def design(
     state = equilibrium(q, structure, graph)
     lengths = state.lengths[:, 0]
 
-    acting = actions(model, state.xyz, diameters, steel, tube, loads=loads)
+    acting = actions(model, state.xyz, diameters, steel, catalogue, loads=loads)
 
     buckling = lengths if l_cr is None else l_cr
 
     required = diameter_ec3(
-        acting, buckling, steel, tube, plastic=plastic, resultant=resultant
+        acting, buckling, steel, catalogue, plastic=plastic, resultant=resultant
     )
 
     used = utilization_ec3(
-        required, acting, buckling, steel, tube, plastic=plastic, resultant=resultant
+        required,
+        acting,
+        buckling,
+        steel,
+        catalogue,
+        plastic=plastic,
+        resultant=resultant,
     )
 
     return Design(
@@ -254,7 +260,7 @@ def design(
         l_cr=buckling,
         diameters=required,
         utilization=used,
-        mass=mass_ec3(required, lengths, steel, tube),
+        mass=mass_ec3(required, lengths, steel, catalogue),
     )
 
 
@@ -265,7 +271,7 @@ def mass(
     graph: EquilibriumStructure,
     model: Model,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -289,7 +295,7 @@ def mass(
         The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -324,7 +330,7 @@ def mass(
         graph,
         model,
         steel,
-        tube,
+        catalogue,
         plastic=plastic,
         resultant=resultant,
         l_cr=l_cr,
@@ -400,7 +406,7 @@ def envelope(
     graph: EquilibriumStructure,
     model: Model,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     loads: Float[Array, "cases nodes 3"],
     beta: float | Float[Array, ""],
     *,
@@ -427,7 +433,7 @@ def envelope(
         The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     loads :
         Force applied at every node in every load case.
@@ -474,13 +480,14 @@ def envelope(
     buckling = lengths if l_cr is None else l_cr
 
     acting = [
-        actions(model, state.xyz, diameters, steel, tube, loads=case) for case in loads
+        actions(model, state.xyz, diameters, steel, catalogue, loads=case)
+        for case in loads
     ]
 
     required = jnp.stack(
         [
             diameter_ec3(
-                case, buckling, steel, tube, plastic=plastic, resultant=resultant
+                case, buckling, steel, catalogue, plastic=plastic, resultant=resultant
             )
             for case in acting
         ]
@@ -495,7 +502,7 @@ def envelope(
                 case,
                 buckling,
                 steel,
-                tube,
+                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -519,7 +526,7 @@ def envelope(
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(covering, lengths, steel, tube),
+        mass=mass_ec3(covering, lengths, steel, catalogue),
     )
 
 
@@ -553,7 +560,7 @@ class Unsmoothed(NamedTuple):
 def unsmoothed(
     result: Envelope,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -567,7 +574,7 @@ def unsmoothed(
         An enveloped design, from `envelope`.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -605,7 +612,7 @@ def unsmoothed(
                 ),
                 result.l_cr,
                 steel,
-                tube,
+                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -616,7 +623,7 @@ def unsmoothed(
     return Unsmoothed(
         diameters=sizes,
         utilization=used,
-        mass=mass_ec3(sizes, result.lengths, steel, tube),
+        mass=mass_ec3(sizes, result.lengths, steel, catalogue),
     )
 
 
@@ -649,7 +656,7 @@ def governing_case(result: Envelope) -> Int[Array, "members"]:
 def governing(
     result: Design,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -663,7 +670,7 @@ def governing(
         A design, from `design`.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -690,7 +697,7 @@ def governing(
         result.actions,
         result.l_cr,
         steel,
-        tube,
+        catalogue,
         plastic=plastic,
         resultant=resultant,
     )
@@ -739,7 +746,7 @@ def stability(
     result: Design,
     model: Model,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     num_modes: int = 1,
     threshold: float = ALPHA_CR_ELASTIC,
@@ -756,7 +763,7 @@ def stability(
         The prepared analysis model, from `normax.analysis.smax.prepare`.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family every member is drawn from.
     num_modes :
         Number of critical load factors to return. Static.
@@ -795,14 +802,14 @@ def stability(
         result.xyz,
         result.diameters,
         steel,
-        tube,
+        catalogue,
         num_modes=num_modes,
         loads=loads,
     )
     alpha_cr = modes.factors[0]
 
-    gross = area(result.diameters, tube.ratio)
-    inertia = second_moment(result.diameters, tube.ratio)
+    gross = area(result.diameters, catalogue.ratio)
+    inertia = second_moment(result.diameters, catalogue.ratio)
 
     return Stability(
         factors=modes.factors,

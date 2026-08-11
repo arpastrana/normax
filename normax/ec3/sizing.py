@@ -87,7 +87,7 @@ LIMIT_MAJOR = 3.0
 LIMIT_MINOR = 4.0
 
 
-class Tube(NamedTuple):
+class TubeCatalogue(NamedTuple):
     """
     The family of circular hollow sections a member is drawn from.
 
@@ -118,9 +118,9 @@ class Tube(NamedTuple):
         f_y: float | Float[Array, ""],
         cross_section_class: int,
         diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM,
-    ) -> "Tube":
+    ) -> "TubeCatalogue":
         """
-        The thinnest-walled tube still inside a given class.
+        The family whose wall is as thin as a given class allows.
 
         Parameters
         ----------
@@ -133,8 +133,8 @@ class Tube(NamedTuple):
 
         Returns
         -------
-        tube :
-            A tube whose ratio sits exactly on that class's limit.
+        catalogue :
+            A catalogue whose ratio sits exactly on that class's limit.
 
         Raises
         ------
@@ -208,7 +208,7 @@ def utilization_design(
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -226,7 +226,7 @@ def utilization_design(
         Buckling length.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -253,7 +253,7 @@ def utilization_design(
     both checks are indifferent to the sign of either moment.
     """
     member, section = _demands(
-        diameter, actions, l_cr, steel, tube, plastic=plastic, resultant=resultant
+        diameter, actions, l_cr, steel, catalogue, plastic=plastic, resultant=resultant
     )
 
     return jnp.maximum(member, section)
@@ -264,7 +264,7 @@ def _demands(
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -283,10 +283,10 @@ def _demands(
     Shared by the utilization and by the diagnostic that reports which check
     decided a member, so the two cannot disagree about what governed.
     """
-    gross = area(diameter, tube.ratio)
-    modulus = _modulus(diameter, tube.ratio, plastic=plastic)
+    gross = area(diameter, catalogue.ratio)
+    modulus = _modulus(diameter, catalogue.ratio, plastic=plastic)
 
-    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel)
+    critical = force_critical(second_moment(diameter, catalogue.ratio), l_cr, steel)
     lam = slenderness_from_force(gross, steel, critical)
     reduction = reduction_buckling(lam, steel.alpha)
 
@@ -317,7 +317,7 @@ def _demands(
 def diameter_bracket(
     actions: MemberActions,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -332,7 +332,7 @@ def diameter_bracket(
         bounds below being cross-section conditions.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -356,8 +356,8 @@ def diameter_bracket(
     which is where the implicit derivative stops being valid. It is applied
     afterwards instead.
     """
-    unit_area = area(1.0, tube.ratio)
-    unit_modulus = _modulus(1.0, tube.ratio, plastic=plastic)
+    unit_area = area(1.0, catalogue.ratio)
+    unit_modulus = _modulus(1.0, catalogue.ratio, plastic=plastic)
 
     moment = moment_combined(
         actions.m_y_ed, actions.m_z_ed, plastic=plastic, resultant=resultant
@@ -375,7 +375,7 @@ def _solve(
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     Bisect the check in log-diameter.
@@ -413,7 +413,9 @@ def _solve(
         *(jnp.shape(action) for action in actions),
         jnp.shape(l_cr),
     )
-    lower = diameter_bracket(actions, steel, tube, plastic=plastic, resultant=resultant)
+    lower = diameter_bracket(
+        actions, steel, catalogue, plastic=plastic, resultant=resultant
+    )
     under = jnp.broadcast_to(jnp.log(lower), shape)
     over = under + BRACKET_DOUBLINGS * jnp.log(2.0)
 
@@ -429,7 +431,7 @@ def _solve(
                 actions,
                 l_cr,
                 steel,
-                tube,
+                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -441,7 +443,13 @@ def _solve(
     ceiling = jnp.exp(over)
     bracketed = (
         utilization_design(
-            ceiling, actions, l_cr, steel, tube, plastic=plastic, resultant=resultant
+            ceiling,
+            actions,
+            l_cr,
+            steel,
+            catalogue,
+            plastic=plastic,
+            resultant=resultant,
         )
         <= 1.0
     )
@@ -458,7 +466,7 @@ def _diameter(
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
     The sizing map, with the class as the leading static argument.
@@ -468,15 +476,15 @@ def _diameter(
     diameter :
         Fully-stressed outer diameter.
     """
-    return _solve(plastic, resultant, actions, l_cr, steel, tube)
+    return _solve(plastic, resultant, actions, l_cr, steel, catalogue)
 
 
 @_diameter.defjvp
 def _diameter_jvp(
     plastic: bool,
     resultant: bool,
-    primals: tuple[MemberActions, Float[Array, "members"], SteelGrade, Tube],
-    tangents: tuple[MemberActions, Float[Array, "members"], SteelGrade, Tube],
+    primals: tuple[MemberActions, Float[Array, "members"], SteelGrade, TubeCatalogue],
+    tangents: tuple[MemberActions, Float[Array, "members"], SteelGrade, TubeCatalogue],
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
     Differentiate the map by the implicit function theorem.
@@ -522,7 +530,7 @@ def _diameter_jvp(
         return jnp.sum(demand)
 
     def at_root(
-        *inputs: MemberActions | Float[Array, "members"] | SteelGrade | Tube,
+        *inputs: MemberActions | Float[Array, "members"] | SteelGrade | TubeCatalogue,
     ) -> Float[Array, "members"]:
         return utilization_design(solved, *inputs, plastic=plastic, resultant=resultant)
 
@@ -539,7 +547,7 @@ def diameter_required(
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -555,7 +563,7 @@ def diameter_required(
         Buckling length.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -579,16 +587,16 @@ def diameter_required(
     binds the derivative follows it rather than the standard, which is the
     honest answer: the actions have stopped deciding the size.
     """
-    solved = _diameter(plastic, resultant, actions, l_cr, steel, tube)
+    solved = _diameter(plastic, resultant, actions, l_cr, steel, catalogue)
 
-    return jnp.maximum(solved, tube.diameter_min)
+    return jnp.maximum(solved, catalogue.diameter_min)
 
 
 def mass(
     diameter: Float[Array, "members"],
     lengths: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> Float[Array, ""]:
     """
     Total mass of a set of members.
@@ -601,7 +609,7 @@ def mass(
         Length of each member.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the members are drawn from.
 
     Returns
@@ -613,7 +621,7 @@ def mass(
     -----
     Geometry, not EN 1993-1-1. The objective the sizing map exists to serve.
     """
-    return steel.density * jnp.sum(area(diameter, tube.ratio) * lengths)
+    return steel.density * jnp.sum(area(diameter, catalogue.ratio) * lengths)
 
 
 def governing_limit_state(
@@ -621,7 +629,7 @@ def governing_limit_state(
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -639,7 +647,7 @@ def governing_limit_state(
         Buckling length.
     steel :
         Material properties and partial factors.
-    tube :
+    catalogue :
         The section family the member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
@@ -663,12 +671,12 @@ def governing_limit_state(
     kinked.
     """
     member, section = _demands(
-        diameter, actions, l_cr, steel, tube, plastic=plastic, resultant=resultant
+        diameter, actions, l_cr, steel, catalogue, plastic=plastic, resultant=resultant
     )
 
-    gross = area(diameter, tube.ratio)
-    modulus = _modulus(diameter, tube.ratio, plastic=plastic)
-    critical = force_critical(second_moment(diameter, tube.ratio), l_cr, steel)
+    gross = area(diameter, catalogue.ratio)
+    modulus = _modulus(diameter, catalogue.ratio, plastic=plastic)
+    critical = force_critical(second_moment(diameter, catalogue.ratio), l_cr, steel)
     lam = slenderness_from_force(gross, steel, critical)
     reduction = reduction_buckling(lam, steel.alpha)
 
@@ -694,7 +702,7 @@ def governing_limit_state(
     )
     decided = jnp.where(member > section, by_member, by_section)
 
-    at_minimum = jnp.asarray(diameter) <= tube.diameter_min * (1.0 + 1e-12)
+    at_minimum = jnp.asarray(diameter) <= catalogue.diameter_min * (1.0 + 1e-12)
 
     return jnp.where(at_minimum, LIMIT_MINIMUM_SIZE, decided)
 

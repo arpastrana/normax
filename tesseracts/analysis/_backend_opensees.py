@@ -34,7 +34,7 @@ from normax.analysis.opensees import forces
 from normax.analysis.opensees import jacobian
 from normax.analysis.opensees import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.structures import Structure
 
 # Which block of the Jacobian carries each (output, input) pair. The minor-axis
@@ -52,7 +52,7 @@ BLOCKS = {
 OUTPUT_RANK = {"n_ed": 1, "m_y_ed": 2, "m_z_ed": 2}
 
 
-def _model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, Tube]:
+def _model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, TubeCatalogue]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -85,9 +85,13 @@ def _model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, Tube]:
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
-    tube = Tube(ratio=inputs["ratio"])
+    catalogue = TubeCatalogue(ratio=inputs["ratio"])
 
-    return prepare(structure, steel, tube, normal=inputs["normal"]), steel, tube
+    return (
+        prepare(structure, steel, catalogue, normal=inputs["normal"]),
+        steel,
+        catalogue,
+    )
 
 
 def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -110,14 +114,14 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     elastic analysis under nodal loads having no use for either, exactly as in
     the other backend. Carrying them keeps one schema describing both.
     """
-    model, steel, tube = _model(inputs)
+    model, steel, catalogue = _model(inputs)
 
     member = forces(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
         steel,
-        tube,
+        catalogue,
     )
 
     return {
@@ -148,14 +152,14 @@ def _blocks(inputs: dict[str, Any]) -> Jacobian:
     back-substitution each and dropping some would save a fraction of a sweep
     while making the two derivative rules disagree about what was solved.
     """
-    model, steel, tube = _model(inputs)
+    model, steel, catalogue = _model(inputs)
 
     return jacobian(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
         steel,
-        tube,
+        catalogue,
     )
 
 

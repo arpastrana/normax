@@ -56,7 +56,7 @@ import numpy as np
 from normax.analysis.smax import buckling
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass as mass_of_tubes
 from normax.ec3.stability import ALPHA_CR_ELASTIC
@@ -117,7 +117,7 @@ STEEL = SteelGrade()
 
 # Preparing the analysis model needs a section family to stand up a frame, and
 # every property of it is replaced per call, so one seed serves both classes.
-TUBE_SEED = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE_SEED = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
 LIMIT_NAMES = {
     0.0: "catalogue minimum",
@@ -135,7 +135,7 @@ def setup(num_edges):
     load = TOTAL_LOAD / (num_edges - 1)
     structure = arch(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
     graph_fdm = graph(structure)
-    model = prepare(structure, STEEL, TUBE_SEED, normal=NORMAL)
+    model = prepare(structure, STEEL, CATALOGUE_SEED, normal=NORMAL)
 
     trial = jnp.full(num_edges, -1.0)
     reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
@@ -162,7 +162,7 @@ def disagreement(exact, numeric, scale):
     return abs(exact - numeric) / scale
 
 
-def relaxed(q, structure, graph_fdm, model, tube, *, plastic, passes):
+def relaxed(q, structure, graph_fdm, model, catalogue, *, plastic, passes):
     """
     Repeat the staggered analysis and check, reporting how far each pass moves.
     """
@@ -178,7 +178,7 @@ def relaxed(q, structure, graph_fdm, model, tube, *, plastic, passes):
             graph_fdm,
             model,
             STEEL,
-            tube,
+            catalogue,
             plastic=plastic,
         )
         moves.append(
@@ -204,17 +204,17 @@ def main():
     worst_utilization = 0.0
     designs = {}
     for cross_section_class in (2, 3):
-        tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
         plastic = is_plastic(cross_section_class)
         result = design(
-            q, seed, structure, graph_fdm, model, STEEL, tube, plastic=plastic
+            q, seed, structure, graph_fdm, model, STEEL, catalogue, plastic=plastic
         )
-        codes = governing(result, STEEL, tube, plastic=plastic)
+        codes = governing(result, STEEL, catalogue, plastic=plastic)
         departure = float(jnp.max(jnp.abs(result.utilization - 1.0)))
         worst_utilization = max(worst_utilization, departure)
-        designs[cross_section_class] = (tube, plastic, result)
+        designs[cross_section_class] = (catalogue, plastic, result)
 
-        print(f"\nClass {cross_section_class}, d/t = {float(tube.ratio):.3f}")
+        print(f"\nClass {cross_section_class}, d/t = {float(catalogue.ratio):.3f}")
         print(f"  {'member':>7} {'N [kN]':>10} {'M [kNm]':>10} {'d [mm]':>9} {'u':>18}")
         for member in range(NUM_EDGES):
             print(
@@ -228,12 +228,14 @@ def main():
         limits = {LIMIT_NAMES[float(code)] for code in codes}
         print(f"  governing           {', '.join(sorted(limits))}")
 
-    tube, plastic, result = designs[3]
+    catalogue, plastic, result = designs[3]
 
     print("\nThe central difference plateaus before it is trusted")
 
     def objective(q):
-        return mass(q, seed, structure, graph_fdm, model, STEEL, tube, plastic=plastic)
+        return mass(
+            q, seed, structure, graph_fdm, model, STEEL, catalogue, plastic=plastic
+        )
 
     gradient = jax.grad(objective)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
@@ -262,7 +264,7 @@ def main():
 
     print("\nThe staggered coupling closes geometrically")
     _, moves, masses = relaxed(
-        q, structure, graph_fdm, model, tube, plastic=plastic, passes=PASSES
+        q, structure, graph_fdm, model, catalogue, plastic=plastic, passes=PASSES
     )
     print(f"  {'pass':>5} {'relative move':>15} {'mass [t]':>14} {'ratio':>8}")
     for step, (move, total) in enumerate(zip(moves, masses)):
@@ -289,7 +291,7 @@ def main():
             refined_graph,
             refined_model,
             STEEL,
-            tube,
+            catalogue,
             plastic=plastic,
         )
         held = design(
@@ -299,7 +301,7 @@ def main():
             refined_graph,
             refined_model,
             STEEL,
-            tube,
+            catalogue,
             plastic=plastic,
             l_cr=jnp.full(count, BUCKLING_LENGTH),
         )
@@ -328,7 +330,7 @@ def main():
         result,
         model,
         STEEL,
-        tube,
+        catalogue,
         num_modes=NUM_MODES,
     )
     factors = np.asarray(checked.factors)
@@ -363,7 +365,7 @@ def main():
         graph_fdm,
         model,
         STEEL,
-        tube,
+        catalogue,
         plastic=plastic,
         l_cr=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc),
     )
@@ -387,7 +389,7 @@ def main():
 
     FIGURES.mkdir(exist_ok=True)
 
-    assumed_mass = float(mass_of_tubes(seed, result.lengths, STEEL, tube))
+    assumed_mass = float(mass_of_tubes(seed, result.lengths, STEEL, catalogue))
     sections = figure_sections(
         result.xyz,
         structure.edges,
@@ -413,7 +415,7 @@ def main():
         result.xyz,
         result.diameters,
         STEEL,
-        tube,
+        catalogue,
         num_modes=NUM_MODES,
     )
     shapes = figure_modes(result.xyz, factors, np.asarray(modes.shapes), RISE)

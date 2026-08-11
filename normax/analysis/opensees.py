@@ -59,7 +59,7 @@ from normax.analysis import fixities
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import area
 from normax.ec3.section import second_moment
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.structures import Structure
 from normax.units import MILLIMETRE
 from normax.units import to_metres
@@ -219,7 +219,7 @@ def plane(
 def prepare(
     structure: Structure,
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     normal: int | None,
 ) -> Model:
@@ -232,7 +232,7 @@ def prepare(
         The structure supplying the connectivity, the supports and the loads.
     steel :
         Material properties. Unused, the domain being rebuilt per call.
-    tube :
+    catalogue :
         The section family. Unused, for the same reason.
     normal :
         Index of the global axis the frame has no thickness along.
@@ -267,7 +267,7 @@ def _build(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     loads: Float[Array, "nodes 3"] | None,
     parameters: bool,
 ) -> int:
@@ -284,7 +284,7 @@ def _build(
         Outer diameter of every member.
     steel :
         Material properties. Only the modulus reaches a plane frame.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
         Force applied at every node. If None, the structure's own loads.
@@ -334,8 +334,8 @@ def _build(
     flags = fixities(structure, spanned.normal)
 
     outer = to_metres(diameters)
-    areas = np.asarray(area(outer, tube.ratio))
-    inertias = np.asarray(second_moment(outer, tube.ratio))
+    areas = np.asarray(area(outer, catalogue.ratio))
+    inertias = np.asarray(second_moment(outer, catalogue.ratio))
     e_mod = float(to_pascals(steel.e_mod))
 
     num_nodes = coordinates.shape[0]
@@ -472,7 +472,7 @@ def forces(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberForces:
@@ -489,7 +489,7 @@ def forces(
         Outer diameter of every member.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
         Force applied at every node. If None, the structure's own loads.
@@ -508,7 +508,7 @@ def forces(
     The minor-axis moment is returned as exact zeros. A plane frame under
     in-plane load carries none, so this is the value rather than a placeholder.
     """
-    _build(model, xyz, diameters, steel, tube, loads, parameters=False)
+    _build(model, xyz, diameters, steel, catalogue, loads, parameters=False)
 
     axial, moments = _read(np.asarray(model.structure.edges).shape[0])
 
@@ -521,7 +521,7 @@ def forces(
 
 def _section_slopes(
     diameters: Float[Array, "members"],
-    tube: Tube,
+    catalogue: TubeCatalogue,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     How a member's area and second moment move with its diameter.
@@ -530,7 +530,7 @@ def _section_slopes(
     ----------
     diameters :
         Outer diameter of every member.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
 
     Returns
@@ -547,8 +547,8 @@ def _section_slopes(
     """
     outer = to_metres(diameters)
 
-    d_area = jax.vmap(jax.grad(lambda d: area(d, tube.ratio)))(outer)
-    d_inertia = jax.vmap(jax.grad(lambda d: second_moment(d, tube.ratio)))(outer)
+    d_area = jax.vmap(jax.grad(lambda d: area(d, catalogue.ratio)))(outer)
+    d_inertia = jax.vmap(jax.grad(lambda d: second_moment(d, catalogue.ratio)))(outer)
 
     return (
         np.asarray(d_area) * MILLIMETRE,
@@ -596,7 +596,7 @@ def jacobian(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     steel: SteelGrade,
-    tube: Tube,
+    catalogue: TubeCatalogue,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Jacobian:
@@ -613,7 +613,7 @@ def jacobian(
         Outer diameter of every member.
     steel :
         Material properties.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
         Force applied at every node. If None, the structure's own loads.
@@ -636,7 +636,7 @@ def jacobian(
     model built in the plane cannot reach, and it belongs to the minor-axis
     moment alone, which this Jacobian does not carry.
     """
-    count = _build(model, xyz, diameters, steel, tube, loads, parameters=True)
+    count = _build(model, xyz, diameters, steel, catalogue, loads, parameters=True)
 
     num_nodes = np.asarray(xyz).shape[0]
     num_members = np.asarray(model.structure.edges).shape[0]
@@ -654,7 +654,7 @@ def jacobian(
             )
 
     return _assemble(
-        axial, moments, diameters, tube, model.spanned, num_nodes, num_members
+        axial, moments, diameters, catalogue, model.spanned, num_nodes, num_members
     )
 
 
@@ -662,7 +662,7 @@ def _assemble(
     axial: np.ndarray,
     moments: np.ndarray,
     diameters: Float[Array, "members"],
-    tube: Tube,
+    catalogue: TubeCatalogue,
     spanned: Plane,
     num_nodes: int,
     num_members: int,
@@ -678,7 +678,7 @@ def _assemble(
         Derivative of every end moment in every parameter.
     diameters :
         Outer diameter of every member.
-    tube :
+    catalogue :
         The section family, whose ratio fixes the wall thickness.
     spanned :
         The plane the frame is modelled in.
@@ -705,7 +705,7 @@ def _assemble(
     at every use.
     """
     coordinates = 2 * num_nodes
-    d_area, d_inertia = _section_slopes(diameters, tube)
+    d_area, d_inertia = _section_slopes(diameters, catalogue)
 
     n_ed_xyz = np.zeros((num_members, num_nodes, 3))
     m_y_ed_xyz = np.zeros((num_members, 2, num_nodes, 3))

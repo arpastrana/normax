@@ -70,8 +70,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from normax.analysis.smax import prepare
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import Tube
+from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
@@ -162,7 +163,7 @@ FLOOR_WEIGHT = 50.0
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = SteelGrade()
-TUBE = Tube.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 PLASTIC = is_plastic(3)
 
 
@@ -183,7 +184,7 @@ def setup():
         load=TOTAL_LOAD / (NUM_EDGES - 1),
     )
     graph_fdm = graph(structure)
-    model = prepare(structure, STEEL, TUBE, normal=NORMAL)
+    model = prepare(structure, STEEL, CATALOGUE, normal=NORMAL)
 
     trial = jnp.full(NUM_EDGES, -1.0)
     reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
@@ -228,7 +229,7 @@ def build(q, structure, graph_fdm, model, cases, beta, diameters=None):
         graph_fdm,
         model,
         STEEL,
-        TUBE,
+        CATALOGUE,
         cases,
         beta,
         plastic=PLASTIC,
@@ -266,7 +267,7 @@ def report_smoothing(structure, graph_fdm, model, cases, q):
 
     for beta in SHARPNESSES:
         result = build(q, structure, graph_fdm, model, cases, beta)
-        exact = unsmoothed(result, STEEL, TUBE, plastic=PLASTIC)
+        exact = unsmoothed(result, STEEL, CATALOGUE, plastic=PLASTIC)
 
         excess = float(result.mass) / float(exact.mass) - 1.0
         bound = float(cases.shape[0] ** (2.0 / float(beta))) - 1.0
@@ -375,7 +376,7 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
     """
     q = walked.q[-1]
     result = build(q, structure, graph_fdm, model, cases, BETA_STOP)
-    exact = unsmoothed(result, STEEL, TUBE, plastic=PLASTIC)
+    exact = unsmoothed(result, STEEL, CATALOGUE, plastic=PLASTIC)
     decided = np.asarray(governing_case(result))
 
     lower = int(jnp.sum(jnp.abs(q - bounds[0]) < 1e-6))
@@ -425,9 +426,13 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
     single = Design(
         result.xyz,
         result.lengths,
-        result.n_ed[0],
-        result.m_y_ed[0],
-        result.c_my[0],
+        MemberActions(
+            result.n_ed[0],
+            result.m_y_ed[0],
+            result.m_z_ed[0],
+            result.c_my[0],
+            result.c_mz[0],
+        ),
         result.l_cr,
         exact.diameters,
         exact.utilization[0],
@@ -439,7 +444,7 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
     print(f"\n  {'case':>16} {'alpha_cr':>10} {'adequate':>10}")
     weakest = None
     for name, case in zip(CASE_NAMES, cases):
-        factors = stability(single, model, STEEL, TUBE, num_modes=1, loads=case)
+        factors = stability(single, model, STEEL, CATALOGUE, num_modes=1, loads=case)
         alpha_cr = float(factors.factors[0])
         weakest = alpha_cr if weakest is None else min(weakest, alpha_cr)
         print(f"  {name:>16} {alpha_cr:>10.4f} {str(bool(factors.adequate)):>10}")
@@ -475,7 +480,7 @@ def main():
     # The best the single force density can do, which is the design the twenty
     # variables have to beat and the one the figures compare against.
     single = build(q * SCALES[best], structure, graph_fdm, model, cases, BETA_STOP)
-    single_sized = unsmoothed(single, STEEL, TUBE, plastic=PLASTIC)
+    single_sized = unsmoothed(single, STEEL, CATALOGUE, plastic=PLASTIC)
     decided_single = np.asarray(governing_case(single))
 
     FIGURES.mkdir(exist_ok=True)
