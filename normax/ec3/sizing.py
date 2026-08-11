@@ -33,6 +33,7 @@ differentiable only there, not everywhere.
 """
 
 from functools import partial
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -42,6 +43,8 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.interaction import CompressionBendingState
+from normax.ec3.interaction import MemberResistance
 from normax.ec3.interaction import governing_equation
 from normax.ec3.interaction import moment_factor_linear
 from normax.ec3.interaction import utilization_member
@@ -170,6 +173,72 @@ def utilization_design(
     return jnp.maximum(member, section)
 
 
+class SectionProperties(NamedTuple):
+    """
+    Section and buckling state of one trial size.
+
+    Attributes
+    ----------
+    area :
+        Gross cross-sectional area.
+    modulus :
+        Section modulus matching the cross-section class.
+    slenderness :
+        Non-dimensional slenderness, the same about both axes.
+    resistance :
+        What the member resists about each axis, before partial factors.
+
+    Notes
+    -----
+    Everything both checks need from a tube, computed once. The two used to
+    derive it separately, so the utilization and the diagnostic saying which
+    check produced it could in principle disagree.
+
+    One slenderness, not two: a circular hollow section has the same second
+    moment about every centroidal axis, so both axes buckle alike.
+    """
+
+    area: Float[Array, "members"]
+    modulus: Float[Array, "members"]
+    slenderness: Float[Array, "members"]
+    resistance: MemberResistance
+
+
+def _properties(
+    tube: Tube,
+    l_cr: Float[Array, "members"],
+    steel: SteelGrade,
+    *,
+    plastic: bool,
+) -> SectionProperties:
+    """
+    Everything the two checks read from a trial section.
+
+    Returns
+    -------
+    properties :
+        Area, section modulus, slenderness and the characteristic resistances.
+    """
+    gross = tube.area
+    modulus = _modulus(tube, plastic=plastic)
+
+    critical = force_critical(tube.second_moment, l_cr, steel)
+    lam = slenderness_from_force(gross, steel, critical)
+    reduction = reduction_buckling(lam, steel.alpha)
+
+    return SectionProperties(
+        area=gross,
+        modulus=modulus,
+        slenderness=lam,
+        resistance=MemberResistance(
+            chi_y=reduction,
+            chi_z=reduction,
+            n_rk=gross * steel.f_y,
+            m_rk=modulus * steel.f_y,
+        ),
+    )
+
+
 def _demands(
     tube: Tube,
     actions: MemberActions,
@@ -193,35 +262,27 @@ def _demands(
     Shared by the utilization and by the diagnostic that reports which check
     decided a member, so the two cannot disagree about what governed.
     """
-    gross = tube.area
-    modulus = _modulus(tube, plastic=plastic)
+    properties = _properties(tube, l_cr, steel, plastic=plastic)
 
-    critical = force_critical(tube.second_moment, l_cr, steel)
-    lam = slenderness_from_force(gross, steel, critical)
-    reduction = reduction_buckling(lam, steel.alpha)
-
-    axial = jnp.asarray(actions.n_ed)
     member = utilization_member(
-        jnp.maximum(-axial, 0.0),
-        jnp.abs(actions.m_y_ed),
-        jnp.abs(actions.m_z_ed),
-        reduction,
-        reduction,
-        gross * steel.f_y,
-        modulus * steel.f_y,
-        lam,
-        lam,
-        actions.c_my,
-        actions.c_mz,
-        steel.gamma_m1,
+        CompressionBendingState.from_actions(actions),
+        properties.resistance,
+        properties.slenderness,
+        properties.slenderness,
+        steel,
         plastic=plastic,
     )
 
     section = utilization_cross_section(
-        actions, gross, modulus, steel, plastic=plastic, resultant=resultant
+        actions,
+        properties.area,
+        properties.modulus,
+        steel,
+        plastic=plastic,
+        resultant=resultant,
     )
 
-    return jnp.where(axial < 0.0, member, 0.0), section
+    return jnp.where(jnp.asarray(actions.n_ed) < 0.0, member, 0.0), section
 
 
 def diameter_bracket(
@@ -590,26 +651,14 @@ def governing_limit_state(
     member, section = _demands(
         tube, actions, l_cr, steel, plastic=plastic, resultant=resultant
     )
-
-    gross = tube.area
-    modulus = _modulus(tube, plastic=plastic)
-    critical = force_critical(tube.second_moment, l_cr, steel)
-    lam = slenderness_from_force(gross, steel, critical)
-    reduction = reduction_buckling(lam, steel.alpha)
+    properties = _properties(tube, l_cr, steel, plastic=plastic)
 
     equation = governing_equation(
-        jnp.maximum(-jnp.asarray(actions.n_ed), 0.0),
-        jnp.abs(actions.m_y_ed),
-        jnp.abs(actions.m_z_ed),
-        reduction,
-        reduction,
-        gross * steel.f_y,
-        modulus * steel.f_y,
-        lam,
-        lam,
-        actions.c_my,
-        actions.c_mz,
-        steel.gamma_m1,
+        CompressionBendingState.from_actions(actions),
+        properties.resistance,
+        properties.slenderness,
+        properties.slenderness,
+        steel,
         plastic=plastic,
     )
 

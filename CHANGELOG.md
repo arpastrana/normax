@@ -139,6 +139,33 @@
   `Steel` from `normax.ec3.sizing`. It is now correct, one import per line, and
   it was run: 0.0336 t on the twenty-member arch with a finite gradient in every
   force density.
+- **6.3.3 reads a `CompressionBendingState` and a `MemberResistance`.** The
+  three byte-identical thirteen-parameter signatures — `utilization_member`,
+  `_checks`, `governing_equation` — become five arguments and a flag;
+  `interaction_factors` goes from ten to five, `checks` from twelve to four.
+  `gamma_M1` is read off the grade rather than travelling as a loose defaulted
+  argument, so `interaction.py` no longer imports a partial factor of its own
+  and every clause reaches it the same way.
+- **`CompressionBendingState` is deliberately not `MemberActions`, though the
+  fields line up.** The sizing map fed the member check a sign-transformed copy
+  — `maximum(-n, 0)`, `abs(m_y)`, `abs(m_z)` — and the raw signed values to the
+  cross-section check in the same breath, then wrote the transform out a third
+  time in the diagnostic. `from_actions` does it once. One type for both
+  conventions would make a tension-positive force reaching 6.3.3 yield a
+  *negative* axial ratio, which subtracts from Eqs. 6.61 and 6.62 and reports a
+  member as safer than it is; two types make that a checker error instead.
+- **The slendernesses stay loose, outside `MemberResistance`.** `checks` does
+  not read them — only Annex B does — and `tests/test_worked_example_frame.py`
+  is the test for that separability: it supplies Simões da Silva's published
+  reduction factors and interaction factors and has no slendernesses at all.
+- **`sizing._properties` replaces the capacity block that was cloned at two
+  sites.** `_demands` promised the utilization and the diagnostic "cannot
+  disagree about what governed" while the diagnostic recomputed the block
+  independently, so they could. `_modulus` also lost the `resultant` parameter
+  none of its callers passed.
+- **`cap_is_active`'s docstring labelled its own parameter wrong**, calling
+  `c_m` `moment_factor_linear` — collateral from the rename sweep, which
+  rewrote a numpydoc label as if it were an identifier.
 - **Two AST traps recurred and both were caught by tests, not review.** A call
   through a variable (`branch = utilization_plastic if plastic else ...`) and a
   call through `jax.jit(diameter_required, ...)` are invisible to a sweep that

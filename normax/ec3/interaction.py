@@ -36,7 +36,8 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.ec3.material import GAMMA_M1
+from normax.ec3.actions import MemberActions
+from normax.ec3.material import SteelGrade
 
 # EN 1993-1-1 Table B.3, the lower bound on the linear row.
 C_M_MINIMUM = 0.4
@@ -45,6 +46,100 @@ C_M_MINIMUM = 0.4
 # utilization as a non-differentiable diagnostic.
 GOVERNING_MAJOR = 0.0
 GOVERNING_MINOR = 1.0
+
+
+class CompressionBendingState(NamedTuple):
+    """
+    What 6.3.3 reads: a compression and two moment magnitudes.
+
+    Attributes
+    ----------
+    n_ed :
+        Design axial compression, non-negative.
+    m_y_ed :
+        Magnitude of the design bending moment about the major axis.
+    m_z_ed :
+        Magnitude of the design bending moment about the minor axis.
+    c_my :
+        Equivalent uniform moment factor for major-axis bending.
+    c_mz :
+        Equivalent uniform moment factor for minor-axis bending.
+
+    Notes
+    -----
+    **A different type from `MemberActions` on purpose, though the fields line
+    up.** 6.3.3 is titled "bending and axial compression" and reads a
+    compression, so a tension-positive axial force reaching it yields a negative
+    axial ratio, which *subtracts* from Eqs. 6.61 and 6.62 and reports a member
+    as safer than it is. Two types with one named constructor between them turn
+    that from a silent wrong answer into a checker error.
+    """
+
+    n_ed: Float[Array, "members"]
+    m_y_ed: float | Float[Array, "members"] = 0.0
+    m_z_ed: float | Float[Array, "members"] = 0.0
+    c_my: float | Float[Array, "members"] = 1.0
+    c_mz: float | Float[Array, "members"] = 1.0
+
+    @classmethod
+    def from_actions(cls, actions: MemberActions) -> "CompressionBendingState":
+        """
+        The state 6.3.3 reads, from the actions an analysis produced.
+
+        Parameters
+        ----------
+        actions :
+            Design actions on the member, tension positive.
+
+        Returns
+        -------
+        state :
+            The compression and the two moment magnitudes.
+
+        Notes
+        -----
+        A member in tension maps to zero compression rather than to a negative
+        one, which switches every term of 6.3.3 off instead of reversing its
+        sign. The clause does not apply there at all, so a caller must still
+        discard the result rather than read a zero as adequacy.
+        """
+        return cls(
+            jnp.maximum(-jnp.asarray(actions.n_ed), 0.0),
+            jnp.abs(actions.m_y_ed),
+            jnp.abs(actions.m_z_ed),
+            actions.c_my,
+            actions.c_mz,
+        )
+
+
+class MemberResistance(NamedTuple):
+    """
+    What a member resists, about each axis, before partial factors.
+
+    Attributes
+    ----------
+    chi_y :
+        Reduction factor for flexural buckling about the major axis.
+    chi_z :
+        Reduction factor for flexural buckling about the minor axis.
+    n_rk :
+        Characteristic resistance to axial force.
+    m_rk :
+        Characteristic bending resistance, the same about both axes for a
+        circular hollow section.
+
+    Notes
+    -----
+    The two slendernesses are deliberately absent. 6.3.3 does not read them —
+    only Annex B does, to build the interaction factors — and that separability
+    is what lets a published check supplying its own factors be reproduced
+    without inventing slendernesses for a clause that ignores them.
+    """
+
+    chi_y: Float[Array, "members"]
+    chi_z: Float[Array, "members"]
+    n_rk: Float[Array, "members"]
+    m_rk: Float[Array, "members"]
 
 
 class InteractionFactors(NamedTuple):
@@ -107,7 +202,7 @@ def axial_ratio(
     n_ed: Float[Array, "members"],
     chi: Float[Array, "members"],
     n_rk: Float[Array, "members"],
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
     Axial force over the buckling resistance, as the interaction factors use it.
@@ -120,8 +215,8 @@ def axial_ratio(
         Reduction factor for flexural buckling about the relevant axis.
     n_rk :
         Characteristic resistance to axial force.
-    gamma_m1 :
-        Partial factor for member instability.
+    steel :
+        Material properties and partial factors, read for gamma_M1.
 
     Returns
     -------
@@ -136,7 +231,7 @@ def axial_ratio(
     """
     force = jnp.asarray(n_ed)
 
-    return force / (chi * n_rk / gamma_m1)
+    return force / (chi * n_rk / steel.gamma_m1)
 
 
 def _k_axial(
@@ -315,18 +410,11 @@ def k_zy(
 
 
 def utilization_member(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    chi_y: Float[Array, "members"],
-    chi_z: Float[Array, "members"],
-    n_rk: Float[Array, "members"],
-    m_rk: Float[Array, "members"],
+    state: CompressionBendingState,
+    resistance: MemberResistance,
     lam_y: Float[Array, "members"],
     lam_z: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
     *,
     plastic: bool,
 ) -> Float[Array, "members"]:
@@ -335,31 +423,16 @@ def utilization_member(
 
     Parameters
     ----------
-    n_ed :
-        Design axial compression.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
-    chi_y :
-        Reduction factor for flexural buckling about the major axis.
-    chi_z :
-        Reduction factor for flexural buckling about the minor axis.
-    n_rk :
-        Characteristic resistance to axial force.
-    m_rk :
-        Characteristic bending resistance, the same about both axes for a
-        circular hollow section.
+    state :
+        Compression and moment magnitudes acting on the member.
+    resistance :
+        What the member resists about each axis, before partial factors.
     lam_y :
         Non-dimensional slenderness about the major axis.
     lam_z :
         Non-dimensional slenderness about the minor axis.
-    c_my :
-        Equivalent uniform moment factor for major-axis bending.
-    c_mz :
-        Equivalent uniform moment factor for minor-axis bending.
-    gamma_m1 :
-        Partial factor for member instability.
+    steel :
+        Material properties and partial factors, read for gamma_M1.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
 
@@ -380,40 +453,38 @@ def utilization_member(
     oppositely, so they agree only when the moments are equal as well. Taking
     the larger is what makes this one check rather than two.
     """
-    first, second = _checks(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
-        chi_y,
-        chi_z,
-        n_rk,
-        m_rk,
-        lam_y,
-        lam_z,
-        c_my,
-        c_mz,
-        gamma_m1,
-        plastic=plastic,
-    )
+    first, second = _checks(state, resistance, lam_y, lam_z, steel, plastic=plastic)
 
     return jnp.maximum(first, second)
 
 
 def interaction_factors(
-    n_ed: Float[Array, "members"],
-    chi_y: Float[Array, "members"],
-    chi_z: Float[Array, "members"],
-    n_rk: Float[Array, "members"],
+    state: CompressionBendingState,
+    resistance: MemberResistance,
     lam_y: Float[Array, "members"],
     lam_z: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
     *,
     plastic: bool,
 ) -> InteractionFactors:
     """
     All four interaction factors for a hollow section.
+
+    Parameters
+    ----------
+    state :
+        Compression and moment factors acting on the member. Neither moment
+        magnitude is read: Table B.1 scales the moments rather than reading them.
+    resistance :
+        What the member resists. The bending resistance is not read either.
+    lam_y :
+        Non-dimensional slenderness about the major axis.
+    lam_z :
+        Non-dimensional slenderness about the minor axis.
+    steel :
+        Material properties and partial factors, read for gamma_M1.
+    plastic :
+        Whether the section is Class 1 or 2. Static, never a traced value.
 
     Returns
     -------
@@ -426,11 +497,11 @@ def interaction_factors(
     them, which are EN 1993-1-1 6.3.3 and a different clause: a source that
     publishes its own factors can be checked against `checks` alone.
     """
-    ratio_y = axial_ratio(n_ed, chi_y, n_rk, gamma_m1)
-    ratio_z = axial_ratio(n_ed, chi_z, n_rk, gamma_m1)
+    ratio_y = axial_ratio(state.n_ed, resistance.chi_y, resistance.n_rk, steel)
+    ratio_z = axial_ratio(state.n_ed, resistance.chi_z, resistance.n_rk, steel)
 
-    diagonal_y = k_yy(c_my, lam_y, ratio_y, plastic=plastic)
-    diagonal_z = k_zz(c_mz, lam_z, ratio_z, plastic=plastic)
+    diagonal_y = k_yy(state.c_my, lam_y, ratio_y, plastic=plastic)
+    diagonal_z = k_zz(state.c_mz, lam_z, ratio_z, plastic=plastic)
 
     return InteractionFactors(
         yy=diagonal_y,
@@ -441,39 +512,25 @@ def interaction_factors(
 
 
 def checks(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    chi_y: Float[Array, "members"],
-    chi_z: Float[Array, "members"],
-    n_rk: Float[Array, "members"],
-    m_rk: Float[Array, "members"],
+    state: CompressionBendingState,
+    resistance: MemberResistance,
     factors: InteractionFactors,
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
     Both interaction equations, from interaction factors given directly.
 
     Parameters
     ----------
-    n_ed :
-        Design axial compression.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
-    chi_y :
-        Reduction factor for flexural buckling about the major axis.
-    chi_z :
-        Reduction factor for flexural buckling about the minor axis.
-    n_rk :
-        Characteristic resistance to axial force.
-    m_rk :
-        Characteristic bending resistance.
+    state :
+        Compression and moment magnitudes acting on the member. Neither moment
+        factor is read: they reach the check only through the factors.
+    resistance :
+        What the member resists about each axis, before partial factors.
     factors :
         The four interaction factors of Table B.1.
-    gamma_m1 :
-        Partial factor for member instability.
+    steel :
+        Material properties and partial factors, read for gamma_M1.
 
     Returns
     -------
@@ -490,12 +547,12 @@ def checks(
     separable from Annex B, so a published check that supplies its own factors
     can be reproduced without also adopting the table they came from.
     """
-    ratio_y = axial_ratio(n_ed, chi_y, n_rk, gamma_m1)
-    ratio_z = axial_ratio(n_ed, chi_z, n_rk, gamma_m1)
+    ratio_y = axial_ratio(state.n_ed, resistance.chi_y, resistance.n_rk, steel)
+    ratio_z = axial_ratio(state.n_ed, resistance.chi_z, resistance.n_rk, steel)
 
-    bending = m_rk / gamma_m1
-    major = jnp.asarray(m_y_ed) / bending
-    minor = jnp.asarray(m_z_ed) / bending
+    bending = resistance.m_rk / steel.gamma_m1
+    major = jnp.asarray(state.m_y_ed) / bending
+    minor = jnp.asarray(state.m_z_ed) / bending
 
     first = ratio_y + factors.yy * major + factors.yz * minor
     second = ratio_z + factors.zy * major + factors.zz * minor
@@ -504,18 +561,11 @@ def checks(
 
 
 def _checks(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    chi_y: Float[Array, "members"],
-    chi_z: Float[Array, "members"],
-    n_rk: Float[Array, "members"],
-    m_rk: Float[Array, "members"],
+    state: CompressionBendingState,
+    resistance: MemberResistance,
     lam_y: Float[Array, "members"],
     lam_z: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
     *,
     plastic: bool,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
@@ -533,34 +583,18 @@ def _checks(
     governs, so the two cannot drift apart.
     """
     factors = interaction_factors(
-        n_ed,
-        chi_y,
-        chi_z,
-        n_rk,
-        lam_y,
-        lam_z,
-        c_my,
-        c_mz,
-        gamma_m1,
-        plastic=plastic,
+        state, resistance, lam_y, lam_z, steel, plastic=plastic
     )
 
-    return checks(n_ed, m_y_ed, m_z_ed, chi_y, chi_z, n_rk, m_rk, factors, gamma_m1)
+    return checks(state, resistance, factors, steel)
 
 
 def governing_equation(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    chi_y: Float[Array, "members"],
-    chi_z: Float[Array, "members"],
-    n_rk: Float[Array, "members"],
-    m_rk: Float[Array, "members"],
+    state: CompressionBendingState,
+    resistance: MemberResistance,
     lam_y: Float[Array, "members"],
     lam_z: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
-    gamma_m1: float | Float[Array, ""] = GAMMA_M1,
+    steel: SteelGrade,
     *,
     plastic: bool,
 ) -> Float[Array, "members"]:
@@ -579,21 +613,7 @@ def governing_equation(
     optimizer steps mean the design is chattering across the boundary where the
     two equations cross, which is where the two moments are equal.
     """
-    first, second = _checks(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
-        chi_y,
-        chi_z,
-        n_rk,
-        m_rk,
-        lam_y,
-        lam_z,
-        c_my,
-        c_mz,
-        gamma_m1,
-        plastic=plastic,
-    )
+    first, second = _checks(state, resistance, lam_y, lam_z, steel, plastic=plastic)
 
     return jnp.where(second > first, GOVERNING_MINOR, GOVERNING_MAJOR)
 
@@ -610,7 +630,7 @@ def cap_is_active(
 
     Parameters
     ----------
-    moment_factor_linear :
+    c_m :
         Equivalent uniform moment factor.
     lam :
         Non-dimensional slenderness about the relevant axis.

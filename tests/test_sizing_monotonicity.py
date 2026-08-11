@@ -3,6 +3,8 @@ import numpy as np
 import pytest
 
 from normax.ec3.classification import material_factor
+from normax.ec3.interaction import CompressionBendingState
+from normax.ec3.interaction import MemberResistance
 from normax.ec3.interaction import utilization_member
 from normax.ec3.material import E_MODULUS
 from normax.ec3.material import IMPERFECTION_FACTORS
@@ -57,17 +59,11 @@ def member_utilization(diameter, n_ed, m_y_ed, m_z_ed, *, plastic):
     reduction = reduction_buckling(non_dimensional, ALPHA)
 
     return utilization_member(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
-        reduction,
-        reduction,
-        gross * YIELD,
-        modulus * YIELD,
+        CompressionBendingState(n_ed, m_y_ed, m_z_ed, C_M, C_M),
+        MemberResistance(reduction, reduction, gross * YIELD, modulus * YIELD),
         non_dimensional,
         non_dimensional,
-        C_M,
-        C_M,
+        SteelGrade(),
         plastic=plastic,
     )
 

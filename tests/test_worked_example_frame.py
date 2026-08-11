@@ -2,10 +2,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.ec3.interaction import CompressionBendingState
 from normax.ec3.interaction import InteractionFactors
+from normax.ec3.interaction import MemberResistance
 from normax.ec3.interaction import checks
 from normax.ec3.interaction import interaction_factors
 from normax.ec3.interaction import utilization_member
+from normax.ec3.material import SteelGrade
 
 # Simões da Silva, Simões & Gervásio, *Design of Steel Structures* (ECCS).
 # Design Example 2, a 47 m single-span pitched-roof portal frame in S355J2,
@@ -55,14 +58,10 @@ RAFTER = [
 
 def rafter_checks(n_ed, m_y_ed):
     return checks(
-        n_ed,
-        m_y_ed,
-        0.0,
-        CHI_Y,
-        CHI_Z,
-        N_PL_RD,
-        M_PL_Y_RD,
+        CompressionBendingState(n_ed, m_y_ed, 0.0),
+        MemberResistance(CHI_Y, CHI_Z, N_PL_RD, M_PL_Y_RD),
         InteractionFactors(yy=FACTOR_YY, yz=0.0, zy=FACTOR_ZY, zz=0.0),
+        SteelGrade(),
     )
 
 
@@ -136,14 +135,10 @@ def test_segment_matches_the_book(
     # gives 0.64. See the errata section of docs/clauses.md -- this asserts the
     # corrected value, so a fixture built on the printed one would fail here.
     _, second = checks(
-        n_ed,
-        m_y_ed,
-        0.0,
-        1.0,
-        1.0,
-        n_b_rd,
-        m_b_rd,
+        CompressionBendingState(n_ed, m_y_ed, 0.0),
+        MemberResistance(1.0, 1.0, n_b_rd, m_b_rd),
         InteractionFactors(yy=0.0, yz=0.0, zy=factor_zy, zz=0.0),
+        SteelGrade(),
     )
 
     assert second == pytest.approx(expected, abs=TOLERANCE), label
@@ -154,14 +149,10 @@ def test_the_governing_segment_is_the_one_the_book_identifies():
     values = [
         float(
             checks(
-                n,
-                m,
-                0.0,
-                1.0,
-                1.0,
-                n_b,
-                m_b,
+                CompressionBendingState(n, m, 0.0),
+                MemberResistance(1.0, 1.0, n_b, m_b),
                 InteractionFactors(yy=0.0, yz=0.0, zy=k, zz=0.0),
+                SteelGrade(),
             )[1]
         )
         for _, n, m, n_b, m_b, k, _ in SEGMENTS
@@ -177,41 +168,16 @@ def test_the_governing_segment_is_the_one_the_book_identifies():
 def test_supplying_the_factors_agrees_with_deriving_them():
     # `checks` and `utilization` must not drift apart: feeding the factors that
     # Table B.1 would produce has to give what the full path gives.
-    arguments = dict(
-        n_ed=480.3e3,
-        chi_y=0.48,
-        chi_z=1.00,
-        n_rk=N_PL_RD,
-        lam_y=0.9,
-        lam_z=0.4,
-        c_my=0.9,
-        c_mz=0.9,
-    )
-    factors = interaction_factors(**arguments, plastic=True)
+    state = CompressionBendingState(480.3e3, 344.5e6, 0.0, 0.9, 0.9)
+    resistance = MemberResistance(0.48, 1.00, N_PL_RD, M_PL_Y_RD)
 
-    supplied = checks(
-        480.3e3,
-        344.5e6,
-        0.0,
-        0.48,
-        1.00,
-        N_PL_RD,
-        M_PL_Y_RD,
-        factors,
+    factors = interaction_factors(
+        state, resistance, 0.9, 0.4, SteelGrade(), plastic=True
     )
+
+    supplied = checks(state, resistance, factors, SteelGrade())
     derived = utilization_member(
-        480.3e3,
-        344.5e6,
-        0.0,
-        0.48,
-        1.00,
-        N_PL_RD,
-        M_PL_Y_RD,
-        0.9,
-        0.4,
-        0.9,
-        0.9,
-        plastic=True,
+        state, resistance, 0.9, 0.4, SteelGrade(), plastic=True
     )
 
     assert max(supplied) == pytest.approx(derived)

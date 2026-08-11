@@ -6,6 +6,8 @@ import pytest
 from normax.ec3.interaction import C_M_MINIMUM
 from normax.ec3.interaction import GOVERNING_MAJOR
 from normax.ec3.interaction import GOVERNING_MINOR
+from normax.ec3.interaction import CompressionBendingState
+from normax.ec3.interaction import MemberResistance
 from normax.ec3.interaction import axial_ratio
 from normax.ec3.interaction import cap_is_active
 from normax.ec3.interaction import governing_equation
@@ -15,6 +17,7 @@ from normax.ec3.interaction import k_zy
 from normax.ec3.interaction import k_zz
 from normax.ec3.interaction import moment_factor_linear
 from normax.ec3.interaction import utilization_member
+from normax.ec3.material import SteelGrade
 
 # EN 1993-1-1 Annex B, method 2. See docs/clauses.md for the two interpretations
 # taken here: a circular hollow section reads the RHS row of Table B.1, which
@@ -135,13 +138,13 @@ def test_eccs_example_moment_factor():
 
 
 def test_eccs_example_axial_ratio():
-    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK)
+    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK, SteelGrade())
 
     assert ratio == pytest.approx(0.6209, rel=TOLERANCE)
 
 
 def test_eccs_example_k_yy():
-    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK)
+    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK, SteelGrade())
     factor = k_yy(moment_factor_linear(ECCS_PSI), ECCS_LAMBDA_Y, ratio, plastic=True)
 
     assert factor == pytest.approx(0.53, rel=TOLERANCE)
@@ -152,17 +155,17 @@ def test_eccs_example_utilization():
     # k_zy = 0, which is permissive; we do not take it, so our 6.62 is higher
     # and 6.61 still governs.
     value = utilization_member(
-        ECCS_N_ED,
-        ECCS_M_Y_ED,
-        0.0,
-        ECCS_CHI_Y,
-        ECCS_CHI_Z,
-        ECCS_N_RK,
-        ECCS_M_Y_RK,
+        CompressionBendingState(
+            ECCS_N_ED,
+            ECCS_M_Y_ED,
+            0.0,
+            moment_factor_linear(ECCS_PSI),
+            moment_factor_linear(ECCS_PSI),
+        ),
+        MemberResistance(ECCS_CHI_Y, ECCS_CHI_Z, ECCS_N_RK, ECCS_M_Y_RK),
         ECCS_LAMBDA_Y,
         ECCS_LAMBDA_Y,
-        moment_factor_linear(ECCS_PSI),
-        moment_factor_linear(ECCS_PSI),
+        SteelGrade(),
         plastic=True,
     )
 
@@ -174,17 +177,11 @@ def test_eccs_example_utilization():
 
 def test_reduces_to_pure_compression_when_moments_vanish():
     value = utilization_member(
-        965e3,
-        0.0,
-        0.0,
-        0.83,
-        0.72,
-        1872.6e3,
-        127.4e6,
+        CompressionBendingState(965e3, 0.0, 0.0, 0.4, 0.4),
+        MemberResistance(0.83, 0.72, 1872.6e3, 127.4e6),
         0.74,
         0.92,
-        0.4,
-        0.4,
+        SteelGrade(),
         plastic=True,
     )
     pure = 965e3 / (0.72 * 1872.6e3)
@@ -194,17 +191,11 @@ def test_reduces_to_pure_compression_when_moments_vanish():
 
 def test_reduces_to_pure_bending_when_the_axial_force_vanishes():
     value = utilization_member(
-        0.0,
-        67.5e6,
-        0.0,
-        0.83,
-        0.72,
-        1872.6e3,
-        127.4e6,
+        CompressionBendingState(0.0, 67.5e6, 0.0, 0.4, 0.4),
+        MemberResistance(0.83, 0.72, 1872.6e3, 127.4e6),
         0.74,
         0.92,
-        0.4,
-        0.4,
+        SteelGrade(),
         plastic=True,
     )
     # With no axial force every k_ij collapses to its C_m.
@@ -216,20 +207,24 @@ def test_reduces_to_pure_bending_when_the_axial_force_vanishes():
 # ---- The correction: 6.61 and 6.62 are not the same equation ---- #
 
 
-def test_the_two_equations_agree_only_when_the_moments_are_equal():
-    common = dict(
-        chi_y=0.8,
-        chi_z=0.8,
-        n_rk=2.6e6,
-        m_rk=150e6,
-        lam_y=0.9,
-        lam_z=0.9,
-        c_my=0.9,
-        c_mz=0.9,
+def used(n_ed, m_y, m_z, chi, lam, c_m, *, plastic=True):
+    """
+    The member check, with both axes given the same reduction and slenderness.
+    """
+    return utilization_member(
+        CompressionBendingState(n_ed, m_y, m_z, c_m, c_m),
+        MemberResistance(chi, chi, 2.6e6, 150e6),
+        lam,
+        lam,
+        SteelGrade(),
+        plastic=plastic,
     )
-    balanced = utilization_member(500e3, 100e6, 100e6, plastic=True, **common)
-    swapped = utilization_member(500e3, 100e6, 20e6, plastic=True, **common)
-    mirrored = utilization_member(500e3, 20e6, 100e6, plastic=True, **common)
+
+
+def test_the_two_equations_agree_only_when_the_moments_are_equal():
+    balanced = used(500e3, 100e6, 100e6, 0.8, 0.9, 0.9)
+    swapped = used(500e3, 100e6, 20e6, 0.8, 0.9, 0.9)
+    mirrored = used(500e3, 20e6, 100e6, 0.8, 0.9, 0.9)
 
     # Symmetric in the two moments, because we take the worse of the pair.
     assert swapped == pytest.approx(mirrored)
@@ -238,20 +233,10 @@ def test_the_two_equations_agree_only_when_the_moments_are_equal():
 
 
 def test_utilization_is_symmetric_in_the_two_moments():
-    common = dict(
-        chi_y=0.75,
-        chi_z=0.75,
-        n_rk=2.6e6,
-        m_rk=150e6,
-        lam_y=1.0,
-        lam_z=1.0,
-        c_my=0.8,
-        c_mz=0.8,
-    )
     for m_y, m_z in ((80e6, 10e6), (10e6, 80e6), (45e6, 45e6)):
-        assert utilization_member(
-            400e3, m_y, m_z, plastic=True, **common
-        ) == pytest.approx(utilization_member(400e3, m_z, m_y, plastic=True, **common))
+        assert used(400e3, m_y, m_z, 0.75, 1.0, 0.8) == pytest.approx(
+            used(400e3, m_z, m_y, 0.75, 1.0, 0.8)
+        )
 
 
 # ---- Monotonicity, which is what keeps the sizing bisection valid ---- #
@@ -260,7 +245,12 @@ def test_utilization_is_symmetric_in_the_two_moments():
 def test_utilization_falls_as_the_reduction_factor_rises():
     values = [
         utilization_member(
-            500e3, 60e6, 20e6, chi, chi, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+            CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
+            MemberResistance(chi, chi, 2.6e6, 150e6),
+            0.9,
+            0.9,
+            SteelGrade(),
+            plastic=True,
         )
         for chi in (0.4, 0.6, 0.8, 1.0)
     ]
@@ -271,17 +261,11 @@ def test_utilization_falls_as_the_reduction_factor_rises():
 def test_utilization_falls_as_the_resistances_rise():
     values = [
         utilization_member(
-            500e3,
-            60e6,
-            20e6,
-            0.8,
-            0.8,
-            2.6e6 * s,
-            150e6 * s,
+            CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
+            MemberResistance(0.8, 0.8, 2.6e6 * s, 150e6 * s),
             0.9,
             0.9,
-            0.8,
-            0.8,
+            SteelGrade(),
             plastic=True,
         )
         for s in (1.0, 1.5, 2.0, 3.0)
@@ -292,17 +276,37 @@ def test_utilization_falls_as_the_resistances_rise():
 
 def test_utilization_rises_with_every_action():
     base = utilization_member(
-        400e3, 40e6, 10e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+        CompressionBendingState(400e3, 40e6, 10e6, 0.8, 0.8),
+        MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+        0.9,
+        0.9,
+        SteelGrade(),
+        plastic=True,
     )
     for bumped in (
         utilization_member(
-            500e3, 40e6, 10e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+            CompressionBendingState(500e3, 40e6, 10e6, 0.8, 0.8),
+            MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+            0.9,
+            0.9,
+            SteelGrade(),
+            plastic=True,
         ),
         utilization_member(
-            400e3, 50e6, 10e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+            CompressionBendingState(400e3, 50e6, 10e6, 0.8, 0.8),
+            MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+            0.9,
+            0.9,
+            SteelGrade(),
+            plastic=True,
         ),
         utilization_member(
-            400e3, 40e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+            CompressionBendingState(400e3, 40e6, 20e6, 0.8, 0.8),
+            MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+            0.9,
+            0.9,
+            SteelGrade(),
+            plastic=True,
         ),
     ):
         assert bumped > base
@@ -312,7 +316,12 @@ def test_elastic_first_equation_never_falls_below_the_second():
     # Elastic couplings are k_yz = k_zz and k_zy = 0.8 k_yy, so 6.61 dominates.
     for m_y, m_z in ((60e6, 20e6), (20e6, 60e6), (40e6, 40e6)):
         value = utilization_member(
-            500e3, m_y, m_z, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=False
+            CompressionBendingState(500e3, m_y, m_z, 0.8, 0.8),
+            MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+            0.9,
+            0.9,
+            SteelGrade(),
+            plastic=False,
         )
 
         assert jnp.isfinite(value)
@@ -320,36 +329,52 @@ def test_elastic_first_equation_never_falls_below_the_second():
 
 # ---- Governing diagnostics, reported beside the utilization ---- #
 
-DIAGNOSTIC = dict(
-    chi_y=0.8,
-    chi_z=0.8,
-    n_rk=2.6e6,
-    m_rk=150e6,
-    lam_y=0.9,
-    lam_z=0.9,
-    c_my=0.9,
-    c_mz=0.9,
-)
+DIAGNOSTIC_RESISTANCE = MemberResistance(0.8, 0.8, 2.6e6, 150e6)
+DIAGNOSTIC_SLENDERNESS = 0.9
+DIAGNOSTIC_FACTOR = 0.9
+
+
+def governs(m_y, m_z, *, plastic=True):
+    """
+    Which equation governs, for the fixture the diagnostic tests share.
+    """
+    return governing_equation(
+        CompressionBendingState(500e3, m_y, m_z, DIAGNOSTIC_FACTOR, DIAGNOSTIC_FACTOR),
+        DIAGNOSTIC_RESISTANCE,
+        DIAGNOSTIC_SLENDERNESS,
+        DIAGNOSTIC_SLENDERNESS,
+        SteelGrade(),
+        plastic=plastic,
+    )
+
+
+def diagnosed(m_y, m_z, *, plastic=True):
+    """
+    The utilization of that same fixture, for comparison against the code.
+    """
+    return used(
+        500e3,
+        m_y,
+        m_z,
+        0.8,
+        DIAGNOSTIC_SLENDERNESS,
+        DIAGNOSTIC_FACTOR,
+        plastic=plastic,
+    )
 
 
 def test_the_major_axis_equation_governs_when_the_major_moment_dominates():
-    code = governing_equation(500e3, 100e6, 20e6, plastic=True, **DIAGNOSTIC)
-
-    assert code == GOVERNING_MAJOR
+    assert governs(100e6, 20e6) == GOVERNING_MAJOR
 
 
 def test_the_minor_axis_equation_governs_when_the_minor_moment_dominates():
-    code = governing_equation(500e3, 20e6, 100e6, plastic=True, **DIAGNOSTIC)
-
-    assert code == GOVERNING_MINOR
+    assert governs(20e6, 100e6) == GOVERNING_MINOR
 
 
 def test_equal_moments_resolve_to_the_major_axis_equation():
     # The two equations coincide there, so the choice is arbitrary but must be
     # deterministic, or the reported code will chatter across the tie.
-    code = governing_equation(500e3, 60e6, 60e6, plastic=True, **DIAGNOSTIC)
-
-    assert code == GOVERNING_MAJOR
+    assert governs(60e6, 60e6) == GOVERNING_MAJOR
 
 
 @pytest.mark.parametrize(
@@ -358,22 +383,16 @@ def test_equal_moments_resolve_to_the_major_axis_equation():
 @pytest.mark.parametrize("plastic", [True, False])
 def test_the_governing_code_is_consistent_with_the_utilization(plastic, m_y, m_z):
     # Whichever equation is reported must be the one whose value was taken.
-    code = governing_equation(500e3, m_y, m_z, plastic=plastic, **DIAGNOSTIC)
-    value = utilization_member(500e3, m_y, m_z, plastic=plastic, **DIAGNOSTIC)
-    swapped = utilization_member(500e3, m_z, m_y, plastic=plastic, **DIAGNOSTIC)
+    code = governs(m_y, m_z, plastic=plastic)
+    value = diagnosed(m_y, m_z, plastic=plastic)
+    swapped = diagnosed(m_z, m_y, plastic=plastic)
 
     assert value == pytest.approx(swapped)
     assert code in (GOVERNING_MAJOR, GOVERNING_MINOR)
 
 
 def test_the_governing_code_vectorizes_over_members():
-    codes = governing_equation(
-        500e3,
-        jnp.asarray([100e6, 20e6]),
-        jnp.asarray([20e6, 100e6]),
-        plastic=True,
-        **DIAGNOSTIC,
-    )
+    codes = governs(jnp.asarray([100e6, 20e6]), jnp.asarray([20e6, 100e6]))
 
     assert codes.shape == (2,)
     assert np.asarray(codes) == pytest.approx([GOVERNING_MAJOR, GOVERNING_MINOR])
@@ -416,7 +435,12 @@ def test_the_cap_marks_exactly_where_the_factor_stops_rising(plastic):
 
 def test_utilization_is_float64():
     value = utilization_member(
-        500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+        CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
+        MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+        0.9,
+        0.9,
+        SteelGrade(),
+        plastic=True,
     )
 
     assert value.dtype == jnp.float64
@@ -426,7 +450,12 @@ def test_utilization_vectorizes_over_members():
     forces = jnp.asarray([300e3, 500e3, 700e3])
 
     values = utilization_member(
-        forces, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+        CompressionBendingState(forces, 60e6, 20e6, 0.8, 0.8),
+        MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+        0.9,
+        0.9,
+        SteelGrade(),
+        plastic=True,
     )
 
     assert values.shape == (3,)
@@ -434,22 +463,37 @@ def test_utilization_vectorizes_over_members():
 
 
 def test_utilization_is_jittable():
+    # The containers are built from tracers inside the mapped function, which is
+    # ordinary pytree construction; only the class flag stays static.
     jitted = jax.jit(utilization_member, static_argnames=("plastic",))
     value = jitted(
-        500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
+        CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
+        MemberResistance(0.8, 0.8, 2.6e6, 150e6),
+        0.9,
+        0.9,
+        SteelGrade(),
+        plastic=True,
     )
 
-    assert value == pytest.approx(
-        utilization_member(
-            500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
-        )
-    )
+    assert value == pytest.approx(used(500e3, 60e6, 20e6, 0.8, 0.9, 0.8))
 
 
-def test_utilization_is_differentiable():
-    gradient = jax.grad(utilization_member)(
-        500e3, 60e6, 20e6, 0.8, 0.8, 2.6e6, 150e6, 0.9, 0.9, 0.8, 0.8, plastic=True
-    )
+def test_utilization_is_differentiable_in_the_axial_force():
+    def check(n_ed):
+        return used(n_ed, 60e6, 20e6, 0.8, 0.9, 0.8)
+
+    gradient = jax.grad(check)(500e3)
 
     assert jnp.isfinite(gradient)
     assert gradient > 0.0
+
+
+def test_utilization_is_differentiable_in_a_container_field():
+    # A grouped argument is a pytree, so a cotangent still reaches each leaf.
+    def check(chi):
+        return used(500e3, 60e6, 20e6, chi, 0.9, 0.8)
+
+    gradient = jax.grad(check)(0.8)
+
+    assert jnp.isfinite(gradient)
+    assert gradient < 0.0
