@@ -404,6 +404,49 @@ def moment_resultant(
     return jnp.where(positive, jnp.sqrt(jnp.where(positive, square, 1.0)), 0.0)
 
 
+def moment_combined(
+    m_y_ed: Float[Array, "members"],
+    m_z_ed: Float[Array, "members"],
+    *,
+    plastic: bool,
+    resultant: bool = True,
+) -> Float[Array, "members"]:
+    """
+    The two bending moments as the cross-section check reads them.
+
+    Parameters
+    ----------
+    m_y_ed :
+        Design bending moment about the major axis.
+    m_z_ed :
+        Design bending moment about the minor axis.
+    plastic :
+        Whether the section is Class 1 or 2. Static, never a traced value.
+    resultant :
+        Whether to combine the two into a resultant rather than summing them.
+        Static, never a traced value.
+
+    Returns
+    -------
+    moment :
+        Resultant on the plastic branch, and either reading on the elastic one.
+
+    Notes
+    -----
+    EN 1993-1-1 6.2.9. The reading is open only on the elastic branch: for an
+    axisymmetric section Eq. 6.41 takes both exponents as two and collapses to a
+    resultant exactly, so 6.2.9.1 has nothing to choose and the flag applies to
+    6.2.9.2 alone.
+
+    Shared with the analytic lower bound on the diameter, which has to combine
+    the moments the way the check does or it stops bounding it.
+    """
+    if plastic or resultant:
+        return moment_resultant(m_y_ed, m_z_ed)
+
+    return jnp.abs(jnp.asarray(m_y_ed)) + jnp.abs(jnp.asarray(m_z_ed))
+
+
 def utilization_plastic(
     n_ed: Float[Array, "members"],
     m_y_ed: Float[Array, "members"],
@@ -464,8 +507,10 @@ def utilization_plastic(
     exact rather than approximate here: both exponents of Eq. 6.41 are two for a
     circular hollow section and its two reduced resistances are equal.
     """
+    combined = moment_combined(m_y_ed, m_z_ed, plastic=True)
+
     axial = jnp.abs(jnp.asarray(n_ed)) / n_pl_rd(area, f_y, gamma_m0)
-    bending = moment_resultant(m_y_ed, m_z_ed) / m_pl_rd(w_pl, f_y, gamma_m0)
+    bending = combined / m_pl_rd(w_pl, f_y, gamma_m0)
 
     return axial**MOMENT_EXPONENT + bending
 
@@ -533,14 +578,11 @@ def utilization_elastic(
     Unlike the plastic branch this needs no separate axial check, since the
     axial term survives when the moments vanish.
     """
+    combined = moment_combined(m_y_ed, m_z_ed, plastic=False, resultant=resultant)
+
     axial = jnp.abs(jnp.asarray(n_ed)) / n_pl_rd(area, f_y, gamma_m0)
 
-    if resultant:
-        moment = moment_resultant(m_y_ed, m_z_ed)
-    else:
-        moment = jnp.abs(jnp.asarray(m_y_ed)) + jnp.abs(jnp.asarray(m_z_ed))
-
-    return axial + moment / m_el_rd(w_el, f_y, gamma_m0)
+    return axial + combined / m_el_rd(w_el, f_y, gamma_m0)
 
 
 def utilization_cross_section(

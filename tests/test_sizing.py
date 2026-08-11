@@ -32,6 +32,7 @@ ACTIONS = [
     (-5e5, 40e6, 0.0),
     (-5e5, 40e6, 15e6),
     (0.0, 40e6, 15e6),
+    (0.0, 40e6, 40e6),
     (5e5, 40e6, 15e6),
     (-9e5, 80e6, 60e6),
     (-5e4, 5e6, 5e6),
@@ -406,11 +407,11 @@ def test_the_map_vectorizes_over_members():
 
 
 def test_the_map_is_jittable_with_moments():
-    jitted = jax.jit(diameter, static_argnames=("plastic",))
+    jitted = jax.jit(diameter, static_argnames=("plastic", "resultant"))
     tube = tube_for(3)
 
     assert jitted(
-        -5e5, 40e6, 15e6, 0.9, 0.9, LENGTH, STEEL, tube, plastic=False
+        -5e5, 40e6, 15e6, 0.9, 0.9, LENGTH, STEEL, tube, plastic=False, resultant=True
     ) == pytest.approx(float(sized((-5e5, 40e6, 15e6))))
 
 
@@ -424,15 +425,15 @@ def test_the_map_is_jittable_with_moments():
 # circular hollow section and the resultant is exact algebra.
 
 
-def sized_reading(actions, l_cr=LENGTH, *, resultant, c_m=0.9):
+def sized_reading(actions, l_cr=LENGTH, *, resultant, c_m=0.9, cross_section_class=3):
     return diameter(
         *actions,
         c_m,
         c_m,
         l_cr,
         STEEL,
-        tube_for(3),
-        plastic=False,
+        tube_for(cross_section_class),
+        plastic=is_plastic(cross_section_class),
         resultant=resultant,
     )
 
@@ -445,11 +446,19 @@ def test_the_linear_sum_never_asks_for_less_than_the_resultant(actions):
     assert float(summed) >= float(resultant) - 1e-9
 
 
+@pytest.mark.parametrize("cross_section_class, _plastic", BRANCHES)
 @pytest.mark.parametrize("actions", ACTIONS)
-def test_both_readings_are_exactly_fully_stressed(actions):
+def test_both_readings_are_exactly_fully_stressed(
+    actions, cross_section_class, _plastic
+):
     # Whichever reading is chosen, the member satisfies that reading exactly.
+    # Both branches, because the analytic bound the search starts from has to
+    # combine the moments the way the check does or the root falls above it and
+    # the search hands back an untested end of its interval.
     for resultant in (True, False):
-        d = sized_reading(actions, resultant=resultant)
+        d = sized_reading(
+            actions, resultant=resultant, cross_section_class=cross_section_class
+        )
         value = utilization(
             d,
             *actions,
@@ -457,8 +466,8 @@ def test_both_readings_are_exactly_fully_stressed(actions):
             0.9,
             LENGTH,
             STEEL,
-            tube_for(3),
-            plastic=False,
+            tube_for(cross_section_class),
+            plastic=is_plastic(cross_section_class),
             resultant=resultant,
         )
 

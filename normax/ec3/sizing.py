@@ -51,7 +51,7 @@ from normax.ec3.resistance import GAMMA_M0
 from normax.ec3.resistance import GAMMA_M1
 from normax.ec3.resistance import IMPERFECTION_FACTORS
 from normax.ec3.resistance import chi
-from normax.ec3.resistance import moment_resultant
+from normax.ec3.resistance import moment_combined
 from normax.ec3.resistance import n_cr
 from normax.ec3.resistance import slenderness
 from normax.ec3.resistance import utilization_cross_section
@@ -441,11 +441,9 @@ def bracket(
     unit_area = area(1.0, tube.ratio)
     unit_modulus = _modulus(1.0, tube.ratio, plastic=plastic)
 
+    moment = moment_combined(m_y_ed, m_z_ed, plastic=plastic, resultant=resultant)
+
     squash = jnp.sqrt(jnp.abs(n_ed) * steel.gamma_m0 / (steel.f_y * unit_area))
-    if resultant:
-        moment = moment_resultant(m_y_ed, m_z_ed)
-    else:
-        moment = jnp.abs(jnp.asarray(m_y_ed)) + jnp.abs(jnp.asarray(m_z_ed))
     bending = jnp.cbrt(moment * steel.gamma_m0 / (steel.f_y * unit_modulus))
 
     return jnp.maximum(jnp.maximum(squash, bending), DIAMETER_EPSILON)

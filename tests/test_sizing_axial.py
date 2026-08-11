@@ -321,10 +321,10 @@ def test_the_map_broadcasts_a_scalar_force_over_many_lengths():
 
 
 def test_the_map_is_jittable():
-    jitted = jax.jit(diameter, static_argnames=("plastic",))
+    jitted = jax.jit(diameter, static_argnames=("plastic", "resultant"))
 
     assert jitted(
-        -5e5, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC
+        -5e5, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC, resultant=True
     ) == pytest.approx(float(sized(-5e5)))
 
 
