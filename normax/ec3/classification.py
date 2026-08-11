@@ -88,6 +88,46 @@ def class_limits(f_y: float | Float[Array, ""]) -> Float[Array, "3"]:
     return factors * material_factor(f_y) ** 2
 
 
+def ratio_at_class_limit(
+    f_y: float | Float[Array, ""],
+    cross_section_class: int,
+) -> Float[Array, ""]:
+    """
+    Slenderness limit of one cross-section class.
+
+    Parameters
+    ----------
+    f_y :
+        Yield strength.
+    cross_section_class :
+        Class 1, 2 or 3.
+
+    Returns
+    -------
+    ratio :
+        Largest diameter-to-thickness ratio still inside that class.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 5.2 sheet 3, one row of `class_limits`. The class is a
+    Python integer selecting a row rather than a traced value, so refusing
+    Class 4 here is an ordinary exception: beyond the third limit the tube is a
+    shell and EN 1993-1-6 applies instead.
+    """
+    if cross_section_class not in (1, 2, 3):
+        raise ValueError(
+            f"class must be 1, 2 or 3, not {cross_section_class}; "
+            "beyond the Class 3 limit EN 1993-1-6 applies"
+        )
+
+    return class_limits(f_y)[cross_section_class - 1]
+
+
 def classify_section(
     ratio: Float[Array, "members"],
     f_y: float | Float[Array, ""],

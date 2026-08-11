@@ -6,8 +6,7 @@ import pytest
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
-from normax.ec3.section import area
-from normax.ec3.section import second_moment
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.stability import ALPHA_CR_AMPLIFIABLE
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.ec3.stability import ALPHA_CR_PLASTIC
@@ -31,8 +30,8 @@ RATIO = 59.577_464_788_732_41
 @pytest.mark.parametrize("n_ed", [-1e3, -1e5, -2e6])
 @pytest.mark.parametrize("l_cr", [500.0, 4000.0, 12000.0])
 def test_the_member_route_and_the_global_route_agree(diameter, n_ed, l_cr):
-    gross = area(diameter, RATIO)
-    inertia = second_moment(diameter, RATIO)
+    gross = TubeCatalogue(RATIO).tube(diameter).area
+    inertia = TubeCatalogue(RATIO).tube(diameter).second_moment
 
     critical = force_critical(inertia, l_cr, SteelGrade(e_mod=E_MOD))
     by_member = slenderness_from_force(gross, SteelGrade(f_y=F_Y), critical)
@@ -49,7 +48,7 @@ def test_the_member_route_and_the_global_route_agree(diameter, n_ed, l_cr):
 @pytest.mark.parametrize("diameter", [80.0, 300.0])
 @pytest.mark.parametrize("n_ed", [-5e4, -8e5])
 def test_a_buckling_length_survives_a_round_trip_through_a_load_factor(diameter, n_ed):
-    inertia = second_moment(diameter, RATIO)
+    inertia = TubeCatalogue(RATIO).tube(diameter).second_moment
     original = 3500.0
 
     alpha_cr = force_critical(inertia, original, SteelGrade(e_mod=E_MOD)) / abs(n_ed)
@@ -64,7 +63,7 @@ def test_the_load_factor_scales_the_members_share_of_the_load():
 
 
 def test_a_stiffer_frame_is_a_less_slender_member():
-    gross = area(100.0, RATIO)
+    gross = TubeCatalogue(RATIO).tube(100.0).area
     factor = amplifier_resistance(gross, SteelGrade(f_y=F_Y), -1e5)
 
     assert float(slenderness_global(factor, 20.0)) < float(
@@ -77,8 +76,8 @@ def test_the_routes_agree_elementwise_over_members():
     lengths = jnp.array([800.0, 1500.0, 2600.0])
     n_ed = jnp.array([-4e4, -9e4, -3e5])
 
-    gross = area(diameters, RATIO)
-    inertia = second_moment(diameters, RATIO)
+    gross = TubeCatalogue(RATIO).tube(diameters).area
+    inertia = TubeCatalogue(RATIO).tube(diameters).second_moment
     critical = force_critical(inertia, lengths, SteelGrade(e_mod=E_MOD))
 
     by_member = slenderness_from_force(gross, SteelGrade(f_y=F_Y), critical)
@@ -175,7 +174,7 @@ def test_the_global_slenderness_is_differentiable():
 def test_an_unloaded_member_has_no_amplifier():
     # A gridshell's boundary hoops span support to support and carry nothing.
     # The amplifier is a ratio to the load a member carries, so there is none.
-    gross = area(jnp.array([100.0, 100.0]), RATIO)
+    gross = TubeCatalogue(RATIO).tube(jnp.array([100.0, 100.0])).area
     factor = amplifier_resistance(gross, SteelGrade(f_y=F_Y), jnp.array([-1e5, 0.0]))
 
     assert np.isfinite(float(factor[0]))
@@ -183,7 +182,7 @@ def test_an_unloaded_member_has_no_amplifier():
 
 
 def test_an_unloaded_member_has_no_equivalent_buckling_length():
-    inertia = second_moment(jnp.array([100.0, 100.0]), RATIO)
+    inertia = TubeCatalogue(RATIO).tube(jnp.array([100.0, 100.0])).second_moment
     lengths = buckling_length_global(
         0.4, jnp.array([-1e5, 0.0]), inertia, SteelGrade(e_mod=E_MOD)
     )
@@ -195,7 +194,7 @@ def test_an_unloaded_member_has_no_equivalent_buckling_length():
 def test_an_unloaded_member_is_not_reported_as_infinitely_slender():
     # Infinity would read as a statement about the member. nan says the question
     # does not apply, and a reduction over the members says so too.
-    gross = area(jnp.array([80.0, 80.0]), RATIO)
+    gross = TubeCatalogue(RATIO).tube(jnp.array([80.0, 80.0])).area
     slender = slenderness_global(
         amplifier_resistance(gross, SteelGrade(f_y=F_Y), jnp.array([-5e4, 0.0])), 0.4
     )
@@ -205,8 +204,8 @@ def test_an_unloaded_member_is_not_reported_as_infinitely_slender():
 
 
 def test_a_loaded_member_is_untouched_by_the_guard():
-    gross = area(120.0, RATIO)
-    inertia = second_moment(120.0, RATIO)
+    gross = TubeCatalogue(RATIO).tube(120.0).area
+    inertia = TubeCatalogue(RATIO).tube(120.0).second_moment
     n_ed = -2.5e5
 
     critical = force_critical(inertia, 3000.0, SteelGrade(e_mod=E_MOD))

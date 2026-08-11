@@ -47,7 +47,7 @@ from tesseract_core.runtime import Float64
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state as governing_limit
@@ -230,16 +230,18 @@ def _forward(
     lengths = jnp.asarray(inputs["lengths"])
 
     actions = MemberActions(n_ed, m_ed, m_minor, c_m, c_minor)
-    arguments = (actions, l_cr, steel, catalogue)
 
-    required = diameter_required(*arguments, plastic=plastic, resultant=resultant)
+    required = diameter_required(
+        actions, l_cr, steel, catalogue, plastic=plastic, resultant=resultant
+    )
+    sized = catalogue.tube(required)
     used = utilization_of_tubes(
-        required, *arguments, plastic=plastic, resultant=resultant
+        sized, actions, l_cr, steel, plastic=plastic, resultant=resultant
     )
 
     outputs = {
         "diameter": required,
-        "mass": mass_of_tubes(required, lengths, steel, catalogue),
+        "mass": mass_of_tubes(sized, lengths, steel),
         "utilization": used,
         "m_y_ed": m_ed,
         "m_z_ed": m_minor,
@@ -249,7 +251,13 @@ def _forward(
 
     if diagnostics:
         outputs["governing"] = governing_limit(
-            required, *arguments, plastic=plastic, resultant=resultant
+            sized,
+            actions,
+            l_cr,
+            steel,
+            catalogue,
+            plastic=plastic,
+            resultant=resultant,
         )
 
     return outputs

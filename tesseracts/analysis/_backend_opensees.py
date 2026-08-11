@@ -34,7 +34,7 @@ from normax.analysis.opensees import forces
 from normax.analysis.opensees import jacobian
 from normax.analysis.opensees import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 
 # Which block of the Jacobian carries each (output, input) pair. The minor-axis

@@ -30,12 +30,12 @@ import jax.numpy as jnp
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
 from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.sizing import LIMIT_MINIMUM_SIZE
 from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
-from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import is_plastic
@@ -179,17 +179,16 @@ def main() -> None:
         d = size(*actions, catalogue, False)
         demand = float(
             utilization_design(
-                d,
+                catalogue.tube(d),
                 MemberActions(*actions[:3], 0.9, 0.9),
                 actions[3],
                 STEEL,
-                catalogue,
                 plastic=False,
             )
         )
         code = float(
             governing_limit_state(
-                d,
+                catalogue.tube(d),
                 MemberActions(*actions[:3], 0.9, 0.9),
                 actions[3],
                 STEEL,
@@ -217,7 +216,7 @@ def main() -> None:
             plastic=False,
         )
 
-        return mass(sizes, lengths, STEEL, catalogue)
+        return mass(catalogue.tube(sizes), lengths, STEEL)
 
     total = float(objective(forces))
     gradient = jax.grad(objective)(forces)

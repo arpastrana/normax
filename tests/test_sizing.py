@@ -6,13 +6,13 @@ import pytest
 from normax.ec3.actions import MemberActions
 from normax.ec3.interaction import C_M_MINIMUM
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import DIAMETER_MINIMUM
+from normax.ec3.section import DIAMETER_MINIMUM
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
 from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.sizing import LIMIT_MINIMUM_SIZE
 from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
-from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
@@ -62,11 +62,10 @@ def used(d, actions, l_cr=LENGTH, *, c_m=0.9, cross_section_class=3):
     catalogue = catalogue_for(cross_section_class)
 
     return utilization_design(
-        d,
+        catalogue.tube(d),
         MemberActions(*actions, c_m, c_m),
         l_cr,
         STEEL,
-        catalogue,
         plastic=is_plastic(cross_section_class),
     )
 
@@ -127,7 +126,7 @@ def test_the_cross_section_check_can_govern_over_the_member_check():
     assert (
         float(
             governing_limit_state(
-                floored,
+                catalogue_for(3).tube(floored),
                 MemberActions(-1e3, 60e6, 0.0, C_M_MINIMUM, C_M_MINIMUM),
                 stocky,
                 STEEL,
@@ -143,7 +142,7 @@ def test_a_tension_member_is_sized_by_the_cross_section_alone():
     catalogue = catalogue_for(3)
     d = sized((5e5, 40e6, 15e6))
     code = governing_limit_state(
-        d,
+        catalogue.tube(d),
         MemberActions(5e5, 40e6, 15e6, 0.9, 0.9),
         LENGTH,
         STEEL,
@@ -260,7 +259,12 @@ def test_the_diagnostic_names_a_real_limit_state(
     plastic = is_plastic(cross_section_class)
     d = sized(actions, cross_section_class=cross_section_class)
     code = governing_limit_state(
-        d, MemberActions(*actions, 0.9, 0.9), LENGTH, STEEL, catalogue, plastic=plastic
+        catalogue.tube(d),
+        MemberActions(*actions, 0.9, 0.9),
+        LENGTH,
+        STEEL,
+        catalogue,
+        plastic=plastic,
     )
 
     assert float(code) in {
@@ -276,7 +280,7 @@ def test_the_diagnostic_reports_the_minimum_size_ahead_of_any_clause():
     catalogue = catalogue_for(3)
     d = sized((-1.0, 0.0, 0.0))
     code = governing_limit_state(
-        d,
+        catalogue.tube(d),
         MemberActions(-1.0, 0.0, 0.0, 0.9, 0.9),
         LENGTH,
         STEEL,
@@ -292,7 +296,7 @@ def test_a_slender_compression_member_is_governed_by_the_member_check():
     catalogue = catalogue_for(3)
     d = sized((-5e5, 40e6, 15e6), 12000.0)
     code = governing_limit_state(
-        d,
+        catalogue.tube(d),
         MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9),
         12000.0,
         STEEL,
@@ -309,7 +313,7 @@ def test_the_named_equation_is_the_one_that_actually_wins():
     catalogue = catalogue_for(2)
     d = sized((-5e5, 80e6, 5e6), 12000.0, cross_section_class=2)
     code = governing_limit_state(
-        d,
+        catalogue.tube(d),
         MemberActions(-5e5, 80e6, 5e6, 0.9, 0.9),
         12000.0,
         STEEL,
@@ -331,9 +335,11 @@ def test_the_diagnostic_needs_the_minor_axis_it_was_sized_with():
     major_only = MemberActions(actions.n_ed, actions.m_y_ed, 0.0, actions.c_my, 1.0)
 
     d = diameter_required(actions, LENGTH, STEEL, catalogue, plastic=False)
-    both = governing_limit_state(d, actions, LENGTH, STEEL, catalogue, plastic=False)
+    both = governing_limit_state(
+        catalogue.tube(d), actions, LENGTH, STEEL, catalogue, plastic=False
+    )
     dropped = governing_limit_state(
-        d, major_only, LENGTH, STEEL, catalogue, plastic=False
+        catalogue.tube(d), major_only, LENGTH, STEEL, catalogue, plastic=False
     )
 
     assert float(both) == LIMIT_CROSS_SECTION
@@ -514,11 +520,10 @@ def test_both_readings_are_exactly_fully_stressed(
             actions, resultant=resultant, cross_section_class=cross_section_class
         )
         value = utilization_design(
-            d,
+            catalogue_for(cross_section_class).tube(d),
             MemberActions(*actions, 0.9, 0.9),
             LENGTH,
             STEEL,
-            catalogue_for(cross_section_class),
             plastic=is_plastic(cross_section_class),
             resultant=resultant,
         )
@@ -557,7 +562,7 @@ def test_the_reading_cannot_bite_where_the_member_check_governs():
     resultant = sized_reading((-5e5, 40e6, 40e6), slender, resultant=True)
     summed = sized_reading((-5e5, 40e6, 40e6), slender, resultant=False)
     code = governing_limit_state(
-        resultant,
+        catalogue_for(3).tube(resultant),
         MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         slender,
         STEEL,
@@ -641,11 +646,10 @@ def test_the_ceiling_is_out_of_physical_reach():
             plastic=False,
         )
         used = utilization_design(
-            sized,
+            catalogue.tube(sized),
             MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0),
             l_cr,
             steel,
-            catalogue,
             plastic=False,
         )
 
@@ -704,11 +708,10 @@ def test_the_guard_costs_one_evaluation_and_changes_no_answer():
             plastic=False,
         )
         used = utilization_design(
-            sized,
+            catalogue.tube(sized),
             MemberActions(n_ed, m_ed, 0.0, 1.0, 1.0),
             l_cr,
             steel,
-            catalogue,
             plastic=False,
         )
 

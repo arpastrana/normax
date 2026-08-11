@@ -33,7 +33,6 @@ differentiable only there, not everywhere.
 """
 
 from functools import partial
-from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -43,7 +42,6 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
-from normax.ec3.classification import class_limits
 from normax.ec3.interaction import governing_equation
 from normax.ec3.interaction import moment_factor_linear
 from normax.ec3.interaction import utilization_member
@@ -53,14 +51,8 @@ from normax.ec3.resistance import moment_combined
 from normax.ec3.resistance import reduction_buckling
 from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.resistance import utilization_cross_section
-from normax.ec3.section import area
-from normax.ec3.section import modulus_elastic
-from normax.ec3.section import modulus_plastic
-from normax.ec3.section import second_moment
-
-# EN 10210 lists no smaller hot-finished tube, so a member is never sized below
-# this however light its actions.
-DIAMETER_MINIMUM = 21.3
+from normax.ec3.section import Tube
+from normax.ec3.section import TubeCatalogue
 
 # Classes taking plastic section properties, EN 1993-1-1 Table 6.7.
 PLASTIC_CLASSES = (1, 2)
@@ -87,78 +79,6 @@ LIMIT_MAJOR = 3.0
 LIMIT_MINOR = 4.0
 
 
-class TubeCatalogue(NamedTuple):
-    """
-    The family of circular hollow sections a member is drawn from.
-
-    Attributes
-    ----------
-    ratio :
-        Diameter-to-thickness ratio, fixed so that a member carries a single
-        size variable.
-    diameter_min :
-        Smallest diameter the family offers.
-
-    Notes
-    -----
-    The ratio fixes the cross-section class, but the class itself is not held
-    here: it selects between two clauses and so must stay a static Python value,
-    while every field of this container is a traceable leaf.
-
-    The buckling curve is not held here either. It follows the fabrication
-    route rather than the shape, so it belongs to the grade.
-    """
-
-    ratio: float | Float[Array, ""]
-    diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM
-
-    @classmethod
-    def at_class_limit(
-        cls,
-        f_y: float | Float[Array, ""],
-        cross_section_class: int,
-        diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM,
-    ) -> "TubeCatalogue":
-        """
-        The family whose wall is as thin as a given class allows.
-
-        Parameters
-        ----------
-        f_y :
-            Yield strength.
-        cross_section_class :
-            Class 1, 2 or 3.
-        diameter_min :
-            Smallest diameter the family offers.
-
-        Returns
-        -------
-        catalogue :
-            A catalogue whose ratio sits exactly on that class's limit.
-
-        Raises
-        ------
-        ValueError
-            If the class is not 1, 2 or 3.
-
-        Notes
-        -----
-        EN 1993-1-1 Table 5.2 sheet 3. Sitting on the limit maximises the wall
-        slenderness, and so minimises material, while staying inside the class.
-        Class 4 is refused: beyond the third limit the tube is a shell and
-        EN 1993-1-6 applies instead.
-        """
-        if cross_section_class not in (1, 2, 3):
-            raise ValueError(
-                f"class must be 1, 2 or 3, not {cross_section_class}; "
-                "beyond the Class 3 limit EN 1993-1-6 applies"
-            )
-
-        limit = class_limits(f_y)[cross_section_class - 1]
-
-        return cls(limit, diameter_min)
-
-
 def is_plastic(cross_section_class: int) -> bool:
     """
     Whether a cross-section class takes plastic section properties.
@@ -182,13 +102,7 @@ def is_plastic(cross_section_class: int) -> bool:
     return cross_section_class in PLASTIC_CLASSES
 
 
-def _modulus(
-    diameter: Float[Array, "members"],
-    ratio: float | Float[Array, ""],
-    *,
-    plastic: bool,
-    resultant: bool = True,
-) -> Float[Array, "members"]:
+def _modulus(tube: Tube, *, plastic: bool) -> Float[Array, "members"]:
     """
     Section modulus matching the cross-section class.
 
@@ -198,36 +112,33 @@ def _modulus(
         Plastic modulus for Classes 1 and 2, elastic modulus for Class 3.
     """
     if plastic:
-        return modulus_plastic(diameter, ratio)
+        return tube.modulus_plastic
 
-    return modulus_elastic(diameter, ratio)
+    return tube.modulus_elastic
 
 
 def utilization_design(
-    diameter: Float[Array, "members"],
+    tube: Tube,
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
 ) -> Float[Array, "members"]:
     """
-    Demand over resistance for a tube of a given diameter.
+    Demand over resistance of a given tube.
 
     Parameters
     ----------
-    diameter :
-        Outer diameter.
+    tube :
+        The section carrying the actions.
     actions :
         Design actions on the member.
     l_cr :
         Buckling length.
     steel :
         Material properties and partial factors.
-    catalogue :
-        The section family the member is drawn from.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
 
@@ -253,18 +164,17 @@ def utilization_design(
     both checks are indifferent to the sign of either moment.
     """
     member, section = _demands(
-        diameter, actions, l_cr, steel, catalogue, plastic=plastic, resultant=resultant
+        tube, actions, l_cr, steel, plastic=plastic, resultant=resultant
     )
 
     return jnp.maximum(member, section)
 
 
 def _demands(
-    diameter: Float[Array, "members"],
+    tube: Tube,
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
-    catalogue: TubeCatalogue,
     *,
     plastic: bool,
     resultant: bool = True,
@@ -283,10 +193,10 @@ def _demands(
     Shared by the utilization and by the diagnostic that reports which check
     decided a member, so the two cannot disagree about what governed.
     """
-    gross = area(diameter, catalogue.ratio)
-    modulus = _modulus(diameter, catalogue.ratio, plastic=plastic)
+    gross = tube.area
+    modulus = _modulus(tube, plastic=plastic)
 
-    critical = force_critical(second_moment(diameter, catalogue.ratio), l_cr, steel)
+    critical = force_critical(tube.second_moment, l_cr, steel)
     lam = slenderness_from_force(gross, steel, critical)
     reduction = reduction_buckling(lam, steel.alpha)
 
@@ -356,8 +266,9 @@ def diameter_bracket(
     which is where the implicit derivative stops being valid. It is applied
     afterwards instead.
     """
-    unit_area = area(1.0, catalogue.ratio)
-    unit_modulus = _modulus(1.0, catalogue.ratio, plastic=plastic)
+    unit = catalogue.tube(1.0)
+    unit_area = unit.area
+    unit_modulus = _modulus(unit, plastic=plastic)
 
     moment = moment_combined(
         actions.m_y_ed, actions.m_z_ed, plastic=plastic, resultant=resultant
@@ -427,11 +338,10 @@ def _solve(
         middle = 0.5 * (small + large)
         exceeded = (
             utilization_design(
-                jnp.exp(middle),
+                catalogue.tube(jnp.exp(middle)),
                 actions,
                 l_cr,
                 steel,
-                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -440,16 +350,10 @@ def _solve(
 
         return jnp.where(exceeded, middle, small), jnp.where(exceeded, large, middle)
 
-    ceiling = jnp.exp(over)
+    ceiling = catalogue.tube(jnp.exp(over))
     bracketed = (
         utilization_design(
-            ceiling,
-            actions,
-            l_cr,
-            steel,
-            catalogue,
-            plastic=plastic,
-            resultant=resultant,
+            ceiling, actions, l_cr, steel, plastic=plastic, resultant=resultant
         )
         <= 1.0
     )
@@ -516,10 +420,16 @@ def _diameter_jvp(
     the catalogue rather than by the standard, and the tangent is zero.
     """
     solved = _solve(plastic, resultant, *primals)
+    acting, buckling, grade, family = primals
 
     def check(size: Float[Array, "members"]) -> Float[Array, ""]:
         demand = utilization_design(
-            size, *primals, plastic=plastic, resultant=resultant
+            family.tube(size),
+            acting,
+            buckling,
+            grade,
+            plastic=plastic,
+            resultant=resultant,
         )
         if jnp.shape(demand) != jnp.shape(size):
             raise ValueError(
@@ -530,9 +440,19 @@ def _diameter_jvp(
         return jnp.sum(demand)
 
     def at_root(
-        *inputs: MemberActions | Float[Array, "members"] | SteelGrade | TubeCatalogue,
+        actions: MemberActions,
+        l_cr: Float[Array, "members"],
+        steel: SteelGrade,
+        catalogue: TubeCatalogue,
     ) -> Float[Array, "members"]:
-        return utilization_design(solved, *inputs, plastic=plastic, resultant=resultant)
+        return utilization_design(
+            catalogue.tube(solved),
+            actions,
+            l_cr,
+            steel,
+            plastic=plastic,
+            resultant=resultant,
+        )
 
     slope = jax.grad(check)(solved)
     _, drift = jax.jvp(at_root, primals, tangents)
@@ -593,24 +513,21 @@ def diameter_required(
 
 
 def mass(
-    diameter: Float[Array, "members"],
+    tubes: Tube,
     lengths: Float[Array, "members"],
     steel: SteelGrade,
-    catalogue: TubeCatalogue,
 ) -> Float[Array, ""]:
     """
     Total mass of a set of members.
 
     Parameters
     ----------
-    diameter :
-        Outer diameter of each member.
+    tubes :
+        The section of each member.
     lengths :
         Length of each member.
     steel :
         Material properties and partial factors.
-    catalogue :
-        The section family the members are drawn from.
 
     Returns
     -------
@@ -621,11 +538,11 @@ def mass(
     -----
     Geometry, not EN 1993-1-1. The objective the sizing map exists to serve.
     """
-    return steel.density * jnp.sum(area(diameter, catalogue.ratio) * lengths)
+    return steel.density * jnp.sum(tubes.area * lengths)
 
 
 def governing_limit_state(
-    diameter: Float[Array, "members"],
+    tube: Tube,
     actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
@@ -639,8 +556,8 @@ def governing_limit_state(
 
     Parameters
     ----------
-    diameter :
-        Outer diameter, as returned by the sizing map.
+    tube :
+        The section the sizing map returned.
     actions :
         Design actions on the member, the same ones it was sized for.
     l_cr :
@@ -648,7 +565,7 @@ def governing_limit_state(
     steel :
         Material properties and partial factors.
     catalogue :
-        The section family the member is drawn from.
+        The section family the member is drawn from, read only for its floor.
     plastic :
         Whether the section is Class 1 or 2. Static, never a traced value.
 
@@ -671,12 +588,12 @@ def governing_limit_state(
     kinked.
     """
     member, section = _demands(
-        diameter, actions, l_cr, steel, catalogue, plastic=plastic, resultant=resultant
+        tube, actions, l_cr, steel, plastic=plastic, resultant=resultant
     )
 
-    gross = area(diameter, catalogue.ratio)
-    modulus = _modulus(diameter, catalogue.ratio, plastic=plastic)
-    critical = force_critical(second_moment(diameter, catalogue.ratio), l_cr, steel)
+    gross = tube.area
+    modulus = _modulus(tube, plastic=plastic)
+    critical = force_critical(tube.second_moment, l_cr, steel)
     lam = slenderness_from_force(gross, steel, critical)
     reduction = reduction_buckling(lam, steel.alpha)
 
@@ -702,7 +619,7 @@ def governing_limit_state(
     )
     decided = jnp.where(member > section, by_member, by_section)
 
-    at_minimum = jnp.asarray(diameter) <= catalogue.diameter_min * (1.0 + 1e-12)
+    at_minimum = jnp.asarray(tube.diameter) <= catalogue.diameter_min * (1.0 + 1e-12)
 
     return jnp.where(at_minimum, LIMIT_MINIMUM_SIZE, decided)
 

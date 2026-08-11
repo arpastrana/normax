@@ -42,13 +42,7 @@ from normax.ec3.resistance import resistance_shear
 from normax.ec3.resistance import resistance_tension
 from normax.ec3.resistance import resistance_yielding
 from normax.ec3.resistance import utilization_elastic
-from normax.ec3.section import area
-from normax.ec3.section import diameter_inner
-from normax.ec3.section import modulus_elastic
-from normax.ec3.section import modulus_plastic
-from normax.ec3.section import radius_of_gyration
-from normax.ec3.section import second_moment
-from normax.ec3.section import thickness
+from normax.ec3.section import TubeCatalogue
 
 # Blueprints is LGPL-2.1 and normax is Apache-2.0, so it is a dev dependency
 # and appears only here, as a NUMERICAL ORACLE. Its formula classes are called
@@ -209,7 +203,7 @@ def test_thickness_agrees(profiles, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    assert thickness(profile.outer_diameter, ratio) == pytest.approx(
+    assert TubeCatalogue(ratio).tube(profile.outer_diameter).thickness == pytest.approx(
         profile.wall_thickness
     )
 
@@ -219,9 +213,9 @@ def test_inner_diameter_agrees(profiles, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    assert diameter_inner(profile.outer_diameter, ratio) == pytest.approx(
-        profile.inner_diameter
-    )
+    assert TubeCatalogue(ratio).tube(
+        profile.outer_diameter
+    ).diameter_inner == pytest.approx(profile.inner_diameter)
 
 
 @pytest.mark.parametrize("name", PROFILE_NAMES)
@@ -229,7 +223,7 @@ def test_area_agrees(profiles, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    assert area(profile.outer_diameter, ratio) == pytest.approx(
+    assert TubeCatalogue(ratio).tube(profile.outer_diameter).area == pytest.approx(
         profile.area, rel=MESH_TOLERANCE
     )
 
@@ -239,7 +233,7 @@ def test_second_moment_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = second_moment(profile.outer_diameter, ratio)
+    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).second_moment
 
     assert ours == pytest.approx(meshed[name].ixx_c, rel=MESH_TOLERANCE)
     assert ours == pytest.approx(meshed[name].iyy_c, rel=MESH_TOLERANCE)
@@ -250,7 +244,7 @@ def test_modulus_elastic_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = modulus_elastic(profile.outer_diameter, ratio)
+    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).modulus_elastic
 
     assert ours == pytest.approx(meshed[name].zxx_plus, rel=MESH_TOLERANCE)
 
@@ -260,7 +254,7 @@ def test_modulus_plastic_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = modulus_plastic(profile.outer_diameter, ratio)
+    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).modulus_plastic
 
     assert ours == pytest.approx(meshed[name].sxx, rel=MESH_TOLERANCE)
 
@@ -270,7 +264,7 @@ def test_radius_of_gyration_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = radius_of_gyration(profile.outer_diameter, ratio)
+    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).radius_of_gyration
 
     assert ours == pytest.approx(meshed[name].rx_c, rel=MESH_TOLERANCE)
 

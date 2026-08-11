@@ -57,9 +57,7 @@ from jaxtyping import Float
 from normax.analysis import MemberForces
 from normax.analysis import fixities
 from normax.ec3.material import SteelGrade
-from normax.ec3.section import area
-from normax.ec3.section import second_moment
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 from normax.units import MILLIMETRE
 from normax.units import to_metres
@@ -334,8 +332,8 @@ def _build(
     flags = fixities(structure, spanned.normal)
 
     outer = to_metres(diameters)
-    areas = np.asarray(area(outer, catalogue.ratio))
-    inertias = np.asarray(second_moment(outer, catalogue.ratio))
+    areas = np.asarray(catalogue.tube(outer).area)
+    inertias = np.asarray(catalogue.tube(outer).second_moment)
     e_mod = float(to_pascals(steel.e_mod))
 
     num_nodes = coordinates.shape[0]
@@ -547,8 +545,8 @@ def _section_slopes(
     """
     outer = to_metres(diameters)
 
-    d_area = jax.vmap(jax.grad(lambda d: area(d, catalogue.ratio)))(outer)
-    d_inertia = jax.vmap(jax.grad(lambda d: second_moment(d, catalogue.ratio)))(outer)
+    d_area = jax.vmap(jax.grad(lambda d: catalogue.tube(d).area))(outer)
+    d_inertia = jax.vmap(jax.grad(lambda d: catalogue.tube(d).second_moment))(outer)
 
     return (
         np.asarray(d_area) * MILLIMETRE,

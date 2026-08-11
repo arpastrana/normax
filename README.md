@@ -37,7 +37,7 @@ import jax.numpy as jnp
 
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import graph
 from normax.pipeline import mass

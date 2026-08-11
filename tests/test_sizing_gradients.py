@@ -13,7 +13,7 @@ from normax.ec3.adjoint import reduction_buckling_derivative
 from normax.ec3.material import IMPERFECTION_FACTORS
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import reduction_buckling
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
@@ -254,7 +254,7 @@ def test_check_grads_passes_through_the_mass_objective():
     def objective(force_kn, length_m):
         sizes = scaled(force_kn, 40.0, 15.0, length_m)
 
-        return mass(sizes, length_m * METRE, STEEL, CATALOGUE)
+        return mass(CATALOGUE.tube(sizes), length_m * METRE, STEEL)
 
     check_grads(objective, (-500.0, 4.0), order=1, modes=("rev",))
 
@@ -302,7 +302,7 @@ def test_the_mass_gradient_is_finite_and_signed():
             plastic=PLASTIC,
         )
 
-        return mass(sizes, lengths, STEEL, CATALOGUE)
+        return mass(CATALOGUE.tube(sizes), lengths, STEEL)
 
     gradient = jax.grad(objective)(forces)
 
@@ -326,7 +326,7 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
             plastic=PLASTIC,
         )
 
-        return mass(sizes, lengths, STEEL, CATALOGUE)
+        return mass(CATALOGUE.tube(sizes), lengths, STEEL)
 
     gradient = jax.grad(objective)(forces)
 

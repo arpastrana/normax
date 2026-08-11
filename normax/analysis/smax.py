@@ -66,9 +66,7 @@ from normax.analysis import Buckling
 from normax.analysis import MemberForces
 from normax.analysis import fixities
 from normax.ec3.material import SteelGrade
-from normax.ec3.section import area
-from normax.ec3.section import second_moment
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_metre
 from normax.units import to_metres
@@ -287,8 +285,8 @@ def _injected(
     every member being a beam.
     """
     outer = to_metres(diameters)
-    gross = area(outer, catalogue.ratio)
-    inertia = second_moment(outer, catalogue.ratio)
+    gross = catalogue.tube(outer).area
+    inertia = catalogue.tube(outer).second_moment
 
     e_mod = to_pascals(jnp.asarray(steel.e_mod))
     f_y = to_pascals(jnp.asarray(steel.f_y))

@@ -35,7 +35,7 @@ from normax.ec3.adjoint import derivative_force
 from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import utilization_design
@@ -72,11 +72,10 @@ def used(d, n_ed, l_cr):
     Utilization at a diameter, from the exact clause functions.
     """
     return utilization_design(
-        d,
+        CATALOGUE.tube(d),
         MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0),
         l_cr,
         STEEL,
-        CATALOGUE,
         plastic=PLASTIC,
     )
 

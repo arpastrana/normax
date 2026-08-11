@@ -35,7 +35,7 @@ import jax.numpy as jnp
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
@@ -84,7 +84,9 @@ def total_mass(beta):
     """
     Mass of the structure sized by the smooth envelope at a given sharpness.
     """
-    return mass(diameter_envelope(sizes_per_case(), beta), LENGTHS, STEEL, CATALOGUE)
+    return mass(
+        CATALOGUE.tube(diameter_envelope(sizes_per_case(), beta)), LENGTHS, STEEL
+    )
 
 
 def main() -> None:
@@ -93,7 +95,7 @@ def main() -> None:
     """
     per_case = sizes_per_case()
     exact = jnp.max(per_case, axis=0)
-    exact_mass = float(mass(exact, LENGTHS, STEEL, CATALOGUE)) * 1e3
+    exact_mass = float(mass(CATALOGUE.tube(exact), LENGTHS, STEEL)) * 1e3
 
     print("Three load cases over four members, S355 at the Class 3 limit\n")
     print(f"  {'member':<10}{'case 1':<12}{'case 2':<12}{'case 3':<12}{'exact max'}")
@@ -115,19 +117,20 @@ def main() -> None:
         bound = float(jnp.log(per_case.shape[0]) / beta) * 100.0
         gradient = jax.grad(
             lambda f: mass(
-                diameter_envelope(
-                    diameter_required(
-                        MemberActions(f, MOMENTS, 0.0, 0.9, 0.9),
-                        LENGTHS,
-                        STEEL,
-                        CATALOGUE,
-                        plastic=PLASTIC,
-                    ),
-                    beta,
+                CATALOGUE.tube(
+                    diameter_envelope(
+                        diameter_required(
+                            MemberActions(f, MOMENTS, 0.0, 0.9, 0.9),
+                            LENGTHS,
+                            STEEL,
+                            CATALOGUE,
+                            plastic=PLASTIC,
+                        ),
+                        beta,
+                    )
                 ),
                 LENGTHS,
                 STEEL,
-                CATALOGUE,
             )
         )(FORCES)
         finite = bool(jnp.all(jnp.isfinite(gradient)))
@@ -151,7 +154,7 @@ def main() -> None:
             plastic=PLASTIC,
         )
 
-        return mass(diameter_envelope(sizes, beta), LENGTHS, STEEL, CATALOGUE)
+        return mass(CATALOGUE.tube(diameter_envelope(sizes, beta)), LENGTHS, STEEL)
 
     def hard(forces):
         sizes = diameter_required(
@@ -162,7 +165,7 @@ def main() -> None:
             plastic=PLASTIC,
         )
 
-        return mass(jnp.max(sizes, axis=0), LENGTHS, STEEL, CATALOGUE)
+        return mass(CATALOGUE.tube(jnp.max(sizes, axis=0)), LENGTHS, STEEL)
 
     smooth_gradient = jax.grad(objective)(FORCES)
     hard_gradient = jax.grad(hard)(FORCES)

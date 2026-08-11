@@ -51,9 +51,7 @@ from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
-from normax.ec3.section import area
-from normax.ec3.section import second_moment
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import diameter_required as diameter_ec3
 from normax.ec3.sizing import end_moments
@@ -244,11 +242,10 @@ def design(
     )
 
     used = utilization_ec3(
-        required,
+        catalogue.tube(required),
         acting,
         buckling,
         steel,
-        catalogue,
         plastic=plastic,
         resultant=resultant,
     )
@@ -260,7 +257,7 @@ def design(
         l_cr=buckling,
         diameters=required,
         utilization=used,
-        mass=mass_ec3(required, lengths, steel, catalogue),
+        mass=mass_ec3(catalogue.tube(required), lengths, steel),
     )
 
 
@@ -498,11 +495,10 @@ def envelope(
     used = jnp.stack(
         [
             utilization_ec3(
-                covering,
+                catalogue.tube(covering),
                 case,
                 buckling,
                 steel,
-                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -526,7 +522,7 @@ def envelope(
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(covering, lengths, steel, catalogue),
+        mass=mass_ec3(catalogue.tube(covering), lengths, steel),
     )
 
 
@@ -602,7 +598,7 @@ def unsmoothed(
     used = jnp.stack(
         [
             utilization_ec3(
-                sizes,
+                catalogue.tube(sizes),
                 MemberActions(
                     result.n_ed[case],
                     result.m_y_ed[case],
@@ -612,7 +608,6 @@ def unsmoothed(
                 ),
                 result.l_cr,
                 steel,
-                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -623,7 +618,7 @@ def unsmoothed(
     return Unsmoothed(
         diameters=sizes,
         utilization=used,
-        mass=mass_ec3(sizes, result.lengths, steel, catalogue),
+        mass=mass_ec3(catalogue.tube(sizes), result.lengths, steel),
     )
 
 
@@ -693,7 +688,7 @@ def governing(
     on a subset of them.
     """
     return governing_ec3(
-        result.diameters,
+        catalogue.tube(result.diameters),
         result.actions,
         result.l_cr,
         steel,
@@ -808,8 +803,8 @@ def stability(
     )
     alpha_cr = modes.factors[0]
 
-    gross = area(result.diameters, catalogue.ratio)
-    inertia = second_moment(result.diameters, catalogue.ratio)
+    gross = catalogue.tube(result.diameters).area
+    inertia = catalogue.tube(result.diameters).second_moment
 
     return Stability(
         factors=modes.factors,

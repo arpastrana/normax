@@ -38,9 +38,7 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import SLENDERNESS_OFFSET
 from normax.ec3.resistance import buckling_auxiliary
 from normax.ec3.resistance import reduction_buckling
-from normax.ec3.section import area
-from normax.ec3.section import second_moment
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 
 
 def reduction_buckling_derivative(
@@ -112,8 +110,8 @@ def slenderness_unit(
     by the wall proportion and the grade. Collecting that constant once is what
     reduces every derivative below to a rational expression.
     """
-    unit_area = area(1.0, catalogue.ratio)
-    unit_inertia = second_moment(1.0, catalogue.ratio)
+    unit_area = catalogue.tube(1.0).area
+    unit_inertia = catalogue.tube(1.0).second_moment
 
     return jnp.sqrt(unit_area * steel.f_y / (jnp.pi**2 * steel.e_mod * unit_inertia))
 
@@ -179,9 +177,7 @@ def _buckling_check(
     """
     lam = slenderness_unit(steel, catalogue) * l_cr / diameter
     reduction = reduction_buckling(lam, steel.alpha)
-    resistance = (
-        reduction * area(diameter, catalogue.ratio) * steel.f_y / steel.gamma_m1
-    )
+    resistance = reduction * catalogue.tube(diameter).area * steel.f_y / steel.gamma_m1
 
     return jnp.abs(n_ed) / resistance
 
@@ -306,7 +302,7 @@ def diameter_tension(
     length in the answer, and the area is quadratic in the diameter, so the
     root needs no search at all. The catalogue minimum is not applied here.
     """
-    unit_area = area(1.0, catalogue.ratio)
+    unit_area = catalogue.tube(1.0).area
 
     return jnp.sqrt(jnp.abs(n_ed) * steel.gamma_m0 / (steel.f_y * unit_area))
 

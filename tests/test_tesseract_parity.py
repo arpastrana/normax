@@ -12,7 +12,7 @@ from normax.composition import envelope as envelope_composed
 from normax.composition import local
 from normax.composition import mass as mass_composed
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.formfinding import equilibrium
 from normax.formfinding import graph

@@ -8,7 +8,7 @@ from normax.ec3.classification import CLASS_LIMIT_TOLERANCE
 from normax.ec3.classification import class_limits
 from normax.ec3.classification import classify_section
 from normax.ec3.classification import material_factor
-from normax.ec3.section import thickness
+from normax.ec3.section import TubeCatalogue
 
 # EN 1993-1-1 Table 5.2, the epsilon row, rounded to 2 d.p. in the standard.
 # (f_y, epsilon, epsilon squared)
@@ -138,7 +138,7 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
     # one ratio across two classes.
     limit = float(np.asarray(class_limits(f_y))[index])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = diameters / thickness(diameters, limit)
+    ratios = diameters / TubeCatalogue(limit).tube(diameters).thickness
 
     assert np.all(np.asarray(classify_section(ratios, f_y)) == index + 1)
 
@@ -147,7 +147,7 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
 def test_the_round_trip_stays_inside_the_tolerance(f_y):
     limit = float(np.asarray(class_limits(f_y))[2])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = np.asarray(diameters / thickness(diameters, limit))
+    ratios = np.asarray(diameters / TubeCatalogue(limit).tube(diameters).thickness)
 
     assert np.max(np.abs(ratios - limit)) / limit < CLASS_LIMIT_TOLERANCE
 
@@ -159,7 +159,7 @@ def test_the_round_trip_straddles_the_limit_at_the_design_grade():
     # across two classes.
     limit = float(np.asarray(class_limits(355.0))[2])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = np.asarray(diameters / thickness(diameters, limit))
+    ratios = np.asarray(diameters / TubeCatalogue(limit).tube(diameters).thickness)
 
     assert ratios.max() > limit
     assert ratios.min() < limit

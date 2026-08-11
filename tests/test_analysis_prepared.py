@@ -7,7 +7,7 @@ import pytest
 from normax.analysis.smax import forces
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium
 from normax.formfinding import graph
 from normax.structures import arch

@@ -12,10 +12,8 @@ from normax.ec3.resistance import reduction_buckling
 from normax.ec3.resistance import resistance_buckling
 from normax.ec3.resistance import resistance_yielding
 from normax.ec3.resistance import slenderness_from_force
-from normax.ec3.section import area
-from normax.ec3.section import second_moment
-from normax.ec3.sizing import DIAMETER_MINIMUM
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import DIAMETER_MINIMUM
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_bracket
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
@@ -48,11 +46,10 @@ def sized(n_ed, l_cr=LENGTH, *, plastic=PLASTIC, catalogue=CATALOGUE):
 
 def used(d, n_ed, l_cr=LENGTH, *, plastic=PLASTIC, catalogue=CATALOGUE):
     return utilization_design(
-        d,
+        catalogue.tube(d),
         MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0),
         l_cr,
         STEEL,
-        catalogue,
         plastic=plastic,
     )
 
@@ -143,7 +140,7 @@ def test_the_bracket_does_not_carry_the_catalogue_minimum():
 
 def test_the_bracket_is_the_closed_form_squash_diameter():
     # A f_y / gamma_M0 = |N| inverted, with A quadratic in the diameter.
-    unit = float(area(1.0, CATALOGUE.ratio))
+    unit = float(CATALOGUE.tube(1.0).area)
     expected = float(jnp.sqrt(5e5 * STEEL.gamma_m0 / (STEEL.f_y * unit)))
 
     assert diameter_bracket(
@@ -168,11 +165,11 @@ def test_the_sized_member_reproduces_the_buckling_resistance(n_ed, l_cr):
     # Independent of the residual: rebuild N_b,Rd from 6.47 at the solved
     # diameter and check it carries the force.
     d = sized(n_ed, l_cr)
-    gross = area(d, CATALOGUE.ratio)
+    gross = CATALOGUE.tube(d).area
     lam = slenderness_from_force(
         gross,
         SteelGrade(f_y=STEEL.f_y),
-        force_critical(second_moment(d, CATALOGUE.ratio), l_cr, SteelGrade()),
+        force_critical(CATALOGUE.tube(d).second_moment, l_cr, SteelGrade()),
     )
     resistance = resistance_buckling(
         reduction_buckling(lam, STEEL.alpha), gross, SteelGrade(f_y=STEEL.f_y)
@@ -227,7 +224,7 @@ def test_the_map_agrees_with_a_dense_scan():
 def test_a_tension_member_is_sized_by_the_gross_section():
     # No buckling in tension, so 6.2.3 governs alone and the diameter follows
     # in closed form from A f_y / gamma_M0 = N.
-    unit = float(area(1.0, CATALOGUE.ratio))
+    unit = float(CATALOGUE.tube(1.0).area)
     expected = float(jnp.sqrt(5e5 * STEEL.gamma_m0 / (STEEL.f_y * unit)))
 
     assert float(sized(5e5)) == pytest.approx(expected, rel=1e-12)
@@ -246,7 +243,7 @@ def test_a_sized_tension_member_reaches_its_plastic_resistance(n_ed):
     d = sized(n_ed)
 
     assert float(
-        resistance_yielding(area(d, CATALOGUE.ratio), SteelGrade(f_y=STEEL.f_y))
+        resistance_yielding(CATALOGUE.tube(d).area, SteelGrade(f_y=STEEL.f_y))
     ) == pytest.approx(n_ed, rel=1e-9)
 
 
@@ -284,9 +281,9 @@ def test_nothing_is_ever_sized_below_the_floor():
 def test_mass_is_density_times_volume():
     d = jnp.asarray([100.0, 200.0])
     lengths = jnp.asarray([3000.0, 5000.0])
-    volume = float(jnp.sum(area(d, CATALOGUE.ratio) * lengths))
+    volume = float(jnp.sum(CATALOGUE.tube(d).area * lengths))
 
-    assert mass(d, lengths, STEEL, CATALOGUE) == pytest.approx(
+    assert mass(CATALOGUE.tube(d), lengths, STEEL) == pytest.approx(
         float(STEEL.density) * volume
     )
 
@@ -294,15 +291,15 @@ def test_mass_is_density_times_volume():
 def test_mass_of_the_fixture_section_matches_the_tabulated_tube():
     # EN 10210 gives CHS 244.5 x 10 as 57.8 kg/m, so a 4 m length is 231 kg.
     catalogue = TubeCatalogue(24.45)
-    kilograms = float(mass(244.5, 4000.0, STEEL, catalogue)) * 1e3
+    kilograms = float(mass(catalogue.tube(244.5), 4000.0, STEEL)) * 1e3
 
     assert kilograms == pytest.approx(4.0 * 57.8, rel=5e-3)
 
 
 def test_mass_grows_when_any_member_grows():
     lengths = jnp.asarray([3000.0, 5000.0])
-    light = mass(jnp.asarray([100.0, 200.0]), lengths, STEEL, CATALOGUE)
-    heavy = mass(jnp.asarray([100.0, 201.0]), lengths, STEEL, CATALOGUE)
+    light = mass(CATALOGUE.tube(jnp.asarray([100.0, 200.0])), lengths, STEEL)
+    heavy = mass(CATALOGUE.tube(jnp.asarray([100.0, 201.0])), lengths, STEEL)
 
     assert heavy > light
 

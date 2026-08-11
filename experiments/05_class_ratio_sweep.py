@@ -34,8 +34,7 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import resistance_shear
-from normax.ec3.section import area
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass
@@ -72,7 +71,7 @@ def member_mass(cross_section_class, m_y_ed):
     """
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
 
-    return mass(sized(cross_section_class, m_y_ed), LENGTH, STEEL, catalogue)
+    return mass(catalogue.tube(sized(cross_section_class, m_y_ed)), LENGTH, STEEL)
 
 
 def main() -> None:
@@ -129,7 +128,7 @@ def main() -> None:
         d = sized(3, moment)
         catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
         resistance = resistance_shear(
-            area_shear(area(d, catalogue.ratio)),
+            area_shear(catalogue.tube(d).area),
             SteelGrade(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0),
         )
         # A simply supported span carrying that end moment has a shear of about

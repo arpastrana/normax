@@ -98,6 +98,38 @@
   `catalogue` rather than `tube` everywhere, so nothing reads as a section that
   is not one. Verified afterwards that no binding named `Tube` or `tube` remains
   anywhere in the tree.
+- **`Tube(diameter, thickness)` replaces the seven free functions in
+  `section.py`.** A tube is two leaves and every property — `ratio`,
+  `diameter_inner`, `area`, `second_moment`, `radius_of_gyration`,
+  `modulus_elastic`, `modulus_plastic` — is computed on access, so a diameter
+  and a wall cannot drift apart and no call site restates the annulus formulas.
+  `TubeCatalogue.tube(d)` is the only place a wall is chosen for a diameter.
+  `TubeCatalogue` and `DIAMETER_MINIMUM` move into `section.py` beside it, and
+  `at_class_limit` delegates to a new `classification.ratio_at_class_limit`,
+  which **closes the last `adjoint → sizing` edge**: `adjoint.py` called itself
+  "an independent oracle, not the rule the map is differentiated with" and then
+  imported the bisection it audits. The ec3 DAG is now acyclic with three
+  leaves and `sizing` alone at the top.
+- **This step moved the numbers, and the bitwise baseline was re-captured
+  once.** Storing a wall instead of a ratio is a reparametrization rather than
+  a regrouping: the wall is a division and reading the ratio back is another, so
+  `d / (d / r) == r` fails for 20–40% of diameters at one ulp — measured across
+  ten thousand of them at six ratios. Nothing downstream can then be bitwise.
+  Measured against the step-5 capture: mass 1.7e-15, diameter 2.7e-14, gradient
+  7.3e-14, utilization 1.8e-15, and end moment 1.5e-12, that last being the
+  funicular near-cancellation `test_tesseract_parity.py` already holds at 1e-11
+  and not a new effect. Class 2 sizing was bitwise unchanged throughout; Class 3
+  moved one diameter in six. **Bitwise is the right bar again from here on** —
+  the remaining steps are regroupings.
+- **`area` is written as `pi t (d - t)` rather than as a difference of two
+  circles.** For a wall at the Class 3 limit the squares agree to within 7% of
+  their own size, so differencing them throws away a digit for nothing.
+- **`area_shear` stays in `resistance.py` and did not move onto `Tube`.** The
+  plan had it on the section object, but `A_v = 2A/pi` is EN 1993-1-1 6.2.6(3)
+  — a clause, not geometry — and `section.py` opens by saying it holds no
+  clauses. Putting it there would also have written the constant twice.
+- **`_modulus` lost the `resultant` parameter it never read**, since its
+  signature was changing anyway.
 - **Renaming by spelling was safe here, and only here.** The usual rule is to
   rename by binding, but a scan first established that every `Tube`/`tube`
   binding in the tree referred to the family: no shadowing, no `.tube`

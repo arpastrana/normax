@@ -9,9 +9,8 @@ from normax.analysis.smax import buckling
 from normax.analysis.smax import prepare
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.section import area
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_MAJOR
-from normax.ec3.sizing import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.formfinding import equilibrium
@@ -165,7 +164,7 @@ def test_a_compression_arch_is_governed_by_the_member_check(
 def test_the_mass_is_the_sum_over_members(setup, steel):
     catalogue, result = sized(setup, steel, 3)
     by_hand = steel.density * jnp.sum(
-        area(result.diameters, catalogue.ratio) * result.lengths
+        catalogue.tube(result.diameters).area * result.lengths
     )
 
     assert float(result.mass) == pytest.approx(float(by_hand), rel=1e-14)
@@ -414,9 +413,7 @@ def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
 def test_the_section_figure_builds(setup, steel, seed):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
-    assumed = float(
-        steel.density * jnp.sum(area(seed, catalogue.ratio) * result.lengths)
-    )
+    assumed = float(steel.density * jnp.sum(catalogue.tube(seed).area * result.lengths))
 
     figure = figure_sections(
         result.xyz,
@@ -449,9 +446,7 @@ def test_the_section_figure_reports_a_lighter_design(setup, steel, seed):
     # The label flips wording on the sign, so the sign is worth pinning.
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
-    assumed = float(
-        steel.density * jnp.sum(area(seed, catalogue.ratio) * result.lengths)
-    )
+    assumed = float(steel.density * jnp.sum(catalogue.tube(seed).area * result.lengths))
 
     figure = figure_sections(
         result.xyz, structure.edges, seed, result.diameters, assumed, float(result.mass)

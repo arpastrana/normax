@@ -54,7 +54,7 @@ from tesseract_jax import apply_tesseract
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import mass as mass_ec3
 from normax.ec3.sizing import utilization_design as utilization_ec3
@@ -603,13 +603,12 @@ def envelope(
     used = jnp.stack(
         [
             utilization_ec3(
-                covering,
+                catalogue.tube(covering),
                 MemberActions(
                     n_ed[case], m_y_ed[case], m_z_ed[case], c_my[case], c_mz[case]
                 ),
                 buckling,
                 steel,
-                catalogue,
                 plastic=plastic,
                 resultant=resultant,
             )
@@ -629,5 +628,5 @@ def envelope(
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(covering, lengths, steel, catalogue),
+        mass=mass_ec3(catalogue.tube(covering), lengths, steel),
     )

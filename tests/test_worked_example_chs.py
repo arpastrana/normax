@@ -13,11 +13,7 @@ from normax.ec3.resistance import reduction_buckling
 from normax.ec3.resistance import resistance_buckling
 from normax.ec3.resistance import resistance_compression
 from normax.ec3.resistance import slenderness_from_force
-from normax.ec3.section import area
-from normax.ec3.section import modulus_elastic
-from normax.ec3.section import modulus_plastic
-from normax.ec3.section import second_moment
-from normax.ec3.section import thickness
+from normax.ec3.section import TubeCatalogue
 
 # Gardner, L. and Nethercot, D. (2011), Designers' Guide to Eurocode 3, 2nd edn,
 # ICE Publishing. Worked Example 6.7, "buckling resistance of a compression
@@ -83,8 +79,8 @@ TOLERANCE_GUIDE = 1e-2
 
 @pytest.fixture
 def chain():
-    gross = area(DIAMETER, RATIO)
-    inertia = second_moment(DIAMETER, RATIO)
+    gross = TubeCatalogue(RATIO).tube(DIAMETER).area
+    inertia = TubeCatalogue(RATIO).tube(DIAMETER).second_moment
     critical = force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=MODULUS))
     non_dimensional = slenderness_from_force(gross, SteelGrade(f_y=YIELD), critical)
     reduction = reduction_buckling(non_dimensional, ALPHA)
@@ -92,10 +88,10 @@ def chain():
     return {
         "area": gross,
         "second_moment": inertia,
-        "modulus_elastic": modulus_elastic(DIAMETER, RATIO),
-        "modulus_plastic": modulus_plastic(DIAMETER, RATIO),
+        "modulus_elastic": TubeCatalogue(RATIO).tube(DIAMETER).modulus_elastic,
+        "modulus_plastic": TubeCatalogue(RATIO).tube(DIAMETER).modulus_plastic,
         "epsilon": material_factor(YIELD),
-        "ratio": DIAMETER / thickness(DIAMETER, RATIO),
+        "ratio": DIAMETER / TubeCatalogue(RATIO).tube(DIAMETER).thickness,
         "class_limit_1": class_limits(YIELD)[0],
         "n_c_rd": resistance_compression(
             gross, SteelGrade(f_y=YIELD, gamma_m0=GAMMA_M0)
@@ -177,7 +173,7 @@ def test_chain_is_float64(chain):
 def test_chain_vectorizes_over_members(chain):
     diameters = jnp.full((5,), DIAMETER)
 
-    areas = area(diameters, RATIO)
+    areas = TubeCatalogue(RATIO).tube(diameters).area
 
     assert areas.shape == (5,)
     assert np.asarray(areas) == pytest.approx(float(chain["area"]))

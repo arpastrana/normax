@@ -56,7 +56,7 @@ import numpy as np
 from normax.analysis.smax import buckling
 from normax.analysis.smax import prepare
 from normax.ec3.material import SteelGrade
-from normax.ec3.sizing import TubeCatalogue
+from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import mass as mass_of_tubes
 from normax.ec3.stability import ALPHA_CR_ELASTIC
@@ -389,7 +389,7 @@ def main():
 
     FIGURES.mkdir(exist_ok=True)
 
-    assumed_mass = float(mass_of_tubes(seed, result.lengths, STEEL, catalogue))
+    assumed_mass = float(mass_of_tubes(catalogue.tube(seed), result.lengths, STEEL))
     sections = figure_sections(
         result.xyz,
         structure.edges,
