@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.interaction import C_M_MINIMUM
 from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import DIAMETER_MINIMUM
@@ -49,9 +50,7 @@ def sized(actions, l_cr=LENGTH, *, c_m=0.9, cross_section_class=3):
     tube = tube_for(cross_section_class)
 
     return diameter_required(
-        *actions,
-        c_m,
-        c_m,
+        MemberActions(*actions, c_m, c_m),
         l_cr,
         STEEL,
         tube,
@@ -64,9 +63,7 @@ def used(d, actions, l_cr=LENGTH, *, c_m=0.9, cross_section_class=3):
 
     return utilization_design(
         d,
-        *actions,
-        c_m,
-        c_m,
+        MemberActions(*actions, c_m, c_m),
         l_cr,
         STEEL,
         tube,
@@ -131,11 +128,7 @@ def test_the_cross_section_check_can_govern_over_the_member_check():
         float(
             governing_limit_state(
                 floored,
-                -1e3,
-                60e6,
-                0.0,
-                C_M_MINIMUM,
-                C_M_MINIMUM,
+                MemberActions(-1e3, 60e6, 0.0, C_M_MINIMUM, C_M_MINIMUM),
                 stocky,
                 STEEL,
                 tube_for(3),
@@ -150,7 +143,7 @@ def test_a_tension_member_is_sized_by_the_cross_section_alone():
     tube = tube_for(3)
     d = sized((5e5, 40e6, 15e6))
     code = governing_limit_state(
-        d, 5e5, 40e6, 15e6, 0.9, 0.9, LENGTH, STEEL, tube, plastic=False
+        d, MemberActions(5e5, 40e6, 15e6, 0.9, 0.9), LENGTH, STEEL, tube, plastic=False
     )
 
     assert float(code) == LIMIT_TENSION
@@ -262,7 +255,7 @@ def test_the_diagnostic_names_a_real_limit_state(
     plastic = is_plastic(cross_section_class)
     d = sized(actions, cross_section_class=cross_section_class)
     code = governing_limit_state(
-        d, *actions, 0.9, 0.9, LENGTH, STEEL, tube, plastic=plastic
+        d, MemberActions(*actions, 0.9, 0.9), LENGTH, STEEL, tube, plastic=plastic
     )
 
     assert float(code) in {
@@ -278,7 +271,7 @@ def test_the_diagnostic_reports_the_minimum_size_ahead_of_any_clause():
     tube = tube_for(3)
     d = sized((-1.0, 0.0, 0.0))
     code = governing_limit_state(
-        d, -1.0, 0.0, 0.0, 0.9, 0.9, LENGTH, STEEL, tube, plastic=False
+        d, MemberActions(-1.0, 0.0, 0.0, 0.9, 0.9), LENGTH, STEEL, tube, plastic=False
     )
 
     assert float(d) == pytest.approx(DIAMETER_MINIMUM)
@@ -289,7 +282,12 @@ def test_a_slender_compression_member_is_governed_by_the_member_check():
     tube = tube_for(3)
     d = sized((-5e5, 40e6, 15e6), 12000.0)
     code = governing_limit_state(
-        d, -5e5, 40e6, 15e6, 0.9, 0.9, 12000.0, STEEL, tube, plastic=False
+        d,
+        MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9),
+        12000.0,
+        STEEL,
+        tube,
+        plastic=False,
     )
 
     assert float(code) in {LIMIT_MAJOR, LIMIT_MINOR}
@@ -301,10 +299,28 @@ def test_the_named_equation_is_the_one_that_actually_wins():
     tube = tube_for(2)
     d = sized((-5e5, 80e6, 5e6), 12000.0, cross_section_class=2)
     code = governing_limit_state(
-        d, -5e5, 80e6, 5e6, 0.9, 0.9, 12000.0, STEEL, tube, plastic=True
+        d, MemberActions(-5e5, 80e6, 5e6, 0.9, 0.9), 12000.0, STEEL, tube, plastic=True
     )
 
     assert float(code) == LIMIT_MAJOR
+
+
+def test_the_diagnostic_needs_the_minor_axis_it_was_sized_with():
+    # A member whose minor-axis moment is the larger one. Re-checking it with
+    # that moment dropped and its factor replaced by one moves the answer from
+    # the cross-section to Eq. 6.61, so a caller reporting the diagnostic must
+    # keep every action the size was solved for rather than the major axis
+    # alone.
+    tube = tube_for(3)
+    actions = MemberActions(-3e5, 2e7, 6e7, 0.9, 0.4)
+    major_only = MemberActions(actions.n_ed, actions.m_y_ed, 0.0, actions.c_my, 1.0)
+
+    d = diameter_required(actions, LENGTH, STEEL, tube, plastic=False)
+    both = governing_limit_state(d, actions, LENGTH, STEEL, tube, plastic=False)
+    dropped = governing_limit_state(d, major_only, LENGTH, STEEL, tube, plastic=False)
+
+    assert float(both) == LIMIT_CROSS_SECTION
+    assert float(dropped) == LIMIT_MAJOR
 
 
 # ---- Table B.3, the linear row ---- #
@@ -413,7 +429,11 @@ def test_the_map_vectorizes_over_members():
     tube = tube_for(3)
 
     sizes = diameter_required(
-        forces, moments, 0.0, 0.9, 0.9, LENGTH, STEEL, tube, plastic=False
+        MemberActions(forces, moments, 0.0, 0.9, 0.9),
+        LENGTH,
+        STEEL,
+        tube,
+        plastic=False,
     )
 
     assert sizes.shape == forces.shape
@@ -425,7 +445,12 @@ def test_the_map_is_jittable_with_moments():
     tube = tube_for(3)
 
     assert jitted(
-        -5e5, 40e6, 15e6, 0.9, 0.9, LENGTH, STEEL, tube, plastic=False, resultant=True
+        MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9),
+        LENGTH,
+        STEEL,
+        tube,
+        plastic=False,
+        resultant=True,
     ) == pytest.approx(float(sized((-5e5, 40e6, 15e6))))
 
 
@@ -441,9 +466,7 @@ def test_the_map_is_jittable_with_moments():
 
 def sized_reading(actions, l_cr=LENGTH, *, resultant, c_m=0.9, cross_section_class=3):
     return diameter_required(
-        *actions,
-        c_m,
-        c_m,
+        MemberActions(*actions, c_m, c_m),
         l_cr,
         STEEL,
         tube_for(cross_section_class),
@@ -475,9 +498,7 @@ def test_both_readings_are_exactly_fully_stressed(
         )
         value = utilization_design(
             d,
-            *actions,
-            0.9,
-            0.9,
+            MemberActions(*actions, 0.9, 0.9),
             LENGTH,
             STEEL,
             tube_for(cross_section_class),
@@ -520,11 +541,7 @@ def test_the_reading_cannot_bite_where_the_member_check_governs():
     summed = sized_reading((-5e5, 40e6, 40e6), slender, resultant=False)
     code = governing_limit_state(
         resultant,
-        -5e5,
-        40e6,
-        40e6,
-        0.9,
-        0.9,
+        MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         slender,
         STEEL,
         tube_for(3),
@@ -539,11 +556,7 @@ def test_the_plastic_branch_ignores_the_reading():
     # 6.2.9.1(6) with both exponents at two is exact for a circular hollow
     # section, so there is nothing to choose there.
     kept = diameter_required(
-        -5e5,
-        40e6,
-        40e6,
-        0.9,
-        0.9,
+        MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         LENGTH,
         STEEL,
         tube_for(2),
@@ -551,11 +564,7 @@ def test_the_plastic_branch_ignores_the_reading():
         resultant=True,
     )
     dropped = diameter_required(
-        -5e5,
-        40e6,
-        40e6,
-        0.9,
-        0.9,
+        MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         LENGTH,
         STEEL,
         tube_for(2),
@@ -570,11 +579,7 @@ def test_both_readings_are_differentiable():
     for resultant in (True, False):
         gradient = jax.grad(
             lambda n: diameter_required(
-                n,
-                40e6,
-                40e6,
-                0.9,
-                0.9,
+                MemberActions(n, 40e6, 40e6, 0.9, 0.9),
                 LENGTH,
                 STEEL,
                 tube_for(3),
@@ -597,7 +602,7 @@ def test_a_root_above_the_search_interval_returns_nan_not_a_diameter():
     tube = Tube.at_class_limit(steel.f_y, 3)
 
     sized = diameter_required(
-        -1e5, 0.0, 0.0, 1.0, 1.0, 1e30, steel, tube, plastic=False
+        MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0), 1e30, steel, tube, plastic=False
     )
 
     assert jnp.isnan(sized)
@@ -612,10 +617,15 @@ def test_the_ceiling_is_out_of_physical_reach():
 
     for l_cr in (1e3, 1e6, 1e12, 1e18, 1e24):
         sized = diameter_required(
-            -1e5, 0.0, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False
+            MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0), l_cr, steel, tube, plastic=False
         )
         used = utilization_design(
-            sized, -1e5, 0.0, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False
+            sized,
+            MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0),
+            l_cr,
+            steel,
+            tube,
+            plastic=False,
         )
 
         assert not jnp.isnan(sized)
@@ -629,7 +639,7 @@ def test_the_guard_does_not_fire_on_a_member_carrying_nothing():
     tube = Tube.at_class_limit(steel.f_y, 3)
 
     sized = diameter_required(
-        0.0, 0.0, 0.0, 1.0, 1.0, 1000.0, steel, tube, plastic=False
+        MemberActions(0.0, 0.0, 0.0, 1.0, 1.0), 1000.0, steel, tube, plastic=False
     )
 
     assert not jnp.isnan(sized)
@@ -644,7 +654,7 @@ def test_a_failed_bracket_poisons_the_gradient_too():
 
     def size(n_ed):
         return diameter_required(
-            n_ed, 0.0, 0.0, 1.0, 1.0, 1e30, steel, tube, plastic=False
+            MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), 1e30, steel, tube, plastic=False
         )
 
     assert jnp.isnan(jax.grad(size)(-1e5))
@@ -662,10 +672,15 @@ def test_the_guard_costs_one_evaluation_and_changes_no_answer():
         (-2e6, 5e7, 12000.0),
     ):
         sized = diameter_required(
-            n_ed, m_ed, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False
+            MemberActions(n_ed, m_ed, 0.0, 1.0, 1.0), l_cr, steel, tube, plastic=False
         )
         used = utilization_design(
-            sized, n_ed, m_ed, 0.0, 1.0, 1.0, l_cr, steel, tube, plastic=False
+            sized,
+            MemberActions(n_ed, m_ed, 0.0, 1.0, 1.0),
+            l_cr,
+            steel,
+            tube,
+            plastic=False,
         )
 
         assert not jnp.isnan(sized)

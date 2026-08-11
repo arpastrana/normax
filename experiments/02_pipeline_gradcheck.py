@@ -28,6 +28,7 @@ Run with `uv run python experiments/02_pipeline_gradcheck.py`.
 import jax
 import jax.numpy as jnp
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
 from normax.ec3.sizing import LIMIT_MAJOR
@@ -74,7 +75,11 @@ def size(n_ed, m_y_ed, m_z_ed, l_cr, tube, plastic):
     Fully-stressed diameter under the full interaction.
     """
     return diameter_required(
-        n_ed, m_y_ed, m_z_ed, 0.9, 0.9, l_cr, STEEL, tube, plastic=plastic
+        MemberActions(n_ed, m_y_ed, m_z_ed, 0.9, 0.9),
+        l_cr,
+        STEEL,
+        tube,
+        plastic=plastic,
     )
 
 
@@ -154,7 +159,11 @@ def main() -> None:
         with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, tube, plastic))
         axial_only = float(
             diameter_required(
-                -5e5, 0.0, 0.0, 1.0, 1.0, 4000.0, STEEL, tube, plastic=plastic
+                MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0),
+                4000.0,
+                STEEL,
+                tube,
+                plastic=plastic,
             )
         )
         print(
@@ -169,12 +178,22 @@ def main() -> None:
         d = size(*actions, tube, False)
         demand = float(
             utilization_design(
-                d, *actions[:3], 0.9, 0.9, actions[3], STEEL, tube, plastic=False
+                d,
+                MemberActions(*actions[:3], 0.9, 0.9),
+                actions[3],
+                STEEL,
+                tube,
+                plastic=False,
             )
         )
         code = float(
             governing_limit_state(
-                d, *actions[:3], 0.9, 0.9, actions[3], STEEL, tube, plastic=False
+                d,
+                MemberActions(*actions[:3], 0.9, 0.9),
+                actions[3],
+                STEEL,
+                tube,
+                plastic=False,
             )
         )
         worst_check = max(worst_check, abs(demand - 1.0))
@@ -190,7 +209,11 @@ def main() -> None:
 
     def objective(n_ed):
         sizes = diameter_required(
-            n_ed, 4e7, 1.5e7, 0.9, 0.9, lengths, STEEL, tube, plastic=False
+            MemberActions(n_ed, 4e7, 1.5e7, 0.9, 0.9),
+            lengths,
+            STEEL,
+            tube,
+            plastic=False,
         )
 
         return mass(sizes, lengths, STEEL, tube)

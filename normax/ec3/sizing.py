@@ -42,6 +42,7 @@ from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.classification import class_limits
 from normax.ec3.interaction import governing_equation
 from normax.ec3.interaction import moment_factor_linear
@@ -204,11 +205,7 @@ def _modulus(
 
 def utilization_design(
     diameter: Float[Array, "members"],
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
+    actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
     tube: Tube,
@@ -223,16 +220,8 @@ def utilization_design(
     ----------
     diameter :
         Outer diameter.
-    n_ed :
-        Design axial force, tension positive.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
-    c_my :
-        Equivalent uniform moment factor for major-axis bending.
-    c_mz :
-        Equivalent uniform moment factor for minor-axis bending.
+    actions :
+        Design actions on the member.
     l_cr :
         Buckling length.
     steel :
@@ -264,17 +253,7 @@ def utilization_design(
     both checks are indifferent to the sign of either moment.
     """
     member, section = _demands(
-        diameter,
-        n_ed,
-        m_y_ed,
-        m_z_ed,
-        c_my,
-        c_mz,
-        l_cr,
-        steel,
-        tube,
-        plastic=plastic,
-        resultant=resultant,
+        diameter, actions, l_cr, steel, tube, plastic=plastic, resultant=resultant
     )
 
     return jnp.maximum(member, section)
@@ -282,11 +261,7 @@ def utilization_design(
 
 def _demands(
     diameter: Float[Array, "members"],
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
+    actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
     tube: Tube,
@@ -315,41 +290,32 @@ def _demands(
     lam = slenderness_from_force(gross, steel, critical)
     reduction = reduction_buckling(lam, steel.alpha)
 
-    axial = jnp.asarray(n_ed)
+    axial = jnp.asarray(actions.n_ed)
     member = utilization_member(
         jnp.maximum(-axial, 0.0),
-        jnp.abs(m_y_ed),
-        jnp.abs(m_z_ed),
+        jnp.abs(actions.m_y_ed),
+        jnp.abs(actions.m_z_ed),
         reduction,
         reduction,
         gross * steel.f_y,
         modulus * steel.f_y,
         lam,
         lam,
-        c_my,
-        c_mz,
+        actions.c_my,
+        actions.c_mz,
         steel.gamma_m1,
         plastic=plastic,
     )
 
     section = utilization_cross_section(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
-        gross,
-        modulus,
-        steel,
-        plastic=plastic,
-        resultant=resultant,
+        actions, gross, modulus, steel, plastic=plastic, resultant=resultant
     )
 
     return jnp.where(axial < 0.0, member, 0.0), section
 
 
 def diameter_bracket(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
+    actions: MemberActions,
     steel: SteelGrade,
     tube: Tube,
     *,
@@ -361,12 +327,9 @@ def diameter_bracket(
 
     Parameters
     ----------
-    n_ed :
-        Design axial force, tension positive.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
+    actions :
+        Design actions on the member. Neither moment factor is read, both
+        bounds below being cross-section conditions.
     steel :
         Material properties and partial factors.
     tube :
@@ -396,9 +359,11 @@ def diameter_bracket(
     unit_area = area(1.0, tube.ratio)
     unit_modulus = _modulus(1.0, tube.ratio, plastic=plastic)
 
-    moment = moment_combined(m_y_ed, m_z_ed, plastic=plastic, resultant=resultant)
+    moment = moment_combined(
+        actions.m_y_ed, actions.m_z_ed, plastic=plastic, resultant=resultant
+    )
 
-    squash = jnp.sqrt(jnp.abs(n_ed) * steel.gamma_m0 / (steel.f_y * unit_area))
+    squash = jnp.sqrt(jnp.abs(actions.n_ed) * steel.gamma_m0 / (steel.f_y * unit_area))
     bending = jnp.cbrt(moment * steel.gamma_m0 / (steel.f_y * unit_modulus))
 
     return jnp.maximum(jnp.maximum(squash, bending), DIAMETER_EPSILON)
@@ -407,11 +372,7 @@ def diameter_bracket(
 def _solve(
     plastic: bool,
     resultant: bool,
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
+    actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
     tube: Tube,
@@ -449,16 +410,10 @@ def _solve(
     bound. Neither tension nor bending can, both inverting exactly.
     """
     shape = jnp.broadcast_shapes(
-        jnp.shape(n_ed),
-        jnp.shape(m_y_ed),
-        jnp.shape(m_z_ed),
-        jnp.shape(c_my),
-        jnp.shape(c_mz),
+        *(jnp.shape(action) for action in actions),
         jnp.shape(l_cr),
     )
-    lower = diameter_bracket(
-        n_ed, m_y_ed, m_z_ed, steel, tube, plastic=plastic, resultant=resultant
-    )
+    lower = diameter_bracket(actions, steel, tube, plastic=plastic, resultant=resultant)
     under = jnp.broadcast_to(jnp.log(lower), shape)
     over = under + BRACKET_DOUBLINGS * jnp.log(2.0)
 
@@ -471,11 +426,7 @@ def _solve(
         exceeded = (
             utilization_design(
                 jnp.exp(middle),
-                n_ed,
-                m_y_ed,
-                m_z_ed,
-                c_my,
-                c_mz,
+                actions,
                 l_cr,
                 steel,
                 tube,
@@ -490,17 +441,7 @@ def _solve(
     ceiling = jnp.exp(over)
     bracketed = (
         utilization_design(
-            ceiling,
-            n_ed,
-            m_y_ed,
-            m_z_ed,
-            c_my,
-            c_mz,
-            l_cr,
-            steel,
-            tube,
-            plastic=plastic,
-            resultant=resultant,
+            ceiling, actions, l_cr, steel, tube, plastic=plastic, resultant=resultant
         )
         <= 1.0
     )
@@ -514,11 +455,7 @@ def _solve(
 def _diameter(
     plastic: bool,
     resultant: bool,
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
+    actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
     tube: Tube,
@@ -531,17 +468,15 @@ def _diameter(
     diameter :
         Fully-stressed outer diameter.
     """
-    return _solve(
-        plastic, resultant, n_ed, m_y_ed, m_z_ed, c_my, c_mz, l_cr, steel, tube
-    )
+    return _solve(plastic, resultant, actions, l_cr, steel, tube)
 
 
 @_diameter.defjvp
 def _diameter_jvp(
     plastic: bool,
     resultant: bool,
-    primals: tuple[Float[Array, "members"], ...],
-    tangents: tuple[Float[Array, "members"], ...],
+    primals: tuple[MemberActions, Float[Array, "members"], SteelGrade, Tube],
+    tangents: tuple[MemberActions, Float[Array, "members"], SteelGrade, Tube],
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
     Differentiate the map by the implicit function theorem.
@@ -586,10 +521,10 @@ def _diameter_jvp(
 
         return jnp.sum(demand)
 
-    def at_root(*actions: Float[Array, "members"]) -> Float[Array, "members"]:
-        return utilization_design(
-            solved, *actions, plastic=plastic, resultant=resultant
-        )
+    def at_root(
+        *inputs: MemberActions | Float[Array, "members"] | SteelGrade | Tube,
+    ) -> Float[Array, "members"]:
+        return utilization_design(solved, *inputs, plastic=plastic, resultant=resultant)
 
     slope = jax.grad(check)(solved)
     _, drift = jax.jvp(at_root, primals, tangents)
@@ -601,11 +536,7 @@ def _diameter_jvp(
 
 
 def diameter_required(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
+    actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
     tube: Tube,
@@ -618,16 +549,8 @@ def diameter_required(
 
     Parameters
     ----------
-    n_ed :
-        Design axial force, tension positive.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
-    c_my :
-        Equivalent uniform moment factor for major-axis bending.
-    c_mz :
-        Equivalent uniform moment factor for minor-axis bending.
+    actions :
+        Design actions on the member.
     l_cr :
         Buckling length.
     steel :
@@ -656,9 +579,7 @@ def diameter_required(
     binds the derivative follows it rather than the standard, which is the
     honest answer: the actions have stopped deciding the size.
     """
-    solved = _diameter(
-        plastic, resultant, n_ed, m_y_ed, m_z_ed, c_my, c_mz, l_cr, steel, tube
-    )
+    solved = _diameter(plastic, resultant, actions, l_cr, steel, tube)
 
     return jnp.maximum(solved, tube.diameter_min)
 
@@ -697,11 +618,7 @@ def mass(
 
 def governing_limit_state(
     diameter: Float[Array, "members"],
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
-    c_my: Float[Array, "members"],
-    c_mz: Float[Array, "members"],
+    actions: MemberActions,
     l_cr: Float[Array, "members"],
     steel: SteelGrade,
     tube: Tube,
@@ -716,16 +633,8 @@ def governing_limit_state(
     ----------
     diameter :
         Outer diameter, as returned by the sizing map.
-    n_ed :
-        Design axial force, tension positive.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
-    c_my :
-        Equivalent uniform moment factor for major-axis bending.
-    c_mz :
-        Equivalent uniform moment factor for minor-axis bending.
+    actions :
+        Design actions on the member, the same ones it was sized for.
     l_cr :
         Buckling length.
     steel :
@@ -754,17 +663,7 @@ def governing_limit_state(
     kinked.
     """
     member, section = _demands(
-        diameter,
-        n_ed,
-        m_y_ed,
-        m_z_ed,
-        c_my,
-        c_mz,
-        l_cr,
-        steel,
-        tube,
-        plastic=plastic,
-        resultant=resultant,
+        diameter, actions, l_cr, steel, tube, plastic=plastic, resultant=resultant
     )
 
     gross = area(diameter, tube.ratio)
@@ -774,23 +673,25 @@ def governing_limit_state(
     reduction = reduction_buckling(lam, steel.alpha)
 
     equation = governing_equation(
-        jnp.maximum(-jnp.asarray(n_ed), 0.0),
-        jnp.abs(m_y_ed),
-        jnp.abs(m_z_ed),
+        jnp.maximum(-jnp.asarray(actions.n_ed), 0.0),
+        jnp.abs(actions.m_y_ed),
+        jnp.abs(actions.m_z_ed),
         reduction,
         reduction,
         gross * steel.f_y,
         modulus * steel.f_y,
         lam,
         lam,
-        c_my,
-        c_mz,
+        actions.c_my,
+        actions.c_mz,
         steel.gamma_m1,
         plastic=plastic,
     )
 
     by_member = jnp.where(equation > 0.0, LIMIT_MINOR, LIMIT_MAJOR)
-    by_section = jnp.where(jnp.asarray(n_ed) >= 0.0, LIMIT_TENSION, LIMIT_CROSS_SECTION)
+    by_section = jnp.where(
+        jnp.asarray(actions.n_ed) >= 0.0, LIMIT_TENSION, LIMIT_CROSS_SECTION
+    )
     decided = jnp.where(member > section, by_member, by_section)
 
     at_minimum = jnp.asarray(diameter) <= tube.diameter_min * (1.0 + 1e-12)

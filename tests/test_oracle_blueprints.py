@@ -30,6 +30,7 @@ from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.f
 )
 from blueprints.structural_sections.steel.standard_profiles import chs
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import moment_resultant
@@ -429,9 +430,7 @@ ELASTIC_ACTIONS = [
 def test_the_linear_sum_reading_agrees_with_equation_6_44(n_ed, m_y_ed, m_z_ed):
     area, modulus = 7367.03, 414981.0
     ours = utilization_elastic(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
+        MemberActions(n_ed, m_y_ed, m_z_ed),
         area,
         modulus,
         SteelGrade(f_y=355.0, gamma_m0=1.0),
@@ -474,18 +473,14 @@ def test_the_resultant_reading_never_exceeds_the_linear_sum(n_ed, m_y_ed, m_z_ed
     # conservative one, by at most the square root of two in the moment term.
     area, modulus = 7367.03, 414981.0
     summed = utilization_elastic(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
+        MemberActions(n_ed, m_y_ed, m_z_ed),
         area,
         modulus,
         SteelGrade(f_y=355.0, gamma_m0=1.0),
         resultant=False,
     )
     resultant = utilization_elastic(
-        n_ed,
-        m_y_ed,
-        m_z_ed,
+        MemberActions(n_ed, m_y_ed, m_z_ed),
         area,
         modulus,
         SteelGrade(f_y=355.0, gamma_m0=1.0),
@@ -504,7 +499,10 @@ def test_the_elastic_check_is_the_stress_limit_of_equation_6_42():
     # design strength is the stress its comparison accepts at exactly unity.
     area, modulus = 7367.03, 414981.0
     ours = utilization_elastic(
-        -5e5, 4e7, 1.5e7, area, modulus, SteelGrade(f_y=355.0, gamma_m0=1.0)
+        MemberActions(-5e5, 4e7, 1.5e7),
+        area,
+        modulus,
+        SteelGrade(f_y=355.0, gamma_m0=1.0),
     )
     stress = float(ours) * 355.0 / 1.0
 

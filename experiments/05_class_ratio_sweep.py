@@ -29,6 +29,7 @@ Run with `uv run python experiments/05_class_ratio_sweep.py`.
 
 import jax.numpy as jnp
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
@@ -57,11 +58,7 @@ def sized(cross_section_class, m_y_ed, m_z_ed=0.0):
     tube = Tube.at_class_limit(STEEL.f_y, cross_section_class)
 
     return diameter_required(
-        FORCE,
-        m_y_ed,
-        m_z_ed,
-        0.9,
-        0.9,
+        MemberActions(FORCE, m_y_ed, m_z_ed, 0.9, 0.9),
         LENGTH,
         STEEL,
         tube,
@@ -167,11 +164,7 @@ def main() -> None:
         readings = [
             float(
                 diameter_required(
-                    FORCE,
-                    moment,
-                    moment,
-                    0.9,
-                    0.9,
+                    MemberActions(FORCE, moment, moment, 0.9, 0.9),
                     LENGTH,
                     STEEL,
                     tube,

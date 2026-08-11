@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import MOMENT_EXPONENT
 from normax.ec3.resistance import moment_resultant
@@ -189,12 +190,15 @@ def test_the_plastic_check_recovers_the_squash_check_without_moment():
     squash = float(resistance_yielding(AREA, SteelGrade(f_y=YIELD)))
 
     assert utilization_plastic(
-        -squash, 0.0, 0.0, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-squash, 0.0, 0.0), AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
     ) == pytest.approx(1.0, rel=1e-12)
     assert (
         float(
             utilization_plastic(
-                0.0, 0.0, 0.0, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+                MemberActions(0.0, 0.0, 0.0),
+                AREA,
+                MODULUS_PLASTIC,
+                SteelGrade(f_y=YIELD),
             )
         )
         == 0.0
@@ -205,7 +209,7 @@ def test_the_plastic_check_is_the_axial_ratio_to_the_exponent_without_moment():
     axial = 0.955 * float(resistance_yielding(AREA, SteelGrade(f_y=YIELD)))
 
     value = utilization_plastic(
-        -axial, 0.0, 0.0, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-axial, 0.0, 0.0), AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
     )
 
     assert value == pytest.approx(0.955**1.7, rel=1e-12)
@@ -225,7 +229,10 @@ def test_the_plastic_check_is_the_clause_rearranged_not_a_different_check():
     for factor in (0.5, 0.9, 1.0, 1.1, 2.0):
         quotient = factor * reduced / reduced
         summed = utilization_plastic(
-            -axial, factor * reduced, 0.0, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+            MemberActions(-axial, factor * reduced, 0.0),
+            AREA,
+            MODULUS_PLASTIC,
+            SteelGrade(f_y=YIELD),
         )
 
         assert (float(summed) > 1.0) == (quotient > 1.0)
@@ -241,7 +248,10 @@ def test_the_plastic_check_stays_finite_beyond_the_squash_load():
         resistance_yielding(AREA, SteelGrade(f_y=YIELD))
     )
     values = utilization_plastic(
-        -overloaded, 40e6, 0.0, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-overloaded, 40e6, 0.0),
+        AREA,
+        MODULUS_PLASTIC,
+        SteelGrade(f_y=YIELD),
     )
 
     assert jnp.all(jnp.isfinite(values))
@@ -253,7 +263,7 @@ def test_the_elastic_check_reduces_to_the_axial_ratio_without_moment():
     axial = 0.955 * float(resistance_yielding(AREA, SteelGrade(f_y=YIELD)))
 
     value = utilization_elastic(
-        -axial, 0.0, 0.0, AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-axial, 0.0, 0.0), AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD)
     )
 
     assert value == pytest.approx(0.955, rel=1e-9)
@@ -266,7 +276,7 @@ def test_the_plastic_check_sums_the_axial_and_bending_terms():
     )
 
     value = utilization_plastic(
-        -axial, 40e6, 15e6, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-axial, 40e6, 15e6), AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
     )
 
     assert value == pytest.approx(0.2**1.7 + float(bending), rel=1e-12)
@@ -278,7 +288,7 @@ def test_the_elastic_check_is_equation_6_42_written_longhand():
     stress = 500e3 / AREA + moment_resultant(40e6, 15e6) / MODULUS_ELASTIC
 
     value = utilization_elastic(
-        -500e3, 40e6, 15e6, AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-500e3, 40e6, 15e6), AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD)
     )
 
     assert value == pytest.approx(float(stress) / YIELD, rel=1e-12)
@@ -302,10 +312,18 @@ def test_the_checks_ignore_the_sign_of_the_axial_force(plastic):
     # magnitude. A tension member is checked by the same expression.
     modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
     tension = utilization_cross_section(
-        500e3, 40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(500e3, 40e6, 15e6),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     )
     compression = utilization_cross_section(
-        -500e3, 40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     )
 
     assert tension == pytest.approx(float(compression), rel=1e-14)
@@ -315,10 +333,18 @@ def test_the_checks_ignore_the_sign_of_the_axial_force(plastic):
 def test_the_checks_ignore_the_sign_of_either_moment(plastic):
     modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
     positive = utilization_cross_section(
-        -500e3, 40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     )
     mixed = utilization_cross_section(
-        -500e3, -40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(-500e3, -40e6, 15e6),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     )
 
     assert positive == pytest.approx(float(mixed), rel=1e-14)
@@ -336,7 +362,10 @@ def test_the_plastic_check_is_unity_on_the_reduced_moment(n):
     axial = n * float(resistance_yielding(AREA, SteelGrade(f_y=YIELD)))
 
     value = utilization_plastic(
-        -axial, reduced, 0.0, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-axial, reduced, 0.0),
+        AREA,
+        MODULUS_PLASTIC,
+        SteelGrade(f_y=YIELD),
     )
 
     assert value == pytest.approx(1.0, abs=1e-12)
@@ -349,7 +378,7 @@ def test_the_elastic_check_is_unity_on_the_yield_stress():
     )
 
     value = utilization_elastic(
-        -axial, moment, 0.0, AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD)
+        MemberActions(-axial, moment, 0.0), AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD)
     )
 
     assert value == pytest.approx(1.0, rel=1e-12)
@@ -361,9 +390,20 @@ def test_the_dispatcher_selects_the_branch(plastic):
     branch = utilization_plastic if plastic else utilization_elastic
 
     assert utilization_cross_section(
-        -500e3, 40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     ) == pytest.approx(
-        float(branch(-500e3, 40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD)))
+        float(
+            branch(
+                MemberActions(-500e3, 40e6, 15e6),
+                AREA,
+                modulus,
+                SteelGrade(f_y=YIELD),
+            )
+        )
     )
 
 
@@ -374,7 +414,11 @@ def test_the_checks_grow_with_the_axial_force(plastic):
         1e3, 0.9 * float(resistance_yielding(AREA, SteelGrade(f_y=YIELD))), 300
     )
     values = utilization_cross_section(
-        forces, 40e6, 15e6, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(forces, 40e6, 15e6),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     )
 
     assert jnp.all(jnp.diff(values) > 0.0)
@@ -385,7 +429,11 @@ def test_the_checks_grow_with_the_moment(plastic):
     modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
     moments = jnp.linspace(0.0, 120e6, 300)
     values = utilization_cross_section(
-        -500e3, moments, 0.0, AREA, modulus, SteelGrade(f_y=YIELD), plastic=plastic
+        MemberActions(-500e3, moments, 0.0),
+        AREA,
+        modulus,
+        SteelGrade(f_y=YIELD),
+        plastic=plastic,
     )
 
     assert jnp.all(jnp.diff(values) >= 0.0)
@@ -395,10 +443,16 @@ def test_the_checks_grow_with_the_moment(plastic):
 def test_the_partial_factor_scales_the_elastic_check_exactly():
     # Both terms of 6.42 carry gamma_M0 linearly, so the whole check does.
     unity = utilization_elastic(
-        -500e3, 40e6, 15e6, AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD, gamma_m0=1.0)
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        MODULUS_ELASTIC,
+        SteelGrade(f_y=YIELD, gamma_m0=1.0),
     )
     raised = utilization_elastic(
-        -500e3, 40e6, 15e6, AREA, MODULUS_ELASTIC, SteelGrade(f_y=YIELD, gamma_m0=1.1)
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        MODULUS_ELASTIC,
+        SteelGrade(f_y=YIELD, gamma_m0=1.1),
     )
 
     assert raised == pytest.approx(float(unity) * 1.1, rel=1e-12)
@@ -409,10 +463,16 @@ def test_the_partial_factor_raises_the_plastic_check_faster_than_linearly():
     # the reduced moment, whose own reduction deepens as that ratio grows. So
     # the plastic branch is superlinear in gamma_M0, unlike the elastic one.
     unity = utilization_plastic(
-        -500e3, 40e6, 15e6, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD, gamma_m0=1.0)
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        MODULUS_PLASTIC,
+        SteelGrade(f_y=YIELD, gamma_m0=1.0),
     )
     raised = utilization_plastic(
-        -500e3, 40e6, 15e6, AREA, MODULUS_PLASTIC, SteelGrade(f_y=YIELD, gamma_m0=1.1)
+        MemberActions(-500e3, 40e6, 15e6),
+        AREA,
+        MODULUS_PLASTIC,
+        SteelGrade(f_y=YIELD, gamma_m0=1.1),
     )
 
     assert raised > float(unity) * 1.1

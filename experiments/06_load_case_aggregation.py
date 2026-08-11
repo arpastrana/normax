@@ -33,6 +33,7 @@ Run with `uv run python experiments/06_load_case_aggregation.py`.
 import jax
 import jax.numpy as jnp
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_envelope
@@ -71,7 +72,11 @@ def sizes_per_case():
     Fully-stressed diameter of every member under every load case.
     """
     return diameter_required(
-        FORCES, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
+        MemberActions(FORCES, MOMENTS, 0.0, 0.9, 0.9),
+        LENGTHS,
+        STEEL,
+        TUBE,
+        plastic=PLASTIC,
     )
 
 
@@ -112,7 +117,11 @@ def main() -> None:
             lambda f: mass(
                 diameter_envelope(
                     diameter_required(
-                        f, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
+                        MemberActions(f, MOMENTS, 0.0, 0.9, 0.9),
+                        LENGTHS,
+                        STEEL,
+                        TUBE,
+                        plastic=PLASTIC,
                     ),
                     beta,
                 ),
@@ -135,14 +144,22 @@ def main() -> None:
 
     def objective(forces):
         sizes = diameter_required(
-            forces, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
+            MemberActions(forces, MOMENTS, 0.0, 0.9, 0.9),
+            LENGTHS,
+            STEEL,
+            TUBE,
+            plastic=PLASTIC,
         )
 
         return mass(diameter_envelope(sizes, beta), LENGTHS, STEEL, TUBE)
 
     def hard(forces):
         sizes = diameter_required(
-            forces, MOMENTS, 0.0, 0.9, 0.9, LENGTHS, STEEL, TUBE, plastic=PLASTIC
+            MemberActions(forces, MOMENTS, 0.0, 0.9, 0.9),
+            LENGTHS,
+            STEEL,
+            TUBE,
+            plastic=PLASTIC,
         )
 
         return mass(jnp.max(sizes, axis=0), LENGTHS, STEEL, TUBE)

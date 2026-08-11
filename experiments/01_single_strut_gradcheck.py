@@ -30,6 +30,7 @@ Run with `uv run python experiments/01_single_strut_gradcheck.py`.
 import jax
 import jax.numpy as jnp
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.adjoint import derivative_force
 from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
@@ -62,7 +63,7 @@ def size(n_ed, l_cr):
     Fully-stressed diameter under axial force alone.
     """
     return diameter_required(
-        n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, TUBE, plastic=PLASTIC
+        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, TUBE, plastic=PLASTIC
     )
 
 
@@ -71,7 +72,7 @@ def used(d, n_ed, l_cr):
     Utilization at a diameter, from the exact clause functions.
     """
     return utilization_design(
-        d, n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, TUBE, plastic=PLASTIC
+        d, MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, TUBE, plastic=PLASTIC
     )
 
 

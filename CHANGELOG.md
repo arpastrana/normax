@@ -64,6 +64,34 @@
   Table 6.2 assigns the curve by fabrication route, so the same grade drawn hot
   and cold is two grades, not two shapes. `Tube` is down to `ratio` and
   `diameter_min`.
+- **Fixed: `pipeline.governing` invented the minor axis it reported on.**
+  `design` sizes with all five actions, but `Design` kept only `n_ed`,
+  `m_ed = m_y_ed` and `c_m = c_my`, so the diagnostic rebuilt the missing half
+  as `m_z = 0` and `c_mz = 1` and then named a limit state from it. At
+  `n = -300 kN`, `M_y = 20 kNm`, `M_z = 60 kNm`, `c_my = 0.9`, `c_mz = 0.4`,
+  `L_cr = 4 m` the true code is `LIMIT_CROSS_SECTION` and the fabricated one is
+  `LIMIT_MAJOR`: a member sized by 6.2.9 reported as sized by Eq. 6.61.
+  Diagnostic only — nothing differentiable read it and the mass was never
+  affected — and invisible on the arch fixture, whose minor-axis moment is zero
+  anyway, which is why it survived. `Design` now carries a `MemberActions`, so
+  there is nothing left to fabricate; the same fix lands on the composed path,
+  where `composition.design` was dropping two fields the ec3 Tesseract already
+  returns.
+- **`MemberActions` groups the five actions the checks read.** A new
+  `normax/ec3/actions.py` leaf, replacing `pipeline.Actions`, whose docstring
+  had already noted it was "ordered to be splatted straight into the sizing
+  map" — the splat is now the container. Seven sizing signatures and the three
+  cross-section checks lose four parameters each: `diameter_required` goes from
+  ten to four positional arguments, `utilization_cross_section` from nine to
+  four plus two flags. The moment factors default to one, the largest Table B.3
+  permits, so a member given no factor is checked conservatively. `Envelope`
+  keeps its flat fields, its per-case arrays carrying a case axis a container
+  annotated `"members"` cannot honestly hold.
+- **Two AST traps recurred and both were caught by tests, not review.** A call
+  through a variable (`branch = utilization_plastic if plastic else ...`) and a
+  call through `jax.jit(diameter_required, ...)` are invisible to a sweep that
+  matches on the callee's name. Seventy call sites moved mechanically; three
+  needed hands.
 - **373 identifiers were moved from the AST, not by regex.** `diameter` has 318
   textual occurrences and `governing` 84, nearly all parameters and prose; only
   names actually bound to the renamed imports were touched. The one case the

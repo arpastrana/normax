@@ -7,6 +7,7 @@ import pytest
 
 from normax.analysis.smax import buckling
 from normax.analysis.smax import prepare
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import area
 from normax.ec3.sizing import LIMIT_MAJOR
@@ -190,7 +191,7 @@ def test_the_mass_agrees_with_the_scalar_entry_point(setup, steel, seed):
 def test_every_member_is_in_compression(setup, steel):
     _, result = sized(setup, steel, 3)
 
-    assert np.all(np.asarray(result.n_ed) < 0.0)
+    assert np.all(np.asarray(result.actions.n_ed) < 0.0)
 
 
 def test_the_arch_is_symmetric_about_midspan(setup, steel):
@@ -859,8 +860,8 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
     )
 
     assert np.allclose(np.asarray(funicular.xyz), np.asarray(patched.xyz))
-    assert float(jnp.max(jnp.abs(patched.m_ed))) > float(
-        jnp.max(jnp.abs(funicular.m_ed))
+    assert float(jnp.max(jnp.abs(patched.actions.m_y_ed))) > float(
+        jnp.max(jnp.abs(funicular.actions.m_y_ed))
     )
 
 
@@ -907,9 +908,13 @@ def test_the_critical_load_factor_belongs_to_a_load_case(setup, steel, cases):
     single = Design(
         result.xyz,
         result.lengths,
-        result.n_ed[0],
-        result.m_y_ed[0],
-        result.c_my[0],
+        MemberActions(
+            result.n_ed[0],
+            result.m_y_ed[0],
+            result.m_z_ed[0],
+            result.c_my[0],
+            result.c_mz[0],
+        ),
         result.l_cr,
         exact.diameters,
         exact.utilization[0],
@@ -944,9 +949,13 @@ def test_the_default_load_case_of_the_stability_check_is_the_structures_own(
     single = Design(
         result.xyz,
         result.lengths,
-        result.n_ed[0],
-        result.m_y_ed[0],
-        result.c_my[0],
+        MemberActions(
+            result.n_ed[0],
+            result.m_y_ed[0],
+            result.m_z_ed[0],
+            result.c_my[0],
+            result.c_mz[0],
+        ),
         result.l_cr,
         exact.diameters,
         exact.utilization[0],

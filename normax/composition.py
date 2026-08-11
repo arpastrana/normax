@@ -52,6 +52,7 @@ from jaxtyping import Float
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
@@ -267,9 +268,13 @@ def design(
     return Design(
         xyz=shape["xyz"],
         lengths=lengths,
-        n_ed=member["n_ed"],
-        m_ed=sized["m_y_ed"],
-        c_m=sized["c_my"],
+        actions=MemberActions(
+            member["n_ed"],
+            sized["m_y_ed"],
+            sized["m_z_ed"],
+            sized["c_my"],
+            sized["c_mz"],
+        ),
         l_cr=buckling,
         diameters=sized["diameter"],
         utilization=sized["utilization"],
@@ -599,11 +604,9 @@ def envelope(
         [
             utilization_ec3(
                 covering,
-                n_ed[case],
-                m_y_ed[case],
-                m_z_ed[case],
-                c_my[case],
-                c_mz[case],
+                MemberActions(
+                    n_ed[case], m_y_ed[case], m_z_ed[case], c_my[case], c_mz[case]
+                ),
                 buckling,
                 steel,
                 tube,

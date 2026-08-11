@@ -47,6 +47,7 @@ from jaxtyping import Int
 from normax.analysis.smax import Model
 from normax.analysis.smax import buckling
 from normax.analysis.smax import forces
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
@@ -69,38 +70,6 @@ from normax.formfinding import equilibrium
 from normax.structures import Structure
 
 
-class Actions(NamedTuple):
-    """
-    What a member carries, in the terms EN 1993-1-1 states its checks in.
-
-    Attributes
-    ----------
-    n_ed :
-        Axial force, tension positive.
-    m_y_ed :
-        Larger major-axis end moment, in magnitude.
-    m_z_ed :
-        Larger minor-axis end moment, in magnitude.
-    c_my :
-        Equivalent uniform moment factor for major-axis bending.
-    c_mz :
-        Equivalent uniform moment factor for minor-axis bending.
-
-    Notes
-    -----
-    The reduction from two end moments to a design moment and a factor is
-    EN 1993-1-1 Table B.3, so an analysis stops one step short of this and the
-    step belongs to the check. Ordered to be splatted straight into the sizing
-    map, which takes these five and then a buckling length.
-    """
-
-    n_ed: Float[Array, "members"]
-    m_y_ed: Float[Array, "members"]
-    m_z_ed: Float[Array, "members"]
-    c_my: Float[Array, "members"]
-    c_mz: Float[Array, "members"]
-
-
 def actions(
     model: Model,
     xyz: Float[Array, "nodes 3"],
@@ -109,7 +78,7 @@ def actions(
     tube: Tube,
     *,
     loads: Float[Array, "nodes 3"] | None = None,
-) -> Actions:
+) -> MemberActions:
     """
     Analyse a geometry and read the result as the check states its terms.
 
@@ -138,7 +107,7 @@ def actions(
     m_y_ed, c_my = end_moments(member.m_y_ed[:, 0], member.m_y_ed[:, 1])
     m_z_ed, c_mz = end_moments(member.m_z_ed[:, 0], member.m_z_ed[:, 1])
 
-    return Actions(member.n_ed, m_y_ed, m_z_ed, c_my, c_mz)
+    return MemberActions(member.n_ed, m_y_ed, m_z_ed, c_my, c_mz)
 
 
 class Design(NamedTuple):
@@ -151,12 +120,9 @@ class Design(NamedTuple):
         Position of every node at equilibrium.
     lengths :
         Length of every member.
-    n_ed :
-        Axial force of every member, tension positive.
-    m_ed :
-        Larger end moment of every member, in magnitude.
-    c_m :
-        Equivalent uniform moment factor of every member.
+    actions :
+        Axial force, both design moments and both moment factors of every
+        member.
     l_cr :
         Buckling length used for every member.
     diameters :
@@ -172,13 +138,14 @@ class Design(NamedTuple):
     Every field is a differentiable leaf. The diagnostic saying which limit
     state decided each size is deliberately absent, since a concrete cotangent
     on it would be an error; ask `governing` for it separately.
+
+    The actions are carried whole rather than flattened to the major axis, so
+    that a design can be re-checked against exactly what sized it.
     """
 
     xyz: Float[Array, "nodes 3"]
     lengths: Float[Array, "members"]
-    n_ed: Float[Array, "members"]
-    m_ed: Float[Array, "members"]
-    c_m: Float[Array, "members"]
+    actions: MemberActions
     l_cr: Float[Array, "members"]
     diameters: Float[Array, "members"]
     utilization: Float[Array, "members"]
@@ -273,19 +240,17 @@ def design(
     buckling = lengths if l_cr is None else l_cr
 
     required = diameter_ec3(
-        *acting, buckling, steel, tube, plastic=plastic, resultant=resultant
+        acting, buckling, steel, tube, plastic=plastic, resultant=resultant
     )
 
     used = utilization_ec3(
-        required, *acting, buckling, steel, tube, plastic=plastic, resultant=resultant
+        required, acting, buckling, steel, tube, plastic=plastic, resultant=resultant
     )
 
     return Design(
         xyz=state.xyz,
         lengths=lengths,
-        n_ed=acting.n_ed,
-        m_ed=acting.m_y_ed,
-        c_m=acting.c_my,
+        actions=acting,
         l_cr=buckling,
         diameters=required,
         utilization=used,
@@ -515,7 +480,7 @@ def envelope(
     required = jnp.stack(
         [
             diameter_ec3(
-                *case, buckling, steel, tube, plastic=plastic, resultant=resultant
+                case, buckling, steel, tube, plastic=plastic, resultant=resultant
             )
             for case in acting
         ]
@@ -527,7 +492,7 @@ def envelope(
         [
             utilization_ec3(
                 covering,
-                *case,
+                case,
                 buckling,
                 steel,
                 tube,
@@ -538,17 +503,19 @@ def envelope(
         ]
     )
 
-    stacked = Actions(*(jnp.stack(field) for field in zip(*acting)))
+    # Stacked field by field rather than as a MemberActions, whose fields carry
+    # one member axis and not the case axis these gain.
+    n_ed, m_y_ed, m_z_ed, c_my, c_mz = (jnp.stack(field) for field in zip(*acting))
 
     return Envelope(
         xyz=state.xyz,
         lengths=lengths,
         l_cr=buckling,
-        n_ed=stacked.n_ed,
-        m_y_ed=stacked.m_y_ed,
-        m_z_ed=stacked.m_z_ed,
-        c_my=stacked.c_my,
-        c_mz=stacked.c_mz,
+        n_ed=n_ed,
+        m_y_ed=m_y_ed,
+        m_z_ed=m_z_ed,
+        c_my=c_my,
+        c_mz=c_mz,
         required=required,
         diameters=covering,
         utilization=used,
@@ -629,11 +596,13 @@ def unsmoothed(
         [
             utilization_ec3(
                 sizes,
-                result.n_ed[case],
-                result.m_y_ed[case],
-                result.m_z_ed[case],
-                result.c_my[case],
-                result.c_mz[case],
+                MemberActions(
+                    result.n_ed[case],
+                    result.m_y_ed[case],
+                    result.m_z_ed[case],
+                    result.c_my[case],
+                    result.c_mz[case],
+                ),
                 result.l_cr,
                 steel,
                 tube,
@@ -711,16 +680,14 @@ def governing(
     -----
     **Non-differentiable**, and kept out of `Design` for that reason. Read it
     beside a design, never through one.
-    """
-    zeros = result.m_ed * 0.0
 
+    The design is re-checked against the actions it was sized for, which is what
+    makes the answer the one that decided the size rather than a second opinion
+    on a subset of them.
+    """
     return governing_ec3(
         result.diameters,
-        result.n_ed,
-        result.m_ed,
-        zeros,
-        result.c_m,
-        zeros + 1.0,
+        result.actions,
         result.l_cr,
         steel,
         tube,
@@ -845,7 +812,9 @@ def stability(
             gross, steel, force_critical(inertia, result.l_cr, steel)
         ),
         slenderness_global=slenderness_global(
-            amplifier_resistance(gross, steel, result.n_ed), alpha_cr
+            amplifier_resistance(gross, steel, result.actions.n_ed), alpha_cr
         ),
-        l_cr_global=buckling_length_global(alpha_cr, result.n_ed, inertia, steel),
+        l_cr_global=buckling_length_global(
+            alpha_cr, result.actions.n_ed, inertia, steel
+        ),
     )

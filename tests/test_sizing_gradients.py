@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.adjoint import derivative_force
 from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
@@ -44,11 +45,13 @@ METRE = 1e3
 
 def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, c_m=0.9):
     return diameter_required(
-        force_kn * KILONEWTON,
-        moment_y_knm * KILONEWTON_METRE,
-        moment_z_knm * KILONEWTON_METRE,
-        c_m,
-        c_m,
+        MemberActions(
+            force_kn * KILONEWTON,
+            moment_y_knm * KILONEWTON_METRE,
+            moment_z_knm * KILONEWTON_METRE,
+            c_m,
+            c_m,
+        ),
         length_m * METRE,
         STEEL,
         TUBE,
@@ -58,7 +61,11 @@ def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, c_m=0.9):
 
 def raw(n_ed=FORCE, m_y_ed=0.0, m_z_ed=0.0, l_cr=LENGTH, c_m=0.9, tube=TUBE):
     return diameter_required(
-        n_ed, m_y_ed, m_z_ed, c_m, c_m, l_cr, STEEL, tube, plastic=PLASTIC
+        MemberActions(n_ed, m_y_ed, m_z_ed, c_m, c_m),
+        l_cr,
+        STEEL,
+        tube,
+        plastic=PLASTIC,
     )
 
 
@@ -288,7 +295,11 @@ def test_the_mass_gradient_is_finite_and_signed():
 
     def objective(n_ed):
         sizes = diameter_required(
-            n_ed, 4e7, 1.5e7, 0.9, 0.9, lengths, STEEL, TUBE, plastic=PLASTIC
+            MemberActions(n_ed, 4e7, 1.5e7, 0.9, 0.9),
+            lengths,
+            STEEL,
+            TUBE,
+            plastic=PLASTIC,
         )
 
         return mass(sizes, lengths, STEEL, TUBE)
@@ -308,7 +319,11 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
 
     def objective(n_ed):
         sizes = diameter_required(
-            n_ed, 0.0, 0.0, 0.9, 0.9, lengths, STEEL, TUBE, plastic=PLASTIC
+            MemberActions(n_ed, 0.0, 0.0, 0.9, 0.9),
+            lengths,
+            STEEL,
+            TUBE,
+            plastic=PLASTIC,
         )
 
         return mass(sizes, lengths, STEEL, TUBE)
@@ -323,7 +338,11 @@ def test_a_member_with_no_actions_has_no_gradient():
     def objective(n_ed):
         return jnp.sum(
             diameter_required(
-                n_ed, 0.0, 0.0, 0.9, 0.9, LENGTH, STEEL, TUBE, plastic=PLASTIC
+                MemberActions(n_ed, 0.0, 0.0, 0.9, 0.9),
+                LENGTH,
+                STEEL,
+                TUBE,
+                plastic=PLASTIC,
             )
         )
 
@@ -343,7 +362,11 @@ def test_the_map_is_differentiable_in_the_yield_strength():
         )
 
         return diameter_required(
-            FORCE, 4e7, 1.5e7, 0.9, 0.9, LENGTH, steel, TUBE, plastic=PLASTIC
+            MemberActions(FORCE, 4e7, 1.5e7, 0.9, 0.9),
+            LENGTH,
+            steel,
+            TUBE,
+            plastic=PLASTIC,
         )
 
     gradient = float(jax.grad(at)(355.0))
@@ -358,11 +381,7 @@ def test_the_map_is_differentiable_in_the_wall_proportion():
     # it comes free from differentiating the check rather than the solver.
     def at(ratio):
         return diameter_required(
-            FORCE,
-            4e7,
-            1.5e7,
-            0.9,
-            0.9,
+            MemberActions(FORCE, 4e7, 1.5e7, 0.9, 0.9),
             LENGTH,
             STEEL,
             Tube(ratio, TUBE.diameter_min),

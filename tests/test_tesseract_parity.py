@@ -70,7 +70,7 @@ TOLERANCE_PARITY_ENVELOPE = 1e-12
 #
 # The moment factors read a ratio of the two end moments, so they inherit it.
 TOLERANCE_MOMENT = 1e-11
-MOMENT_FIELDS = ("m_ed", "m_y_ed", "m_z_ed", "c_m", "c_my", "c_mz")
+MOMENT_FIELDS = ("m_y_ed", "m_z_ed", "c_my", "c_mz")
 
 # Derivatives are looser than values, and not because of the boundary. Each
 # stage linearizes on its own here and all three linearize together in process,
@@ -193,6 +193,19 @@ def relative(oracle, composed):
     return float(np.max(np.abs(left - right))) / scale
 
 
+def named_fields(container):
+    """
+    Every field of a result, with a nested container expanded one level.
+    """
+    for field in container._fields:
+        value = getattr(container, field)
+        if hasattr(value, "_fields"):
+            for inner in value._fields:
+                yield f"{field}.{inner}", getattr(value, inner)
+        else:
+            yield field, value
+
+
 # --------------------------------------------------------------------------- #
 # The claim the whole step exists to make
 # --------------------------------------------------------------------------- #
@@ -214,10 +227,11 @@ def test_every_field_of_the_design_survives_the_boundary(
     # disagreement entered.
     oracle, composed = both(setup, chain, steel, seed, cross_section_class)
 
-    for field in oracle._fields:
-        limit = TOLERANCE_MOMENT if field in MOMENT_FIELDS else TOLERANCE_PARITY
+    for (label, left), (_, right) in zip(named_fields(oracle), named_fields(composed)):
+        leaf = label.rpartition(".")[2]
+        limit = TOLERANCE_MOMENT if leaf in MOMENT_FIELDS else TOLERANCE_PARITY
 
-        assert relative(getattr(oracle, field), getattr(composed, field)) < limit, field
+        assert relative(left, right) < limit, label
 
 
 @pytest.mark.parametrize("cross_section_class", [2, 3])
@@ -323,8 +337,8 @@ def test_the_boundary_does_not_downcast_to_single_precision(setup, chain, steel,
     _, composed_design = both(setup, chain, steel, seed, 3)
     _, composed = objectives(setup, chain, steel, seed, 3)
 
-    for field in composed_design._fields:
-        assert jnp.asarray(getattr(composed_design, field)).dtype == jnp.float64, field
+    for label, value in named_fields(composed_design):
+        assert jnp.asarray(value).dtype == jnp.float64, label
 
     assert jax.grad(composed)(q).dtype == jnp.float64
 

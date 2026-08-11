@@ -548,7 +548,8 @@ test needs; revisit in P5 or P6 if there is time.
 2. **Table B.3 lives in T3, not in T2.** `end_moments` is a clause of the
    standard and not a product of an analysis, so a frame solver has no opinion on
    it. That is what keeps T2's schema free of anything a C++ solver would have to
-   be taught, and it is why T3 reports `m_ed` and `c_m` as outputs.
+   be taught, and it is why T3 reports the design moments and moment factors as
+   outputs.
 3. **Splitting the linearization costs digits; the boundary does not.** Values
    cross bit-identically. Derivatives disagree at 3.6e-14 — and forward mode
    against reverse mode, both entirely inside the composition, disagree by

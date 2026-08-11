@@ -36,6 +36,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 
 # EN 1993-1-1 6.3.1.2(3). At or below this slenderness there is no reduction.
@@ -403,9 +404,7 @@ def moment_combined(
 
 
 def utilization_plastic(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
+    actions: MemberActions,
     area: Float[Array, "members"],
     w_pl: Float[Array, "members"],
     steel: SteelGrade,
@@ -415,12 +414,10 @@ def utilization_plastic(
 
     Parameters
     ----------
-    n_ed :
-        Design axial force, of either sign.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
+    actions :
+        Design actions on the member. The two moment factors are not read: this
+        clause is a cross-section check and knows nothing of the length over
+        which a moment varies.
     area :
         Gross cross-sectional area.
     w_pl :
@@ -459,18 +456,16 @@ def utilization_plastic(
     exact rather than approximate here: both exponents of Eq. 6.41 are two for a
     circular hollow section and its two reduced resistances are equal.
     """
-    combined = moment_combined(m_y_ed, m_z_ed, plastic=True)
+    combined = moment_combined(actions.m_y_ed, actions.m_z_ed, plastic=True)
 
-    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, steel)
+    axial = jnp.abs(jnp.asarray(actions.n_ed)) / resistance_yielding(area, steel)
     bending = combined / resistance_bending_plastic(w_pl, steel)
 
     return axial**MOMENT_EXPONENT + bending
 
 
 def utilization_elastic(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
+    actions: MemberActions,
     area: Float[Array, "members"],
     w_el: Float[Array, "members"],
     steel: SteelGrade,
@@ -482,12 +477,10 @@ def utilization_elastic(
 
     Parameters
     ----------
-    n_ed :
-        Design axial force, of either sign.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
+    actions :
+        Design actions on the member. The two moment factors are not read: this
+        clause is a cross-section check and knows nothing of the length over
+        which a moment varies.
     area :
         Gross cross-sectional area.
     w_el :
@@ -527,17 +520,17 @@ def utilization_elastic(
     Unlike the plastic branch this needs no separate axial check, since the
     axial term survives when the moments vanish.
     """
-    combined = moment_combined(m_y_ed, m_z_ed, plastic=False, resultant=resultant)
+    combined = moment_combined(
+        actions.m_y_ed, actions.m_z_ed, plastic=False, resultant=resultant
+    )
 
-    axial = jnp.abs(jnp.asarray(n_ed)) / resistance_yielding(area, steel)
+    axial = jnp.abs(jnp.asarray(actions.n_ed)) / resistance_yielding(area, steel)
 
     return axial + combined / resistance_bending_elastic(w_el, steel)
 
 
 def utilization_cross_section(
-    n_ed: Float[Array, "members"],
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
+    actions: MemberActions,
     area: Float[Array, "members"],
     modulus: Float[Array, "members"],
     steel: SteelGrade,
@@ -550,12 +543,10 @@ def utilization_cross_section(
 
     Parameters
     ----------
-    n_ed :
-        Design axial force, of either sign.
-    m_y_ed :
-        Design bending moment about the major axis.
-    m_z_ed :
-        Design bending moment about the minor axis.
+    actions :
+        Design actions on the member. The two moment factors are not read: this
+        clause is a cross-section check and knows nothing of the length over
+        which a moment varies.
     area :
         Gross cross-sectional area.
     modulus :
@@ -587,11 +578,9 @@ def utilization_cross_section(
     is then exact algebra rather than an interpretation.
     """
     if plastic:
-        return utilization_plastic(n_ed, m_y_ed, m_z_ed, area, modulus, steel)
+        return utilization_plastic(actions, area, modulus, steel)
 
-    return utilization_elastic(
-        n_ed, m_y_ed, m_z_ed, area, modulus, steel, resultant=resultant
-    )
+    return utilization_elastic(actions, area, modulus, steel, resultant=resultant)
 
 
 def force_critical(

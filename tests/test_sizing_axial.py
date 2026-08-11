@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.classification import classify_section
 from normax.ec3.material import IMPERFECTION_FACTORS
 from normax.ec3.material import SteelGrade
@@ -41,13 +42,13 @@ LENGTHS = [2000.0, 4000.0, 12000.0, 40000.0]
 
 def sized(n_ed, l_cr=LENGTH, *, plastic=PLASTIC, tube=TUBE):
     return diameter_required(
-        n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, tube, plastic=plastic
+        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, tube, plastic=plastic
     )
 
 
 def used(d, n_ed, l_cr=LENGTH, *, plastic=PLASTIC, tube=TUBE):
     return utilization_design(
-        d, n_ed, 0.0, 0.0, 1.0, 1.0, l_cr, STEEL, tube, plastic=plastic
+        d, MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, tube, plastic=plastic
     )
 
 
@@ -100,7 +101,9 @@ def test_only_the_first_two_classes_are_plastic():
 @pytest.mark.parametrize("l_cr", LENGTHS)
 @pytest.mark.parametrize("n_ed", FORCES)
 def test_the_bracket_is_never_above_the_root(n_ed, l_cr):
-    lower = diameter_bracket(n_ed, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
+    lower = diameter_bracket(
+        MemberActions(n_ed, 0.0, 0.0), STEEL, TUBE, plastic=PLASTIC
+    )
 
     assert float(sized(n_ed, l_cr)) >= float(lower) - 1e-9
 
@@ -109,7 +112,9 @@ def test_the_bracket_is_never_above_the_root(n_ed, l_cr):
 def test_the_bracket_is_at_or_beyond_full_utilization(n_ed):
     # The lower bound is the squash diameter, where the axial force alone
     # exhausts the section. Buckling can only make that worse.
-    lower = diameter_bracket(n_ed, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
+    lower = diameter_bracket(
+        MemberActions(n_ed, 0.0, 0.0), STEEL, TUBE, plastic=PLASTIC
+    )
 
     assert float(used(lower, n_ed)) >= 1.0 - 1e-9
 
@@ -119,7 +124,7 @@ def test_the_bracket_does_not_carry_the_catalogue_minimum():
     # check. Folding it into the search would stop the search at a diameter
     # where the check is unsatisfied, which is where the implicit derivative
     # stops being valid, so it is applied to the answer instead.
-    lower = diameter_bracket(0.0, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC)
+    lower = diameter_bracket(MemberActions(0.0, 0.0, 0.0), STEEL, TUBE, plastic=PLASTIC)
 
     assert float(lower) < DIAMETER_MINIMUM
     assert float(sized(0.0)) == pytest.approx(DIAMETER_MINIMUM)
@@ -131,7 +136,7 @@ def test_the_bracket_is_the_closed_form_squash_diameter():
     expected = float(jnp.sqrt(5e5 * STEEL.gamma_m0 / (STEEL.f_y * unit)))
 
     assert diameter_bracket(
-        -5e5, 0.0, 0.0, STEEL, TUBE, plastic=PLASTIC
+        MemberActions(-5e5, 0.0, 0.0), STEEL, TUBE, plastic=PLASTIC
     ) == pytest.approx(expected, rel=1e-12)
 
 
@@ -252,7 +257,11 @@ def test_nothing_is_ever_sized_below_the_floor():
 
     assert jnp.all(
         diameter_required(
-            forces, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC
+            MemberActions(forces, 0.0, 0.0, 1.0, 1.0),
+            LENGTH,
+            STEEL,
+            TUBE,
+            plastic=PLASTIC,
         )
         >= DIAMETER_MINIMUM - 1e-12
     )
@@ -317,7 +326,7 @@ def test_the_map_vectorizes_over_members():
     lengths = jnp.full_like(forces, LENGTH)
 
     sizes = diameter_required(
-        forces, 0.0, 0.0, 1.0, 1.0, lengths, STEEL, TUBE, plastic=PLASTIC
+        MemberActions(forces, 0.0, 0.0, 1.0, 1.0), lengths, STEEL, TUBE, plastic=PLASTIC
     )
 
     assert sizes.shape == forces.shape
@@ -330,7 +339,7 @@ def test_the_map_broadcasts_a_scalar_force_over_many_lengths():
     lengths = jnp.asarray(LENGTHS)
 
     sizes = diameter_required(
-        -5e5, 0.0, 0.0, 1.0, 1.0, lengths, STEEL, TUBE, plastic=PLASTIC
+        MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0), lengths, STEEL, TUBE, plastic=PLASTIC
     )
 
     assert sizes.shape == lengths.shape
@@ -340,7 +349,7 @@ def test_the_map_is_jittable():
     jitted = jax.jit(diameter_required, static_argnames=("plastic", "resultant"))
 
     assert jitted(
-        -5e5, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC, resultant=True
+        MemberActions(-5e5), LENGTH, STEEL, TUBE, plastic=PLASTIC, resultant=True
     ) == pytest.approx(float(sized(-5e5)))
 
 
@@ -349,7 +358,11 @@ def test_the_map_is_vmappable():
 
     def one(force):
         return diameter_required(
-            force, 0.0, 0.0, 1.0, 1.0, LENGTH, STEEL, TUBE, plastic=PLASTIC
+            MemberActions(force, 0.0, 0.0, 1.0, 1.0),
+            LENGTH,
+            STEEL,
+            TUBE,
+            plastic=PLASTIC,
         )
 
     assert np.asarray(jax.vmap(one)(forces)) == pytest.approx(

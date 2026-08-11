@@ -45,6 +45,7 @@ from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
+from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.sizing import Tube
 from normax.ec3.sizing import diameter_required
@@ -228,9 +229,8 @@ def _forward(
     l_cr = jnp.asarray(inputs["l_cr"])
     lengths = jnp.asarray(inputs["lengths"])
 
-    # The tail every clause below shares, kept as one tuple so the three
-    # calls cannot drift out of step with each other.
-    arguments = (n_ed, m_ed, m_minor, c_m, c_minor, l_cr, steel, tube)
+    actions = MemberActions(n_ed, m_ed, m_minor, c_m, c_minor)
+    arguments = (actions, l_cr, steel, tube)
 
     required = diameter_required(*arguments, plastic=plastic, resultant=resultant)
     used = utilization_of_tubes(

@@ -218,8 +218,8 @@ def main():
         print(f"  {'member':>7} {'N [kN]':>10} {'M [kNm]':>10} {'d [mm]':>9} {'u':>18}")
         for member in range(NUM_EDGES):
             print(
-                f"  {member:>7} {float(result.n_ed[member]) / 1e3:>10.4f}"
-                f" {float(result.m_ed[member]) / 1e6:>10.5f}"
+                f"  {member:>7} {float(result.actions.n_ed[member]) / 1e3:>10.4f}"
+                f" {float(result.actions.m_y_ed[member]) / 1e6:>10.5f}"
                 f" {float(result.diameters[member]):>9.4f}"
                 f" {float(result.utilization[member]):>18.16f}"
             )
