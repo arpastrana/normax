@@ -30,6 +30,13 @@ from jaxtyping import Int
 # EN 1993-1-1 Table 5.2 sheet 3. Multiply by epsilon SQUARED, not by epsilon.
 CLASS_LIMIT_FACTORS = (50.0, 70.0, 90.0)
 
+# Classes this package implements. Beyond the third limit the tube is a shell and
+# EN 1993-1-6 applies instead.
+CLASSES_IMPLEMENTED = (1, 2, 3)
+
+# Classes taking plastic section properties, EN 1993-1-1 Table 6.7.
+PLASTIC_CLASSES = (1, 2)
+
 # Relative width of the inclusive bound of Table 5.2. A section pinned to a limit
 # carries a wall thickness of the diameter over that limit, and recovering the
 # ratio from the two returns it only to within rounding — measured at 1e-16
@@ -88,9 +95,59 @@ def class_limits(f_y: float | Float[Array, ""]) -> Float[Array, "3"]:
     return factors * material_factor(f_y) ** 2
 
 
+def is_plastic(section_class: int) -> bool:
+    """
+    Whether a cross-section class takes plastic section properties.
+
+    Parameters
+    ----------
+    section_class :
+        Class 1, 2 or 3.
+
+    Returns
+    -------
+    plastic :
+        True for Classes 1 and 2.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 6.7, the characteristic resistances by class. This
+    selects the section modulus, the cross-section clause and the column of
+    Table B.1, so it is a build-time choice and never a traced value.
+
+    Class 4 is refused rather than reported as elastic. It takes effective
+    section properties under 6.2.2.5, which this package does not implement, and
+    answering False would run Class 3's clauses on a shell.
+    """
+    _validate_class(section_class)
+
+    return section_class in PLASTIC_CLASSES
+
+
+def _validate_class(section_class: int) -> None:
+    """
+    Refuse a class this package does not implement.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+    """
+    if section_class not in CLASSES_IMPLEMENTED:
+        raise ValueError(
+            f"class must be 1, 2 or 3, not {section_class}; "
+            "beyond the Class 3 limit EN 1993-1-6 applies"
+        )
+
+
 def ratio_at_class_limit(
     f_y: float | Float[Array, ""],
-    cross_section_class: int,
+    section_class: int,
 ) -> Float[Array, ""]:
     """
     Slenderness limit of one cross-section class.
@@ -99,7 +156,7 @@ def ratio_at_class_limit(
     ----------
     f_y :
         Yield strength.
-    cross_section_class :
+    section_class :
         Class 1, 2 or 3.
 
     Returns
@@ -116,16 +173,14 @@ def ratio_at_class_limit(
     -----
     EN 1993-1-1 Table 5.2 sheet 3, one row of `class_limits`. The class is a
     Python integer selecting a row rather than a traced value, so refusing
-    Class 4 here is an ordinary exception: beyond the third limit the tube is a
-    shell and EN 1993-1-6 applies instead.
-    """
-    if cross_section_class not in (1, 2, 3):
-        raise ValueError(
-            f"class must be 1, 2 or 3, not {cross_section_class}; "
-            "beyond the Class 3 limit EN 1993-1-6 applies"
-        )
+    Class 4 here is an ordinary exception.
 
-    return class_limits(f_y)[cross_section_class - 1]
+    Inverse of `section_class_at_ratio`, and the round trip through either order
+    is exact to within the inclusive bound the classification applies.
+    """
+    _validate_class(section_class)
+
+    return class_limits(f_y)[section_class - 1]
 
 
 def classify_section(
@@ -144,7 +199,7 @@ def classify_section(
 
     Returns
     -------
-    cross_section_class :
+    section_class :
         Class 1, 2, 3 or 4.
 
     Notes
@@ -164,3 +219,49 @@ def classify_section(
     exceeded = jnp.asarray(ratio)[..., None] > limits
 
     return 1 + jnp.sum(exceeded, axis=-1)
+
+
+def section_class_at_ratio(
+    ratio: float | Float[Array, ""],
+    f_y: float | Float[Array, ""],
+) -> int:
+    """
+    Cross-section class of one ratio, as a value that can select a clause.
+
+    Parameters
+    ----------
+    ratio :
+        Diameter-to-thickness ratio, a single value rather than one per member.
+    f_y :
+        Yield strength.
+
+    Returns
+    -------
+    section_class :
+        Class 1, 2 or 3, as a Python integer.
+
+    Raises
+    ------
+    ValueError
+        If the ratio is not a single value, or if it classifies as Class 4.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 5.2 sheet 3, and the inverse of `ratio_at_class_limit`.
+    `classify_section` is the same clause for a whole set of members and returns
+    an array; this returns an integer, which is what a clause selector has to be.
+
+    A traced ratio has no integer value, so this refuses to run inside a jitted
+    or differentiated function. That is the honest failure: the class chooses
+    between clauses, and a derivative with respect to the ratio cannot move it.
+    """
+    if jnp.shape(ratio) != ():
+        raise ValueError(
+            f"the class selects a clause, so it takes one ratio, not "
+            f"{jnp.shape(ratio)}; a section family has a single ratio"
+        )
+
+    section_class = int(classify_section(ratio, f_y))
+    _validate_class(section_class)
+
+    return section_class

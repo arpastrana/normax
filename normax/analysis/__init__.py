@@ -69,11 +69,11 @@ class MemberForces(NamedTuple):
 
     Attributes
     ----------
-    n_ed :
+    axial_force :
         Axial force, tension positive.
-    m_y_ed :
+    moment_major :
         Bending moment about the major axis, at each end of the member.
-    m_z_ed :
+    moment_minor :
         Bending moment about the minor axis, at each end of the member.
 
     Notes
@@ -88,9 +88,9 @@ class MemberForces(NamedTuple):
     along the span it does not vary, and the analysis is linear.
     """
 
-    n_ed: Float[Array, "members"]
-    m_y_ed: Float[Array, "members ends"]
-    m_z_ed: Float[Array, "members ends"]
+    axial_force: Float[Array, "members"]
+    moment_major: Float[Array, "members ends"]
+    moment_minor: Float[Array, "members ends"]
 
 
 class Buckling(NamedTuple):
@@ -120,7 +120,7 @@ class Buckling(NamedTuple):
     shapes: Float[Array, "modes nodes 6"]
 
 
-def fixities(
+def support_fixities(
     structure: Structure,
     normal: int | None,
 ) -> Bool[np.ndarray, "nodes 6"]:

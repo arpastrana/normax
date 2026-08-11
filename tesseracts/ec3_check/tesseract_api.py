@@ -51,7 +51,7 @@ from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state as governing_limit
-from normax.ec3.sizing import mass as mass_of_tubes
+from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.sizing import utilization_design as utilization_of_tubes
 
 jax.config.update("jax_enable_x64", True)
@@ -62,19 +62,19 @@ class InputSchema(BaseModel):
     Member actions, a buckling length, and the material the tubes are cut from.
     """
 
-    n_ed: Differentiable[Array[(None,), Float64]]
+    axial_force: Differentiable[Array[(None,), Float64]]
     """Design axial force of every member, in newtons. Tension positive."""
 
-    m_y_ed: Differentiable[Array[(None, 2), Float64]]
+    end_moments_major: Differentiable[Array[(None, 2), Float64]]
     """Major-axis moment at each end of every member, in newton-millimetres."""
 
-    m_z_ed: Differentiable[Array[(None, 2), Float64]]
+    end_moments_minor: Differentiable[Array[(None, 2), Float64]]
     """Minor-axis moment at each end of every member, in newton-millimetres."""
 
     lengths: Differentiable[Array[(None,), Float64]]
     """Length of every member, in millimetres. Sets the mass, not the check."""
 
-    l_cr: Differentiable[Array[(None,), Float64]]
+    buckling_length: Differentiable[Array[(None,), Float64]]
     """Buckling length of every member, in millimetres.
 
     An input and never derived from the mesh. Passing the member's own length
@@ -105,8 +105,13 @@ class InputSchema(BaseModel):
     diameter_min: Float64
     """Smallest diameter the section family offers, in millimetres."""
 
-    plastic: bool
-    """Whether the section is Class 1 or 2. Static: it selects a clause."""
+    section_class: int
+    """Cross-section class, 1, 2 or 3. Static: it selects a clause.
+
+    Must be the class the ratio above falls in, which
+    `TubeCatalogue.section_class` reads off it. Naming a class the wall does
+    not have applies the wrong clause.
+    """
 
     resultant: bool = True
     """Whether the cross-section check combines the two moments as a resultant."""
@@ -130,16 +135,16 @@ class OutputSchema(BaseModel):
     wherever the catalogue minimum did. An invariant to assert on, not a goal.
     """
 
-    m_y_ed: Differentiable[Array[(None,), Float64]]
+    moment_major: Differentiable[Array[(None,), Float64]]
     """Larger major-axis end moment of every member, in newton-millimetres."""
 
-    m_z_ed: Differentiable[Array[(None,), Float64]]
+    moment_minor: Differentiable[Array[(None,), Float64]]
     """Larger minor-axis end moment of every member, in newton-millimetres."""
 
-    c_my: Differentiable[Array[(None,), Float64]]
+    moment_factor_major: Differentiable[Array[(None,), Float64]]
     """Major-axis moment factor of every member, EN 1993-1-1 Table B.3."""
 
-    c_mz: Differentiable[Array[(None,), Float64]]
+    moment_factor_minor: Differentiable[Array[(None,), Float64]]
     """Minor-axis moment factor of every member, EN 1993-1-1 Table B.3.
 
     Reported alongside the major axis rather than folded away, so a caller can
@@ -157,7 +162,7 @@ class OutputSchema(BaseModel):
     """
 
 
-def _material(inputs: dict[str, Any]) -> tuple[SteelGrade, TubeCatalogue]:
+def _material_and_family(inputs: dict[str, Any]) -> tuple[SteelGrade, TubeCatalogue]:
     """
     The material and the section family, from the flat fields of the schema.
 
@@ -187,7 +192,7 @@ def _material(inputs: dict[str, Any]) -> tuple[SteelGrade, TubeCatalogue]:
     return steel, catalogue
 
 
-def _forward(
+def _forward_pass(
     inputs: dict[str, Any],
     *,
     diagnostics: bool,
@@ -215,48 +220,68 @@ def _forward(
     is a clause of the standard and not a product of an analysis. That is what
     keeps the analysis schema free of anything a solver has no opinion on.
     """
-    steel, catalogue = _material(inputs)
-    plastic = inputs["plastic"]
+    steel, catalogue = _material_and_family(inputs)
+    section_class = inputs["section_class"]
     resultant = inputs["resultant"]
 
-    m_y_ed = jnp.asarray(inputs["m_y_ed"])
-    m_z_ed = jnp.asarray(inputs["m_z_ed"])
+    end_moments_major = jnp.asarray(inputs["end_moments_major"])
+    end_moments_minor = jnp.asarray(inputs["end_moments_minor"])
 
-    m_ed, c_m = end_moments(m_y_ed[:, 0], m_y_ed[:, 1])
-    m_minor, c_minor = end_moments(m_z_ed[:, 0], m_z_ed[:, 1])
+    moment_major, moment_factor_major = end_moments(
+        end_moments_major[:, 0], end_moments_major[:, 1]
+    )
+    moment_minor, moment_factor_minor = end_moments(
+        end_moments_minor[:, 0], end_moments_minor[:, 1]
+    )
 
-    n_ed = jnp.asarray(inputs["n_ed"])
-    l_cr = jnp.asarray(inputs["l_cr"])
+    axial_force = jnp.asarray(inputs["axial_force"])
+    buckling_length = jnp.asarray(inputs["buckling_length"])
     lengths = jnp.asarray(inputs["lengths"])
 
-    actions = MemberActions(n_ed, m_ed, m_minor, c_m, c_minor)
+    actions = MemberActions(
+        axial_force,
+        moment_major,
+        moment_minor,
+        moment_factor_major,
+        moment_factor_minor,
+    )
 
     required = diameter_required(
-        actions, l_cr, steel, catalogue, plastic=plastic, resultant=resultant
+        actions,
+        buckling_length,
+        steel,
+        catalogue,
+        section_class=section_class,
+        resultant=resultant,
     )
-    sized = catalogue.tube(required)
+    sized = catalogue.tube_at(required)
     used = utilization_of_tubes(
-        sized, actions, l_cr, steel, plastic=plastic, resultant=resultant
+        sized,
+        actions,
+        buckling_length,
+        steel,
+        section_class=section_class,
+        resultant=resultant,
     )
 
     outputs = {
         "diameter": required,
         "mass": mass_of_tubes(sized, lengths, steel),
         "utilization": used,
-        "m_y_ed": m_ed,
-        "m_z_ed": m_minor,
-        "c_my": c_m,
-        "c_mz": c_minor,
+        "moment_major": moment_major,
+        "moment_minor": moment_minor,
+        "moment_factor_major": moment_factor_major,
+        "moment_factor_minor": moment_factor_minor,
     }
 
     if diagnostics:
         outputs["governing"] = governing_limit(
             sized,
             actions,
-            l_cr,
+            buckling_length,
             steel,
             catalogue,
-            plastic=plastic,
+            section_class=section_class,
             resultant=resultant,
         )
 
@@ -277,7 +302,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     outputs :
         The required sizes, the mass, the utilization and the diagnostics.
     """
-    return _forward(inputs.model_dump(), diagnostics=True)
+    return _forward_pass(inputs.model_dump(), diagnostics=True)
 
 
 def abstract_eval(abstract_inputs):
@@ -299,21 +324,21 @@ def abstract_eval(abstract_inputs):
     Required by Tesseract-JAX: JAX resolves shapes before it executes anything,
     so every endpoint below is unreachable without this one.
     """
-    members = abstract_inputs.n_ed.shape[0]
+    members = abstract_inputs.axial_force.shape[0]
 
     return {
         "diameter": {"shape": (members,), "dtype": "float64"},
         "mass": {"shape": (), "dtype": "float64"},
         "utilization": {"shape": (members,), "dtype": "float64"},
-        "m_y_ed": {"shape": (members,), "dtype": "float64"},
-        "m_z_ed": {"shape": (members,), "dtype": "float64"},
-        "c_my": {"shape": (members,), "dtype": "float64"},
-        "c_mz": {"shape": (members,), "dtype": "float64"},
+        "moment_major": {"shape": (members,), "dtype": "float64"},
+        "moment_minor": {"shape": (members,), "dtype": "float64"},
+        "moment_factor_major": {"shape": (members,), "dtype": "float64"},
+        "moment_factor_minor": {"shape": (members,), "dtype": "float64"},
         "governing": {"shape": (members,), "dtype": "float64"},
     }
 
 
-def _differentiate(
+def _restrict_for_derivative(
     inputs: InputSchema,
     wrt: list[str],
     outputs: list[str],
@@ -354,13 +379,13 @@ def _differentiate(
     raw = inputs.model_dump()
     static = {name: value for name, value in raw.items() if name not in wrt}
 
-    def restricted(*values):
+    def restricted_map(*values):
         merged = {**static, **dict(zip(wrt, values))}
-        computed = _forward(merged, diagnostics=False)
+        computed = _forward_pass(merged, diagnostics=False)
 
         return {name: computed[name] for name in outputs}
 
-    return restricted, [jnp.asarray(raw[name]) for name in wrt]
+    return restricted_map, [jnp.asarray(raw[name]) for name in wrt]
 
 
 def vector_jacobian_product(
@@ -395,9 +420,9 @@ def vector_jacobian_product(
     through: the tangent comes from the implicit function theorem applied at the
     root, which needs the residual differentiable only there.
     """
-    restricted, primals = _differentiate(inputs, vjp_inputs, vjp_outputs)
+    restricted_map, primals = _restrict_for_derivative(inputs, vjp_inputs, vjp_outputs)
 
-    _, pullback = jax.vjp(restricted, *primals)
+    _, pullback = jax.vjp(restricted_map, *primals)
     cotangents = pullback(
         {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
     )
@@ -435,9 +460,9 @@ def jacobian_vector_product(
     Never reached by `jax.grad`, and provided because it costs one call and
     cross-checks the reverse rule against the same implicit tangent.
     """
-    restricted, primals = _differentiate(inputs, jvp_inputs, jvp_outputs)
+    restricted_map, primals = _restrict_for_derivative(inputs, jvp_inputs, jvp_outputs)
 
     tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
-    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+    _, pushed = jax.jvp(restricted_map, tuple(primals), tangents)
 
     return pushed

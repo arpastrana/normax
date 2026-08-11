@@ -30,9 +30,9 @@ from typing import Any
 import jax.numpy as jnp
 
 from normax.analysis.opensees import Jacobian
-from normax.analysis.opensees import forces
-from normax.analysis.opensees import jacobian
-from normax.analysis.opensees import prepare
+from normax.analysis.opensees import force_jacobian
+from normax.analysis.opensees import member_forces
+from normax.analysis.opensees import prepare_model
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -41,18 +41,18 @@ from normax.structures import Structure
 # moment has none: a plane frame carries no such moment and the one derivative
 # of it that is nonzero is the block this backend cannot reach.
 BLOCKS = {
-    ("n_ed", "xyz"): "n_ed_xyz",
-    ("n_ed", "diameter"): "n_ed_diameter",
-    ("m_y_ed", "xyz"): "m_y_ed_xyz",
-    ("m_y_ed", "diameter"): "m_y_ed_diameter",
+    ("axial_force", "xyz"): "axial_force_xyz",
+    ("axial_force", "diameter"): "axial_force_diameter",
+    ("end_moments_major", "xyz"): "moment_major_xyz",
+    ("end_moments_major", "diameter"): "moment_major_diameter",
 }
 
 # How many axes of a block belong to the output, so a contraction knows where
 # the output ends and the input begins.
-OUTPUT_RANK = {"n_ed": 1, "m_y_ed": 2, "m_z_ed": 2}
+OUTPUT_RANK = {"axial_force": 1, "end_moments_major": 2, "end_moments_minor": 2}
 
 
-def _model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, TubeCatalogue]:
+def _build_model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, TubeCatalogue]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -88,13 +88,13 @@ def _model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, TubeCatalogue
     catalogue = TubeCatalogue(ratio=inputs["ratio"])
 
     return (
-        prepare(structure, steel, catalogue, normal=inputs["normal"]),
+        prepare_model(structure, steel, catalogue, normal=inputs["normal"]),
         steel,
         catalogue,
     )
 
 
-def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
+def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     """
     Internal forces of the frame the inputs describe.
 
@@ -114,9 +114,9 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     elastic analysis under nodal loads having no use for either, exactly as in
     the other backend. Carrying them keeps one schema describing both.
     """
-    model, steel, catalogue = _model(inputs)
+    model, steel, catalogue = _build_model(inputs)
 
-    member = forces(
+    member = member_forces(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
@@ -125,13 +125,13 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     )
 
     return {
-        "n_ed": member.n_ed,
-        "m_y_ed": member.m_y_ed,
-        "m_z_ed": member.m_z_ed,
+        "axial_force": member.axial_force,
+        "end_moments_major": member.moment_major,
+        "end_moments_minor": member.moment_minor,
     }
 
 
-def _blocks(inputs: dict[str, Any]) -> Jacobian:
+def _jacobian_blocks(inputs: dict[str, Any]) -> Jacobian:
     """
     Sweep the solver once for every derivative the stage can be asked for.
 
@@ -152,9 +152,9 @@ def _blocks(inputs: dict[str, Any]) -> Jacobian:
     back-substitution each and dropping some would save a fraction of a sweep
     while making the two derivative rules disagree about what was solved.
     """
-    model, steel, catalogue = _model(inputs)
+    model, steel, catalogue = _build_model(inputs)
 
-    return jacobian(
+    return force_jacobian(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
@@ -163,7 +163,7 @@ def _blocks(inputs: dict[str, Any]) -> Jacobian:
     )
 
 
-def jvp(
+def forces_jvp(
     inputs: dict[str, Any],
     jvp_inputs: list[str],
     jvp_outputs: list[str],
@@ -195,11 +195,11 @@ def jvp(
     input's tangent, and an output with no block for an input contributes
     nothing to it.
     """
-    blocks = _blocks(inputs)
+    blocks = _jacobian_blocks(inputs)
     tangents = {}
 
     for output in jvp_outputs:
-        total = jnp.zeros(_shape(blocks, output))
+        total = jnp.zeros(_output_shape(blocks, output))
         for field in jvp_inputs:
             if (output, field) not in BLOCKS:
                 continue
@@ -211,7 +211,7 @@ def jvp(
     return tangents
 
 
-def vjp(
+def forces_vjp(
     inputs: dict[str, Any],
     vjp_inputs: list[str],
     vjp_outputs: list[str],
@@ -243,7 +243,7 @@ def vjp(
     cost grows in the parameter count. That difference is the measurement
     `experiments/04_backend_agreement.py` reports rather than a detail.
     """
-    blocks = _blocks(inputs)
+    blocks = _jacobian_blocks(inputs)
     cotangents = {}
 
     for field in vjp_inputs:
@@ -259,7 +259,7 @@ def vjp(
     return cotangents
 
 
-def _shape(blocks: Jacobian, output: str) -> tuple[int, ...]:
+def _output_shape(blocks: Jacobian, output: str) -> tuple[int, ...]:
     """
     Shape of one output field, read off the blocks that produce it.
 
@@ -280,7 +280,7 @@ def _shape(blocks: Jacobian, output: str) -> tuple[int, ...]:
     Taken from a block rather than from the schema so that a tangent on an
     output with no blocks at all still has the right shape to be added to.
     """
-    if output == "n_ed":
-        return blocks.n_ed_diameter.shape[:1]
+    if output == "axial_force":
+        return blocks.axial_force_diameter.shape[:1]
 
-    return blocks.m_y_ed_diameter.shape[:2]
+    return blocks.moment_major_diameter.shape[:2]

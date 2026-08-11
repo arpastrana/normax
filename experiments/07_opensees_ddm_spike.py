@@ -400,7 +400,7 @@ def printb_semantics():
     nel = 6
     coords = {k + 1: [4.0 * k / nel, 0.0] for k in range(nel + 1)}
 
-    def arch(specs=(), mode=None):
+    def arch_2d(specs=(), mode=None):
         ops.wipe()
         ops.model("basic", "-ndm", 2, "-ndf", 3)
         for tag, xy in coords.items():
@@ -432,7 +432,7 @@ def printb_semantics():
     ndof = 3 * (nel + 1) - 3
     for mode in (None, "-computeAtEachStep", "-computeByCommand"):
         specs = () if mode is None else (("element", 1, "E"),)
-        arch(specs, mode)
+        arch_2d(specs, mode)
         stiffness = np.array(ops.printA("-ret")).reshape(ndof, ndof)
         rhs = np.array(ops.printB("-ret"))
         disp = np.array(
@@ -469,7 +469,7 @@ def cost_scaling():
     print("cost scaling -- DDM sweep vs finite differences")
     print("=" * 78)
 
-    def arch(nel, n_params=0, solve=True):
+    def arch_2d(nel, n_params=0, solve=True):
         ops.wipe()
         ops.model("basic", "-ndm", 2, "-ndf", 3)
         for k in range(nel + 1):
@@ -510,8 +510,8 @@ def cost_scaling():
         return best
 
     for nel in (20, 100, 400):
-        assembly = fastest(lambda nel=nel: arch(nel, solve=False))
-        plain = fastest(lambda nel=nel: arch(nel))
+        assembly = fastest(lambda nel=nel: arch_2d(nel, solve=False))
+        plain = fastest(lambda nel=nel: arch_2d(nel))
         ndof = 3 * (nel + 1) - 6
         solve = (plain - assembly) * 1e3
         print(
@@ -523,7 +523,7 @@ def cost_scaling():
             f"{'per param':>11} {'FD equiv':>11} {'speedup':>8}"
         )
         for n in (10, 50, 2 * nel - 2):
-            total = fastest(lambda nel=nel, n=n: arch(nel, n))
+            total = fastest(lambda nel=nel, n=n: arch_2d(nel, n))
             sens = total - plain
             fd = assembly + (n + 1) * plain
             print(

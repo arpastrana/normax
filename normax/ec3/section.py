@@ -41,6 +41,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.classification import ratio_at_class_limit
+from normax.ec3.classification import section_class_at_ratio
 
 # EN 10210 lists no smaller hot-finished tube, so a member is never sized below
 # this however light its actions.
@@ -196,7 +197,9 @@ class TubeCatalogue(NamedTuple):
     -----
     The ratio fixes the cross-section class, but the class itself is not held
     here: it selects between two clauses and so must stay a static Python value,
-    while every field of this container is a traceable leaf.
+    while every field of this container is a traceable leaf. `section_class`
+    recovers it, and is the only thing that should ever supply it — a class
+    named independently of the family it describes is free to contradict it.
 
     The buckling curve is not held here either. It follows the fabrication
     route rather than the shape, so it belongs to the grade.
@@ -205,7 +208,7 @@ class TubeCatalogue(NamedTuple):
     ratio: float | Float[Array, ""]
     diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM
 
-    def tube(self, diameter: Float[Array, "members"]) -> Tube:
+    def tube_at(self, diameter: Float[Array, "members"]) -> Tube:
         """
         The tube of a given diameter, walled by this catalogue's ratio.
 
@@ -229,11 +232,43 @@ class TubeCatalogue(NamedTuple):
         """
         return Tube(diameter, jnp.asarray(diameter) / self.ratio)
 
+    def section_class(self, f_y: float | Float[Array, ""]) -> int:
+        """
+        The cross-section class this family's ratio falls in.
+
+        Parameters
+        ----------
+        f_y :
+            Yield strength.
+
+        Returns
+        -------
+        section_class :
+            Class 1, 2 or 3, as a Python integer.
+
+        Raises
+        ------
+        ValueError
+            If the ratio classifies as Class 4.
+
+        Notes
+        -----
+        EN 1993-1-1 Table 5.2 sheet 3. The one place a clause selector should
+        come from, since a class read off the family cannot disagree with the
+        wall the family gives a member. Naming the two independently allows the
+        plastic clauses to be applied to a Class 3 wall, which is unsafe.
+
+        The ratio must be concrete, so this belongs outside any traced function.
+        A class chosen at build time is exactly what makes the branches it
+        selects legal under jit.
+        """
+        return section_class_at_ratio(self.ratio, f_y)
+
     @classmethod
     def at_class_limit(
         cls,
         f_y: float | Float[Array, ""],
-        cross_section_class: int,
+        section_class: int,
         diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM,
     ) -> "TubeCatalogue":
         """
@@ -243,7 +278,7 @@ class TubeCatalogue(NamedTuple):
         ----------
         f_y :
             Yield strength.
-        cross_section_class :
+        section_class :
             Class 1, 2 or 3.
         diameter_min :
             Smallest diameter the family offers.
@@ -265,4 +300,4 @@ class TubeCatalogue(NamedTuple):
         Class 4 is refused: beyond the third limit the tube is a shell and
         EN 1993-1-6 applies instead.
         """
-        return cls(ratio_at_class_limit(f_y, cross_section_class), diameter_min)
+        return cls(ratio_at_class_limit(f_y, section_class), diameter_min)

@@ -8,6 +8,8 @@ from normax.ec3.classification import CLASS_LIMIT_TOLERANCE
 from normax.ec3.classification import class_limits
 from normax.ec3.classification import classify_section
 from normax.ec3.classification import material_factor
+from normax.ec3.classification import ratio_at_class_limit
+from normax.ec3.classification import section_class_at_ratio
 from normax.ec3.section import TubeCatalogue
 
 # EN 1993-1-1 Table 5.2, the epsilon row, rounded to 2 d.p. in the standard.
@@ -138,7 +140,7 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
     # one ratio across two classes.
     limit = float(np.asarray(class_limits(f_y))[index])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = diameters / TubeCatalogue(limit).tube(diameters).thickness
+    ratios = diameters / TubeCatalogue(limit).tube_at(diameters).thickness
 
     assert np.all(np.asarray(classify_section(ratios, f_y)) == index + 1)
 
@@ -147,7 +149,7 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
 def test_the_round_trip_stays_inside_the_tolerance(f_y):
     limit = float(np.asarray(class_limits(f_y))[2])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = np.asarray(diameters / TubeCatalogue(limit).tube(diameters).thickness)
+    ratios = np.asarray(diameters / TubeCatalogue(limit).tube_at(diameters).thickness)
 
     assert np.max(np.abs(ratios - limit)) / limit < CLASS_LIMIT_TOLERANCE
 
@@ -159,7 +161,7 @@ def test_the_round_trip_straddles_the_limit_at_the_design_grade():
     # across two classes.
     limit = float(np.asarray(class_limits(355.0))[2])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = np.asarray(diameters / TubeCatalogue(limit).tube(diameters).thickness)
+    ratios = np.asarray(diameters / TubeCatalogue(limit).tube_at(diameters).thickness)
 
     assert ratios.max() > limit
     assert ratios.min() < limit
@@ -179,3 +181,52 @@ def test_a_real_thin_walled_tube_is_still_class_four():
     # CHS 508 x 8, S355: d/t = 63.5 against a limit of 59.58. Geometry, not
     # rounding, so the tolerance leaves it alone.
     assert classify_section(508.0 / 8.0, 355.0) == 4
+
+
+# ---- The class as a clause selector ---- #
+#
+# `classify_section` answers for a whole set of members and returns an array;
+# selecting a clause needs one Python integer, which is what these produce. The
+# pair below is what makes a class and a section family unable to disagree.
+
+
+@pytest.mark.parametrize("f_y", GRADES)
+@pytest.mark.parametrize("section_class", [1, 2, 3])
+def test_the_class_of_a_ratio_inverts_the_ratio_of_a_class(f_y, section_class):
+    ratio = ratio_at_class_limit(f_y, section_class)
+
+    assert section_class_at_ratio(ratio, f_y) == section_class
+
+
+@pytest.mark.parametrize("f_y", GRADES)
+@pytest.mark.parametrize("section_class", [1, 2, 3])
+def test_a_catalogue_reports_the_class_it_was_built_at(f_y, section_class):
+    # The invariant the structural fix rests on: a class read off the family
+    # cannot contradict the wall the family gives a member.
+    catalogue = TubeCatalogue.at_class_limit(f_y, section_class)
+
+    assert catalogue.section_class(f_y) == section_class
+
+
+def test_the_class_of_a_ratio_is_a_python_integer():
+    # A traced or array value cannot select a clause under jit.
+    value = section_class_at_ratio(55.0, 355.0)
+
+    assert type(value) is int
+
+
+def test_a_class_four_ratio_is_refused():
+    with pytest.raises(ValueError, match="1993-1-6"):
+        section_class_at_ratio(508.0 / 8.0, 355.0)
+
+
+def test_one_ratio_per_family_not_one_per_member():
+    with pytest.raises(ValueError, match="one ratio"):
+        section_class_at_ratio(jnp.asarray([40.0, 55.0]), 355.0)
+
+
+def test_the_class_cannot_be_taken_of_a_traced_ratio():
+    # The honest failure: the class chooses between clauses, so a derivative
+    # with respect to the ratio cannot move it.
+    with pytest.raises(Exception, match="[Cc]oncret|[Tt]race"):
+        jax.jit(lambda ratio: section_class_at_ratio(ratio, 355.0))(55.0)

@@ -30,15 +30,15 @@ class MemberActions(NamedTuple):
 
     Attributes
     ----------
-    n_ed :
+    axial_force :
         Axial force, tension positive.
-    m_y_ed :
+    moment_major :
         Design bending moment about the major axis.
-    m_z_ed :
+    moment_minor :
         Design bending moment about the minor axis.
-    c_my :
+    moment_factor_major :
         Equivalent uniform moment factor for major-axis bending.
-    c_mz :
+    moment_factor_minor :
         Equivalent uniform moment factor for minor-axis bending.
 
     Notes
@@ -57,8 +57,8 @@ class MemberActions(NamedTuple):
     checked conservatively rather than favourably.
     """
 
-    n_ed: Float[Array, "members"]
-    m_y_ed: float | Float[Array, "members"] = 0.0
-    m_z_ed: float | Float[Array, "members"] = 0.0
-    c_my: float | Float[Array, "members"] = 1.0
-    c_mz: float | Float[Array, "members"] = 1.0
+    axial_force: Float[Array, "members"]
+    moment_major: float | Float[Array, "members"] = 0.0
+    moment_minor: float | Float[Array, "members"] = 0.0
+    moment_factor_major: float | Float[Array, "members"] = 1.0
+    moment_factor_minor: float | Float[Array, "members"] = 1.0

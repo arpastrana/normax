@@ -5,7 +5,8 @@ import pytest
 from normax.ec3.interaction import CompressionBendingState
 from normax.ec3.interaction import InteractionFactors
 from normax.ec3.interaction import MemberResistance
-from normax.ec3.interaction import checks
+from normax.ec3.interaction import MemberSlenderness
+from normax.ec3.interaction import interaction_checks
 from normax.ec3.interaction import interaction_factors
 from normax.ec3.interaction import utilization_member
 from normax.ec3.material import SteelGrade
@@ -56,30 +57,38 @@ RAFTER = [
 ]
 
 
-def rafter_checks(n_ed, m_y_ed):
-    return checks(
-        CompressionBendingState(n_ed, m_y_ed, 0.0),
+def rafter_checks(axial_force, moment_major):
+    return interaction_checks(
+        CompressionBendingState(axial_force, moment_major, 0.0),
         MemberResistance(CHI_Y, CHI_Z, N_PL_RD, M_PL_Y_RD),
         InteractionFactors(yy=FACTOR_YY, yz=0.0, zy=FACTOR_ZY, zz=0.0),
         SteelGrade(),
     )
 
 
-@pytest.mark.parametrize("label, n_ed, m_y_ed, first, second", RAFTER)
-def test_rafter_first_equation_matches_the_book(label, n_ed, m_y_ed, first, second):
-    assert rafter_checks(n_ed, m_y_ed)[0] == pytest.approx(first, abs=TOLERANCE), label
-
-
-@pytest.mark.parametrize("label, n_ed, m_y_ed, first, second", RAFTER)
-def test_rafter_second_equation_matches_the_book(label, n_ed, m_y_ed, first, second):
-    assert rafter_checks(n_ed, m_y_ed)[1] == pytest.approx(second, abs=TOLERANCE), label
-
-
-@pytest.mark.parametrize("label, n_ed, m_y_ed, first, second", RAFTER)
-def test_rafter_utilization_takes_the_worse_equation(
-    label, n_ed, m_y_ed, first, second
+@pytest.mark.parametrize("label, axial_force, moment_major, first, second", RAFTER)
+def test_rafter_first_equation_matches_the_book(
+    label, axial_force, moment_major, first, second
 ):
-    value = max(rafter_checks(n_ed, m_y_ed))
+    assert rafter_checks(axial_force, moment_major)[0] == pytest.approx(
+        first, abs=TOLERANCE
+    ), label
+
+
+@pytest.mark.parametrize("label, axial_force, moment_major, first, second", RAFTER)
+def test_rafter_second_equation_matches_the_book(
+    label, axial_force, moment_major, first, second
+):
+    assert rafter_checks(axial_force, moment_major)[1] == pytest.approx(
+        second, abs=TOLERANCE
+    ), label
+
+
+@pytest.mark.parametrize("label, axial_force, moment_major, first, second", RAFTER)
+def test_rafter_utilization_takes_the_worse_equation(
+    label, axial_force, moment_major, first, second
+):
+    value = max(rafter_checks(axial_force, moment_major))
 
     assert value == pytest.approx(max(first, second), abs=TOLERANCE), label
 
@@ -87,15 +96,15 @@ def test_rafter_utilization_takes_the_worse_equation(
 def test_the_first_equation_governs_along_the_whole_rafter():
     # The major axis has the longer buckling length here, so it governs at
     # every section the book checks.
-    for _, n_ed, m_y_ed, _, _ in RAFTER:
-        first, second = rafter_checks(n_ed, m_y_ed)
+    for _, axial_force, moment_major, _, _ in RAFTER:
+        first, second = rafter_checks(axial_force, moment_major)
 
         assert first > second
 
 
 def test_the_rafter_is_adequate_as_the_book_concludes():
-    for _, n_ed, m_y_ed, _, _ in RAFTER:
-        assert max(rafter_checks(n_ed, m_y_ed)) < 1.0
+    for _, axial_force, moment_major, _, _ in RAFTER:
+        assert max(rafter_checks(axial_force, moment_major)) < 1.0
 
 
 def test_the_whole_rafter_evaluates_in_one_call():
@@ -126,16 +135,17 @@ SEGMENTS = [
 
 
 @pytest.mark.parametrize(
-    "label, n_ed, m_y_ed, n_b_rd, m_b_rd, factor_zy, expected", SEGMENTS
+    "label, axial_force, moment_major, n_b_rd, m_b_rd, factor_zy, expected",
+    SEGMENTS,
 )
 def test_segment_matches_the_book(
-    label, n_ed, m_y_ed, n_b_rd, m_b_rd, factor_zy, expected
+    label, axial_force, moment_major, n_b_rd, m_b_rd, factor_zy, expected
 ):
     # The book prints 0.62 for segment XC; recomputing from its own inputs
     # gives 0.64. See the errata section of docs/clauses.md -- this asserts the
     # corrected value, so a fixture built on the printed one would fail here.
-    _, second = checks(
-        CompressionBendingState(n_ed, m_y_ed, 0.0),
+    _, second = interaction_checks(
+        CompressionBendingState(axial_force, moment_major, 0.0),
         MemberResistance(1.0, 1.0, n_b_rd, m_b_rd),
         InteractionFactors(yy=0.0, yz=0.0, zy=factor_zy, zz=0.0),
         SteelGrade(),
@@ -148,7 +158,7 @@ def test_the_governing_segment_is_the_one_the_book_identifies():
     # B3X reaches 0.99 and is the critical segment of the rafter.
     values = [
         float(
-            checks(
+            interaction_checks(
                 CompressionBendingState(n, m, 0.0),
                 MemberResistance(1.0, 1.0, n_b, m_b),
                 InteractionFactors(yy=0.0, yz=0.0, zy=k, zz=0.0),
@@ -171,13 +181,15 @@ def test_supplying_the_factors_agrees_with_deriving_them():
     state = CompressionBendingState(480.3e3, 344.5e6, 0.0, 0.9, 0.9)
     resistance = MemberResistance(0.48, 1.00, N_PL_RD, M_PL_Y_RD)
 
+    slenderness = MemberSlenderness(0.9, 0.4)
+
     factors = interaction_factors(
-        state, resistance, 0.9, 0.4, SteelGrade(), plastic=True
+        state, resistance, slenderness, SteelGrade(), section_class=2
     )
 
-    supplied = checks(state, resistance, factors, SteelGrade())
+    supplied = interaction_checks(state, resistance, factors, SteelGrade())
     derived = utilization_member(
-        state, resistance, 0.9, 0.4, SteelGrade(), plastic=True
+        state, resistance, slenderness, SteelGrade(), section_class=2
     )
 
     assert max(supplied) == pytest.approx(derived)

@@ -11,15 +11,15 @@ from smax import diagnose_mechanisms
 from smax import element_forces
 from smax import solve
 
-from normax.analysis import fixities
-from normax.analysis.smax import forces
-from normax.analysis.smax import frame
-from normax.analysis.smax import prepare
+from normax.analysis import support_fixities
+from normax.analysis.smax import frame_model
+from normax.analysis.smax import member_forces
+from normax.analysis.smax import prepare_model
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.structures import arch
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.structures import arch_2d
 
 # A 10 m arch of ten members, rising about a third of its span under a force
 # density of 75 N/mm and a 20 kN load at every free node. Units are mm and N.
@@ -44,7 +44,7 @@ TOLERANCE_BENDING = 1.0e-3
 
 @pytest.fixture(scope="module")
 def structure():
-    return arch(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=LOAD)
+    return arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=LOAD)
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +59,7 @@ def catalogue(steel):
 
 @pytest.fixture(scope="module")
 def model(structure, steel, catalogue):
-    return prepare(structure, steel, catalogue, normal=NORMAL)
+    return prepare_model(structure, steel, catalogue, normal=NORMAL)
 
 
 @pytest.fixture(scope="module")
@@ -69,12 +69,12 @@ def q():
 
 @pytest.fixture(scope="module")
 def state(q, structure):
-    return equilibrium(q, structure, graph(structure))
+    return equilibrium_state(q, structure, equilibrium_graph(structure))
 
 
 @pytest.fixture(scope="module")
 def member(model, state, steel, catalogue):
-    return forces(
+    return member_forces(
         model,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
@@ -87,20 +87,20 @@ def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY
     """
     Largest relative gap between the analysed and the funicular axial force.
     """
-    structure = arch(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
     q = jnp.full(NUM_EDGES, force_density)
-    state = equilibrium(q, structure, graph(structure))
+    state = equilibrium_state(q, structure, equilibrium_graph(structure))
 
     funicular = q * state.lengths[:, 0]
-    member = forces(
-        prepare(structure, steel, catalogue, normal=NORMAL),
+    member = member_forces(
+        prepare_model(structure, steel, catalogue, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
         steel,
         catalogue,
     )
 
-    return float(jnp.max(jnp.abs(member.n_ed - funicular) / jnp.abs(funicular)))
+    return float(jnp.max(jnp.abs(member.axial_force - funicular) / jnp.abs(funicular)))
 
 
 def span_field(structure, xyz, steel, catalogue):
@@ -108,7 +108,7 @@ def span_field(structure, xyz, steel, catalogue):
     The whole span field, to check the assumptions `forces` collapses it under.
     """
     compiled = compile_structure(
-        frame(
+        frame_model(
             structure,
             xyz,
             jnp.full(NUM_EDGES, DIAMETER),
@@ -132,7 +132,7 @@ def span_field(structure, xyz, steel, catalogue):
 def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
     structure, state, steel, catalogue
 ):
-    model = frame(
+    model = frame_model(
         structure,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
@@ -147,7 +147,7 @@ def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
 def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
     structure, state, steel, catalogue
 ):
-    model = frame(
+    model = frame_model(
         structure,
         state.xyz,
         jnp.full(NUM_EDGES, DIAMETER),
@@ -168,7 +168,7 @@ def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
 
 
 def test_a_support_is_pinned_and_never_fixed(structure):
-    flags = fixities(structure, NORMAL)
+    flags = support_fixities(structure, NORMAL)
     supports = np.asarray(structure.supports)
 
     assert np.all(flags[supports, :3] == True)
@@ -176,7 +176,7 @@ def test_a_support_is_pinned_and_never_fixed(structure):
 
 
 def test_a_free_node_is_restrained_only_out_of_the_plane(structure):
-    flags = fixities(structure, NORMAL)
+    flags = support_fixities(structure, NORMAL)
     free = [n for n in range(structure.nodes.shape[0]) if n not in (0, NUM_EDGES)]
 
     for node in free:
@@ -185,7 +185,7 @@ def test_a_free_node_is_restrained_only_out_of_the_plane(structure):
 
 
 def test_a_three_dimensional_structure_restrains_nothing_beyond_its_supports(structure):
-    flags = fixities(structure, None)
+    flags = support_fixities(structure, None)
 
     assert np.count_nonzero(flags) == 3 * structure.supports.shape[0]
 
@@ -193,7 +193,7 @@ def test_a_three_dimensional_structure_restrains_nothing_beyond_its_supports(str
 @pytest.mark.parametrize("normal", [-1, 3, 5])
 def test_an_axis_that_is_not_a_global_axis_is_refused(structure, normal):
     with pytest.raises(ValueError):
-        fixities(structure, normal)
+        support_fixities(structure, normal)
 
 
 # --------------------------------------------------------------------------- #
@@ -223,7 +223,7 @@ def test_the_arch_rises_rather_than_sags(state):
 # --------------------------------------------------------------------------- #
 def test_the_analysis_reproduces_the_funicular_axial_forces(q, state, member):
     funicular = q * state.lengths[:, 0]
-    gap = jnp.abs(member.n_ed - funicular) / jnp.abs(funicular)
+    gap = jnp.abs(member.axial_force - funicular) / jnp.abs(funicular)
 
     assert float(jnp.max(gap)) < TOLERANCE_AXIAL
 
@@ -233,12 +233,12 @@ def test_the_analysis_agrees_with_form_finding_on_the_sign_of_every_member(
 ):
     funicular = q * state.lengths[:, 0]
 
-    assert np.all(jnp.sign(member.n_ed) == jnp.sign(funicular))
+    assert np.all(jnp.sign(member.axial_force) == jnp.sign(funicular))
 
 
 def test_bending_is_secondary_to_axial_action(q, state, member):
     funicular = q * state.lengths[:, 0]
-    peak = jnp.max(jnp.abs(member.m_y_ed), axis=1)
+    peak = jnp.max(jnp.abs(member.moment_major), axis=1)
     ratio = peak / jnp.abs(funicular * state.lengths[:, 0])
 
     assert float(jnp.max(ratio)) < TOLERANCE_BENDING
@@ -257,21 +257,23 @@ def test_the_reported_axial_force_is_the_one_the_solver_recovered(
 ):
     field = span_field(structure, state.xyz, steel, catalogue)
 
-    assert np.allclose(member.n_ed, field.nx[:, 0], rtol=1e-15)
+    assert np.allclose(member.axial_force, field.nx[:, 0], rtol=1e-15)
 
 
 def test_an_arch_in_a_plane_carries_no_minor_axis_moment(member):
-    assert float(jnp.max(jnp.abs(member.m_z_ed))) == 0.0
+    assert float(jnp.max(jnp.abs(member.moment_minor))) == 0.0
 
 
 def test_the_end_moments_of_neighbouring_members_agree(member):
     # Continuity at a shared node, and the sign convention that goes with it.
-    assert np.allclose(member.m_y_ed[:-1, 1], member.m_y_ed[1:, 0], rtol=1e-10)
+    assert np.allclose(
+        member.moment_major[:-1, 1], member.moment_major[1:, 0], rtol=1e-10
+    )
 
 
 def test_the_arch_carries_no_moment_at_a_pinned_base(member):
-    assert float(abs(member.m_y_ed[0, 0])) < 1e-6
-    assert float(abs(member.m_y_ed[-1, 1])) < 1e-6
+    assert float(abs(member.moment_major[0, 0])) < 1e-6
+    assert float(abs(member.moment_major[-1, 1])) < 1e-6
 
 
 # --------------------------------------------------------------------------- #
@@ -315,13 +317,13 @@ def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, catal
 def test_the_gradient_through_both_stages_matches_central_differences(
     q, structure, model, steel, catalogue
 ):
-    fdm = graph(structure)
+    fdm = equilibrium_graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
 
     def objective(q):
-        state = equilibrium(q, structure, fdm)
-        member = forces(model, state.xyz, diameters, steel, catalogue)
-        return jnp.sum(member.n_ed**2)
+        state = equilibrium_state(q, structure, fdm)
+        member = member_forces(model, state.xyz, diameters, steel, catalogue)
+        return jnp.sum(member.axial_force**2)
 
     gradient = jax.grad(objective)(q)
 
@@ -337,13 +339,13 @@ def test_the_gradient_through_both_stages_matches_central_differences(
 def test_the_gradient_through_both_stages_is_finite(
     q, structure, model, steel, catalogue
 ):
-    fdm = graph(structure)
+    fdm = equilibrium_graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
 
     def objective(q):
-        state = equilibrium(q, structure, fdm)
-        member = forces(model, state.xyz, diameters, steel, catalogue)
-        return jnp.sum(member.n_ed**2)
+        state = equilibrium_state(q, structure, fdm)
+        member = member_forces(model, state.xyz, diameters, steel, catalogue)
+        return jnp.sum(member.axial_force**2)
 
     gradient = jax.grad(objective)(q)
 

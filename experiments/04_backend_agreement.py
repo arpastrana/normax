@@ -52,18 +52,18 @@ import jax.numpy as jnp
 import numpy as np
 
 from normax.analysis import opensees as backend_opensees
-from normax.analysis.smax import forces as forces_smax
-from normax.analysis.smax import prepare as prepare_smax
-from normax.composition import backend
-from normax.composition import local
-from normax.composition import mass as mass_composed
+from normax.analysis.smax import member_forces as forces_smax
+from normax.analysis.smax import prepare_model as prepare_smax
+from normax.composition import analysis_backend
+from normax.composition import local_chain
+from normax.composition import total_mass as mass_composed
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.optimization import descend
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
-from normax.structures import arch
+from normax.structures import arch_2d
 from normax.visualization import figure_backends
 
 # A 10 m arch rising 3 m, carrying 180 kN. The same one the rest of the
@@ -109,11 +109,11 @@ def setup(num_edges):
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     load = TOTAL_LOAD / (num_edges - 1)
-    structure = arch(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
-    graph_fdm = graph(structure)
+    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
+    graph_fdm = equilibrium_graph(structure)
 
     trial = jnp.full(num_edges, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
 
     return structure, graph_fdm, trial * reached / RISE
 
@@ -144,7 +144,7 @@ def objective(chain, structure, num_edges):
             STEEL,
             CATALOGUE,
             normal=NORMAL,
-            plastic=False,
+            section_class=3,
         )
 
     return total
@@ -157,11 +157,11 @@ def agreement():
     print("=" * 78)
 
     structure, graph_fdm, q = setup(NUM_EDGES)
-    xyz = equilibrium(q, structure, graph_fdm).xyz
+    xyz = equilibrium_state(q, structure, graph_fdm).xyz
     diameters = jnp.full(NUM_EDGES, SEED)
 
-    mine = backend_opensees.forces(
-        backend_opensees.prepare(structure, STEEL, CATALOGUE, normal=NORMAL),
+    mine = backend_opensees.member_forces(
+        backend_opensees.prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL),
         xyz,
         diameters,
         STEEL,
@@ -176,14 +176,14 @@ def agreement():
     )
 
     print("\nmember forces, DDM backend against the traced one")
-    for name in ("n_ed", "m_y_ed"):
+    for name in ("axial_force", "end_moments_major"):
         gap = relative(getattr(mine, name), getattr(theirs, name))
         print(f"  {name:<10} worst relative {gap:.3e}")
-    minor = float(np.max(np.abs(np.asarray(mine.m_z_ed))))
+    minor = float(np.max(np.abs(np.asarray(mine.moment_minor))))
     print(f"  {'m_z_ed':<10} exactly zero in a plane frame, max {minor:.1e}")
 
-    blocks = backend_opensees.jacobian(
-        backend_opensees.prepare(structure, STEEL, CATALOGUE, normal=NORMAL),
+    blocks = backend_opensees.force_jacobian(
+        backend_opensees.prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL),
         xyz,
         diameters,
         STEEL,
@@ -199,17 +199,32 @@ def agreement():
             CATALOGUE,
         )
 
-        return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
+        return {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+        }
 
     by_coordinate = jax.jacfwd(run, argnums=0)(xyz, diameters)
     by_diameter = jax.jacfwd(run, argnums=1)(xyz, diameters)
 
     print("\nJacobian blocks, hand-derived C++ against traced autodiff")
     pairs = (
-        ("n_ed_xyz", blocks.n_ed_xyz, by_coordinate["n_ed"]),
-        ("m_y_ed_xyz", blocks.m_y_ed_xyz, by_coordinate["m_y_ed"]),
-        ("n_ed_diameter", blocks.n_ed_diameter, by_diameter["n_ed"]),
-        ("m_y_ed_diameter", blocks.m_y_ed_diameter, by_diameter["m_y_ed"]),
+        ("axial_force_xyz", blocks.axial_force_xyz, by_coordinate["axial_force"]),
+        (
+            "moment_major_xyz",
+            blocks.moment_major_xyz,
+            by_coordinate["end_moments_major"],
+        ),
+        (
+            "axial_force_diameter",
+            blocks.axial_force_diameter,
+            by_diameter["axial_force"],
+        ),
+        (
+            "moment_major_diameter",
+            blocks.moment_major_diameter,
+            by_diameter["end_moments_major"],
+        ),
     )
     worst = 0.0
     for name, ddm, traced in pairs:
@@ -219,13 +234,13 @@ def agreement():
         print(f"  {name:<18} {shape:<22} worst relative {gap:.3e}")
     print(f"  worst over every block  {worst:.3e}")
 
-    chain = local()
+    chain = local_chain()
     total = objective(chain, structure, NUM_EDGES)
 
     print("\nend to end, force densities to a mass")
     results = {}
     for name in BACKENDS:
-        with backend(name):
+        with analysis_backend(name):
             results[name] = (float(total(q)), np.asarray(jax.grad(total)(q)))
         print(f"  {name:<10} mass {results[name][0]:.9f} t")
 
@@ -244,7 +259,7 @@ def blind():
     print("=" * 78)
 
     structure, graph_fdm, q = setup(NUM_EDGES)
-    xyz = equilibrium(q, structure, graph_fdm).xyz
+    xyz = equilibrium_state(q, structure, graph_fdm).xyz
     diameters = jnp.full(NUM_EDGES, SEED)
 
     def run(coords):
@@ -256,7 +271,11 @@ def blind():
             CATALOGUE,
         )
 
-        return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed, "m_z_ed": member.m_z_ed}
+        return {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+            "end_moments_minor": member.moment_minor,
+        }
 
     jacobian = jax.jacfwd(run)(xyz)
 
@@ -266,7 +285,7 @@ def blind():
         sizes = [
             float(np.max(np.abs(np.asarray(block)[..., axis]))) for axis in range(3)
         ]
-        mark = " <- normal" if name == "m_z_ed" else ""
+        mark = " <- normal" if name == "end_moments_minor" else ""
         print(f"  {name:<10} " + " ".join(f"{s:>14.6e}" for s in sizes) + mark)
 
     print("\n  The response separates: nothing in the plane moves when a node")
@@ -284,7 +303,9 @@ def blind():
     print("  is a rigid motion and strains nothing — it would read as blindness")
     print("  where there is none.")
 
-    reachable = jax.jacfwd(lambda qq: equilibrium(qq, structure, graph_fdm).xyz)(q)
+    reachable = jax.jacfwd(lambda qq: equilibrium_state(qq, structure, graph_fdm).xyz)(
+        q
+    )
     out_of_plane = float(np.max(np.abs(np.asarray(reachable)[:, NORMAL, :])))
 
     print("\nand what form finding can do about it")
@@ -315,16 +336,23 @@ def stage_cost(structure, xyz, diameters):
     fixed cost per frame size and the warm-up excludes it, exactly as it excludes
     the kernel the section slopes need on the other side.
     """
-    prepared_ddm = backend_opensees.prepare(structure, STEEL, CATALOGUE, normal=NORMAL)
+    prepared_ddm = backend_opensees.prepare_model(
+        structure, STEEL, CATALOGUE, normal=NORMAL
+    )
     prepared_smax = prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL)
 
     def ddm():
-        return backend_opensees.jacobian(prepared_ddm, xyz, diameters, STEEL, CATALOGUE)
+        return backend_opensees.force_jacobian(
+            prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+        )
 
     def run(coords, sizes):
         member = forces_smax(prepared_smax, coords, sizes, STEEL, CATALOGUE)
 
-        return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
+        return {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+        }
 
     coordinates = eqx.filter_jit(jax.jacfwd(run, argnums=0))
     sections = eqx.filter_jit(jax.jacfwd(run, argnums=1))
@@ -420,15 +448,15 @@ def scaling():
     print(f"  {'members':>8} {'params':>7} {'backend':>9} {'value':>9} {'grad':>9}")
     for num_edges in MESHES:
         structure, graph_fdm, q = setup(num_edges)
-        xyz = equilibrium(q, structure, graph_fdm).xyz
+        xyz = equilibrium_state(q, structure, graph_fdm).xyz
         diameters = jnp.full(num_edges, SEED)
-        chain = local()
+        chain = local_chain()
         total = objective(chain, structure, num_edges)
 
         grads = {}
         count = 2 * (num_edges + 1) + 2 * num_edges
         for name in BACKENDS:
-            with backend(name):
+            with analysis_backend(name):
                 gradient = jax.grad(total)
 
                 seconds_value = steady(lambda f=total: f(q))
@@ -514,7 +542,7 @@ def optimize():
     print("=" * 78)
 
     structure, _, q = setup(NUM_EDGES)
-    chain = local()
+    chain = local_chain()
     total = objective(chain, structure, NUM_EDGES)
 
     bounds = (float(q[0]) * DECADES, float(q[0]) / DECADES)
@@ -522,7 +550,7 @@ def optimize():
 
     results = {}
     for name in BACKENDS:
-        with backend(name):
+        with analysis_backend(name):
             gradient = value_and_gradient(total)
 
             start = time.perf_counter()
@@ -530,7 +558,7 @@ def optimize():
             compiling = time.perf_counter() - start
 
             start = time.perf_counter()
-            result = descend(
+            result = minimize_bounded(
                 total, q, bounds=bounds, iterations=ITERATIONS, gradient=gradient
             )
             elapsed = time.perf_counter() - start

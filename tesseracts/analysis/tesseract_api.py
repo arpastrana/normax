@@ -106,17 +106,17 @@ class OutputSchema(BaseModel):
     What every member carries.
     """
 
-    n_ed: Differentiable[Array[(None,), Float64]]
+    axial_force: Differentiable[Array[(None,), Float64]]
     """Axial force of every member, in newtons. Tension positive.
 
     One number per member: loads are applied at nodes alone, so nothing varies
     along a span, and the analysis is linear.
     """
 
-    m_y_ed: Differentiable[Array[(None, 2), Float64]]
+    end_moments_major: Differentiable[Array[(None, 2), Float64]]
     """Major-axis moment at each end of every member, in newton-millimetres."""
 
-    m_z_ed: Differentiable[Array[(None, 2), Float64]]
+    end_moments_minor: Differentiable[Array[(None, 2), Float64]]
     """Minor-axis moment at each end of every member, in newton-millimetres.
 
     Both ends rather than a peak, because nodal loads leave the moment varying
@@ -126,7 +126,7 @@ class OutputSchema(BaseModel):
     """
 
 
-def _backend() -> Any:
+def _selected_backend() -> Any:
     """
     The module implementing the selected backend.
 
@@ -182,7 +182,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     outputs :
         The internal forces of every member.
     """
-    return _backend().solve(inputs.model_dump())
+    return _selected_backend().solve_forces(inputs.model_dump())
 
 
 def abstract_eval(abstract_inputs):
@@ -207,9 +207,9 @@ def abstract_eval(abstract_inputs):
     members = abstract_inputs.edges.shape[0]
 
     return {
-        "n_ed": {"shape": (members,), "dtype": "float64"},
-        "m_y_ed": {"shape": (members, 2), "dtype": "float64"},
-        "m_z_ed": {"shape": (members, 2), "dtype": "float64"},
+        "axial_force": {"shape": (members,), "dtype": "float64"},
+        "end_moments_major": {"shape": (members, 2), "dtype": "float64"},
+        "end_moments_minor": {"shape": (members, 2), "dtype": "float64"},
     }
 
 
@@ -247,7 +247,7 @@ def vector_jacobian_product(
     differently they pay for it is a result rather than an implementation
     detail.
     """
-    return _backend().vjp(
+    return _selected_backend().forces_vjp(
         inputs.model_dump(), vjp_inputs, vjp_outputs, cotangent_vector
     )
 
@@ -283,4 +283,6 @@ def jacobian_vector_product(
     differentiation backend, which computes a tangent per parameter directly.
     The two backends therefore meet here first, before the reverse rule.
     """
-    return _backend().jvp(inputs.model_dump(), jvp_inputs, jvp_outputs, tangent_vector)
+    return _selected_backend().forces_jvp(
+        inputs.model_dump(), jvp_inputs, jvp_outputs, tangent_vector
+    )

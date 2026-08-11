@@ -37,12 +37,11 @@ from normax.ec3.adjoint import derivative_length
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import is_plastic
 from normax.ec3.sizing import utilization_design
 
 STEEL = SteelGrade()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-PLASTIC = is_plastic(3)
+SECTION_CLASS = 3
 
 TARGET = 1e-8
 
@@ -58,25 +57,29 @@ CASES = [
 TENSION = [1e4, 1e5, 5e5, 5e6]
 
 
-def size(n_ed, l_cr):
+def size(axial_force, buckling_length):
     """
     Fully-stressed diameter under axial force alone.
     """
     return diameter_required(
-        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0), l_cr, STEEL, CATALOGUE, plastic=PLASTIC
+        MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0),
+        buckling_length,
+        STEEL,
+        CATALOGUE,
+        section_class=SECTION_CLASS,
     )
 
 
-def used(d, n_ed, l_cr):
+def used(d, axial_force, buckling_length):
     """
     Utilization at a diameter, from the exact clause functions.
     """
     return utilization_design(
-        CATALOGUE.tube(d),
-        MemberActions(n_ed, 0.0, 0.0, 1.0, 1.0),
-        l_cr,
+        CATALOGUE.tube_at(d),
+        MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0),
+        buckling_length,
         STEEL,
-        plastic=PLASTIC,
+        section_class=SECTION_CLASS,
     )
 
 
@@ -129,48 +132,70 @@ def main() -> None:
     print("Compression, sensitivity of the diameter to the axial force")
     print(header)
     worst_overall = 0.0
-    for n_ed, l_cr in CASES:
-        solved = size(n_ed, l_cr)
-        forward = float(jax.jacfwd(size)(n_ed, l_cr))
-        reverse = float(jax.grad(size)(n_ed, l_cr))
-        closed = float(derivative_force(solved, n_ed, l_cr, STEEL, CATALOGUE))
-        numeric = float(central(lambda x: float(size(x, l_cr)), n_ed, abs(n_ed) * 1e-6))
-        label = f"{n_ed / 1e3:.0f} kN, {l_cr / 1e3:.0f} m"
+    for axial_force, buckling_length in CASES:
+        solved = size(axial_force, buckling_length)
+        forward = float(jax.jacfwd(size)(axial_force, buckling_length))
+        reverse = float(jax.grad(size)(axial_force, buckling_length))
+        closed = float(
+            derivative_force(solved, axial_force, buckling_length, STEEL, CATALOGUE)
+        )
+        numeric = float(
+            central(
+                lambda x: float(size(x, buckling_length)),
+                axial_force,
+                abs(axial_force) * 1e-6,
+            )
+        )
+        label = f"{axial_force / 1e3:.0f} kN, {buckling_length / 1e3:.0f} m"
         worst_overall = max(
             worst_overall, report(label, forward, reverse, closed, numeric)
         )
 
     print("\nCompression, sensitivity of the diameter to the buckling length")
     print(header)
-    for n_ed, l_cr in CASES:
-        solved = size(n_ed, l_cr)
-        forward = float(jax.jacfwd(size, argnums=1)(n_ed, l_cr))
-        reverse = float(jax.grad(size, argnums=1)(n_ed, l_cr))
-        closed = float(derivative_length(solved, n_ed, l_cr, STEEL, CATALOGUE))
-        numeric = float(central(lambda x: float(size(n_ed, x)), l_cr, l_cr * 1e-6))
-        label = f"{n_ed / 1e3:.0f} kN, {l_cr / 1e3:.0f} m"
+    for axial_force, buckling_length in CASES:
+        solved = size(axial_force, buckling_length)
+        forward = float(jax.jacfwd(size, argnums=1)(axial_force, buckling_length))
+        reverse = float(jax.grad(size, argnums=1)(axial_force, buckling_length))
+        closed = float(
+            derivative_length(solved, axial_force, buckling_length, STEEL, CATALOGUE)
+        )
+        numeric = float(
+            central(
+                lambda x: float(size(axial_force, x)),
+                buckling_length,
+                buckling_length * 1e-6,
+            )
+        )
+        label = f"{axial_force / 1e3:.0f} kN, {buckling_length / 1e3:.0f} m"
         worst_overall = max(
             worst_overall, report(label, forward, reverse, closed, numeric)
         )
 
     print("\nTension, where the answer is closed form and buckling never enters")
     print(header)
-    for n_ed in TENSION:
-        forward = float(jax.jacfwd(size)(n_ed, 4000.0))
-        reverse = float(jax.grad(size)(n_ed, 4000.0))
-        closed = float(derivative_force_tension(n_ed, STEEL, CATALOGUE))
-        numeric = float(central(lambda x: float(size(x, 4000.0)), n_ed, n_ed * 1e-6))
-        label = f"{n_ed / 1e3:.0f} kN"
+    for axial_force in TENSION:
+        forward = float(jax.jacfwd(size)(axial_force, 4000.0))
+        reverse = float(jax.grad(size)(axial_force, 4000.0))
+        closed = float(derivative_force_tension(axial_force, STEEL, CATALOGUE))
+        numeric = float(
+            central(lambda x: float(size(x, 4000.0)), axial_force, axial_force * 1e-6)
+        )
+        label = f"{axial_force / 1e3:.0f} kN"
         worst_overall = max(
             worst_overall, report(label, forward, reverse, closed, numeric)
         )
 
     print("\nThe invariant the derivative rests on")
     worst_check = 0.0
-    for n_ed, l_cr in CASES:
-        demand = float(used(size(n_ed, l_cr), n_ed, l_cr))
+    for axial_force, buckling_length in CASES:
+        demand = float(
+            used(size(axial_force, buckling_length), axial_force, buckling_length)
+        )
         worst_check = max(worst_check, abs(demand - 1.0))
-        print(f"  {n_ed / 1e3:>8.0f} kN, {l_cr / 1e3:>4.0f} m   u = {demand:.16f}")
+        force = axial_force / 1e3
+        span = buckling_length / 1e3
+        print(f"  {force:>8.0f} kN, {span:>4.0f} m   u = {demand:.16f}")
 
     print(f"\nworst derivative disagreement   {worst_overall:.2e}")
     print(f"worst departure from unity      {worst_check:.2e}")

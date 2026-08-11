@@ -45,19 +45,19 @@ import numpy as np
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
+from normax.analysis.smax import prepare_model
 from normax.composition import Chain
-from normax.composition import design as design_composed
-from normax.composition import local
-from normax.composition import mass as mass_composed
+from normax.composition import design_members as design_composed
+from normax.composition import local_chain
+from normax.composition import total_mass as mass_composed
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import is_plastic
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.pipeline import design as design_in_process
-from normax.pipeline import governing
-from normax.pipeline import mass as mass_in_process
-from normax.structures import arch
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.pipeline import design_members as design_in_process
+from normax.pipeline import governing_states
+from normax.pipeline import total_mass as mass_in_process
+from normax.structures import arch_2d
 
 # The arch of experiment 09, unchanged, so the two are comparable.
 SPAN = 10_000.0
@@ -101,11 +101,11 @@ def setup():
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     load = TOTAL_LOAD / (NUM_EDGES - 1)
-    structure = arch(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
-    graph_fdm = graph(structure)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
+    graph_fdm = equilibrium_graph(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
 
     return structure, graph_fdm, trial * reached / RISE
 
@@ -177,24 +177,24 @@ def refusal(chain, structure, seed, catalogue):
         axis=1,
     )
 
-    def limit_states(n_ed):
+    def limit_states(axial_force):
         sized = apply_tesseract(
             chain.ec3,
             {
-                "n_ed": n_ed,
-                "m_y_ed": member["m_y_ed"],
-                "m_z_ed": member["m_z_ed"],
+                "axial_force": axial_force,
+                "end_moments_major": member["end_moments_major"],
+                "end_moments_minor": member["end_moments_minor"],
                 "lengths": lengths,
-                "l_cr": lengths,
+                "buckling_length": lengths,
                 "f_y": STEEL.f_y,
                 "e_mod": STEEL.e_mod,
                 "density": STEEL.density,
                 "gamma_m0": STEEL.gamma_m0,
                 "gamma_m1": STEEL.gamma_m1,
                 "ratio": catalogue.ratio,
-                "alpha": steel.alpha,
+                "alpha": STEEL.alpha,
                 "diameter_min": catalogue.diameter_min,
-                "plastic": False,
+                "section_class": 3,
                 "resultant": True,
             },
         )
@@ -202,7 +202,7 @@ def refusal(chain, structure, seed, catalogue):
         return jnp.sum(sized["governing"])
 
     try:
-        jax.grad(limit_states)(member["n_ed"])
+        jax.grad(limit_states)(member["axial_force"])
     except ValueError as error:
         return str(error).splitlines()[0]
 
@@ -227,7 +227,7 @@ def report_served(chain, structure, q, seed, catalogue):
 
     def objective(stages):
         return lambda q: mass_composed(
-            q, seed, structure, stages, STEEL, catalogue, normal=NORMAL, plastic=False
+            q, seed, structure, stages, STEEL, catalogue, normal=NORMAL, section_class=3
         )
 
     reference, _ = timed(lambda: objective(chain)(q))
@@ -255,7 +255,7 @@ def report_served(chain, structure, q, seed, catalogue):
 def main():
     structure, graph_fdm, q = setup()
     seed = jnp.full(NUM_EDGES, SEED)
-    chain = local()
+    chain = local_chain()
 
     report_schemas(chain)
 
@@ -263,24 +263,24 @@ def main():
     worst_value = 0.0
     worst_gradient = 0.0
 
-    for cross_section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
-        plastic = is_plastic(cross_section_class)
+    for section_class in (2, 3):
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        model = prepare_model(structure, STEEL, catalogue, normal=NORMAL)
 
         oracle, seconds_oracle = timed(
-            lambda catalogue=catalogue, plastic=plastic: design_in_process(
+            lambda catalogue=catalogue, section_class=section_class: design_in_process(
                 q,
                 seed,
                 structure,
                 graph_fdm,
+                model,
                 STEEL,
                 catalogue,
-                normal=NORMAL,
-                plastic=plastic,
+                section_class=section_class,
             )
         )
         composed, seconds_chain = timed(
-            lambda catalogue=catalogue, plastic=plastic: design_composed(
+            lambda catalogue=catalogue, section_class=section_class: design_composed(
                 q,
                 seed,
                 structure,
@@ -288,11 +288,11 @@ def main():
                 STEEL,
                 catalogue,
                 normal=NORMAL,
-                plastic=plastic,
+                section_class=section_class,
             )
         )
 
-        print(f"\n  Class {cross_section_class}, d/t = {float(catalogue.ratio):.3f}")
+        print(f"\n  Class {section_class}, d/t = {float(catalogue.ratio):.3f}")
         print(f"    {'field':>12} {'in process':>22} {'composed':>22} {'scaled':>10}")
         for field in oracle._fields:
             left = np.asarray(getattr(oracle, field), dtype=np.float64)
@@ -304,7 +304,7 @@ def main():
                 f" {float(right.ravel()[0]):>22.14e} {scaled:>10.2e}"
             )
 
-        codes = governing(oracle, STEEL, catalogue, plastic=plastic)
+        codes = governing_states(oracle, STEEL, catalogue, section_class=section_class)
         limits = {LIMIT_NAMES[float(code)] for code in codes}
         print(f"    governing    {', '.join(sorted(limits))}")
         print(f"    mass         {float(composed.mass):.12f} t")
@@ -315,19 +315,19 @@ def main():
             f" {seconds_chain:.3f} composed"
         )
 
-        def in_process(q, catalogue=catalogue, plastic=plastic):
+        def in_process(q, catalogue=catalogue, section_class=section_class):
             return mass_in_process(
                 q,
                 seed,
                 structure,
                 graph_fdm,
+                model,
                 STEEL,
                 catalogue,
-                normal=NORMAL,
-                plastic=plastic,
+                section_class=section_class,
             )
 
-        def composed_mass(q, catalogue=catalogue, plastic=plastic):
+        def composed_mass(q, catalogue=catalogue, section_class=section_class):
             return mass_composed(
                 q,
                 seed,
@@ -336,7 +336,7 @@ def main():
                 STEEL,
                 catalogue,
                 normal=NORMAL,
-                plastic=plastic,
+                section_class=section_class,
             )
 
         exact, seconds_oracle = timed(lambda: jax.grad(in_process)(q))
@@ -363,7 +363,7 @@ def main():
 
     def objective(q):
         return mass_composed(
-            q, seed, structure, chain, STEEL, catalogue, normal=NORMAL, plastic=False
+            q, seed, structure, chain, STEEL, catalogue, normal=NORMAL, section_class=3
         )
 
     direction = jnp.ones_like(q)

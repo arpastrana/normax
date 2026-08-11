@@ -38,8 +38,7 @@ from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import governing_limit_state
-from normax.ec3.sizing import is_plastic
-from normax.ec3.sizing import mass
+from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.sizing import utilization_design
 
 STEEL = SteelGrade()
@@ -70,16 +69,18 @@ STEPS = (1e-6, 1e-6, 1e-6, 1e-6)
 LABELS = ("force", "major moment", "minor moment", "length")
 
 
-def size(n_ed, m_y_ed, m_z_ed, l_cr, catalogue, plastic):
+def size(
+    axial_force, moment_major, moment_minor, buckling_length, catalogue, section_class
+):
     """
     Fully-stressed diameter under the full interaction.
     """
     return diameter_required(
-        MemberActions(n_ed, m_y_ed, m_z_ed, 0.9, 0.9),
-        l_cr,
+        MemberActions(axial_force, moment_major, moment_minor, 0.9, 0.9),
+        buckling_length,
         STEEL,
         catalogue,
-        plastic=plastic,
+        section_class=section_class,
     )
 
 
@@ -97,12 +98,11 @@ def main() -> None:
     print("The sizing map under axial force and biaxial bending\n")
 
     worst = 0.0
-    for cross_section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
-        plastic = is_plastic(cross_section_class)
-        branch = "plastic" if plastic else "elastic"
+    for section_class in (2, 3):
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        branch = "plastic" if section_class else "elastic"
         ratio = float(catalogue.ratio)
-        print(f"Class {cross_section_class} ({branch}), d/t = {ratio:.2f}")
+        print(f"Class {section_class} ({branch}), d/t = {ratio:.2f}")
         print(
             f"  {'case':<26}{'argument':<15}{'reverse':<22}"
             f"{'central diff':<22}{'rel':<10}"
@@ -115,7 +115,7 @@ def main() -> None:
                     probed = list(actions)
                     probed[index] = x
 
-                    return size(*probed, catalogue, plastic)
+                    return size(*probed, catalogue, section_class)
 
                 value = actions[index]
                 if value == 0.0:
@@ -146,7 +146,7 @@ def main() -> None:
             probed = list(actions)
             probed[0] = x
 
-            return size(*probed, catalogue, False)
+            return size(*probed, catalogue, 3)
 
         forward = float(jax.jacfwd(at)(actions[0]))
         reverse = float(jax.grad(at)(actions[0]))
@@ -154,21 +154,20 @@ def main() -> None:
         print(f"  {actions[0] / 1e3:>8.0f} kN   forward-reverse gap {gap:.2e}")
 
     print("\nRemoving the moments reproduces the axial answer")
-    for cross_section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
-        plastic = is_plastic(cross_section_class)
-        with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, catalogue, plastic))
+    for section_class in (2, 3):
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, catalogue, section_class))
         axial_only = float(
             diameter_required(
                 MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0),
                 4000.0,
                 STEEL,
                 catalogue,
-                plastic=plastic,
+                section_class=section_class,
             )
         )
         print(
-            f"  Class {cross_section_class}   {with_moment:.12f}  vs  "
+            f"  Class {section_class}   {with_moment:.12f}  vs  "
             f"{axial_only:.12f}   gap {abs(with_moment - axial_only):.2e}"
         )
 
@@ -176,24 +175,24 @@ def main() -> None:
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
     worst_check = 0.0
     for actions in CASES:
-        d = size(*actions, catalogue, False)
+        d = size(*actions, catalogue, 3)
         demand = float(
             utilization_design(
-                catalogue.tube(d),
+                catalogue.tube_at(d),
                 MemberActions(*actions[:3], 0.9, 0.9),
                 actions[3],
                 STEEL,
-                plastic=False,
+                section_class=3,
             )
         )
         code = float(
             governing_limit_state(
-                catalogue.tube(d),
+                catalogue.tube_at(d),
                 MemberActions(*actions[:3], 0.9, 0.9),
                 actions[3],
                 STEEL,
                 catalogue,
-                plastic=False,
+                section_class=3,
             )
         )
         worst_check = max(worst_check, abs(demand - 1.0))
@@ -207,16 +206,16 @@ def main() -> None:
     forces = jnp.asarray([-5e5, -9e5, 5e5, -5e4])
     lengths = jnp.asarray([4000.0, 12000.0, 4000.0, 8000.0])
 
-    def objective(n_ed):
+    def objective(axial_force):
         sizes = diameter_required(
-            MemberActions(n_ed, 4e7, 1.5e7, 0.9, 0.9),
+            MemberActions(axial_force, 4e7, 1.5e7, 0.9, 0.9),
             lengths,
             STEEL,
             catalogue,
-            plastic=False,
+            section_class=3,
         )
 
-        return mass(catalogue.tube(sizes), lengths, STEEL)
+        return mass_of_tubes(catalogue.tube_at(sizes), lengths, STEEL)
 
     total = float(objective(forces))
     gradient = jax.grad(objective)(forces)

@@ -30,14 +30,14 @@ Run with `uv run python experiments/05_class_ratio_sweep.py`.
 import jax.numpy as jnp
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.classification import is_plastic
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import resistance_shear
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import is_plastic
-from normax.ec3.sizing import mass
+from normax.ec3.sizing import mass_of_tubes
 
 STEEL = SteelGrade()
 LENGTH = 6000.0
@@ -50,28 +50,30 @@ FORCE = -6e5
 CLASSES = (2, 3)
 
 
-def sized(cross_section_class, m_y_ed, m_z_ed=0.0):
+def sized(section_class, moment_major, moment_minor=0.0):
     """
     Fully-stressed diameter on one class branch.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
 
     return diameter_required(
-        MemberActions(FORCE, m_y_ed, m_z_ed, 0.9, 0.9),
+        MemberActions(FORCE, moment_major, moment_minor, 0.9, 0.9),
         LENGTH,
         STEEL,
         catalogue,
-        plastic=is_plastic(cross_section_class),
+        section_class=section_class,
     )
 
 
-def member_mass(cross_section_class, m_y_ed):
+def member_mass(section_class, moment_major):
     """
     Mass of one member of unit count on one class branch.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
 
-    return mass(catalogue.tube(sized(cross_section_class, m_y_ed)), LENGTH, STEEL)
+    return mass_of_tubes(
+        catalogue.tube_at(sized(section_class, moment_major)), LENGTH, STEEL
+    )
 
 
 def main() -> None:
@@ -80,11 +82,11 @@ def main() -> None:
     """
     print("Class 2 limit against Class 3 limit, S355, 6 m member, 600 kN compression\n")
 
-    for cross_section_class in CLASSES:
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
-        branch = "plastic" if is_plastic(cross_section_class) else "elastic"
+    for section_class in CLASSES:
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        branch = "plastic" if is_plastic(section_class) else "elastic"
         ratio = float(catalogue.ratio)
-        print(f"  Class {cross_section_class}: d/t = {ratio:.3f}  ({branch})")
+        print(f"  Class {section_class}: d/t = {ratio:.3f}  ({branch})")
 
     print(
         f"\n  {'M_y [kNm]':<12}{'d Class 2':<14}{'d Class 3':<14}"
@@ -128,7 +130,7 @@ def main() -> None:
         d = sized(3, moment)
         catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
         resistance = resistance_shear(
-            area_shear(catalogue.tube(d).area),
+            area_shear(catalogue.tube_at(d).area),
             SteelGrade(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0),
         )
         # A simply supported span carrying that end moment has a shear of about
@@ -166,7 +168,7 @@ def main() -> None:
                     LENGTH,
                     STEEL,
                     catalogue,
-                    plastic=False,
+                    section_class=3,
                     resultant=choice,
                 )
             )

@@ -27,32 +27,40 @@ RATIO = 59.577_464_788_732_41
 # The two routes to slenderness are one equation — algebra, so no source needed
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("diameter", [50.0, 100.0, 244.5, 500.0])
-@pytest.mark.parametrize("n_ed", [-1e3, -1e5, -2e6])
-@pytest.mark.parametrize("l_cr", [500.0, 4000.0, 12000.0])
-def test_the_member_route_and_the_global_route_agree(diameter, n_ed, l_cr):
-    gross = TubeCatalogue(RATIO).tube(diameter).area
-    inertia = TubeCatalogue(RATIO).tube(diameter).second_moment
+@pytest.mark.parametrize("axial_force", [-1e3, -1e5, -2e6])
+@pytest.mark.parametrize("buckling_length", [500.0, 4000.0, 12000.0])
+def test_the_member_route_and_the_global_route_agree(
+    diameter, axial_force, buckling_length
+):
+    gross = TubeCatalogue(RATIO).tube_at(diameter).area
+    inertia = TubeCatalogue(RATIO).tube_at(diameter).second_moment
 
-    critical = force_critical(inertia, l_cr, SteelGrade(e_mod=E_MOD))
+    critical = force_critical(inertia, buckling_length, SteelGrade(e_mod=E_MOD))
     by_member = slenderness_from_force(gross, SteelGrade(f_y=F_Y), critical)
 
     # The same member, described by a load factor instead of a length.
-    alpha_cr = critical / abs(n_ed)
+    alpha_cr = critical / abs(axial_force)
     by_global = slenderness_global(
-        amplifier_resistance(gross, SteelGrade(f_y=F_Y), n_ed), alpha_cr
+        amplifier_resistance(gross, SteelGrade(f_y=F_Y), axial_force), alpha_cr
     )
 
     assert float(by_global) == pytest.approx(float(by_member), rel=1e-14)
 
 
 @pytest.mark.parametrize("diameter", [80.0, 300.0])
-@pytest.mark.parametrize("n_ed", [-5e4, -8e5])
-def test_a_buckling_length_survives_a_round_trip_through_a_load_factor(diameter, n_ed):
-    inertia = TubeCatalogue(RATIO).tube(diameter).second_moment
+@pytest.mark.parametrize("axial_force", [-5e4, -8e5])
+def test_a_buckling_length_survives_a_round_trip_through_a_load_factor(
+    diameter, axial_force
+):
+    inertia = TubeCatalogue(RATIO).tube_at(diameter).second_moment
     original = 3500.0
 
-    alpha_cr = force_critical(inertia, original, SteelGrade(e_mod=E_MOD)) / abs(n_ed)
-    recovered = buckling_length_global(alpha_cr, n_ed, inertia, SteelGrade(e_mod=E_MOD))
+    alpha_cr = force_critical(inertia, original, SteelGrade(e_mod=E_MOD)) / abs(
+        axial_force
+    )
+    recovered = buckling_length_global(
+        alpha_cr, axial_force, inertia, SteelGrade(e_mod=E_MOD)
+    )
 
     assert float(recovered) == pytest.approx(original, rel=1e-13)
 
@@ -63,7 +71,7 @@ def test_the_load_factor_scales_the_members_share_of_the_load():
 
 
 def test_a_stiffer_frame_is_a_less_slender_member():
-    gross = TubeCatalogue(RATIO).tube(100.0).area
+    gross = TubeCatalogue(RATIO).tube_at(100.0).area
     factor = amplifier_resistance(gross, SteelGrade(f_y=F_Y), -1e5)
 
     assert float(slenderness_global(factor, 20.0)) < float(
@@ -74,15 +82,16 @@ def test_a_stiffer_frame_is_a_less_slender_member():
 def test_the_routes_agree_elementwise_over_members():
     diameters = jnp.array([60.0, 90.0, 140.0])
     lengths = jnp.array([800.0, 1500.0, 2600.0])
-    n_ed = jnp.array([-4e4, -9e4, -3e5])
+    axial_force = jnp.array([-4e4, -9e4, -3e5])
 
-    gross = TubeCatalogue(RATIO).tube(diameters).area
-    inertia = TubeCatalogue(RATIO).tube(diameters).second_moment
+    gross = TubeCatalogue(RATIO).tube_at(diameters).area
+    inertia = TubeCatalogue(RATIO).tube_at(diameters).second_moment
     critical = force_critical(inertia, lengths, SteelGrade(e_mod=E_MOD))
 
     by_member = slenderness_from_force(gross, SteelGrade(f_y=F_Y), critical)
     by_global = slenderness_global(
-        amplifier_resistance(gross, SteelGrade(f_y=F_Y), n_ed), critical / jnp.abs(n_ed)
+        amplifier_resistance(gross, SteelGrade(f_y=F_Y), axial_force),
+        critical / jnp.abs(axial_force),
     )
 
     assert np.allclose(by_global, by_member, rtol=1e-14)
@@ -174,7 +183,7 @@ def test_the_global_slenderness_is_differentiable():
 def test_an_unloaded_member_has_no_amplifier():
     # A gridshell's boundary hoops span support to support and carry nothing.
     # The amplifier is a ratio to the load a member carries, so there is none.
-    gross = TubeCatalogue(RATIO).tube(jnp.array([100.0, 100.0])).area
+    gross = TubeCatalogue(RATIO).tube_at(jnp.array([100.0, 100.0])).area
     factor = amplifier_resistance(gross, SteelGrade(f_y=F_Y), jnp.array([-1e5, 0.0]))
 
     assert np.isfinite(float(factor[0]))
@@ -182,7 +191,7 @@ def test_an_unloaded_member_has_no_amplifier():
 
 
 def test_an_unloaded_member_has_no_equivalent_buckling_length():
-    inertia = TubeCatalogue(RATIO).tube(jnp.array([100.0, 100.0])).second_moment
+    inertia = TubeCatalogue(RATIO).tube_at(jnp.array([100.0, 100.0])).second_moment
     lengths = buckling_length_global(
         0.4, jnp.array([-1e5, 0.0]), inertia, SteelGrade(e_mod=E_MOD)
     )
@@ -194,7 +203,7 @@ def test_an_unloaded_member_has_no_equivalent_buckling_length():
 def test_an_unloaded_member_is_not_reported_as_infinitely_slender():
     # Infinity would read as a statement about the member. nan says the question
     # does not apply, and a reduction over the members says so too.
-    gross = TubeCatalogue(RATIO).tube(jnp.array([80.0, 80.0])).area
+    gross = TubeCatalogue(RATIO).tube_at(jnp.array([80.0, 80.0])).area
     slender = slenderness_global(
         amplifier_resistance(gross, SteelGrade(f_y=F_Y), jnp.array([-5e4, 0.0])), 0.4
     )
@@ -204,16 +213,16 @@ def test_an_unloaded_member_is_not_reported_as_infinitely_slender():
 
 
 def test_a_loaded_member_is_untouched_by_the_guard():
-    gross = TubeCatalogue(RATIO).tube(120.0).area
-    inertia = TubeCatalogue(RATIO).tube(120.0).second_moment
-    n_ed = -2.5e5
+    gross = TubeCatalogue(RATIO).tube_at(120.0).area
+    inertia = TubeCatalogue(RATIO).tube_at(120.0).second_moment
+    axial_force = -2.5e5
 
     critical = force_critical(inertia, 3000.0, SteelGrade(e_mod=E_MOD))
-    alpha_cr = critical / abs(n_ed)
+    alpha_cr = critical / abs(axial_force)
 
     assert float(
-        amplifier_resistance(gross, SteelGrade(f_y=F_Y), n_ed)
-    ) == pytest.approx(float(gross) * F_Y / abs(n_ed), rel=1e-15)
+        amplifier_resistance(gross, SteelGrade(f_y=F_Y), axial_force)
+    ) == pytest.approx(float(gross) * F_Y / abs(axial_force), rel=1e-15)
     assert float(
-        buckling_length_global(alpha_cr, n_ed, inertia, SteelGrade(e_mod=E_MOD))
+        buckling_length_global(alpha_cr, axial_force, inertia, SteelGrade(e_mod=E_MOD))
     ) == pytest.approx(3000.0, rel=1e-13)

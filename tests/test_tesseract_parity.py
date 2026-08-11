@@ -5,23 +5,22 @@ import numpy as np
 import pytest
 from tesseract_jax import apply_tesseract
 
-from normax.analysis.smax import prepare
+from normax.analysis.smax import prepare_model
 from normax.composition import STAGES
-from normax.composition import design as design_composed
-from normax.composition import envelope as envelope_composed
-from normax.composition import local
-from normax.composition import mass as mass_composed
+from normax.composition import design_envelope as envelope_composed
+from normax.composition import design_members as design_composed
+from normax.composition import local_chain
+from normax.composition import total_mass as mass_composed
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import is_plastic
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.pipeline import design as design_in_process
-from normax.pipeline import envelope as envelope_in_process
-from normax.pipeline import governing
-from normax.pipeline import mass as mass_in_process
-from normax.structures import arch
-from normax.structures import crown
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.pipeline import design_envelope as envelope_in_process
+from normax.pipeline import design_members as design_in_process
+from normax.pipeline import governing_states
+from normax.pipeline import total_mass as mass_in_process
+from normax.structures import arch_2d
+from normax.structures import crown_node
 from normax.structures import loads_half_span
 from normax.structures import loads_point
 from normax.structures import loads_uniform
@@ -70,7 +69,12 @@ TOLERANCE_PARITY_ENVELOPE = 1e-12
 #
 # The moment factors read a ratio of the two end moments, so they inherit it.
 TOLERANCE_MOMENT = 1e-11
-MOMENT_FIELDS = ("m_y_ed", "m_z_ed", "c_my", "c_mz")
+MOMENT_FIELDS = (
+    "moment_major",
+    "moment_minor",
+    "moment_factor_major",
+    "moment_factor_minor",
+)
 
 # Derivatives are looser than values, and not because of the boundary. Each
 # stage linearizes on its own here and all three linearize together in process,
@@ -96,7 +100,7 @@ def steel():
 
 @pytest.fixture(scope="module")
 def chain():
-    return local()
+    return local_chain()
 
 
 @pytest.fixture(scope="module")
@@ -105,11 +109,11 @@ def setup():
     The arch, its connectivity, and the `q` that reaches the target rise.
     """
     load = TOTAL_LOAD / (NUM_EDGES - 1)
-    structure = arch(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
-    fdm = graph(structure)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
+    fdm = equilibrium_graph(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, fdm).xyz[:, 2])
 
     return structure, fdm, trial * reached / RISE
 
@@ -119,23 +123,22 @@ def seed():
     return jnp.full(NUM_EDGES, SEED)
 
 
-def both(setup, chain, steel, seed, cross_section_class, **kwargs):
+def both(setup, chain, steel, seed, section_class, **kwargs):
     """
     The same design taken in process and across the three Tesseracts.
     """
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
-    plastic = is_plastic(cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, section_class)
 
     oracle = design_compiled(
         q,
         seed,
         structure,
         fdm,
-        prepare(structure, steel, catalogue, normal=NORMAL),
+        prepare_model(structure, steel, catalogue, normal=NORMAL),
         steel,
         catalogue,
-        plastic=plastic,
+        section_class=section_class,
         **kwargs,
     )
     composed = design_composed(
@@ -146,20 +149,19 @@ def both(setup, chain, steel, seed, cross_section_class, **kwargs):
         steel,
         catalogue,
         normal=NORMAL,
-        plastic=plastic,
+        section_class=section_class,
         **kwargs,
     )
 
     return oracle, composed
 
 
-def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
+def objectives(setup, chain, steel, seed, section_class, **kwargs):
     """
     The mass as a function of the force densities, by both routes.
     """
     structure, fdm, _ = setup
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
-    plastic = is_plastic(cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, section_class)
 
     def in_process(q):
         return mass_compiled(
@@ -167,10 +169,10 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
             seed,
             structure,
             fdm,
-            prepare(structure, steel, catalogue, normal=NORMAL),
+            prepare_model(structure, steel, catalogue, normal=NORMAL),
             steel,
             catalogue,
-            plastic=plastic,
+            section_class=section_class,
             **kwargs,
         )
 
@@ -183,7 +185,7 @@ def objectives(setup, chain, steel, seed, cross_section_class, **kwargs):
             steel,
             catalogue,
             normal=NORMAL,
-            plastic=plastic,
+            section_class=section_class,
             **kwargs,
         )
 
@@ -217,23 +219,23 @@ def named_fields(container):
 # --------------------------------------------------------------------------- #
 # The claim the whole step exists to make
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_the_composed_mass_is_the_in_process_mass(
-    setup, chain, steel, seed, cross_section_class
+    setup, chain, steel, seed, section_class
 ):
-    oracle, composed = both(setup, chain, steel, seed, cross_section_class)
+    oracle, composed = both(setup, chain, steel, seed, section_class)
 
     assert relative(oracle.mass, composed.mass) < TOLERANCE_PARITY
 
 
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_every_field_of_the_design_survives_the_boundary(
-    setup, chain, steel, seed, cross_section_class
+    setup, chain, steel, seed, section_class
 ):
     # Mass alone would pass on a cancellation of two errors. Comparing the
     # geometry, the member actions, the sizes and the utilization pins where any
     # disagreement entered.
-    oracle, composed = both(setup, chain, steel, seed, cross_section_class)
+    oracle, composed = both(setup, chain, steel, seed, section_class)
 
     for (label, left), (_, right) in zip(named_fields(oracle), named_fields(composed)):
         leaf = label.rpartition(".")[2]
@@ -242,12 +244,12 @@ def test_every_field_of_the_design_survives_the_boundary(
         assert relative(left, right) < limit, label
 
 
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_the_mass_gradient_survives_the_boundary(
-    setup, chain, steel, seed, cross_section_class
+    setup, chain, steel, seed, section_class
 ):
     _, _, q = setup
-    in_process, composed = objectives(setup, chain, steel, seed, cross_section_class)
+    in_process, composed = objectives(setup, chain, steel, seed, section_class)
 
     assert (
         relative(jax.grad(in_process)(q), jax.grad(composed)(q)) < TOLERANCE_DERIVATIVE
@@ -259,11 +261,13 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(
 ):
     # The buckling length is an input rather than a mesh length, so it has to
     # reach the check as itself and not as the member length beside it.
-    l_cr = jnp.full(NUM_EDGES, 1_000.0)
-    oracle, composed = both(setup, chain, steel, seed, 3, l_cr=l_cr)
+    buckling_length = jnp.full(NUM_EDGES, 1_000.0)
+    oracle, composed = both(
+        setup, chain, steel, seed, 3, buckling_length=buckling_length
+    )
 
     assert relative(oracle.mass, composed.mass) < TOLERANCE_PARITY
-    assert np.allclose(np.asarray(composed.l_cr), 1_000.0)
+    assert np.allclose(np.asarray(composed.buckling_length), 1_000.0)
 
 
 def test_the_linear_sum_reading_of_the_moments_crosses_unchanged(
@@ -279,14 +283,14 @@ def test_the_linear_sum_reading_of_the_moments_crosses_unchanged(
 # --------------------------------------------------------------------------- #
 # The gradient, end to end
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_the_composed_gradient_matches_central_differences(
-    setup, chain, steel, seed, cross_section_class
+    setup, chain, steel, seed, section_class
 ):
     # Parity says the boundary changed nothing. This says the thing it left
     # unchanged is right, without the in-process pipeline vouching for it.
     _, _, q = setup
-    _, composed = objectives(setup, chain, steel, seed, cross_section_class)
+    _, composed = objectives(setup, chain, steel, seed, section_class)
 
     gradient = jax.grad(composed)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
@@ -327,11 +331,11 @@ def test_the_chain_differentiates_in_both_directions(setup, chain, steel, seed):
 # --------------------------------------------------------------------------- #
 # What the boundary must not quietly change
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_every_member_is_utilized_exactly_once_over(
-    setup, chain, steel, seed, cross_section_class
+    setup, chain, steel, seed, section_class
 ):
-    _, composed = both(setup, chain, steel, seed, cross_section_class)
+    _, composed = both(setup, chain, steel, seed, section_class)
 
     assert np.allclose(
         np.asarray(composed.utilization), 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION
@@ -367,9 +371,13 @@ def test_the_analysis_reports_a_moment_at_each_end_of_every_member(chain):
     # half of it the equivalent uniform moment factor is read from.
     reported = differentiable(chain.analysis, "Output")
 
-    assert set(reported) == {"n_ed", "m_y_ed", "m_z_ed"}
-    assert reported["m_y_ed"]["shape"] == [None, 2]
-    assert reported["m_z_ed"]["shape"] == [None, 2]
+    assert set(reported) == {
+        "axial_force",
+        "end_moments_major",
+        "end_moments_minor",
+    }
+    assert reported["end_moments_major"]["shape"] == [None, 2]
+    assert reported["end_moments_minor"]["shape"] == [None, 2]
 
 
 def test_the_analysis_asks_for_a_derivative_in_nothing_but_shape_and_size(chain):
@@ -385,9 +393,9 @@ def test_the_analysis_never_reports_a_critical_load_factor(chain):
     schemas = chain.analysis.openapi_schema["components"]["schemas"]
 
     assert set(schemas["Apply_OutputSchema"]["properties"]) == {
-        "n_ed",
-        "m_y_ed",
-        "m_z_ed",
+        "axial_force",
+        "end_moments_major",
+        "end_moments_minor",
     }
 
 
@@ -433,14 +441,14 @@ def sized_through_the_check(setup, chain, steel, seed, result, catalogue):
         },
     )
 
-    return lambda n_ed: apply_tesseract(
+    return lambda axial_force: apply_tesseract(
         chain.ec3,
         {
-            "n_ed": n_ed,
-            "m_y_ed": member["m_y_ed"],
-            "m_z_ed": member["m_z_ed"],
+            "axial_force": axial_force,
+            "end_moments_major": member["end_moments_major"],
+            "end_moments_minor": member["end_moments_minor"],
             "lengths": result.lengths,
-            "l_cr": result.lengths,
+            "buckling_length": result.lengths,
             "f_y": steel.f_y,
             "e_mod": steel.e_mod,
             "density": steel.density,
@@ -449,19 +457,21 @@ def sized_through_the_check(setup, chain, steel, seed, result, catalogue):
             "ratio": catalogue.ratio,
             "alpha": steel.alpha,
             "diameter_min": catalogue.diameter_min,
-            "plastic": False,
+            "section_class": 3,
             "resultant": True,
         },
-    ), member["n_ed"]
+    ), member["axial_force"]
 
 
 def test_the_governing_limit_state_survives_the_boundary(setup, chain, steel, seed):
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
     oracle, _ = both(setup, chain, steel, seed, 3)
-    check, n_ed = sized_through_the_check(setup, chain, steel, seed, oracle, catalogue)
+    check, axial_force = sized_through_the_check(
+        setup, chain, steel, seed, oracle, catalogue
+    )
 
-    reported = np.asarray(check(n_ed)["governing"])
-    expected = np.asarray(governing(oracle, steel, catalogue, plastic=False))
+    reported = np.asarray(check(axial_force)["governing"])
+    expected = np.asarray(governing_states(oracle, steel, catalogue, section_class=3))
 
     assert np.array_equal(reported, expected)
 
@@ -473,10 +483,12 @@ def test_differentiating_the_governing_limit_state_is_refused(
     # returning a zero, which is the whole reason the composition drops it.
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
     oracle, _ = both(setup, chain, steel, seed, 3)
-    check, n_ed = sized_through_the_check(setup, chain, steel, seed, oracle, catalogue)
+    check, axial_force = sized_through_the_check(
+        setup, chain, steel, seed, oracle, catalogue
+    )
 
     with pytest.raises(ValueError, match="governing"):
-        jax.grad(lambda forces: jnp.sum(check(forces)["governing"]))(n_ed)
+        jax.grad(lambda forces: jnp.sum(check(forces)["governing"]))(axial_force)
 
 
 # --------------------------------------------------------------------------- #
@@ -511,7 +523,7 @@ def test_a_python_list_is_refused_at_the_boundary(setup, chain):
 
 def test_a_chain_asked_for_a_stage_that_is_not_there_says_so(tmp_path):
     with pytest.raises(FileNotFoundError, match="formfinding"):
-        local(tmp_path)
+        local_chain(tmp_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -529,7 +541,7 @@ def cases(setup):
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
     point = loads_uniform(structure, spread * 0.75) + loads_point(
-        structure, TOTAL_LOAD * 0.25, node=crown(structure)
+        structure, TOTAL_LOAD * 0.25, node=crown_node(structure)
     )
 
     return jnp.stack([loads_uniform(structure, spread), half, point])
@@ -547,12 +559,12 @@ def enveloped(setup, chain, steel, seed, cases, beta):
         seed,
         structure,
         fdm,
-        prepare(structure, steel, catalogue, normal=NORMAL),
+        prepare_model(structure, steel, catalogue, normal=NORMAL),
         steel,
         catalogue,
         cases,
         beta,
-        plastic=False,
+        section_class=3,
     )
     composed = envelope_composed(
         q,
@@ -564,7 +576,7 @@ def enveloped(setup, chain, steel, seed, cases, beta):
         cases,
         beta,
         normal=NORMAL,
-        plastic=False,
+        section_class=3,
     )
 
     return oracle, composed
@@ -599,12 +611,12 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
             seed,
             structure,
             fdm,
-            prepare(structure, steel, catalogue, normal=NORMAL),
+            prepare_model(structure, steel, catalogue, normal=NORMAL),
             steel,
             catalogue,
             cases,
             100.0,
-            plastic=False,
+            section_class=3,
         ).mass
 
     def composed(q):
@@ -618,7 +630,7 @@ def test_the_enveloped_mass_gradient_survives_the_boundary(
             cases,
             100.0,
             normal=NORMAL,
-            plastic=False,
+            section_class=3,
         ).mass
 
     assert (

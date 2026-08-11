@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.classification import is_plastic
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import MOMENT_EXPONENT
 from normax.ec3.resistance import moment_resultant
@@ -306,45 +307,45 @@ def test_the_elastic_resultant_is_the_greatest_stress_around_the_perimeter():
     )
 
 
-@pytest.mark.parametrize("plastic", [True, False])
-def test_the_checks_ignore_the_sign_of_the_axial_force(plastic):
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_the_checks_ignore_the_sign_of_the_axial_force(section_class):
     # 6.2.9 covers bending and axial force of either sign; the ratio n is a
     # magnitude. A tension member is checked by the same expression.
-    modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
+    modulus = MODULUS_PLASTIC if is_plastic(section_class) else MODULUS_ELASTIC
     tension = utilization_cross_section(
         MemberActions(500e3, 40e6, 15e6),
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     )
     compression = utilization_cross_section(
         MemberActions(-500e3, 40e6, 15e6),
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     )
 
     assert tension == pytest.approx(float(compression), rel=1e-14)
 
 
-@pytest.mark.parametrize("plastic", [True, False])
-def test_the_checks_ignore_the_sign_of_either_moment(plastic):
-    modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_the_checks_ignore_the_sign_of_either_moment(section_class):
+    modulus = MODULUS_PLASTIC if is_plastic(section_class) else MODULUS_ELASTIC
     positive = utilization_cross_section(
         MemberActions(-500e3, 40e6, 15e6),
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     )
     mixed = utilization_cross_section(
         MemberActions(-500e3, -40e6, 15e6),
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     )
 
     assert positive == pytest.approx(float(mixed), rel=1e-14)
@@ -384,17 +385,17 @@ def test_the_elastic_check_is_unity_on_the_yield_stress():
     assert value == pytest.approx(1.0, rel=1e-12)
 
 
-@pytest.mark.parametrize("plastic", [True, False])
-def test_the_dispatcher_selects_the_branch(plastic):
-    modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
-    branch = utilization_plastic if plastic else utilization_elastic
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_the_dispatcher_selects_the_branch(section_class):
+    modulus = MODULUS_PLASTIC if is_plastic(section_class) else MODULUS_ELASTIC
+    branch = utilization_plastic if is_plastic(section_class) else utilization_elastic
 
     assert utilization_cross_section(
         MemberActions(-500e3, 40e6, 15e6),
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     ) == pytest.approx(
         float(
             branch(
@@ -407,9 +408,9 @@ def test_the_dispatcher_selects_the_branch(plastic):
     )
 
 
-@pytest.mark.parametrize("plastic", [True, False])
-def test_the_checks_grow_with_the_axial_force(plastic):
-    modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_the_checks_grow_with_the_axial_force(section_class):
+    modulus = MODULUS_PLASTIC if is_plastic(section_class) else MODULUS_ELASTIC
     forces = -jnp.linspace(
         1e3, 0.9 * float(resistance_yielding(AREA, SteelGrade(f_y=YIELD))), 300
     )
@@ -418,22 +419,22 @@ def test_the_checks_grow_with_the_axial_force(plastic):
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     )
 
     assert jnp.all(jnp.diff(values) > 0.0)
 
 
-@pytest.mark.parametrize("plastic", [True, False])
-def test_the_checks_grow_with_the_moment(plastic):
-    modulus = MODULUS_PLASTIC if plastic else MODULUS_ELASTIC
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_the_checks_grow_with_the_moment(section_class):
+    modulus = MODULUS_PLASTIC if is_plastic(section_class) else MODULUS_ELASTIC
     moments = jnp.linspace(0.0, 120e6, 300)
     values = utilization_cross_section(
         MemberActions(-500e3, moments, 0.0),
         AREA,
         modulus,
         SteelGrade(f_y=YIELD),
-        plastic=plastic,
+        section_class=section_class,
     )
 
     assert jnp.all(jnp.diff(values) >= 0.0)

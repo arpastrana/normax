@@ -27,16 +27,16 @@ import numpy as np
 import pytest
 
 from normax.analysis import opensees as backend_opensees
-from normax.analysis.smax import forces as forces_smax
-from normax.analysis.smax import prepare as prepare_smax
-from normax.composition import backend
-from normax.composition import local
-from normax.composition import mass as mass_composed
+from normax.analysis.smax import member_forces as forces_smax
+from normax.analysis.smax import prepare_model as prepare_smax
+from normax.composition import analysis_backend
+from normax.composition import local_chain
+from normax.composition import total_mass as mass_composed
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.structures import arch
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.structures import arch_2d
 
 # The same 10 m arch rising 3 m under 180 kN the rest of the suite uses.
 SPAN = 10_000.0
@@ -77,11 +77,11 @@ def setup():
     The arch, its connectivity, and the `q` that reaches the target rise.
     """
     load = TOTAL_LOAD / (NUM_EDGES - 1)
-    structure = arch(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
-    fdm = graph(structure)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
+    fdm = equilibrium_graph(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, fdm).xyz[:, 2])
 
     return structure, fdm, trial * reached / RISE
 
@@ -90,7 +90,7 @@ def setup():
 def geometry(setup):
     structure, fdm, q = setup
 
-    return structure, equilibrium(q, structure, fdm).xyz
+    return structure, equilibrium_state(q, structure, fdm).xyz
 
 
 @pytest.fixture(scope="module")
@@ -117,7 +117,7 @@ def prepared(geometry, steel, catalogue):
     structure, _ = geometry
 
     return (
-        backend_opensees.prepare(structure, steel, catalogue, normal=NORMAL),
+        backend_opensees.prepare_model(structure, steel, catalogue, normal=NORMAL),
         prepare_smax(structure, steel, catalogue, normal=NORMAL),
     )
 
@@ -128,10 +128,10 @@ def test_the_two_solvers_agree_on_the_axial_force(
     _, xyz = geometry
     ops, smax = prepared
 
-    mine = backend_opensees.forces(ops, xyz, diameters, steel, catalogue)
+    mine = backend_opensees.member_forces(ops, xyz, diameters, steel, catalogue)
     theirs = forces_smax(smax, xyz, diameters, steel, catalogue)
 
-    assert relative(mine.n_ed, theirs.n_ed) < TOLERANCE_PRIMAL
+    assert relative(mine.axial_force, theirs.axial_force) < TOLERANCE_PRIMAL
 
 
 def test_the_two_solvers_agree_on_both_end_moments(
@@ -140,10 +140,10 @@ def test_the_two_solvers_agree_on_both_end_moments(
     _, xyz = geometry
     ops, smax = prepared
 
-    mine = backend_opensees.forces(ops, xyz, diameters, steel, catalogue)
+    mine = backend_opensees.member_forces(ops, xyz, diameters, steel, catalogue)
     theirs = forces_smax(smax, xyz, diameters, steel, catalogue)
 
-    assert relative(mine.m_y_ed, theirs.m_y_ed) < TOLERANCE_PRIMAL
+    assert relative(mine.moment_major, theirs.moment_major) < TOLERANCE_PRIMAL
 
 
 def test_a_plane_frame_carries_no_minor_axis_moment(
@@ -152,9 +152,9 @@ def test_a_plane_frame_carries_no_minor_axis_moment(
     _, xyz = geometry
     ops, _ = prepared
 
-    mine = backend_opensees.forces(ops, xyz, diameters, steel, catalogue)
+    mine = backend_opensees.member_forces(ops, xyz, diameters, steel, catalogue)
 
-    assert np.all(np.asarray(mine.m_z_ed) == 0.0)
+    assert np.all(np.asarray(mine.moment_minor) == 0.0)
 
 
 @pytest.fixture(scope="module")
@@ -162,7 +162,7 @@ def blocks(prepared, geometry, diameters, steel, catalogue):
     _, xyz = geometry
     ops, _ = prepared
 
-    return backend_opensees.jacobian(ops, xyz, diameters, steel, catalogue)
+    return backend_opensees.force_jacobian(ops, xyz, diameters, steel, catalogue)
 
 
 @pytest.fixture(scope="module")
@@ -176,7 +176,10 @@ def traced(prepared, geometry, diameters, steel, catalogue):
     def run(coords, sizes):
         member = forces_smax(smax, coords, sizes, steel, catalogue)
 
-        return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
+        return {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+        }
 
     return (
         jax.jacfwd(run, argnums=0)(xyz, diameters),
@@ -187,25 +190,37 @@ def traced(prepared, geometry, diameters, steel, catalogue):
 def test_the_axial_force_moves_with_a_coordinate_as_autodiff_says(blocks, traced):
     by_coordinate, _ = traced
 
-    assert relative(blocks.n_ed_xyz, by_coordinate["n_ed"]) < TOLERANCE_JACOBIAN
+    assert (
+        relative(blocks.axial_force_xyz, by_coordinate["axial_force"])
+        < TOLERANCE_JACOBIAN
+    )
 
 
 def test_the_end_moments_move_with_a_coordinate_as_autodiff_says(blocks, traced):
     by_coordinate, _ = traced
 
-    assert relative(blocks.m_y_ed_xyz, by_coordinate["m_y_ed"]) < TOLERANCE_JACOBIAN
+    assert (
+        relative(blocks.moment_major_xyz, by_coordinate["end_moments_major"])
+        < TOLERANCE_JACOBIAN
+    )
 
 
 def test_the_axial_force_moves_with_a_diameter_as_autodiff_says(blocks, traced):
     _, by_diameter = traced
 
-    assert relative(blocks.n_ed_diameter, by_diameter["n_ed"]) < TOLERANCE_JACOBIAN
+    assert (
+        relative(blocks.axial_force_diameter, by_diameter["axial_force"])
+        < TOLERANCE_JACOBIAN
+    )
 
 
 def test_the_end_moments_move_with_a_diameter_as_autodiff_says(blocks, traced):
     _, by_diameter = traced
 
-    assert relative(blocks.m_y_ed_diameter, by_diameter["m_y_ed"]) < TOLERANCE_JACOBIAN
+    assert (
+        relative(blocks.moment_major_diameter, by_diameter["end_moments_major"])
+        < TOLERANCE_JACOBIAN
+    )
 
 
 def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
@@ -220,7 +235,10 @@ def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
     def run(coords):
         member = forces_smax(model, coords, diameters, steel, catalogue)
 
-        return {"n_ed": member.n_ed, "m_y_ed": member.m_y_ed}
+        return {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+        }
 
     jacobian = jax.jacfwd(run)(xyz)
 
@@ -238,7 +256,7 @@ def test_the_one_block_the_plane_cannot_reach_is_the_minor_axis_moment(
     model = prepare_smax(structure, steel, catalogue, normal=NORMAL)
 
     def run(coords):
-        return forces_smax(model, coords, diameters, steel, catalogue).m_z_ed
+        return forces_smax(model, coords, diameters, steel, catalogue).moment_minor
 
     jacobian = np.asarray(jax.jacfwd(run)(xyz))
 
@@ -250,16 +268,16 @@ def test_a_three_dimensional_frame_is_refused(geometry, diameters, steel, catalo
     structure, xyz = geometry
 
     with pytest.raises(ValueError, match="planar"):
-        backend_opensees.prepare(structure, steel, catalogue, normal=None)
+        backend_opensees.prepare_model(structure, steel, catalogue, normal=None)
 
 
 def test_a_frame_that_is_not_flat_is_refused(geometry, diameters, steel, catalogue):
     structure, xyz = geometry
     warped = jnp.asarray(xyz).at[1, NORMAL].set(500.0)
-    model = backend_opensees.prepare(structure, steel, catalogue, normal=NORMAL)
+    model = backend_opensees.prepare_model(structure, steel, catalogue, normal=NORMAL)
 
     with pytest.raises(ValueError, match="not planar"):
-        backend_opensees.forces(model, warped, diameters, steel, catalogue)
+        backend_opensees.member_forces(model, warped, diameters, steel, catalogue)
 
 
 def test_a_load_out_of_the_plane_is_refused(geometry, diameters, steel, catalogue):
@@ -267,15 +285,15 @@ def test_a_load_out_of_the_plane_is_refused(geometry, diameters, steel, catalogu
     pushed = structure._replace(
         loads=jnp.asarray(structure.loads).at[1, NORMAL].set(1_000.0)
     )
-    model = backend_opensees.prepare(pushed, steel, catalogue, normal=NORMAL)
+    model = backend_opensees.prepare_model(pushed, steel, catalogue, normal=NORMAL)
 
     with pytest.raises(ValueError, match="normal axis"):
-        backend_opensees.forces(model, xyz, diameters, steel, catalogue)
+        backend_opensees.member_forces(model, xyz, diameters, steel, catalogue)
 
 
 @pytest.fixture(scope="module")
 def chain():
-    return local()
+    return local_chain()
 
 
 @pytest.fixture(scope="module")
@@ -291,7 +309,7 @@ def objective(setup, diameters, steel, catalogue, chain):
             steel,
             catalogue,
             normal=NORMAL,
-            plastic=False,
+            section_class=3,
         )
 
     return total
@@ -303,7 +321,7 @@ def masses(setup, objective):
     out = {}
 
     for name in ("smax", "opensees"):
-        with backend(name):
+        with analysis_backend(name):
             out[name] = (float(objective(q)), np.asarray(jax.grad(objective)(q)))
 
     return out
@@ -332,7 +350,7 @@ def test_the_gradient_is_not_trivially_zero(masses):
 def test_the_backend_is_restored_after_the_block():
     before = os.environ.get("NORMAX_ANALYSIS_BACKEND")
 
-    with backend("opensees"):
+    with analysis_backend("opensees"):
         assert os.environ["NORMAX_ANALYSIS_BACKEND"] == "opensees"
 
     assert os.environ.get("NORMAX_ANALYSIS_BACKEND") == before
@@ -341,7 +359,7 @@ def test_the_backend_is_restored_after_the_block():
 def test_the_backend_is_restored_when_the_block_raises():
     before = os.environ.get("NORMAX_ANALYSIS_BACKEND")
 
-    with pytest.raises(RuntimeError), backend("opensees"):
+    with pytest.raises(RuntimeError), analysis_backend("opensees"):
         raise RuntimeError("boom")
 
     assert os.environ.get("NORMAX_ANALYSIS_BACKEND") == before

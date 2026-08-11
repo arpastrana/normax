@@ -54,7 +54,7 @@ class Structure(NamedTuple):
     loads: Float[Array, "nodes 3"]
 
 
-def cable(
+def cable_2d(
     num_edges: int = 10,
     span: float = 10.0,
     sag: float = 0.0,
@@ -83,13 +83,13 @@ def cable(
     -----
     A cable carries tension, so the force densities on its edges are positive.
     """
-    nodes, edges, supports = _parabola(num_edges, span, -sag)
+    nodes, edges, supports = _parabola_chain(num_edges, span, -sag)
     loads = _loads_vertical(nodes.shape[0], supports, load)
 
-    return _structure(nodes, edges, supports, loads)
+    return _structure_on_device(nodes, edges, supports, loads)
 
 
-def arch(
+def arch_2d(
     num_edges: int = 10,
     span: float = 10.0,
     rise: float = 0.0,
@@ -120,13 +120,13 @@ def arch(
     negative. The topology it shares with a cable of the same span is the
     mirror of that sign, not a different structure.
     """
-    nodes, edges, supports = _parabola(num_edges, span, rise)
+    nodes, edges, supports = _parabola_chain(num_edges, span, rise)
     loads = _loads_vertical(nodes.shape[0], supports, load)
 
-    return _structure(nodes, edges, supports, loads)
+    return _structure_on_device(nodes, edges, supports, loads)
 
 
-def gridshell(
+def gridshell_3d(
     num_rings: int = 4,
     num_spokes: int = 12,
     radius: float = 5.0,
@@ -199,7 +199,7 @@ def gridshell(
     supports = indices[-1]
     loads = _loads_vertical(nodes.shape[0], supports, load)
 
-    return _structure(nodes, edges, supports, loads)
+    return _structure_on_device(nodes, edges, supports, loads)
 
 
 def loads_uniform(
@@ -228,7 +228,7 @@ def loads_uniform(
     other case is a departure from it, and the bending that appears is what a
     frame analysis exists to report.
     """
-    return _loads(structure, jnp.ones(structure.nodes.shape[0]) * load)
+    return _nodal_loads(structure, jnp.ones(structure.nodes.shape[0]) * load)
 
 
 def loads_half_span(
@@ -280,7 +280,7 @@ def loads_half_span(
     along = structure.nodes[:, axis]
     middle = 0.5 * (jnp.min(along) + jnp.max(along))
 
-    return _loads(structure, jnp.where(along <= middle, load, load * factor))
+    return _nodal_loads(structure, jnp.where(along <= middle, load, load * factor))
 
 
 def loads_point(
@@ -315,10 +315,10 @@ def loads_point(
     """
     magnitudes = jnp.zeros(structure.nodes.shape[0]).at[node].set(load)
 
-    return _loads(structure, magnitudes)
+    return _nodal_loads(structure, magnitudes)
 
 
-def crown(structure: Structure) -> int:
+def crown_node(structure: Structure) -> int:
     """
     Index of the highest node of a structure.
 
@@ -340,7 +340,7 @@ def crown(structure: Structure) -> int:
     return int(jnp.argmax(structure.nodes[:, 2]))
 
 
-def _loads(
+def _nodal_loads(
     structure: Structure,
     magnitudes: Float[Array, "nodes"],
 ) -> Float[Array, "nodes 3"]:
@@ -364,7 +364,7 @@ def _loads(
     return vertical.at[structure.supports, :].set(0.0)
 
 
-def _parabola(
+def _parabola_chain(
     num_edges: int,
     span: float,
     offset: float,
@@ -441,7 +441,7 @@ def _loads_vertical(
     return loads
 
 
-def _structure(
+def _structure_on_device(
     nodes: Float[np.ndarray, "nodes 3"],
     edges: Int[np.ndarray, "edges 2"],
     supports: Int[np.ndarray, "supports"],

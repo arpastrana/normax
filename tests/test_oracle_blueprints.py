@@ -203,9 +203,9 @@ def test_thickness_agrees(profiles, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    assert TubeCatalogue(ratio).tube(profile.outer_diameter).thickness == pytest.approx(
-        profile.wall_thickness
-    )
+    assert TubeCatalogue(ratio).tube_at(
+        profile.outer_diameter
+    ).thickness == pytest.approx(profile.wall_thickness)
 
 
 @pytest.mark.parametrize("name", PROFILE_NAMES)
@@ -213,7 +213,7 @@ def test_inner_diameter_agrees(profiles, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    assert TubeCatalogue(ratio).tube(
+    assert TubeCatalogue(ratio).tube_at(
         profile.outer_diameter
     ).diameter_inner == pytest.approx(profile.inner_diameter)
 
@@ -223,7 +223,7 @@ def test_area_agrees(profiles, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    assert TubeCatalogue(ratio).tube(profile.outer_diameter).area == pytest.approx(
+    assert TubeCatalogue(ratio).tube_at(profile.outer_diameter).area == pytest.approx(
         profile.area, rel=MESH_TOLERANCE
     )
 
@@ -233,7 +233,7 @@ def test_second_moment_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).second_moment
+    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).second_moment
 
     assert ours == pytest.approx(meshed[name].ixx_c, rel=MESH_TOLERANCE)
     assert ours == pytest.approx(meshed[name].iyy_c, rel=MESH_TOLERANCE)
@@ -244,7 +244,7 @@ def test_modulus_elastic_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).modulus_elastic
+    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).modulus_elastic
 
     assert ours == pytest.approx(meshed[name].zxx_plus, rel=MESH_TOLERANCE)
 
@@ -254,7 +254,7 @@ def test_modulus_plastic_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).modulus_plastic
+    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).modulus_plastic
 
     assert ours == pytest.approx(meshed[name].sxx, rel=MESH_TOLERANCE)
 
@@ -264,7 +264,7 @@ def test_radius_of_gyration_agrees(profiles, meshed, name):
     profile = profiles[name]
     ratio = profile.outer_diameter / profile.wall_thickness
 
-    ours = TubeCatalogue(ratio).tube(profile.outer_diameter).radius_of_gyration
+    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).radius_of_gyration
 
     assert ours == pytest.approx(meshed[name].rx_c, rel=MESH_TOLERANCE)
 
@@ -420,25 +420,27 @@ ELASTIC_ACTIONS = [
 ]
 
 
-@pytest.mark.parametrize("n_ed, m_y_ed, m_z_ed", ELASTIC_ACTIONS)
-def test_the_linear_sum_reading_agrees_with_equation_6_44(n_ed, m_y_ed, m_z_ed):
+@pytest.mark.parametrize("axial_force, moment_major, moment_minor", ELASTIC_ACTIONS)
+def test_the_linear_sum_reading_agrees_with_equation_6_44(
+    axial_force, moment_major, moment_minor
+):
     area, modulus = 7367.03, 414981.0
     ours = utilization_elastic(
-        MemberActions(n_ed, m_y_ed, m_z_ed),
+        MemberActions(axial_force, moment_major, moment_minor),
         area,
         modulus,
         SteelGrade(f_y=355.0, gamma_m0=1.0),
         resultant=False,
     )
     oracle = Form6Dot44CombinedCompressionBendingClass4CrossSections(
-        n_ed=abs(n_ed),
+        n_ed=abs(axial_force),
         a_eff=area,
         f_y=355.0,
         gamma_m0=1.0,
-        m_y_ed=m_y_ed,
+        m_y_ed=moment_major,
         e_ny=0.0,
         w_eff_y_min=modulus,
-        m_z_ed=m_z_ed,
+        m_z_ed=moment_minor,
         e_nz=0.0,
         w_eff_z_min=modulus,
     )
@@ -446,14 +448,14 @@ def test_the_linear_sum_reading_agrees_with_equation_6_44(n_ed, m_y_ed, m_z_ed):
     assert float(ours) == pytest.approx(
         float(
             oracle._evaluate_lhs(
-                n_ed=abs(n_ed),
+                n_ed=abs(axial_force),
                 a_eff=area,
                 f_y=355.0,
                 gamma_m0=1.0,
-                m_y_ed=m_y_ed,
+                m_y_ed=moment_major,
                 e_ny=0.0,
                 w_eff_y_min=modulus,
-                m_z_ed=m_z_ed,
+                m_z_ed=moment_minor,
                 e_nz=0.0,
                 w_eff_z_min=modulus,
             )
@@ -461,20 +463,22 @@ def test_the_linear_sum_reading_agrees_with_equation_6_44(n_ed, m_y_ed, m_z_ed):
     )
 
 
-@pytest.mark.parametrize("n_ed, m_y_ed, m_z_ed", ELASTIC_ACTIONS)
-def test_the_resultant_reading_never_exceeds_the_linear_sum(n_ed, m_y_ed, m_z_ed):
+@pytest.mark.parametrize("axial_force, moment_major, moment_minor", ELASTIC_ACTIONS)
+def test_the_resultant_reading_never_exceeds_the_linear_sum(
+    axial_force, moment_major, moment_minor
+):
     # The two readings of 6.42 that docs/clauses.md records. The sum is the
     # conservative one, by at most the square root of two in the moment term.
     area, modulus = 7367.03, 414981.0
     summed = utilization_elastic(
-        MemberActions(n_ed, m_y_ed, m_z_ed),
+        MemberActions(axial_force, moment_major, moment_minor),
         area,
         modulus,
         SteelGrade(f_y=355.0, gamma_m0=1.0),
         resultant=False,
     )
     resultant = utilization_elastic(
-        MemberActions(n_ed, m_y_ed, m_z_ed),
+        MemberActions(axial_force, moment_major, moment_minor),
         area,
         modulus,
         SteelGrade(f_y=355.0, gamma_m0=1.0),

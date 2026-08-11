@@ -143,11 +143,11 @@ def test_chi_is_finite_everywhere(alpha):
 
 
 def test_n_cr_matches_euler():
-    second_moment, l_cr, e_mod = 50731473.4, 4000.0, 210000.0
-    expected = np.pi**2 * e_mod * second_moment / l_cr**2
+    second_moment, buckling_length, e_mod = 50731473.4, 4000.0, 210000.0
+    expected = np.pi**2 * e_mod * second_moment / buckling_length**2
 
     assert force_critical(
-        second_moment, l_cr, SteelGrade(e_mod=e_mod)
+        second_moment, buckling_length, SteelGrade(e_mod=e_mod)
     ) == pytest.approx(expected)
 
 
@@ -165,16 +165,20 @@ def test_lambda_1_matches_the_93_9_epsilon_form():
         )
 
 
-@pytest.mark.parametrize("l_cr", [2000.0, 4000.0, 8000.0])
-def test_slenderness_forms_agree(l_cr):
+@pytest.mark.parametrize("buckling_length", [2000.0, 4000.0, 8000.0])
+def test_slenderness_forms_agree(buckling_length):
     # Eq. 6.50 states lam = sqrt(A f_y / N_cr) = (L_cr / i) / lambda_1.
     area, second_moment, f_y = 7367.0348, 50731473.4, 355.0
     radius = np.sqrt(second_moment / area)
 
     from_force = slenderness_from_force(
-        area, SteelGrade(f_y=f_y), force_critical(second_moment, l_cr, SteelGrade())
+        area,
+        SteelGrade(f_y=f_y),
+        force_critical(second_moment, buckling_length, SteelGrade()),
     )
-    from_gyration = slenderness_from_gyration(l_cr, radius, SteelGrade(f_y=f_y))
+    from_gyration = slenderness_from_gyration(
+        buckling_length, radius, SteelGrade(f_y=f_y)
+    )
 
     assert from_force == pytest.approx(from_gyration)
 

@@ -37,14 +37,14 @@ import jax.numpy as jnp
 import numpy as np
 from smax import diagnose_mechanisms
 
-from normax.analysis.smax import forces
-from normax.analysis.smax import frame
-from normax.analysis.smax import prepare
+from normax.analysis.smax import frame_model
+from normax.analysis.smax import member_forces
+from normax.analysis.smax import prepare_model
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.structures import arch
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.structures import arch_2d
 from normax.visualization import figure_handoff
 
 # A 10 m arch of ten members under a 20 kN load at every free node. Units are
@@ -80,10 +80,10 @@ def funicular(load, force_density):
     """
     Form-find the arch, and report the state the analysis has to reproduce.
     """
-    structure = arch(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
-    fdm = graph(structure)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
+    fdm = equilibrium_graph(structure)
     q = jnp.full(NUM_EDGES, force_density)
-    state = equilibrium(q, structure, fdm)
+    state = equilibrium_state(q, structure, fdm)
 
     return structure, fdm, state, q * state.lengths[:, 0]
 
@@ -93,16 +93,16 @@ def gap(diameter, steel, load=LOAD, force_density=FORCE_DENSITY):
     Largest relative disagreement on axial force, and the bending that explains it.
     """
     structure, _, state, axial = funicular(load, force_density)
-    member = forces(
-        prepare(structure, steel, CATALOGUE, normal=NORMAL),
+    member = member_forces(
+        prepare_model(structure, steel, CATALOGUE, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
         steel,
         CATALOGUE,
     )
 
-    deviation = jnp.max(jnp.abs(member.n_ed - axial) / jnp.abs(axial))
-    peak = jnp.max(jnp.abs(member.m_y_ed), axis=1)
+    deviation = jnp.max(jnp.abs(member.axial_force - axial) / jnp.abs(axial))
+    peak = jnp.max(jnp.abs(member.moment_major), axis=1)
     bending = jnp.max(peak / jnp.abs(axial * state.lengths[:, 0]))
 
     return float(deviation), float(bending)
@@ -118,10 +118,12 @@ def central(f, x, index, step):
 def main():
     structure, fdm, state, axial = funicular(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    prepared = prepare(structure, STEEL, CATALOGUE, normal=NORMAL)
-    member = forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
+    prepared = prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL)
+    member = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
 
-    model = frame(structure, state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL)
+    model = frame_model(
+        structure, state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL
+    )
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
     rise = float(jnp.max(state.xyz[:, 2]))
@@ -137,10 +139,10 @@ def main():
     print(f"\nMember by member, at a diameter of {DIAMETER:.0f} mm")
     print(f"  {'':>4} {'q L [kN]':>12} {'smax N [kN]':>13} {'gap':>10} {'M/(N L)':>10}")
     for edge in range(NUM_EDGES):
-        peak = float(jnp.max(jnp.abs(member.m_y_ed[edge])))
+        peak = float(jnp.max(jnp.abs(member.moment_major[edge])))
         length = float(state.lengths[edge, 0])
         expected = float(axial[edge])
-        analysed = float(member.n_ed[edge])
+        analysed = float(member.axial_force[edge])
         print(
             f"  {edge:>4} {expected / 1e3:>12.4f} {analysed / 1e3:>13.4f}"
             f" {abs(analysed - expected) / abs(expected):>10.2e}"
@@ -167,10 +169,10 @@ def main():
         print(f"  loads and q x {scale:<5.1f}     gap = {deviation:.12e}")
 
     def objective(q):
-        state = equilibrium(q, structure, fdm)
-        member = forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
+        state = equilibrium_state(q, structure, fdm)
+        member = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
 
-        return jnp.sum(member.n_ed**2)
+        return jnp.sum(member.axial_force**2)
 
     q = jnp.full(NUM_EDGES, FORCE_DENSITY)
     gradient = jax.grad(objective)(q)
@@ -192,8 +194,8 @@ def main():
     handoff = figure_handoff(
         state.lengths[:, 0],
         axial,
-        member.n_ed,
-        jnp.max(jnp.abs(member.m_y_ed), axis=1),
+        member.axial_force,
+        jnp.max(jnp.abs(member.moment_major), axis=1),
         np.asarray(DIAMETERS),
         np.asarray([gap(diameter, STEEL)[0] for diameter in DIAMETERS]),
         DIAMETER,

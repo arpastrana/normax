@@ -154,10 +154,69 @@
   conventions would make a tension-positive force reaching 6.3.3 yield a
   *negative* axial ratio, which subtracts from Eqs. 6.61 and 6.62 and reports a
   member as safer than it is; two types make that a checker error instead.
-- **The slendernesses stay loose, outside `MemberResistance`.** `checks` does
-  not read them — only Annex B does — and `tests/test_worked_example_frame.py`
-  is the test for that separability: it supplies Simões da Silva's published
-  reduction factors and interaction factors and has no slendernesses at all.
+- **The slendernesses stay outside `MemberResistance`.** `checks` does not read
+  them — only Annex B does — and `tests/test_worked_example_frame.py` is the test
+  for that separability: it supplies Simões da Silva's published reduction
+  factors and interaction factors and has no slendernesses at all.
+- **`MemberSlenderness` carries the pair, and `about_both_axes` states the
+  axisymmetry once.** `lam_y` and `lam_z` travelled as two positional arguments
+  through four signatures, so every call site for a circular section passed the
+  same value twice — `properties.slenderness, properties.slenderness` in both
+  `_demands` and `governing_limit_state`. Two adjacent positional floats of the
+  same type also admit a silent transposition wherever the axes do differ, which
+  is the same failure `InteractionFactors` was introduced to close. The section
+  properties now hold the pair rather than one number, so the duplication is gone
+  from the caller and the reason for it is stated on the constructor. `k_yy` and
+  `k_zz` stay flat: each is a function of one axis, like `reduction_buckling`.
+- **`l_cr` is spelled `buckling_length` in code, and stays `L_cr` in prose.** 181
+  identifiers across 20 files, swept from the token stream rather than by regex:
+  `l_cr` is a substring of `flexural_critical`, which a word-boundary-free
+  substitution would have corrupted, and BSD `sed` has no `\b`. Three string
+  literals had to move with their bindings — `parametrize("l_cr", ...)` names a
+  test parameter — while the three `"l_cr"` keys building the Tesseract input
+  dict had to stay, being the wire format. The schema field keeps the standard's
+  symbol; only the local reading it was renamed.
+- **The cross-section class travels as itself, in place of `plastic: bool`.**
+  A bool cannot say which class, so the two had to be carried side by side and
+  were free to disagree: `diameter_required(..., catalogue_at_class_3,
+  plastic=True)` ran the plastic clauses on a Class 3 wall and returned 199.600
+  mm where 207.181 mm is required — **1.1220 utilized against the class the wall
+  actually has**, 12.2% overstressed, with nothing to object. `section_class:
+  int` now reaches `sizing`, `pipeline`, `composition`, the Tesseract wire schema
+  and the clause entry points, and `TubeCatalogue.section_class(f_y)` reads it
+  off the family's own ratio, so the value a caller passes comes from the thing
+  it describes. `classification.section_class_at_ratio` is the host-level inverse
+  of `ratio_at_class_limit`; it returns a Python `int` and refuses a traced ratio,
+  which is honest — the class chooses between clauses and no derivative with
+  respect to the ratio can move it.
+- **`is_plastic(4)` raised nothing and answered False**, so a Class 4 shell was
+  silently checked by Class 3's clauses while `at_class_limit(f_y, 4)` refused
+  the same section outright. `is_plastic` moved to `classification.py`, the leaf
+  that owns the concept, and now validates: every point of use rejects a class
+  this package does not implement.
+- **No signature carries a boolean standing in for a class.** The class reaches
+  the Table B.1 rows themselves — `k_yy`, `k_zz`, `k_yz`, `k_zy`,
+  `cap_is_active` — and `moment_combined`, each converting with `is_plastic` at
+  the point it reads its column. Stopping one level higher and handing the rows a
+  bool would have left a second encoding of one fact in the package, which is
+  what the change exists to remove. Classes 1 and 2 select identical clauses
+  here, so 2 is the plastic representative wherever a fixture named `True`.
+- **`utilization_plastic` calls `moment_resultant` directly again.** Bug A's fix
+  routed it through `moment_combined` with a literal `plastic=True`, but that
+  branch was never one of the three clones the helper was introduced to merge —
+  it always took the resultant, which 6.2.9.1 makes exact. Restoring the direct
+  call leaves `moment_combined` with the two callers that genuinely choose a
+  reading, and neither has to invent a class: the elastic branch names
+  `CLASS_ELASTIC`, and the analytic bound already has the real one.
+- **The sweep was defeated three more times, all caught by tooling rather than by
+  reading.** Two locals in `test_sizing_monotonicity.py` held utilization values
+  and section moduli and merely happened to be spelled `plastic`; renaming them
+  by spelling left assertions referring to a name that no longer existed, which
+  `F841` caught. A third site passed the flag *positionally* —
+  `size(*probed, catalogue, False)` — invisible to a keyword-based rewrite and
+  found only by running `experiments/02`. Parity stayed bitwise across all 48
+  arrays, which is the right bar: the class selects exactly the clauses the bool
+  did.
 - **`sizing._properties` replaces the capacity block that was cloned at two
   sites.** `_demands` promised the utilization and the diagnostic "cannot
   disagree about what governed" while the diagnostic recomputed the block
@@ -2208,3 +2267,84 @@ showed was false.
 
 `normax.pipeline.envelope` itself is still not compiled. The test compiles it;
 the module stays the readable reference.
+
+### Naming: actions in full, and no single-word function
+
+- **The five design actions carry their names in full.** `n_ed` is
+  `axial_force`, `m_y_ed` and `m_z_ed` are `moment_major` and `moment_minor`,
+  and `c_my`/`c_mz` are `moment_factor_major`/`moment_factor_minor`. 441
+  identifiers. This reverses P8's explicit decision to keep EN 1993-1-1's
+  printed symbols as field names, and the reason it held then — that the symbols
+  appear verbatim in Eqs. 6.61/6.62 — is now served by the docstrings, which
+  still name the clause and the symbol.
+- **The wire moved with the code.** All three Tesseract schemas now carry
+  `axial_force`, `moment_major`/`moment_minor`, `moment_factor_major`/
+  `moment_factor_minor` and `buckling_length`, so a payload and the code reading
+  it read alike. The two-column per-end arrays are `end_moments_major` and
+  `end_moments_minor`, which resolves a real ambiguity the symbols hid: `m_y_ed`
+  named a pair of end moments on the analysis output and a single design moment
+  on the check's output, and they are different quantities. `test_tesseract_
+  parity.py` asserts the schema field names, so it changed with them. **The
+  material fields keep their symbols** — `f_y`, `e_mod`, `gamma_m0`, `gamma_m1`,
+  `alpha` — matching `SteelGrade`, which was not part of this rename.
+- **The Jacobian block names went too.** `ForceJacobian.n_ed_xyz` and its three
+  siblings are compounds that a `\bn_ed\b` sweep cannot see; they are now
+  `axial_force_xyz`, `axial_force_diameter`, `moment_major_xyz` and
+  `moment_major_diameter`.
+- **Every function is at least two words.** 44 in `normax/` and 13 more inside
+  the Tesseract modules: `pipeline.mass` is `total_mass`, `pipeline.design` is
+  `design_members`, `formfinding.graph` is `equilibrium_graph`,
+  `structures.arch` is `arch_2d`, `sizing.mass` is `mass_of_tubes`,
+  `interaction.checks` is `interaction_checks`, and so on. `TubeCatalogue.tube`
+  is `tube_at`, which is the one method called with parentheses; `Tube.area` and
+  `Tube.ratio` stay as they are, being attributes read off a receiver that
+  already supplies the context. Tesseract Core's `apply` endpoint keeps its
+  mandated name.
+- **`sizing.mass` and `pipeline.mass` could not both become `total_mass`** — the
+  three-way `utilization` collision P8 untangled is the precedent. `sizing` weighs
+  a set of tubes and takes the name `mass_of_tubes`, which the ec3 Tesseract had
+  already chosen for it as an import alias. `pipeline` and `composition` do keep
+  the same names as each other, deliberately: they are the same three functions
+  in process and across the boundary, and the tests import them under aliases to
+  compare them.
+- **A rename by binding, and five ways it still went wrong.** The sweep resolved
+  which local names were actually bound to the functions being renamed, since
+  `mass`, `graph`, `actions`, `governing` and `backend` are also container fields
+  and parameters. Even so: NamedTuple **field declarations** are `ast.Name` in a
+  store context and were renamed with the functions, so `Design.actions` became
+  `Design.member_actions` while `Design(actions=...)` kept the keyword; a module
+  imported under an alias (`from normax.analysis import opensees as
+  backend_opensees`) put the functions behind an attribute the sweep never
+  looked at; a token-level pass over the Tesseract backends renamed **`jax.jvp`
+  to a function JAX does not have**, because a NAME token after a dot looks like
+  any other — caught by the endpoint raising `AttributeError` and reverted;
+  the conservative shadow rule skipped uses in files where any function bound the
+  name locally, and `ruff --fix` then **deleted the freshly renamed import as
+  unused** before the skipped call site was repaired; and renaming keyword
+  arguments into **Blueprints**, a third-party oracle, broke six calls, since a
+  keyword belongs to the callee's namespace. Only the last two were caught by
+  reading; the rest by tests and by `ruff`.
+- **Nothing outside this package was renamed.** Verified by extracting every
+  foreign import and every attribute read off a foreign module — 230 symbols
+  across `jax`, `smax`, `jax-fdm`, `numpy`, `blueprints`, `tesseract-core` and
+  the rest — and differing the set against `HEAD`: identical. A rename touches
+  our own names only; a keyword argument belongs to the callee's namespace, and
+  a module attribute to the module's.
+- Parity stayed bitwise across all 48 arrays throughout both renames.
+
+### Experiments, fixed in passing
+
+- **`experiments/10` had been raising since P5b and nothing noticed.** It called
+  `pipeline.design` with the pre-P5b signature — six positionals where seven are
+  needed, and a `normal=` the function stopped accepting once the topology was
+  hoisted out of the objective — and further down referenced `steel.alpha` where
+  the module constant is `STEEL`. Both are `TypeError`/`NameError` on the first
+  call, so the experiment never reached a number. **`pytest` does not collect
+  `experiments/`**, and the project notes recorded it as passing throughout.
+- It now runs and reports FAIL on its own value target: `Design.actions`, added
+  in P8, entered the field-by-field comparison, and a member force crossing the
+  analysis solver agrees at 1.30e-12 against a threshold of 1e-14 set before that
+  field existed. The mass is at 6.48e-16 and the gradients at 3.66e-14, both
+  inside target. **The threshold is left as it stands** — widening it to make the
+  banner read PASS would be tuning the check to the answer. Whether force fields
+  deserve their own tolerance is a decision, not a fix.

@@ -15,8 +15,7 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import reduction_buckling
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import is_plastic
-from normax.ec3.sizing import mass
+from normax.ec3.sizing import mass_of_tubes
 
 # CLAUDE.md invariant 1: every derivative rule ships with a check_grads test.
 #
@@ -28,7 +27,7 @@ from normax.ec3.sizing import mass
 
 STEEL = SteelGrade()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-PLASTIC = is_plastic(3)
+SECTION_CLASS = 3
 
 LENGTH = 4000.0
 FORCE = -5e5
@@ -43,29 +42,38 @@ KILONEWTON_METRE = 1e6
 METRE = 1e3
 
 
-def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, c_m=0.9):
+def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, moment_factor=0.9):
     return diameter_required(
         MemberActions(
             force_kn * KILONEWTON,
             moment_y_knm * KILONEWTON_METRE,
             moment_z_knm * KILONEWTON_METRE,
-            c_m,
-            c_m,
+            moment_factor,
+            moment_factor,
         ),
         length_m * METRE,
         STEEL,
         CATALOGUE,
-        plastic=PLASTIC,
+        section_class=SECTION_CLASS,
     )
 
 
-def raw(n_ed=FORCE, m_y_ed=0.0, m_z_ed=0.0, l_cr=LENGTH, c_m=0.9, catalogue=CATALOGUE):
+def raw(
+    axial_force=FORCE,
+    moment_major=0.0,
+    moment_minor=0.0,
+    buckling_length=LENGTH,
+    moment_factor=0.9,
+    catalogue=CATALOGUE,
+):
     return diameter_required(
-        MemberActions(n_ed, m_y_ed, m_z_ed, c_m, c_m),
-        l_cr,
+        MemberActions(
+            axial_force, moment_major, moment_minor, moment_factor, moment_factor
+        ),
+        buckling_length,
         STEEL,
         catalogue,
-        plastic=PLASTIC,
+        section_class=SECTION_CLASS,
     )
 
 
@@ -101,49 +109,67 @@ def test_the_slope_is_never_positive():
 # ---- The axial map against its closed form ---- #
 
 
-@pytest.mark.parametrize("l_cr", [2000.0, 4000.0, 12000.0])
-@pytest.mark.parametrize("n_ed", [-1e4, -1e5, -5e5, -2e6])
-def test_the_force_sensitivity_matches_the_closed_form(n_ed, l_cr):
+@pytest.mark.parametrize("buckling_length", [2000.0, 4000.0, 12000.0])
+@pytest.mark.parametrize("axial_force", [-1e4, -1e5, -5e5, -2e6])
+def test_the_force_sensitivity_matches_the_closed_form(axial_force, buckling_length):
     # The map differentiates the check and inverts the implicit part. This
     # expression was derived on paper instead. They must agree.
-    d = raw(n_ed=n_ed, l_cr=l_cr)
-    automatic = jax.grad(lambda force: raw(n_ed=force, l_cr=l_cr))(n_ed)
-    closed = derivative_force(d, n_ed, l_cr, STEEL, CATALOGUE)
+    d = raw(axial_force=axial_force, buckling_length=buckling_length)
+    automatic = jax.grad(
+        lambda force: raw(axial_force=force, buckling_length=buckling_length)
+    )(axial_force)
+    closed = derivative_force(d, axial_force, buckling_length, STEEL, CATALOGUE)
 
     assert float(automatic) == pytest.approx(float(closed), rel=1e-9)
 
 
-@pytest.mark.parametrize("l_cr", [2000.0, 4000.0, 12000.0])
-@pytest.mark.parametrize("n_ed", [-1e4, -1e5, -5e5, -2e6])
-def test_the_length_sensitivity_matches_the_closed_form(n_ed, l_cr):
-    d = raw(n_ed=n_ed, l_cr=l_cr)
-    automatic = jax.grad(lambda length: raw(n_ed=n_ed, l_cr=length))(l_cr)
-    closed = derivative_length(d, n_ed, l_cr, STEEL, CATALOGUE)
+@pytest.mark.parametrize("buckling_length", [2000.0, 4000.0, 12000.0])
+@pytest.mark.parametrize("axial_force", [-1e4, -1e5, -5e5, -2e6])
+def test_the_length_sensitivity_matches_the_closed_form(axial_force, buckling_length):
+    d = raw(axial_force=axial_force, buckling_length=buckling_length)
+    automatic = jax.grad(
+        lambda length: raw(axial_force=axial_force, buckling_length=length)
+    )(buckling_length)
+    closed = derivative_length(d, axial_force, buckling_length, STEEL, CATALOGUE)
 
     assert float(automatic) == pytest.approx(float(closed), rel=1e-9)
 
 
-@pytest.mark.parametrize("n_ed", [1e4, 1e5, 5e5, 5e6])
-def test_the_tension_branch_matches_its_closed_form(n_ed):
-    assert float(raw(n_ed=n_ed)) == pytest.approx(
-        float(diameter_tension(n_ed, STEEL, CATALOGUE)), rel=1e-12
+@pytest.mark.parametrize("axial_force", [1e4, 1e5, 5e5, 5e6])
+def test_the_tension_branch_matches_its_closed_form(axial_force):
+    assert float(raw(axial_force=axial_force)) == pytest.approx(
+        float(diameter_tension(axial_force, STEEL, CATALOGUE)), rel=1e-12
     )
 
-    automatic = jax.grad(lambda force: raw(n_ed=force))(n_ed)
+    automatic = jax.grad(lambda force: raw(axial_force=force))(axial_force)
 
     assert float(automatic) == pytest.approx(
-        float(derivative_force_tension(n_ed, STEEL, CATALOGUE)), rel=1e-9
+        float(derivative_force_tension(axial_force, STEEL, CATALOGUE)), rel=1e-9
     )
 
 
 def test_a_tension_member_has_no_length_sensitivity():
-    assert float(jax.grad(lambda length: raw(n_ed=5e5, l_cr=length))(LENGTH)) == 0.0
+    assert (
+        float(
+            jax.grad(lambda length: raw(axial_force=5e5, buckling_length=length))(
+                LENGTH
+            )
+        )
+        == 0.0
+    )
 
 
 def test_a_stocky_member_has_no_length_sensitivity():
     # Below the offset slenderness the reduction factor is capped and length
     # leaves the answer, so the sensitivity is exactly zero rather than small.
-    assert float(jax.grad(lambda length: raw(n_ed=-1e7, l_cr=length))(500.0)) == 0.0
+    assert (
+        float(
+            jax.grad(lambda length: raw(axial_force=-1e7, buckling_length=length))(
+                500.0
+            )
+        )
+        == 0.0
+    )
 
 
 # ---- Central differences, at engineering scale ---- #
@@ -168,7 +194,10 @@ def test_every_action_agrees_with_a_central_difference(label, index, value, step
         actions[index] = x
 
         return raw(
-            n_ed=actions[0], m_y_ed=actions[1], m_z_ed=actions[2], l_cr=actions[3]
+            axial_force=actions[0],
+            moment_major=actions[1],
+            moment_minor=actions[2],
+            buckling_length=actions[3],
         )
 
     automatic = float(jax.grad(at)(value))
@@ -215,12 +244,12 @@ def test_the_moment_sensitivity_at_exactly_zero_moment_understates_the_slope():
     # This is confined to exactly zero and is harmless in the pipeline, where a
     # moment is never identically zero, but it is why the axial-only gradcheck
     # above holds the moments rather than probing them.
-    def at(m_y_ed):
-        return float(raw(m_y_ed=m_y_ed))
+    def at(moment_major):
+        return float(raw(moment_major=moment_major))
 
     step = 1e2
     one_sided = (at(step) - at(0.0)) / step
-    corner = float(jax.grad(lambda m: raw(m_y_ed=m))(0.0))
+    corner = float(jax.grad(lambda m: raw(moment_major=m))(0.0))
 
     assert 0.0 < corner < one_sided
 
@@ -228,8 +257,8 @@ def test_the_moment_sensitivity_at_exactly_zero_moment_understates_the_slope():
 def test_the_moment_sensitivity_recovers_immediately_off_the_corner():
     # A hair away from zero both checks are ordinary, and the gradient agrees
     # with a central difference again.
-    def at(m_y_ed):
-        return raw(m_y_ed=m_y_ed)
+    def at(moment_major):
+        return raw(moment_major=moment_major)
 
     automatic = float(jax.grad(at)(1e5))
     numeric = float(central(lambda m: float(at(m)), 1e5, 1e2))
@@ -240,21 +269,23 @@ def test_the_moment_sensitivity_recovers_immediately_off_the_corner():
 def test_a_central_difference_across_the_corner_reports_nothing():
     # The other half of the same fact, and the reason the moments are held
     # fixed in the axial-only gradcheck above rather than probed.
-    def at(m_y_ed):
-        return float(raw(m_y_ed=m_y_ed))
+    def at(moment_major):
+        return float(raw(moment_major=moment_major))
 
     assert (at(1e2) - at(-1e2)) / 2e2 == pytest.approx(0.0, abs=1e-15)
 
 
 def test_the_sizing_map_is_even_in_the_sign_of_a_moment():
-    assert float(raw(m_y_ed=4e7)) == pytest.approx(float(raw(m_y_ed=-4e7)), rel=1e-12)
+    assert float(raw(moment_major=4e7)) == pytest.approx(
+        float(raw(moment_major=-4e7)), rel=1e-12
+    )
 
 
 def test_check_grads_passes_through_the_mass_objective():
     def objective(force_kn, length_m):
         sizes = scaled(force_kn, 40.0, 15.0, length_m)
 
-        return mass(CATALOGUE.tube(sizes), length_m * METRE, STEEL)
+        return mass_of_tubes(CATALOGUE.tube_at(sizes), length_m * METRE, STEEL)
 
     check_grads(objective, (-500.0, 4.0), order=1, modes=("rev",))
 
@@ -293,16 +324,16 @@ def test_the_mass_gradient_is_finite_and_signed():
     forces = jnp.asarray([-5e5, -9e5, 5e5])
     lengths = jnp.asarray([4000.0, 6000.0, 3000.0])
 
-    def objective(n_ed):
+    def objective(axial_force):
         sizes = diameter_required(
-            MemberActions(n_ed, 4e7, 1.5e7, 0.9, 0.9),
+            MemberActions(axial_force, 4e7, 1.5e7, 0.9, 0.9),
             lengths,
             STEEL,
             CATALOGUE,
-            plastic=PLASTIC,
+            section_class=SECTION_CLASS,
         )
 
-        return mass(CATALOGUE.tube(sizes), lengths, STEEL)
+        return mass_of_tubes(CATALOGUE.tube_at(sizes), lengths, STEEL)
 
     gradient = jax.grad(objective)(forces)
 
@@ -317,16 +348,16 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
     forces = jnp.asarray([-5e5, -1.0])
     lengths = jnp.asarray([4000.0, 4000.0])
 
-    def objective(n_ed):
+    def objective(axial_force):
         sizes = diameter_required(
-            MemberActions(n_ed, 0.0, 0.0, 0.9, 0.9),
+            MemberActions(axial_force, 0.0, 0.0, 0.9, 0.9),
             lengths,
             STEEL,
             CATALOGUE,
-            plastic=PLASTIC,
+            section_class=SECTION_CLASS,
         )
 
-        return mass(CATALOGUE.tube(sizes), lengths, STEEL)
+        return mass_of_tubes(CATALOGUE.tube_at(sizes), lengths, STEEL)
 
     gradient = jax.grad(objective)(forces)
 
@@ -335,14 +366,14 @@ def test_the_mass_gradient_survives_a_member_at_the_minimum_size():
 
 
 def test_a_member_with_no_actions_has_no_gradient():
-    def objective(n_ed):
+    def objective(axial_force):
         return jnp.sum(
             diameter_required(
-                MemberActions(n_ed, 0.0, 0.0, 0.9, 0.9),
+                MemberActions(axial_force, 0.0, 0.0, 0.9, 0.9),
                 LENGTH,
                 STEEL,
                 CATALOGUE,
-                plastic=PLASTIC,
+                section_class=SECTION_CLASS,
             )
         )
 
@@ -366,7 +397,7 @@ def test_the_map_is_differentiable_in_the_yield_strength():
             LENGTH,
             steel,
             CATALOGUE,
-            plastic=PLASTIC,
+            section_class=SECTION_CLASS,
         )
 
     gradient = float(jax.grad(at)(355.0))
@@ -385,7 +416,7 @@ def test_the_map_is_differentiable_in_the_wall_proportion():
             LENGTH,
             STEEL,
             TubeCatalogue(ratio, CATALOGUE.diameter_min),
-            plastic=PLASTIC,
+            section_class=SECTION_CLASS,
         )
 
     gradient = float(jax.grad(at)(float(CATALOGUE.ratio)))
@@ -400,8 +431,8 @@ def test_the_map_is_differentiable_in_the_wall_proportion():
 
 
 def test_the_gradient_is_jittable():
-    def objective(n_ed):
-        return raw(n_ed=n_ed)
+    def objective(axial_force):
+        return raw(axial_force=axial_force)
 
     jitted = jax.jit(jax.grad(objective))
 
@@ -412,7 +443,7 @@ def test_the_gradient_vmaps_over_members():
     forces = jnp.asarray([-1e5, -5e5, -2e6])
 
     def one(force):
-        return raw(n_ed=force)
+        return raw(axial_force=force)
 
     batched = jax.vmap(jax.grad(one))(forces)
 

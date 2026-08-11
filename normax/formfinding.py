@@ -37,7 +37,7 @@ from jaxtyping import Float
 from normax.structures import Structure
 
 
-def graph(structure: Structure) -> EquilibriumStructure:
+def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
     """
     The connectivity the force density method solves on.
 
@@ -68,7 +68,7 @@ def graph(structure: Structure) -> EquilibriumStructure:
     return EquilibriumStructure(nodes, edges, supports)
 
 
-def equilibrium(
+def equilibrium_state(
     q: Float[Array, "edges"],
     structure: Structure,
     graph: EquilibriumStructure,
@@ -108,7 +108,7 @@ def equilibrium(
     return EquilibriumModel(tmax=1)(params, graph)
 
 
-def positions(
+def node_positions(
     q: Float[Array, "edges"],
     structure: Structure,
     graph: EquilibriumStructure,
@@ -137,7 +137,7 @@ def positions(
     The plan is a result rather than an input, and it moves when the force
     densities stop being uniform.
     """
-    return equilibrium(q, structure, graph).xyz
+    return equilibrium_state(q, structure, graph).xyz
 
 
 def positions_vertical(

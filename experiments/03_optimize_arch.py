@@ -69,24 +69,23 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from normax.analysis.smax import prepare
+from normax.analysis.smax import prepare_model
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import is_plastic
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.optimization import anneal
-from normax.optimization import optimize
-from normax.optimization import penalized
-from normax.optimization import shortest
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.optimization import annealing_schedule
+from normax.optimization import optimize_annealed
+from normax.optimization import penalized_mass
+from normax.optimization import shortest_member
 from normax.pipeline import Design
-from normax.pipeline import envelope
+from normax.pipeline import design_envelope
+from normax.pipeline import frame_stability
 from normax.pipeline import governing_case
-from normax.pipeline import stability
-from normax.pipeline import unsmoothed
-from normax.structures import arch
-from normax.structures import crown
+from normax.pipeline import unsmoothed_design
+from normax.structures import arch_2d
+from normax.structures import crown_node
 from normax.structures import loads_half_span
 from normax.structures import loads_point
 from normax.structures import loads_uniform
@@ -164,7 +163,7 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = SteelGrade()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-PLASTIC = is_plastic(3)
+SECTION_CLASS = 3
 
 
 def setup():
@@ -177,17 +176,17 @@ def setup():
     compiled at all: preparing it reads support flags in Python, which a tracer
     cannot follow.
     """
-    structure = arch(
+    structure = arch_2d(
         num_edges=NUM_EDGES,
         span=SPAN,
         rise=RISE,
         load=TOTAL_LOAD / (NUM_EDGES - 1),
     )
-    graph_fdm = graph(structure)
-    model = prepare(structure, STEEL, CATALOGUE, normal=NORMAL)
+    graph_fdm = equilibrium_graph(structure)
+    model = prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
 
     return structure, graph_fdm, model, trial * reached / RISE
 
@@ -204,7 +203,7 @@ def load_cases(structure):
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
     point = loads_uniform(structure, spread * (1.0 - POINT_SHARE)) + loads_point(
-        structure, TOTAL_LOAD * POINT_SHARE, node=crown(structure)
+        structure, TOTAL_LOAD * POINT_SHARE, node=crown_node(structure)
     )
 
     return jnp.stack([uniform, half, point])
@@ -222,7 +221,7 @@ def build(q, structure, graph_fdm, model, cases, beta, diameters=None):
     """
     seed = jnp.full(NUM_EDGES, SEED) if diameters is None else diameters
 
-    return envelope(
+    return design_envelope(
         q,
         seed,
         structure,
@@ -232,7 +231,7 @@ def build(q, structure, graph_fdm, model, cases, beta, diameters=None):
         CATALOGUE,
         cases,
         beta,
-        plastic=PLASTIC,
+        section_class=SECTION_CLASS,
     )
 
 
@@ -267,7 +266,7 @@ def report_smoothing(structure, graph_fdm, model, cases, q):
 
     for beta in SHARPNESSES:
         result = build(q, structure, graph_fdm, model, cases, beta)
-        exact = unsmoothed(result, STEEL, CATALOGUE, plastic=PLASTIC)
+        exact = unsmoothed_design(result, STEEL, CATALOGUE, section_class=SECTION_CLASS)
 
         excess = float(result.mass) / float(exact.mass) - 1.0
         bound = float(cases.shape[0] ** (2.0 / float(beta))) - 1.0
@@ -343,7 +342,7 @@ def report_descent(structure, graph_fdm, model, cases, q, *, floor):
     The same mass with one force density per member, annealed.
     """
     bounds = (float(q[0]) * DECADES, float(q[0]) / DECADES)
-    schedule = anneal(BETA_START, float(BETA_STOP), ROUNDS)
+    schedule = annealing_schedule(BETA_START, float(BETA_STOP), ROUNDS)
 
     kind = f"a {floor:.0f} mm floor" if floor else "no length floor"
     print(f"\nDescending with one variable per member, {kind}, bounds {bounds}")
@@ -353,7 +352,7 @@ def report_descent(structure, graph_fdm, model, cases, q, *, floor):
         if not floor:
             return result.mass
 
-        return penalized(
+        return penalized_mass(
             result.mass,
             result.lengths,
             floor,
@@ -361,7 +360,9 @@ def report_descent(structure, graph_fdm, model, cases, q, *, floor):
             weight=FLOOR_WEIGHT,
         )
 
-    walked = optimize(objective, q, schedule, bounds=bounds, iterations=ITERATIONS)
+    walked = optimize_annealed(
+        objective, q, schedule, bounds=bounds, iterations=ITERATIONS
+    )
 
     print(f"  {'step':>6} {'beta':>8} {'objective [t]':>16}")
     for step, (beta, total) in enumerate(zip(walked.beta, walked.mass)):
@@ -376,7 +377,7 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
     """
     q = walked.q[-1]
     result = build(q, structure, graph_fdm, model, cases, BETA_STOP)
-    exact = unsmoothed(result, STEEL, CATALOGUE, plastic=PLASTIC)
+    exact = unsmoothed_design(result, STEEL, CATALOGUE, section_class=SECTION_CLASS)
     decided = np.asarray(governing_case(result))
 
     lower = int(jnp.sum(jnp.abs(q - bounds[0]) < 1e-6))
@@ -398,9 +399,8 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
         f"  member length        {lengths.min():.1f} .. {lengths.max():.1f} mm,"
         f" ratio {lengths.max() / lengths.min():.1f}"
     )
-    print(
-        f"  shortest, smoothed   {float(shortest(result.lengths, FLOOR_BETA)):.1f} mm"
-    )
+    smoothed = float(shortest_member(result.lengths, FLOOR_BETA))
+    print(f"  shortest, smoothed   {smoothed:.1f} mm")
     stubs = int(np.sum(lengths < FLOOR))
     print(f"  members under {FLOOR:.0f} mm   {stubs} of {NUM_EDGES}")
     print(f"  force densities at the lower bound {lower}, at the upper {upper}")
@@ -427,13 +427,13 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
         result.xyz,
         result.lengths,
         MemberActions(
-            result.n_ed[0],
-            result.m_y_ed[0],
-            result.m_z_ed[0],
-            result.c_my[0],
-            result.c_mz[0],
+            result.axial_force[0],
+            result.moment_major[0],
+            result.moment_minor[0],
+            result.moment_factor_major[0],
+            result.moment_factor_minor[0],
         ),
-        result.l_cr,
+        result.buckling_length,
         exact.diameters,
         exact.utilization[0],
         exact.mass,
@@ -444,7 +444,9 @@ def report_final(structure, graph_fdm, model, cases, walked, bounds, label):
     print(f"\n  {'case':>16} {'alpha_cr':>10} {'adequate':>10}")
     weakest = None
     for name, case in zip(CASE_NAMES, cases):
-        factors = stability(single, model, STEEL, CATALOGUE, num_modes=1, loads=case)
+        factors = frame_stability(
+            single, model, STEEL, CATALOGUE, num_modes=1, loads=case
+        )
         alpha_cr = float(factors.factors[0])
         weakest = alpha_cr if weakest is None else min(weakest, alpha_cr)
         print(f"  {name:>16} {alpha_cr:>10.4f} {str(bool(factors.adequate)):>10}")
@@ -480,7 +482,9 @@ def main():
     # The best the single force density can do, which is the design the twenty
     # variables have to beat and the one the figures compare against.
     single = build(q * SCALES[best], structure, graph_fdm, model, cases, BETA_STOP)
-    single_sized = unsmoothed(single, STEEL, CATALOGUE, plastic=PLASTIC)
+    single_sized = unsmoothed_design(
+        single, STEEL, CATALOGUE, section_class=SECTION_CLASS
+    )
     decided_single = np.asarray(governing_case(single))
 
     FIGURES.mkdir(exist_ok=True)

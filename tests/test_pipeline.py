@@ -5,28 +5,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from normax.analysis.smax import buckling
-from normax.analysis.smax import prepare
+from normax.analysis.smax import buckling_modes
+from normax.analysis.smax import prepare_model
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_MAJOR
-from normax.ec3.sizing import is_plastic
 from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.formfinding import positions
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.formfinding import node_positions
 from normax.formfinding import positions_vertical
 from normax.pipeline import Design
-from normax.pipeline import design
-from normax.pipeline import envelope
-from normax.pipeline import governing
+from normax.pipeline import design_envelope
+from normax.pipeline import design_members
+from normax.pipeline import frame_stability
 from normax.pipeline import governing_case
-from normax.pipeline import mass
-from normax.pipeline import stability
-from normax.pipeline import unsmoothed
-from normax.structures import arch
-from normax.structures import crown
+from normax.pipeline import governing_states
+from normax.pipeline import total_mass
+from normax.pipeline import unsmoothed_design
+from normax.structures import arch_2d
+from normax.structures import crown_node
 from normax.structures import loads_half_span
 from normax.structures import loads_point
 from normax.structures import loads_uniform
@@ -84,11 +83,11 @@ def setup():
     The arch, its connectivity, and the `q` that reaches the target rise.
     """
     load = TOTAL_LOAD / (NUM_EDGES - 1)
-    structure = arch(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
-    fdm = graph(structure)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
+    fdm = equilibrium_graph(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, fdm).xyz[:, 2])
 
     return structure, fdm, trial * reached / RISE
 
@@ -102,17 +101,17 @@ def analysed(structure, steel, catalogue):
     """
     The analysis model of a structure, prepared per call rather than shared.
     """
-    return prepare(structure, steel, catalogue, normal=NORMAL)
+    return prepare_model(structure, steel, catalogue, normal=NORMAL)
 
 
-def sized(setup, steel, cross_section_class, **kwargs):
+def sized(setup, steel, section_class, **kwargs):
     """
     One pass of form finding, analysis and the code check.
     """
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, section_class)
 
-    result = design(
+    result = design_members(
         q,
         jnp.full(NUM_EDGES, SEED),
         structure,
@@ -120,7 +119,7 @@ def sized(setup, steel, cross_section_class, **kwargs):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=is_plastic(cross_section_class),
+        section_class=section_class,
         **kwargs,
     )
 
@@ -130,30 +129,28 @@ def sized(setup, steel, cross_section_class, **kwargs):
 # --------------------------------------------------------------------------- #
 # The invariant the sizing map is built to hold
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("cross_section_class", [2, 3])
-def test_every_member_is_utilized_exactly_once_over(setup, steel, cross_section_class):
-    _, result = sized(setup, steel, cross_section_class)
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_every_member_is_utilized_exactly_once_over(setup, steel, section_class):
+    _, result = sized(setup, steel, section_class)
 
     assert np.allclose(result.utilization, 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION)
 
 
-@pytest.mark.parametrize("cross_section_class", [2, 3])
-def test_no_member_is_pinned_to_the_catalogue_minimum(
-    setup, steel, cross_section_class
-):
+@pytest.mark.parametrize("section_class", [2, 3])
+def test_no_member_is_pinned_to_the_catalogue_minimum(setup, steel, section_class):
     # Where the floor binds the utilization is below one by design, so the
     # invariant above only means something if the floor is clear of the design.
-    catalogue, result = sized(setup, steel, cross_section_class)
+    catalogue, result = sized(setup, steel, section_class)
 
     assert float(jnp.min(result.diameters)) > float(catalogue.diameter_min)
 
 
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_a_compression_arch_is_governed_by_the_member_check(
-    setup, steel, cross_section_class
+    setup, steel, section_class
 ):
-    catalogue, result = sized(setup, steel, cross_section_class)
-    codes = governing(result, steel, catalogue, plastic=is_plastic(cross_section_class))
+    catalogue, result = sized(setup, steel, section_class)
+    codes = governing_states(result, steel, catalogue, section_class=section_class)
 
     assert np.all(np.asarray(codes) == LIMIT_MAJOR)
 
@@ -164,7 +161,7 @@ def test_a_compression_arch_is_governed_by_the_member_check(
 def test_the_mass_is_the_sum_over_members(setup, steel):
     catalogue, result = sized(setup, steel, 3)
     by_hand = steel.density * jnp.sum(
-        catalogue.tube(result.diameters).area * result.lengths
+        catalogue.tube_at(result.diameters).area * result.lengths
     )
 
     assert float(result.mass) == pytest.approx(float(by_hand), rel=1e-14)
@@ -173,7 +170,7 @@ def test_the_mass_is_the_sum_over_members(setup, steel):
 def test_the_mass_agrees_with_the_scalar_entry_point(setup, steel, seed):
     structure, fdm, q = setup
     catalogue, result = sized(setup, steel, 3)
-    scalar = mass(
+    scalar = total_mass(
         q,
         seed,
         structure,
@@ -181,7 +178,7 @@ def test_the_mass_agrees_with_the_scalar_entry_point(setup, steel, seed):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
 
     assert float(scalar) == float(result.mass)
@@ -190,7 +187,7 @@ def test_the_mass_agrees_with_the_scalar_entry_point(setup, steel, seed):
 def test_every_member_is_in_compression(setup, steel):
     _, result = sized(setup, steel, 3)
 
-    assert np.all(np.asarray(result.actions.n_ed) < 0.0)
+    assert np.all(np.asarray(result.actions.axial_force) < 0.0)
 
 
 def test_the_arch_is_symmetric_about_midspan(setup, steel):
@@ -203,12 +200,12 @@ def test_the_arch_is_symmetric_about_midspan(setup, steel):
 def test_the_buckling_length_defaults_to_the_member_length(setup, steel):
     _, result = sized(setup, steel, 3)
 
-    assert np.allclose(result.l_cr, result.lengths, rtol=0.0, atol=0.0)
+    assert np.allclose(result.buckling_length, result.lengths, rtol=0.0, atol=0.0)
 
 
 def test_a_shorter_buckling_length_never_needs_a_larger_tube(setup, steel):
     _, longer = sized(setup, steel, 3)
-    _, shorter = sized(setup, steel, 3, l_cr=longer.lengths * 0.5)
+    _, shorter = sized(setup, steel, 3, buckling_length=longer.lengths * 0.5)
 
     assert np.all(np.asarray(shorter.diameters) < np.asarray(longer.diameters))
     assert float(shorter.mass) < float(longer.mass)
@@ -218,26 +215,25 @@ def test_the_thinner_walled_class_is_the_lighter_one(setup, steel):
     # Both classes carry the same forces, and the Class 3 limit puts more of the
     # steel far from the axis. Compression-governed members use the gross area
     # either way, so the thinner wall wins.
-    _, plastic = sized(setup, steel, 2)
+    _, section_class = sized(setup, steel, 2)
     _, elastic = sized(setup, steel, 3)
 
-    assert float(elastic.mass) < float(plastic.mass)
-    assert np.all(np.asarray(elastic.diameters) > np.asarray(plastic.diameters))
+    assert float(elastic.mass) < float(section_class.mass)
+    assert np.all(np.asarray(elastic.diameters) > np.asarray(section_class.diameters))
 
 
 # --------------------------------------------------------------------------- #
 # The gradient across all three stages
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("cross_section_class", [2, 3])
+@pytest.mark.parametrize("section_class", [2, 3])
 def test_the_mass_gradient_matches_central_differences(
-    setup, steel, seed, cross_section_class
+    setup, steel, seed, section_class
 ):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
-    plastic = is_plastic(cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, section_class)
 
     def objective(q):
-        return mass(
+        return total_mass(
             q,
             seed,
             structure,
@@ -245,7 +241,7 @@ def test_the_mass_gradient_matches_central_differences(
             analysed(structure, steel, catalogue),
             steel,
             catalogue,
-            plastic=plastic,
+            section_class=section_class,
         )
 
     gradient = jax.grad(objective)(q)
@@ -264,7 +260,7 @@ def test_the_mass_gradient_is_finite_and_nowhere_zero(setup, steel, seed):
     structure, fdm, q = setup
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
-    gradient = jax.grad(mass)(
+    gradient = jax.grad(total_mass)(
         q,
         seed,
         structure,
@@ -272,7 +268,7 @@ def test_the_mass_gradient_is_finite_and_nowhere_zero(setup, steel, seed):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
 
     assert np.all(np.isfinite(np.asarray(gradient)))
@@ -284,7 +280,7 @@ def test_forward_and_reverse_mode_agree_on_the_mass(setup, steel, seed):
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     def objective(q):
-        return mass(
+        return total_mass(
             q,
             seed,
             structure,
@@ -292,7 +288,7 @@ def test_forward_and_reverse_mode_agree_on_the_mass(setup, steel, seed):
             analysed(structure, steel, catalogue),
             steel,
             catalogue,
-            plastic=False,
+            section_class=3,
         )
 
     assert np.allclose(jax.jacfwd(objective)(q), jax.grad(objective)(q), rtol=1e-12)
@@ -304,7 +300,7 @@ def test_the_mass_is_differentiable_in_the_analysed_diameters(setup, steel, seed
     structure, fdm, q = setup
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
-    gradient = jax.grad(mass, argnums=1)(
+    gradient = jax.grad(total_mass, argnums=1)(
         q,
         seed,
         structure,
@@ -312,7 +308,7 @@ def test_the_mass_is_differentiable_in_the_analysed_diameters(setup, steel, seed
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
 
     assert np.all(np.isfinite(np.asarray(gradient)))
@@ -325,7 +321,7 @@ def test_the_gradient_changes_sign_across_the_arch(setup, steel, seed):
     structure, fdm, q = setup
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
-    gradient = jax.grad(mass)(
+    gradient = jax.grad(total_mass)(
         q,
         seed,
         structure,
@@ -333,7 +329,7 @@ def test_the_gradient_changes_sign_across_the_arch(setup, steel, seed):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
 
     assert float(gradient[0]) > 0.0
@@ -350,7 +346,7 @@ def test_repeating_the_pass_reaches_a_fixed_point(setup, steel, seed):
     diameters = seed
     moves = []
     for _ in range(5):
-        result = design(
+        result = design_members(
             q,
             diameters,
             structure,
@@ -358,7 +354,7 @@ def test_repeating_the_pass_reaches_a_fixed_point(setup, steel, seed):
             analysed(structure, steel, catalogue),
             steel,
             catalogue,
-            plastic=False,
+            section_class=3,
         )
         moves.append(
             float(jnp.max(jnp.abs(result.diameters - diameters) / result.diameters))
@@ -377,7 +373,7 @@ def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
     structure, fdm, q = setup
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
-    first = design(
+    first = design_members(
         q,
         seed,
         structure,
@@ -385,12 +381,12 @@ def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
 
     diameters = first.diameters
     for _ in range(5):
-        settled = design(
+        settled = design_members(
             q,
             diameters,
             structure,
@@ -398,7 +394,7 @@ def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
             analysed(structure, steel, catalogue),
             steel,
             catalogue,
-            plastic=False,
+            section_class=3,
         )
         diameters = settled.diameters
 
@@ -413,7 +409,9 @@ def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
 def test_the_section_figure_builds(setup, steel, seed):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
-    assumed = float(steel.density * jnp.sum(catalogue.tube(seed).area * result.lengths))
+    assumed = float(
+        steel.density * jnp.sum(catalogue.tube_at(seed).area * result.lengths)
+    )
 
     figure = figure_sections(
         result.xyz,
@@ -446,7 +444,9 @@ def test_the_section_figure_reports_a_lighter_design(setup, steel, seed):
     # The label flips wording on the sign, so the sign is worth pinning.
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
-    assumed = float(steel.density * jnp.sum(catalogue.tube(seed).area * result.lengths))
+    assumed = float(
+        steel.density * jnp.sum(catalogue.tube_at(seed).area * result.lengths)
+    )
 
     figure = figure_sections(
         result.xyz, structure.edges, seed, result.diameters, assumed, float(result.mass)
@@ -464,7 +464,7 @@ def test_the_critical_factors_are_positive_and_ordered(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    modes = buckling(
+    modes = buckling_modes(
         analysed(structure, steel, catalogue),
         result.xyz,
         result.diameters,
@@ -487,7 +487,7 @@ def test_the_fully_stressed_arch_is_unstable_on_its_own(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    modes = buckling(
+    modes = buckling_modes(
         analysed(structure, steel, catalogue),
         result.xyz,
         result.diameters,
@@ -505,7 +505,7 @@ def test_the_critical_mode_stays_in_the_plane(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    modes = buckling(
+    modes = buckling_modes(
         analysed(structure, steel, catalogue),
         result.xyz,
         result.diameters,
@@ -526,7 +526,7 @@ def test_the_critical_mode_is_antisymmetric(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    modes = buckling(
+    modes = buckling_modes(
         analysed(structure, steel, catalogue),
         result.xyz,
         result.diameters,
@@ -545,7 +545,7 @@ def test_sizing_against_the_global_mode_costs_several_times_the_mass(setup, stee
     _, braced = sized(setup, steel, 3)
     arc = float(jnp.sum(braced.lengths))
     _, unbraced = sized(
-        setup, steel, 3, l_cr=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc)
+        setup, steel, 3, buckling_length=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc)
     )
 
     assert float(unbraced.mass) / float(braced.mass) > 3.0
@@ -554,7 +554,7 @@ def test_sizing_against_the_global_mode_costs_several_times_the_mass(setup, stee
 def test_the_mode_figure_builds(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
-    modes = buckling(
+    modes = buckling_modes(
         analysed(structure, steel, catalogue),
         result.xyz,
         result.diameters,
@@ -581,7 +581,7 @@ def test_the_bare_arch_fails_the_global_stability_check(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    checked = stability(
+    checked = frame_stability(
         result, analysed(structure, steel, catalogue), steel, catalogue, num_modes=1
     )
 
@@ -598,7 +598,7 @@ def test_the_two_routes_to_slenderness_disagree_by_the_assumption(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    checked = stability(
+    checked = frame_stability(
         result, analysed(structure, steel, catalogue), steel, catalogue, num_modes=1
     )
     ratio = np.asarray(checked.slenderness_global) / np.asarray(
@@ -615,7 +615,7 @@ def test_the_global_route_is_nearly_uniform_across_the_arch(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    checked = stability(
+    checked = frame_stability(
         result, analysed(structure, steel, catalogue), steel, catalogue, num_modes=1
     )
     spread = np.asarray(checked.slenderness_global)
@@ -629,18 +629,20 @@ def test_the_equivalent_buckling_length_exceeds_every_member(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    checked = stability(
+    checked = frame_stability(
         result, analysed(structure, steel, catalogue), steel, catalogue, num_modes=1
     )
 
-    assert np.all(np.asarray(checked.l_cr_global) > np.asarray(result.lengths))
+    assert np.all(
+        np.asarray(checked.buckling_length_equivalent) > np.asarray(result.lengths)
+    )
 
 
 def test_the_stability_check_reports_the_modes_it_was_asked_for(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    checked = stability(
+    checked = frame_stability(
         result, analysed(structure, steel, catalogue), steel, catalogue, num_modes=3
     )
 
@@ -652,7 +654,7 @@ def test_a_stricter_threshold_never_makes_a_frame_adequate(setup, steel):
     structure, _, _ = setup
     catalogue, result = sized(setup, steel, 3)
 
-    lenient = stability(
+    lenient = frame_stability(
         result,
         analysed(structure, steel, catalogue),
         steel,
@@ -660,7 +662,7 @@ def test_a_stricter_threshold_never_makes_a_frame_adequate(setup, steel):
         num_modes=1,
         threshold=0.05,
     )
-    strict = stability(
+    strict = frame_stability(
         result,
         analysed(structure, steel, catalogue),
         steel,
@@ -689,17 +691,17 @@ def cases(setup):
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
     point = loads_uniform(structure, spread * 0.75) + loads_point(
-        structure, TOTAL_LOAD * 0.25, node=crown(structure)
+        structure, TOTAL_LOAD * 0.25, node=crown_node(structure)
     )
 
     return jnp.stack([loads_uniform(structure, spread), half, point])
 
 
-def covered(setup, steel, cases, beta, cross_section_class=3):
+def covered(setup, steel, cases, beta, section_class=3):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, cross_section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel.f_y, section_class)
 
-    result = envelope(
+    result = design_envelope(
         q,
         jnp.full(NUM_EDGES, SEED),
         structure,
@@ -709,7 +711,7 @@ def covered(setup, steel, cases, beta, cross_section_class=3):
         catalogue,
         cases,
         beta,
-        plastic=is_plastic(cross_section_class),
+        section_class=section_class,
     )
 
     return catalogue, result
@@ -758,7 +760,7 @@ def test_the_unsmoothed_design_is_fully_stressed(setup, steel, cases):
     # Invariant 6.5 survives the aggregation: some case works every member to
     # exactly one, even though no single case works all of them.
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
 
     worst = np.max(np.asarray(exact.utilization), axis=0)
 
@@ -767,7 +769,7 @@ def test_the_unsmoothed_design_is_fully_stressed(setup, steel, cases):
 
 def test_the_unsmoothed_design_is_never_heavier_than_the_envelope(setup, steel, cases):
     catalogue, result = covered(setup, steel, cases, 50.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
 
     assert float(exact.mass) <= float(result.mass)
 
@@ -779,7 +781,7 @@ def test_one_load_case_reproduces_the_single_case_design(setup, steel, cases):
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
     seeds = jnp.full(NUM_EDGES, SEED)
 
-    single = design(
+    single = design_members(
         q,
         seeds,
         structure,
@@ -787,9 +789,9 @@ def test_one_load_case_reproduces_the_single_case_design(setup, steel, cases):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
-    covering = envelope(
+    covering = design_envelope(
         q,
         seeds,
         structure,
@@ -799,7 +801,7 @@ def test_one_load_case_reproduces_the_single_case_design(setup, steel, cases):
         catalogue,
         cases[:1],
         25.0,
-        plastic=False,
+        section_class=3,
     )
 
     assert np.allclose(
@@ -836,7 +838,7 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
     asymmetric = loads_half_span(structure, spread, factor=0.0)
 
-    funicular = design(
+    funicular = design_members(
         q,
         seeds,
         structure,
@@ -844,9 +846,9 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
     )
-    patched = design(
+    patched = design_members(
         q,
         seeds,
         structure,
@@ -854,13 +856,13 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
         analysed(structure, steel, catalogue),
         steel,
         catalogue,
-        plastic=False,
+        section_class=3,
         loads=asymmetric,
     )
 
     assert np.allclose(np.asarray(funicular.xyz), np.asarray(patched.xyz))
-    assert float(jnp.max(jnp.abs(patched.actions.m_y_ed))) > float(
-        jnp.max(jnp.abs(funicular.actions.m_y_ed))
+    assert float(jnp.max(jnp.abs(patched.actions.moment_major))) > float(
+        jnp.max(jnp.abs(funicular.actions.moment_major))
     )
 
 
@@ -869,7 +871,7 @@ def test_the_enveloped_mass_gradient_matches_central_differences(setup, steel, c
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     def objective(q):
-        return envelope(
+        return design_envelope(
             q,
             jnp.full(NUM_EDGES, SEED),
             structure,
@@ -879,7 +881,7 @@ def test_the_enveloped_mass_gradient_matches_central_differences(setup, steel, c
             catalogue,
             cases,
             100.0,
-            plastic=False,
+            section_class=3,
         ).mass
 
     gradient = jax.grad(objective)(q)
@@ -902,19 +904,19 @@ def test_the_critical_load_factor_belongs_to_a_load_case(setup, steel, cases):
     # appears to: the case a shape was found under is not the one that sized it.
     structure, _, _ = setup
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
 
     single = Design(
         result.xyz,
         result.lengths,
         MemberActions(
-            result.n_ed[0],
-            result.m_y_ed[0],
-            result.m_z_ed[0],
-            result.c_my[0],
-            result.c_mz[0],
+            result.axial_force[0],
+            result.moment_major[0],
+            result.moment_minor[0],
+            result.moment_factor_major[0],
+            result.moment_factor_minor[0],
         ),
-        result.l_cr,
+        result.buckling_length,
         exact.diameters,
         exact.utilization[0],
         exact.mass,
@@ -922,7 +924,7 @@ def test_the_critical_load_factor_belongs_to_a_load_case(setup, steel, cases):
 
     factors = [
         float(
-            stability(
+            frame_stability(
                 single,
                 analysed(structure, steel, catalogue),
                 steel,
@@ -943,26 +945,28 @@ def test_the_default_load_case_of_the_stability_check_is_the_structures_own(
 ):
     structure, _, _ = setup
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
 
     single = Design(
         result.xyz,
         result.lengths,
         MemberActions(
-            result.n_ed[0],
-            result.m_y_ed[0],
-            result.m_z_ed[0],
-            result.c_my[0],
-            result.c_mz[0],
+            result.axial_force[0],
+            result.moment_major[0],
+            result.moment_minor[0],
+            result.moment_factor_major[0],
+            result.moment_factor_minor[0],
         ),
-        result.l_cr,
+        result.buckling_length,
         exact.diameters,
         exact.utilization[0],
         exact.mass,
     )
 
-    implied = stability(single, analysed(structure, steel, catalogue), steel, catalogue)
-    named = stability(
+    implied = frame_stability(
+        single, analysed(structure, steel, catalogue), steel, catalogue
+    )
+    named = frame_stability(
         single,
         analysed(structure, steel, catalogue),
         steel,
@@ -1036,7 +1040,7 @@ def test_the_optimization_figure_marks_the_funicular_start_and_not_the_sweep(set
 def test_the_load_case_figure_builds(setup, steel, cases):
     structure, _, _ = setup
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
     decided = governing_case(result)
 
     figure = figure_load_cases(
@@ -1055,7 +1059,7 @@ def test_the_load_case_figure_builds(setup, steel, cases):
 def test_the_load_case_figure_takes_as_many_forms_as_it_is_given(setup, steel, cases):
     structure, _, _ = setup
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
     decided = governing_case(result)
 
     forms = tuple(
@@ -1073,7 +1077,7 @@ def test_the_two_forms_are_drawn_on_the_same_axes(setup, steel, cases):
     # a collapsed leg is invisible.
     structure, _, _ = setup
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
     decided = governing_case(result)
 
     figure = figure_load_cases(
@@ -1103,7 +1107,7 @@ def test_a_uniform_force_density_leaves_the_plan_alone(setup):
     # density, so holding the plan changes nothing and the two agree exactly.
     structure, fdm, q = setup
 
-    free = positions(q, structure, fdm)
+    free = node_positions(q, structure, fdm)
     held = positions_vertical(q, structure, fdm)
 
     assert np.allclose(np.asarray(free), np.asarray(held), atol=1e-9)
@@ -1115,7 +1119,7 @@ def test_holding_the_plan_never_changes_the_heights(setup):
     structure, fdm, q = setup
     varied = q * jnp.linspace(0.5, 1.8, NUM_EDGES)
 
-    free = positions(varied, structure, fdm)
+    free = node_positions(varied, structure, fdm)
     held = positions_vertical(varied, structure, fdm)
 
     assert np.allclose(np.asarray(free[:, 2]), np.asarray(held[:, 2]), atol=1e-9)
@@ -1163,7 +1167,7 @@ def test_the_full_equilibrium_stays_funicular_whatever_the_force_densities(setup
     structure, fdm, q = setup
     varied = q * jnp.linspace(0.5, 1.8, NUM_EDGES)
 
-    residual = nodal_residual(structure, positions(varied, structure, fdm), varied)
+    residual = nodal_residual(structure, node_positions(varied, structure, fdm), varied)
 
     assert np.all(residual < 1e-6)
 
@@ -1173,7 +1177,7 @@ def test_the_load_case_counts_share_one_scale(setup, steel, cases):
     # make an even split look lopsided.
     structure, _, _ = setup
     catalogue, result = covered(setup, steel, cases, 500.0)
-    exact = unsmoothed(result, steel, catalogue, plastic=False)
+    exact = unsmoothed_design(result, steel, catalogue, section_class=3)
     decided = governing_case(result)
 
     forms = tuple(

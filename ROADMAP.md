@@ -449,7 +449,7 @@ Full write-up in `CHANGELOG.md` under `## P3 step 2`.
 2. **`L_cr = L` is physics, not discretization.** Refining shortens members,
    `L/i` at the crown falls 73.5 → 5.5, and the sequence converges to the squash
    limit rather than to a mesh-independent mass. The buckling length is therefore
-   an argument to `pipeline.design`, not a convention inside it. Report both
+   an argument to `pipeline.design_members`, not a convention inside it. Report both
    curves; this is the P7 caveat showing up as a plot.
 3. **The staggered coupling contracts by ~1/39 per pass and one pass costs 1.22%
    of the mass.** Cheap to relax if P4 wants the fixed point, and now a number
@@ -470,7 +470,7 @@ Full write-up in `CHANGELOG.md` under `## P3 step 2`.
    compared against §5.2.1's threshold and the arch **fails**, utilization 77.4,
    pinned by a test. It cannot enter the sizing bisection — that roots a local
    member check, while stability is a property of the whole frame — so
-   `pipeline.stability` reads a finished `Design`. **Never differentiated**
+   `pipeline.frame_stability` reads a finished `Design`. **Never differentiated**
    (eigenvalue derivatives are undefined at mode crossings).
    ~~⚠️ §5.2 and §6.3.4 are UNVERIFIED~~ — **verified 2026-08-09**, open item 0f
    closed. Every threshold held, so no reported number moves. Two equation
@@ -598,7 +598,7 @@ and the optimizer, and should consume that function rather than rebuild it.
 **Four prerequisites were folded into this phase**, none of which existed before
 it: load case generators in `normax/structures.py`; a `loads` argument on the
 analysis and on both pipelines, which cost **no schema change** because T2
-already carried the nodal loads; `pipeline.envelope`, the enveloped multi-case
+already carried the nodal loads; `pipeline.design_envelope`, the enveloped multi-case
 design, with `unsmoothed` to read it back at the true largest; and
 `normax/optimization.py`, the annealed L-BFGS-B driver. `scipy` is now a project
 dependency.
@@ -626,7 +626,7 @@ family, and the gradient agrees with the sweep to **1.8e-8**. Full write-up in
    twenty under 100 mm and one 0.20 diameters long — a five-member arch with
    fifteen stubs. A vanishing member is free (mass is area times length) and
    unbucklable (`L_cr` is that same length), so nothing objects and two things
-   reward it. `normax.optimization.penalized` adds the floor.
+   reward it. `normax.optimization.penalized_mass` adds the floor.
    **31.7% lighter is the number to quote, not 64.8%** — half the unconstrained
    reduction is collapse rather than design. The floor also makes the problem well
    posed: force densities on a bound fall from **fourteen of twenty to one**, so
@@ -989,12 +989,12 @@ the measurement has.
 connectivity and the fixed plan, take a rank-revealing factorization once on the
 host to classify edges, and expose `q_independent → q_all` as a traced linear map
 so the whole thing differentiates and drops in where
-`normax.formfinding.positions` sits now. The classification is topology and
+`normax.formfinding.node_positions` sits now. The classification is topology and
 belongs outside the trace, exactly as the form-finding graph does today. It also
 depends on the plan, so it is fixed for a given plan and has to be redone if the
 plan changes.
 
-Until then, the length floor of `normax.optimization.penalized` is what keeps a
+Until then, the length floor of `normax.optimization.penalized_mass` is what keeps a
 per-edge search honest, and it is a penalty rather than a guarantee.
 
 ---

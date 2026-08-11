@@ -39,7 +39,7 @@ downstream consumes.
 frame's response separates: the axial force and the in-plane moment do not move
 when a node leaves the plane, and the out-of-plane moment does not move when a
 node travels within it. A model built in the plane therefore carries every
-derivative except `∂m_z_ed/∂xyz` along the normal axis, which it reports as
+derivative except `∂M_z,Ed/∂xyz` along the normal axis, which it reports as
 zero. Form finding cannot move a planar arch out of its plane either, so the
 block is annihilated by the composition rather than merely small.
 """
@@ -55,7 +55,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.analysis import fixities
+from normax.analysis import support_fixities
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -135,13 +135,13 @@ class Jacobian(NamedTuple):
 
     Attributes
     ----------
-    n_ed_xyz :
+    axial_force_xyz :
         Derivative of each member's axial force in every nodal coordinate.
-    n_ed_diameter :
+    axial_force_diameter :
         Derivative of each member's axial force in every member's diameter.
-    m_y_ed_xyz :
+    moment_major_xyz :
         Derivative of each end moment in every nodal coordinate.
-    m_y_ed_diameter :
+    moment_major_diameter :
         Derivative of each end moment in every member's diameter.
 
     Notes
@@ -154,13 +154,13 @@ class Jacobian(NamedTuple):
     derivative it cannot reach is named in this module's own docstring.
     """
 
-    n_ed_xyz: Float[Array, "members nodes 3"]
-    n_ed_diameter: Float[Array, "members members"]
-    m_y_ed_xyz: Float[Array, "members ends nodes 3"]
-    m_y_ed_diameter: Float[Array, "members ends members"]
+    axial_force_xyz: Float[Array, "members nodes 3"]
+    axial_force_diameter: Float[Array, "members members"]
+    moment_major_xyz: Float[Array, "members ends nodes 3"]
+    moment_major_diameter: Float[Array, "members ends members"]
 
 
-def plane(
+def frame_plane(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
     normal: int | None,
@@ -214,7 +214,7 @@ def plane(
     return Plane(axes=axes, normal=normal)
 
 
-def prepare(
+def prepare_model(
     structure: Structure,
     steel: SteelGrade,
     catalogue: TubeCatalogue,
@@ -257,10 +257,12 @@ def prepare(
     reads the same as the other backend's `prepare`. Nothing about a plane frame
     can be precomputed from either.
     """
-    return Model(structure=structure, spanned=plane(structure, structure.nodes, normal))
+    return Model(
+        structure=structure, spanned=frame_plane(structure, structure.nodes, normal)
+    )
 
 
-def _build(
+def _build_model(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -317,7 +319,7 @@ def _build(
     structure = model.structure
     spanned = model.spanned
 
-    plane(structure, xyz, spanned.normal)
+    frame_plane(structure, xyz, spanned.normal)
 
     applied = structure.loads if loads is None else loads
     out_of_plane = np.asarray(applied)[:, spanned.normal]
@@ -329,11 +331,11 @@ def _build(
     coordinates = np.asarray(to_metres(xyz))[:, list(spanned.axes)]
     edges = np.asarray(structure.edges)
     applied = np.asarray(applied)[:, list(spanned.axes)]
-    flags = fixities(structure, spanned.normal)
+    flags = support_fixities(structure, spanned.normal)
 
     outer = to_metres(diameters)
-    areas = np.asarray(catalogue.tube(outer).area)
-    inertias = np.asarray(catalogue.tube(outer).second_moment)
+    areas = np.asarray(catalogue.tube_at(outer).area)
+    inertias = np.asarray(catalogue.tube_at(outer).second_moment)
     e_mod = float(to_pascals(steel.e_mod))
 
     num_nodes = coordinates.shape[0]
@@ -374,7 +376,7 @@ def _build(
 
     count = 0
     if parameters:
-        for spec in _specifications(num_nodes, num_members):
+        for spec in _parameter_specifications(num_nodes, num_members):
             count += 1
             ops.parameter(count, *spec)
 
@@ -391,7 +393,9 @@ def _build(
     return count
 
 
-def _specifications(num_nodes: int, num_members: int) -> list[tuple[Any, ...]]:
+def _parameter_specifications(
+    num_nodes: int, num_members: int
+) -> list[tuple[Any, ...]]:
     """
     The DDM parameter of every differentiable quantity, in tag order.
 
@@ -432,7 +436,7 @@ def _specifications(num_nodes: int, num_members: int) -> list[tuple[Any, ...]]:
     return coordinates + sections
 
 
-def _read(num_members: int) -> tuple[np.ndarray, np.ndarray]:
+def _read_forces(num_members: int) -> tuple[np.ndarray, np.ndarray]:
     """
     Section forces at both ends of every member.
 
@@ -465,7 +469,7 @@ def _read(num_members: int) -> tuple[np.ndarray, np.ndarray]:
     return axial, moments
 
 
-def forces(
+def member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -506,14 +510,14 @@ def forces(
     The minor-axis moment is returned as exact zeros. A plane frame under
     in-plane load carries none, so this is the value rather than a placeholder.
     """
-    _build(model, xyz, diameters, steel, catalogue, loads, parameters=False)
+    _build_model(model, xyz, diameters, steel, catalogue, loads, parameters=False)
 
-    axial, moments = _read(np.asarray(model.structure.edges).shape[0])
+    axial, moments = _read_forces(np.asarray(model.structure.edges).shape[0])
 
     return MemberForces(
-        n_ed=jnp.asarray(axial),
-        m_y_ed=jnp.asarray(to_newton_millimetres(moments)),
-        m_z_ed=jnp.zeros_like(jnp.asarray(moments)),
+        axial_force=jnp.asarray(axial),
+        moment_major=jnp.asarray(to_newton_millimetres(moments)),
+        moment_minor=jnp.zeros_like(jnp.asarray(moments)),
     )
 
 
@@ -545,8 +549,8 @@ def _section_slopes(
     """
     outer = to_metres(diameters)
 
-    d_area = jax.vmap(jax.grad(lambda d: catalogue.tube(d).area))(outer)
-    d_inertia = jax.vmap(jax.grad(lambda d: catalogue.tube(d).second_moment))(outer)
+    d_area = jax.vmap(jax.grad(lambda d: catalogue.tube_at(d).area))(outer)
+    d_inertia = jax.vmap(jax.grad(lambda d: catalogue.tube_at(d).second_moment))(outer)
 
     return (
         np.asarray(d_area) * MILLIMETRE,
@@ -554,7 +558,7 @@ def _section_slopes(
     )
 
 
-def _sensitivity(element: int, section: int, dof: int, tag: int) -> float:
+def _force_sensitivity(element: int, section: int, dof: int, tag: int) -> float:
     """
     One entry of a section's force sensitivity to one parameter.
 
@@ -589,7 +593,7 @@ def _sensitivity(element: int, section: int, dof: int, tag: int) -> float:
     return float(reading[0]) if isinstance(reading, list) else float(reading)
 
 
-def jacobian(
+def force_jacobian(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -634,7 +638,9 @@ def jacobian(
     model built in the plane cannot reach, and it belongs to the minor-axis
     moment alone, which this Jacobian does not carry.
     """
-    count = _build(model, xyz, diameters, steel, catalogue, loads, parameters=True)
+    count = _build_model(
+        model, xyz, diameters, steel, catalogue, loads, parameters=True
+    )
 
     num_nodes = np.asarray(xyz).shape[0]
     num_members = np.asarray(model.structure.edges).shape[0]
@@ -645,18 +651,20 @@ def jacobian(
     for tag in range(1, count + 1):
         for member in range(num_members):
             element = member + 1
-            axial[member, tag - 1] = _sensitivity(element, 1, DOF_AXIAL, tag)
-            moments[member, 0, tag - 1] = _sensitivity(element, 1, DOF_MOMENT, tag)
-            moments[member, 1, tag - 1] = _sensitivity(
+            axial[member, tag - 1] = _force_sensitivity(element, 1, DOF_AXIAL, tag)
+            moments[member, 0, tag - 1] = _force_sensitivity(
+                element, 1, DOF_MOMENT, tag
+            )
+            moments[member, 1, tag - 1] = _force_sensitivity(
                 element, NUM_INTEGRATION_POINTS, DOF_MOMENT, tag
             )
 
-    return _assemble(
+    return _assemble_blocks(
         axial, moments, diameters, catalogue, model.spanned, num_nodes, num_members
     )
 
 
-def _assemble(
+def _assemble_blocks(
     axial: np.ndarray,
     moments: np.ndarray,
     diameters: Float[Array, "members"],
@@ -705,27 +713,27 @@ def _assemble(
     coordinates = 2 * num_nodes
     d_area, d_inertia = _section_slopes(diameters, catalogue)
 
-    n_ed_xyz = np.zeros((num_members, num_nodes, 3))
-    m_y_ed_xyz = np.zeros((num_members, 2, num_nodes, 3))
+    axial_force_xyz = np.zeros((num_members, num_nodes, 3))
+    moment_major_xyz = np.zeros((num_members, 2, num_nodes, 3))
 
     for index, axis in enumerate(spanned.axes):
         columns = slice(index, coordinates, 2)
-        n_ed_xyz[:, :, axis] = axial[:, columns] * MILLIMETRE
-        m_y_ed_xyz[:, :, :, axis] = (
+        axial_force_xyz[:, :, axis] = axial[:, columns] * MILLIMETRE
+        moment_major_xyz[:, :, :, axis] = (
             to_newton_millimetres(moments[:, :, columns]) * MILLIMETRE
         )
 
     sections = axial[:, coordinates:].reshape(num_members, num_members, 2)
-    n_ed_diameter = sections[:, :, 0] * d_area + sections[:, :, 1] * d_inertia
+    axial_force_diameter = sections[:, :, 0] * d_area + sections[:, :, 1] * d_inertia
 
     sections = moments[:, :, coordinates:].reshape(num_members, 2, num_members, 2)
-    m_y_ed_diameter = to_newton_millimetres(
+    moment_major_diameter = to_newton_millimetres(
         sections[:, :, :, 0] * d_area + sections[:, :, :, 1] * d_inertia
     )
 
     return Jacobian(
-        n_ed_xyz=jnp.asarray(n_ed_xyz),
-        n_ed_diameter=jnp.asarray(n_ed_diameter),
-        m_y_ed_xyz=jnp.asarray(m_y_ed_xyz),
-        m_y_ed_diameter=jnp.asarray(m_y_ed_diameter),
+        axial_force_xyz=jnp.asarray(axial_force_xyz),
+        axial_force_diameter=jnp.asarray(axial_force_diameter),
+        moment_major_xyz=jnp.asarray(moment_major_xyz),
+        moment_major_diameter=jnp.asarray(moment_major_diameter),
     )

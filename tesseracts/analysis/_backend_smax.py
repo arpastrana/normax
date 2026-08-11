@@ -40,8 +40,8 @@ from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.analysis.smax import Model
-from normax.analysis.smax import forces
-from normax.analysis.smax import prepare
+from normax.analysis.smax import member_forces
+from normax.analysis.smax import prepare_model
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -97,10 +97,10 @@ def _member_forces(
     including the loads, which reach here inside the model as ordinary leaves
     rather than as constants folded into the program.
     """
-    return forces(model, xyz, diameters, steel, catalogue)
+    return member_forces(model, xyz, diameters, steel, catalogue)
 
 
-def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
+def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     """
     Internal forces of the frame the inputs describe.
 
@@ -150,20 +150,20 @@ def solve(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     )
     catalogue = TubeCatalogue(ratio=inputs["ratio"])
 
-    model = prepare(structure, steel, catalogue, normal=inputs["normal"])
+    model = prepare_model(structure, steel, catalogue, normal=inputs["normal"])
 
     member = _member_forces(
         model, xyz, jnp.asarray(inputs["diameter"]), steel, catalogue
     )
 
     return {
-        "n_ed": member.n_ed,
-        "m_y_ed": member.m_y_ed,
-        "m_z_ed": member.m_z_ed,
+        "axial_force": member.axial_force,
+        "end_moments_major": member.moment_major,
+        "end_moments_minor": member.moment_minor,
     }
 
 
-def _restricted(
+def _restricted_solve(
     inputs: dict[str, Any],
     wrt: list[str],
     outputs: list[str],
@@ -193,16 +193,16 @@ def _restricted(
     """
     static = {name: value for name, value in inputs.items() if name not in wrt}
 
-    def restricted(*values):
+    def restricted_solve(*values):
         merged = {**static, **dict(zip(wrt, values))}
-        computed = solve(merged)
+        computed = solve_forces(merged)
 
         return {name: computed[name] for name in outputs}
 
-    return restricted, [jnp.asarray(inputs[name]) for name in wrt]
+    return restricted_solve, [jnp.asarray(inputs[name]) for name in wrt]
 
 
-def jvp(
+def forces_jvp(
     inputs: dict[str, Any],
     jvp_inputs: list[str],
     jvp_outputs: list[str],
@@ -232,15 +232,15 @@ def jvp(
     One forward pass whatever the number of parameters, the assembly and the
     solve being traced along with everything else.
     """
-    restricted, primals = _restricted(inputs, jvp_inputs, jvp_outputs)
+    restricted_solve, primals = _restricted_solve(inputs, jvp_inputs, jvp_outputs)
 
     tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
-    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+    _, pushed = jax.jvp(restricted_solve, tuple(primals), tangents)
 
     return pushed
 
 
-def vjp(
+def forces_vjp(
     inputs: dict[str, Any],
     vjp_inputs: list[str],
     vjp_outputs: list[str],
@@ -270,9 +270,9 @@ def vjp(
     One reverse pass whatever the number of coordinates, which is the property a
     direct differentiation backend has to buy with a sweep.
     """
-    restricted, primals = _restricted(inputs, vjp_inputs, vjp_outputs)
+    restricted_solve, primals = _restricted_solve(inputs, vjp_inputs, vjp_outputs)
 
-    _, pullback = jax.vjp(restricted, *primals)
+    _, pullback = jax.vjp(restricted_solve, *primals)
     cotangents = pullback(
         {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
     )

@@ -41,8 +41,8 @@ from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 from tesseract_core.runtime import Int64
 
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
 from normax.structures import Structure
 
 jax.config.update("jax_enable_x64", True)
@@ -96,7 +96,7 @@ class OutputSchema(BaseModel):
     """
 
 
-def _forward(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
+def _forward_pass(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     """
     Solve for the equilibrium geometry.
 
@@ -123,7 +123,9 @@ def _forward(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         loads=jnp.asarray(inputs["loads"]),
     )
 
-    state = equilibrium(jnp.asarray(inputs["q"]), structure, graph(structure))
+    state = equilibrium_state(
+        jnp.asarray(inputs["q"]), structure, equilibrium_graph(structure)
+    )
 
     return {
         "xyz": state.xyz,
@@ -146,7 +148,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     outputs :
         The equilibrium geometry and the edge forces.
     """
-    return _forward(inputs.model_dump())
+    return _forward_pass(inputs.model_dump())
 
 
 def abstract_eval(abstract_inputs):
@@ -178,7 +180,7 @@ def abstract_eval(abstract_inputs):
     }
 
 
-def _differentiate(
+def _restrict_for_derivative(
     inputs: InputSchema,
     wrt: list[str],
     outputs: list[str],
@@ -203,13 +205,13 @@ def _differentiate(
     raw = inputs.model_dump()
     static = {name: value for name, value in raw.items() if name not in wrt}
 
-    def restricted(*values):
+    def restricted_map(*values):
         merged = {**static, **dict(zip(wrt, values))}
-        computed = _forward(merged)
+        computed = _forward_pass(merged)
 
         return {name: computed[name] for name in outputs}
 
-    return restricted, [jnp.asarray(raw[name]) for name in wrt]
+    return restricted_map, [jnp.asarray(raw[name]) for name in wrt]
 
 
 def vector_jacobian_product(
@@ -243,9 +245,9 @@ def vector_jacobian_product(
     costs a few forward solves whatever the number of force densities, which is
     the reason the design variable can be per-edge rather than global.
     """
-    restricted, primals = _differentiate(inputs, vjp_inputs, vjp_outputs)
+    restricted_map, primals = _restrict_for_derivative(inputs, vjp_inputs, vjp_outputs)
 
-    _, pullback = jax.vjp(restricted, *primals)
+    _, pullback = jax.vjp(restricted_map, *primals)
     cotangents = pullback(
         {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
     )
@@ -283,9 +285,9 @@ def jacobian_vector_product(
     Never reached by `jax.grad`, and provided because it costs one call and
     cross-checks the reverse rule.
     """
-    restricted, primals = _differentiate(inputs, jvp_inputs, jvp_outputs)
+    restricted_map, primals = _restrict_for_derivative(inputs, jvp_inputs, jvp_outputs)
 
     tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
-    _, pushed = jax.jvp(restricted, tuple(primals), tangents)
+    _, pushed = jax.jvp(restricted_map, tuple(primals), tangents)
 
     return pushed

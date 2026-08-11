@@ -37,7 +37,12 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.classification import is_plastic
 from normax.ec3.material import SteelGrade
+
+# The class 6.2.9.2 is written for. Class 4 takes effective properties instead
+# and is refused before it reaches this module.
+CLASS_ELASTIC = 3
 
 # EN 1993-1-1 6.3.1.2(3). At or below this slenderness there is no reduction.
 SLENDERNESS_OFFSET = 0.2
@@ -321,17 +326,17 @@ def resistance_bending_reduced(
 
 
 def moment_resultant(
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
+    moment_major: Float[Array, "members"],
+    moment_minor: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
     Resultant of the two bending moments on an axisymmetric section.
 
     Parameters
     ----------
-    m_y_ed :
+    moment_major :
         Design bending moment about the major axis.
-    m_z_ed :
+    moment_minor :
         Design bending moment about the minor axis.
 
     Returns
@@ -354,17 +359,17 @@ def moment_resultant(
     gradient that reaches it, including through a comparison it loses, since the
     undefined value survives being multiplied by zero.
     """
-    square = jnp.asarray(m_y_ed) ** 2 + jnp.asarray(m_z_ed) ** 2
+    square = jnp.asarray(moment_major) ** 2 + jnp.asarray(moment_minor) ** 2
     positive = square > 0.0
 
     return jnp.where(positive, jnp.sqrt(jnp.where(positive, square, 1.0)), 0.0)
 
 
 def moment_combined(
-    m_y_ed: Float[Array, "members"],
-    m_z_ed: Float[Array, "members"],
+    moment_major: Float[Array, "members"],
+    moment_minor: Float[Array, "members"],
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
 ) -> Float[Array, "members"]:
     """
@@ -372,12 +377,12 @@ def moment_combined(
 
     Parameters
     ----------
-    m_y_ed :
+    moment_major :
         Design bending moment about the major axis.
-    m_z_ed :
+    moment_minor :
         Design bending moment about the minor axis.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether to combine the two into a resultant rather than summing them.
         Static, never a traced value.
@@ -397,10 +402,10 @@ def moment_combined(
     Shared with the analytic lower bound on the diameter, which has to combine
     the moments the way the check does or it stops bounding it.
     """
-    if plastic or resultant:
-        return moment_resultant(m_y_ed, m_z_ed)
+    if is_plastic(section_class) or resultant:
+        return moment_resultant(moment_major, moment_minor)
 
-    return jnp.abs(jnp.asarray(m_y_ed)) + jnp.abs(jnp.asarray(m_z_ed))
+    return jnp.abs(jnp.asarray(moment_major)) + jnp.abs(jnp.asarray(moment_minor))
 
 
 def utilization_plastic(
@@ -456,9 +461,9 @@ def utilization_plastic(
     exact rather than approximate here: both exponents of Eq. 6.41 are two for a
     circular hollow section and its two reduced resistances are equal.
     """
-    combined = moment_combined(actions.m_y_ed, actions.m_z_ed, plastic=True)
+    combined = moment_resultant(actions.moment_major, actions.moment_minor)
 
-    axial = jnp.abs(jnp.asarray(actions.n_ed)) / resistance_yielding(area, steel)
+    axial = jnp.abs(jnp.asarray(actions.axial_force)) / resistance_yielding(area, steel)
     bending = combined / resistance_bending_plastic(w_pl, steel)
 
     return axial**MOMENT_EXPONENT + bending
@@ -521,10 +526,13 @@ def utilization_elastic(
     axial term survives when the moments vanish.
     """
     combined = moment_combined(
-        actions.m_y_ed, actions.m_z_ed, plastic=False, resultant=resultant
+        actions.moment_major,
+        actions.moment_minor,
+        section_class=CLASS_ELASTIC,
+        resultant=resultant,
     )
 
-    axial = jnp.abs(jnp.asarray(actions.n_ed)) / resistance_yielding(area, steel)
+    axial = jnp.abs(jnp.asarray(actions.axial_force)) / resistance_yielding(area, steel)
 
     return axial + combined / resistance_bending_elastic(w_el, steel)
 
@@ -535,7 +543,7 @@ def utilization_cross_section(
     modulus: Float[Array, "members"],
     steel: SteelGrade,
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
 ) -> Float[Array, "members"]:
     """
@@ -553,8 +561,8 @@ def utilization_cross_section(
         Section modulus about either axis, plastic or elastic to match the class.
     steel :
         Material properties and partial factors.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the elastic branch combines the two moments into a resultant
         rather than summing them. Ignored on the plastic branch, where the
@@ -577,7 +585,7 @@ def utilization_cross_section(
     hollow section, which both sources confirm, and the collapse to a resultant
     is then exact algebra rather than an interpretation.
     """
-    if plastic:
+    if is_plastic(section_class):
         return utilization_plastic(actions, area, modulus, steel)
 
     return utilization_elastic(actions, area, modulus, steel, resultant=resultant)
@@ -585,7 +593,7 @@ def utilization_cross_section(
 
 def force_critical(
     second_moment: Float[Array, "members"],
-    l_cr: Float[Array, "members"],
+    buckling_length: Float[Array, "members"],
     steel: SteelGrade,
 ) -> Float[Array, "members"]:
     """
@@ -595,7 +603,7 @@ def force_critical(
     ----------
     second_moment :
         Second moment of area about the buckling axis.
-    l_cr :
+    buckling_length :
         Buckling length.
     steel :
         Material properties and partial factors.
@@ -612,7 +620,7 @@ def force_critical(
     """
     inertia = jnp.asarray(second_moment)
 
-    return jnp.pi**2 * steel.e_mod * inertia / l_cr**2
+    return jnp.pi**2 * steel.e_mod * inertia / buckling_length**2
 
 
 def slenderness_reference(
@@ -672,7 +680,7 @@ def slenderness_from_force(
 
 
 def slenderness_from_gyration(
-    l_cr: Float[Array, "members"],
+    buckling_length: Float[Array, "members"],
     radius_gyration: Float[Array, "members"],
     steel: SteelGrade,
 ) -> Float[Array, "members"]:
@@ -681,7 +689,7 @@ def slenderness_from_gyration(
 
     Parameters
     ----------
-    l_cr :
+    buckling_length :
         Buckling length.
     radius_gyration :
         Radius of gyration about the buckling axis.
@@ -698,7 +706,7 @@ def slenderness_from_gyration(
     EN 1993-1-1 6.3.1.3, Eq. 6.50, second form. Algebraically identical to the
     first form; it is the one the code's tables are written against.
     """
-    geometric = jnp.asarray(l_cr) / radius_gyration
+    geometric = jnp.asarray(buckling_length) / radius_gyration
 
     return geometric / slenderness_reference(steel)
 

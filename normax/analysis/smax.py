@@ -64,7 +64,7 @@ from smax import solve_buckling
 
 from normax.analysis import Buckling
 from normax.analysis import MemberForces
-from normax.analysis import fixities
+from normax.analysis import support_fixities
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -110,7 +110,7 @@ class Model(NamedTuple):
     loads: LoadCase
 
 
-def frame(
+def frame_model(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -177,7 +177,7 @@ def frame(
         for member in range(edges.shape[0])
     ]
 
-    flags = fixities(structure, normal)
+    flags = support_fixities(structure, normal)
     supports = [
         Support(node, flags[node]) for node in range(xyz.shape[0]) if flags[node].any()
     ]
@@ -185,7 +185,7 @@ def frame(
     return Frame(nodes, elements, supports)
 
 
-def prepare(
+def prepare_model(
     structure: Structure,
     steel: SteelGrade,
     catalogue: TubeCatalogue,
@@ -227,7 +227,9 @@ def prepare(
     placeholder = jnp.full(structure.edges.shape[0], catalogue.diameter_min)
 
     compiled = compile_structure(
-        frame(structure, structure.nodes, placeholder, steel, catalogue, normal=normal)
+        frame_model(
+            structure, structure.nodes, placeholder, steel, catalogue, normal=normal
+        )
     )
 
     applied = [
@@ -238,7 +240,7 @@ def prepare(
     return Model(compiled=compiled, loads=LoadCase(applied, compiled))
 
 
-def _injected(
+def _injected_assembly(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -285,8 +287,8 @@ def _injected(
     every member being a beam.
     """
     outer = to_metres(diameters)
-    gross = catalogue.tube(outer).area
-    inertia = catalogue.tube(outer).second_moment
+    gross = catalogue.tube_at(outer).area
+    inertia = catalogue.tube_at(outer).second_moment
 
     e_mod = to_pascals(jnp.asarray(steel.e_mod))
     f_y = to_pascals(jnp.asarray(steel.f_y))
@@ -357,7 +359,7 @@ def _load_case(
     )
 
 
-def forces(
+def member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -404,20 +406,20 @@ def forces(
     not model, not an error, and they are the whole of the gap between these
     axial forces and the product of force density and length.
     """
-    compiled = _injected(model, xyz, diameters, steel, catalogue)
+    compiled = _injected_assembly(model, xyz, diameters, steel, catalogue)
     case = model.loads if loads is None else _load_case(model, loads)
 
     response = solve(compiled, case)
     field = element_forces(compiled, response, num_samples=2)
 
     return MemberForces(
-        n_ed=field.nx[:, 0],
-        m_y_ed=to_newton_millimetres(field.my),
-        m_z_ed=to_newton_millimetres(field.mz),
+        axial_force=field.nx[:, 0],
+        moment_major=to_newton_millimetres(field.my),
+        moment_minor=to_newton_millimetres(field.mz),
     )
 
 
-def buckling(
+def buckling_modes(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -475,7 +477,7 @@ def buckling(
     plane, which is what makes the factor comparable with an in-plane member
     check rather than with a lateral one.
     """
-    compiled = _injected(model, xyz, diameters, steel, catalogue)
+    compiled = _injected_assembly(model, xyz, diameters, steel, catalogue)
     case = model.loads if loads is None else _load_case(model, loads)
 
     response = solve_buckling(compiled, case, num_modes=num_modes)

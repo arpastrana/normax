@@ -97,7 +97,7 @@ def slenderness_global(
 def amplifier_resistance(
     area: Float[Array, "members"],
     steel: SteelGrade,
-    n_ed: Float[Array, "members"],
+    axial_force: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
     Load amplifier at which a member reaches its squash resistance.
@@ -108,7 +108,7 @@ def amplifier_resistance(
         Gross cross-sectional area.
     steel :
         Material properties and partial factors.
-    n_ed :
+    axial_force :
         Design axial force, tension positive.
 
     Returns
@@ -133,15 +133,15 @@ def amplifier_resistance(
     nan says the question does not apply to it, and any reduction over the
     members says so too rather than quietly absorbing it.
     """
-    loaded = jnp.abs(n_ed) > 0.0
-    safe = jnp.where(loaded, jnp.abs(n_ed), 1.0)
+    loaded = jnp.abs(axial_force) > 0.0
+    safe = jnp.where(loaded, jnp.abs(axial_force), 1.0)
 
     return jnp.where(loaded, area * steel.f_y / safe, jnp.nan)
 
 
 def force_critical_global(
     alpha_cr: Float[Array, "members"],
-    n_ed: Float[Array, "members"],
+    axial_force: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
     Elastic critical force implied by a critical load factor.
@@ -150,7 +150,7 @@ def force_critical_global(
     ----------
     alpha_cr :
         Load amplifier reaching elastic instability.
-    n_ed :
+    axial_force :
         Design axial force, tension positive.
 
     Returns
@@ -163,12 +163,12 @@ def force_critical_global(
     `α_cr = F_cr/F_Ed` of EN 1993-1-1 §5.2.1(3) read for one member: the factor
     scales the load, so it scales the member's share of it.
     """
-    return alpha_cr * jnp.abs(n_ed)
+    return alpha_cr * jnp.abs(axial_force)
 
 
 def buckling_length_global(
     alpha_cr: Float[Array, "members"],
-    n_ed: Float[Array, "members"],
+    axial_force: Float[Array, "members"],
     second_moment: Float[Array, "members"],
     steel: SteelGrade,
 ) -> Float[Array, "members"]:
@@ -179,7 +179,7 @@ def buckling_length_global(
     ----------
     alpha_cr :
         Load amplifier reaching elastic instability.
-    n_ed :
+    axial_force :
         Design axial force, tension positive.
     second_moment :
         Second moment of area.
@@ -188,7 +188,7 @@ def buckling_length_global(
 
     Returns
     -------
-    l_cr :
+    buckling_length :
         Buckling length reproducing the same slenderness.
 
     Notes
@@ -203,7 +203,7 @@ def buckling_length_global(
     `amplifier_resistance` does: a factor scaling the whole load says nothing about a
     member the load never reaches.
     """
-    critical = force_critical_global(alpha_cr, n_ed)
+    critical = force_critical_global(alpha_cr, axial_force)
     loaded = critical > 0.0
     safe = jnp.where(loaded, critical, 1.0)
 

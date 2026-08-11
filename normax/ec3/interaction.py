@@ -25,9 +25,13 @@ The equivalent uniform moment factor comes from the linear row of Table B.3.
 That is exact rather than approximate under nodal loading, since a member with
 no load along its span carries a linear moment diagram.
 
-Whether the plastic or the elastic column of Table B.1 applies follows from the
-cross-section class, which is fixed by the configured diameter-to-thickness
-ratio. It is therefore a static choice, never a branch on a traced value.
+Which column of Table B.1 applies follows from the cross-section class, which is
+fixed by the configured diameter-to-thickness ratio. It is therefore a static
+choice, never a branch on a traced value.
+
+The class travels as itself all the way to the rows, each of which reads the
+column it belongs to. Nothing carries a boolean standing in for a class, so no
+call site can name one that its section family does not have.
 """
 
 from typing import NamedTuple
@@ -37,6 +41,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.classification import is_plastic
 from normax.ec3.material import SteelGrade
 
 # EN 1993-1-1 Table B.3, the lower bound on the linear row.
@@ -54,15 +59,15 @@ class CompressionBendingState(NamedTuple):
 
     Attributes
     ----------
-    n_ed :
+    axial_force :
         Design axial compression, non-negative.
-    m_y_ed :
+    moment_major :
         Magnitude of the design bending moment about the major axis.
-    m_z_ed :
+    moment_minor :
         Magnitude of the design bending moment about the minor axis.
-    c_my :
+    moment_factor_major :
         Equivalent uniform moment factor for major-axis bending.
-    c_mz :
+    moment_factor_minor :
         Equivalent uniform moment factor for minor-axis bending.
 
     Notes
@@ -75,11 +80,11 @@ class CompressionBendingState(NamedTuple):
     that from a silent wrong answer into a checker error.
     """
 
-    n_ed: Float[Array, "members"]
-    m_y_ed: float | Float[Array, "members"] = 0.0
-    m_z_ed: float | Float[Array, "members"] = 0.0
-    c_my: float | Float[Array, "members"] = 1.0
-    c_mz: float | Float[Array, "members"] = 1.0
+    axial_force: Float[Array, "members"]
+    moment_major: float | Float[Array, "members"] = 0.0
+    moment_minor: float | Float[Array, "members"] = 0.0
+    moment_factor_major: float | Float[Array, "members"] = 1.0
+    moment_factor_minor: float | Float[Array, "members"] = 1.0
 
     @classmethod
     def from_actions(cls, actions: MemberActions) -> "CompressionBendingState":
@@ -104,11 +109,11 @@ class CompressionBendingState(NamedTuple):
         discard the result rather than read a zero as adequacy.
         """
         return cls(
-            jnp.maximum(-jnp.asarray(actions.n_ed), 0.0),
-            jnp.abs(actions.m_y_ed),
-            jnp.abs(actions.m_z_ed),
-            actions.c_my,
-            actions.c_mz,
+            jnp.maximum(-jnp.asarray(actions.axial_force), 0.0),
+            jnp.abs(actions.moment_major),
+            jnp.abs(actions.moment_minor),
+            actions.moment_factor_major,
+            actions.moment_factor_minor,
         )
 
 
@@ -130,16 +135,68 @@ class MemberResistance(NamedTuple):
 
     Notes
     -----
-    The two slendernesses are deliberately absent. 6.3.3 does not read them —
-    only Annex B does, to build the interaction factors — and that separability
-    is what lets a published check supplying its own factors be reproduced
-    without inventing slendernesses for a clause that ignores them.
+    The two slendernesses are deliberately absent, carried by
+    `MemberSlenderness` instead. 6.3.3 does not read them — only Annex B does,
+    to build the interaction factors — and that separability is what lets a
+    published check supplying its own factors be reproduced without inventing
+    slendernesses for a clause that ignores them.
     """
 
     chi_y: Float[Array, "members"]
     chi_z: Float[Array, "members"]
     n_rk: Float[Array, "members"]
     m_rk: Float[Array, "members"]
+
+
+class MemberSlenderness(NamedTuple):
+    """
+    Non-dimensional slenderness about each buckling axis.
+
+    Attributes
+    ----------
+    lam_y :
+        Non-dimensional slenderness about the major axis.
+    lam_z :
+        Non-dimensional slenderness about the minor axis.
+
+    Notes
+    -----
+    Read by Annex B alone, which is why it is a type of its own rather than two
+    more fields on the resistance: the equations of 6.3.3 never see it.
+
+    A doubly symmetric closed section buckles alike about both axes, so one
+    value serves for both. `about_both_axes` is the constructor for that case,
+    so a caller holding a single slenderness never has to write it twice and no
+    call site can pass the major-axis value where the minor-axis one belongs.
+    """
+
+    lam_y: Float[Array, "members"]
+    lam_z: Float[Array, "members"]
+
+    @classmethod
+    def about_both_axes(
+        cls,
+        lam: Float[Array, "members"],
+    ) -> "MemberSlenderness":
+        """
+        One slenderness taken about both axes.
+
+        Parameters
+        ----------
+        lam :
+            Non-dimensional slenderness, the same about every centroidal axis.
+
+        Returns
+        -------
+        slenderness :
+            The same value about the major and the minor axis.
+
+        Notes
+        -----
+        A circular hollow section has the same second moment about every
+        centroidal axis, so its two flexural buckling modes are identical.
+        """
+        return cls(lam, lam)
 
 
 class InteractionFactors(NamedTuple):
@@ -199,7 +256,7 @@ def moment_factor_linear(psi: Float[Array, "members"]) -> Float[Array, "members"
 
 
 def axial_ratio(
-    n_ed: Float[Array, "members"],
+    axial_force: Float[Array, "members"],
     chi: Float[Array, "members"],
     n_rk: Float[Array, "members"],
     steel: SteelGrade,
@@ -209,7 +266,7 @@ def axial_ratio(
 
     Parameters
     ----------
-    n_ed :
+    axial_force :
         Design axial compression.
     chi :
         Reduction factor for flexural buckling about the relevant axis.
@@ -229,13 +286,13 @@ def axial_ratio(
     rather than naming it. Distinct from Annex A's utilization, which carries
     no reduction factor.
     """
-    force = jnp.asarray(n_ed)
+    force = jnp.asarray(axial_force)
 
     return force / (chi * n_rk / steel.gamma_m1)
 
 
 def _k_axial(
-    c_m: Float[Array, "members"],
+    moment_factor: Float[Array, "members"],
     slope: Float[Array, "members"],
     cap_slope: float,
     ratio: Float[Array, "members"],
@@ -266,32 +323,32 @@ def _k_axial(
     Only the two coefficients change between plastic and elastic.
     """
     axial = jnp.asarray(ratio)
-    unbounded = c_m * (1.0 + slope * axial)
-    bound = c_m * (1.0 + cap_slope * axial)
+    unbounded = moment_factor * (1.0 + slope * axial)
+    bound = moment_factor * (1.0 + cap_slope * axial)
 
     return jnp.minimum(unbounded, bound)
 
 
 def k_yy(
-    c_my: Float[Array, "members"],
+    moment_factor_major: Float[Array, "members"],
     lam_y: Float[Array, "members"],
     ratio_y: Float[Array, "members"],
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Interaction factor coupling axial force to major-axis bending.
 
     Parameters
     ----------
-    c_my :
+    moment_factor_major :
         Equivalent uniform moment factor for major-axis bending.
     lam_y :
         Non-dimensional slenderness about the major axis.
     ratio_y :
         Axial force over the major-axis buckling resistance.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -302,32 +359,32 @@ def k_yy(
     -----
     EN 1993-1-1 Annex B, Table B.1, hollow-section row.
     """
-    if plastic:
-        return _k_axial(c_my, jnp.asarray(lam_y) - 0.2, 0.8, ratio_y)
+    if is_plastic(section_class):
+        return _k_axial(moment_factor_major, jnp.asarray(lam_y) - 0.2, 0.8, ratio_y)
 
-    return _k_axial(c_my, 0.6 * jnp.asarray(lam_y), 0.6, ratio_y)
+    return _k_axial(moment_factor_major, 0.6 * jnp.asarray(lam_y), 0.6, ratio_y)
 
 
 def k_zz(
-    c_mz: Float[Array, "members"],
+    moment_factor_minor: Float[Array, "members"],
     lam_z: Float[Array, "members"],
     ratio_z: Float[Array, "members"],
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Interaction factor coupling axial force to minor-axis bending.
 
     Parameters
     ----------
-    c_mz :
+    moment_factor_minor :
         Equivalent uniform moment factor for minor-axis bending.
     lam_z :
         Non-dimensional slenderness about the minor axis.
     ratio_z :
         Axial force over the minor-axis buckling resistance.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -340,16 +397,16 @@ def k_zz(
     the major-axis factor. Only I-sections take a different one, with twice the
     slenderness coefficient and a larger bound.
     """
-    if plastic:
-        return _k_axial(c_mz, jnp.asarray(lam_z) - 0.2, 0.8, ratio_z)
+    if is_plastic(section_class):
+        return _k_axial(moment_factor_minor, jnp.asarray(lam_z) - 0.2, 0.8, ratio_z)
 
-    return _k_axial(c_mz, 0.6 * jnp.asarray(lam_z), 0.6, ratio_z)
+    return _k_axial(moment_factor_minor, 0.6 * jnp.asarray(lam_z), 0.6, ratio_z)
 
 
 def k_yz(
     k_zz_value: Float[Array, "members"],
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Interaction factor coupling major-axis buckling to minor-axis bending.
@@ -358,8 +415,8 @@ def k_yz(
     ----------
     k_zz_value :
         The minor-axis diagonal interaction factor.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -371,7 +428,7 @@ def k_yz(
     EN 1993-1-1 Annex B, Table B.1. Six tenths of the diagonal factor for a
     plastic section, and the diagonal factor itself for an elastic one.
     """
-    if plastic:
+    if is_plastic(section_class):
         return 0.6 * jnp.asarray(k_zz_value)
 
     return jnp.asarray(k_zz_value)
@@ -380,7 +437,7 @@ def k_yz(
 def k_zy(
     k_yy_value: Float[Array, "members"],
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Interaction factor coupling minor-axis buckling to major-axis bending.
@@ -389,8 +446,8 @@ def k_zy(
     ----------
     k_yy_value :
         The major-axis diagonal interaction factor.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -403,7 +460,7 @@ def k_zy(
     section under compression and major-axis bending alone; that relaxation is
     not taken here.
     """
-    if plastic:
+    if is_plastic(section_class):
         return 0.6 * jnp.asarray(k_yy_value)
 
     return 0.8 * jnp.asarray(k_yy_value)
@@ -412,11 +469,10 @@ def k_zy(
 def utilization_member(
     state: CompressionBendingState,
     resistance: MemberResistance,
-    lam_y: Float[Array, "members"],
-    lam_z: Float[Array, "members"],
+    slenderness: MemberSlenderness,
     steel: SteelGrade,
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Utilization of a member under axial compression and biaxial bending.
@@ -427,14 +483,12 @@ def utilization_member(
         Compression and moment magnitudes acting on the member.
     resistance :
         What the member resists about each axis, before partial factors.
-    lam_y :
-        Non-dimensional slenderness about the major axis.
-    lam_z :
-        Non-dimensional slenderness about the minor axis.
+    slenderness :
+        Non-dimensional slenderness about each buckling axis.
     steel :
         Material properties and partial factors, read for gamma_M1.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -453,7 +507,9 @@ def utilization_member(
     oppositely, so they agree only when the moments are equal as well. Taking
     the larger is what makes this one check rather than two.
     """
-    first, second = _checks(state, resistance, lam_y, lam_z, steel, plastic=plastic)
+    first, second = _derived_checks(
+        state, resistance, slenderness, steel, section_class=section_class
+    )
 
     return jnp.maximum(first, second)
 
@@ -461,11 +517,10 @@ def utilization_member(
 def interaction_factors(
     state: CompressionBendingState,
     resistance: MemberResistance,
-    lam_y: Float[Array, "members"],
-    lam_z: Float[Array, "members"],
+    slenderness: MemberSlenderness,
     steel: SteelGrade,
     *,
-    plastic: bool,
+    section_class: int,
 ) -> InteractionFactors:
     """
     All four interaction factors for a hollow section.
@@ -477,14 +532,12 @@ def interaction_factors(
         magnitude is read: Table B.1 scales the moments rather than reading them.
     resistance :
         What the member resists. The bending resistance is not read either.
-    lam_y :
-        Non-dimensional slenderness about the major axis.
-    lam_z :
-        Non-dimensional slenderness about the minor axis.
+    slenderness :
+        Non-dimensional slenderness about each buckling axis.
     steel :
         Material properties and partial factors, read for gamma_M1.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -497,21 +550,31 @@ def interaction_factors(
     them, which are EN 1993-1-1 6.3.3 and a different clause: a source that
     publishes its own factors can be checked against `checks` alone.
     """
-    ratio_y = axial_ratio(state.n_ed, resistance.chi_y, resistance.n_rk, steel)
-    ratio_z = axial_ratio(state.n_ed, resistance.chi_z, resistance.n_rk, steel)
+    ratio_y = axial_ratio(state.axial_force, resistance.chi_y, resistance.n_rk, steel)
+    ratio_z = axial_ratio(state.axial_force, resistance.chi_z, resistance.n_rk, steel)
 
-    diagonal_y = k_yy(state.c_my, lam_y, ratio_y, plastic=plastic)
-    diagonal_z = k_zz(state.c_mz, lam_z, ratio_z, plastic=plastic)
+    diagonal_y = k_yy(
+        state.moment_factor_major,
+        slenderness.lam_y,
+        ratio_y,
+        section_class=section_class,
+    )
+    diagonal_z = k_zz(
+        state.moment_factor_minor,
+        slenderness.lam_z,
+        ratio_z,
+        section_class=section_class,
+    )
 
     return InteractionFactors(
         yy=diagonal_y,
-        yz=k_yz(diagonal_z, plastic=plastic),
-        zy=k_zy(diagonal_y, plastic=plastic),
+        yz=k_yz(diagonal_z, section_class=section_class),
+        zy=k_zy(diagonal_y, section_class=section_class),
         zz=diagonal_z,
     )
 
 
-def checks(
+def interaction_checks(
     state: CompressionBendingState,
     resistance: MemberResistance,
     factors: InteractionFactors,
@@ -547,12 +610,12 @@ def checks(
     separable from Annex B, so a published check that supplies its own factors
     can be reproduced without also adopting the table they came from.
     """
-    ratio_y = axial_ratio(state.n_ed, resistance.chi_y, resistance.n_rk, steel)
-    ratio_z = axial_ratio(state.n_ed, resistance.chi_z, resistance.n_rk, steel)
+    ratio_y = axial_ratio(state.axial_force, resistance.chi_y, resistance.n_rk, steel)
+    ratio_z = axial_ratio(state.axial_force, resistance.chi_z, resistance.n_rk, steel)
 
     bending = resistance.m_rk / steel.gamma_m1
-    major = jnp.asarray(state.m_y_ed) / bending
-    minor = jnp.asarray(state.m_z_ed) / bending
+    major = jnp.asarray(state.moment_major) / bending
+    minor = jnp.asarray(state.moment_minor) / bending
 
     first = ratio_y + factors.yy * major + factors.yz * minor
     second = ratio_z + factors.zy * major + factors.zz * minor
@@ -560,14 +623,13 @@ def checks(
     return first, second
 
 
-def _checks(
+def _derived_checks(
     state: CompressionBendingState,
     resistance: MemberResistance,
-    lam_y: Float[Array, "members"],
-    lam_z: Float[Array, "members"],
+    slenderness: MemberSlenderness,
     steel: SteelGrade,
     *,
-    plastic: bool,
+    section_class: int,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
     Both interaction equations, deriving the factors from Table B.1.
@@ -583,20 +645,19 @@ def _checks(
     governs, so the two cannot drift apart.
     """
     factors = interaction_factors(
-        state, resistance, lam_y, lam_z, steel, plastic=plastic
+        state, resistance, slenderness, steel, section_class=section_class
     )
 
-    return checks(state, resistance, factors, steel)
+    return interaction_checks(state, resistance, factors, steel)
 
 
 def governing_equation(
     state: CompressionBendingState,
     resistance: MemberResistance,
-    lam_y: Float[Array, "members"],
-    lam_z: Float[Array, "members"],
+    slenderness: MemberSlenderness,
     steel: SteelGrade,
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Which of the two interaction equations governs.
@@ -613,31 +674,33 @@ def governing_equation(
     optimizer steps mean the design is chattering across the boundary where the
     two equations cross, which is where the two moments are equal.
     """
-    first, second = _checks(state, resistance, lam_y, lam_z, steel, plastic=plastic)
+    first, second = _derived_checks(
+        state, resistance, slenderness, steel, section_class=section_class
+    )
 
     return jnp.where(second > first, GOVERNING_MINOR, GOVERNING_MAJOR)
 
 
 def cap_is_active(
-    c_m: Float[Array, "members"],
+    moment_factor: Float[Array, "members"],
     lam: Float[Array, "members"],
     ratio: Float[Array, "members"],
     *,
-    plastic: bool,
+    section_class: int,
 ) -> Float[Array, "members"]:
     """
     Whether the bound on an interaction factor is the binding one.
 
     Parameters
     ----------
-    c_m :
+    moment_factor :
         Equivalent uniform moment factor.
     lam :
         Non-dimensional slenderness about the relevant axis.
     ratio :
         Axial force over the buckling resistance about that axis.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
 
     Returns
     -------
@@ -653,10 +716,11 @@ def cap_is_active(
     where 0.6 times the slenderness exceeds 0.6 for an elastic one.
     """
     slenderness = jnp.asarray(lam)
+    plastic = is_plastic(section_class)
     slope = slenderness - 0.2 if plastic else 0.6 * slenderness
     cap_slope = 0.8 if plastic else 0.6
 
-    unbounded = c_m * (1.0 + slope * ratio)
-    bound = c_m * (1.0 + cap_slope * ratio)
+    unbounded = moment_factor * (1.0 + slope * ratio)
+    bound = moment_factor * (1.0 + cap_slope * ratio)
 
     return jnp.where(bound < unbounded, 1.0, 0.0)

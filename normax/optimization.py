@@ -76,7 +76,7 @@ class Trajectory(NamedTuple):
     beta: Float[Array, "steps"]
 
 
-def shortest(
+def shortest_member(
     lengths: Float[Array, "members"],
     beta: float | Float[Array, ""],
 ) -> Float[Array, ""]:
@@ -109,7 +109,7 @@ def shortest(
     return jnp.exp(-logsumexp(-beta * jnp.log(lengths)) / beta)
 
 
-def penalized(
+def penalized_mass(
     mass: Float[Array, ""],
     lengths: Float[Array, "members"],
     floor: float | Float[Array, ""],
@@ -156,12 +156,12 @@ def penalized(
     keeps one reverse pass per gradient. Bounding the length exactly would need
     a constrained method and a Jacobian row per member.
     """
-    violation = jnp.maximum(1.0 - shortest(lengths, beta) / floor, 0.0)
+    violation = jnp.maximum(1.0 - shortest_member(lengths, beta) / floor, 0.0)
 
     return mass * (1.0 + weight * violation**2)
 
 
-def anneal(
+def annealing_schedule(
     start: float,
     stop: float,
     rounds: int,
@@ -238,7 +238,7 @@ def value_and_gradient(
     return eqx.filter_jit(jax.value_and_grad(objective))
 
 
-def descend(
+def minimize_bounded(
     objective: Callable[[Float[Array, "members"]], Float[Array, ""]],
     q: Float[Array, "members"],
     *,
@@ -325,13 +325,13 @@ def descend(
 
     gradient = value_and_gradient(objective) if gradient is None else gradient
 
-    def evaluate(x: Float[np.ndarray, "members"]):
+    def evaluate_objective(x: Float[np.ndarray, "members"]):
         value, slope = gradient(jnp.asarray(x))
         evaluated[x.tobytes()] = float(value)
 
         return float(value), np.asarray(slope, dtype=np.float64)
 
-    def record(x: Float[np.ndarray, "members"]) -> None:
+    def record_step(x: Float[np.ndarray, "members"]) -> None:
         visited.append(np.array(x, dtype=np.float64))
 
     if iterations < 1:
@@ -342,12 +342,12 @@ def descend(
         )
 
     result = minimize(
-        evaluate,
+        evaluate_objective,
         np.asarray(q, dtype=np.float64),
         jac=True,
         method="L-BFGS-B",
         bounds=[bounds] * int(np.size(q)),
-        callback=record,
+        callback=record_step,
         options={"maxiter": iterations},
     )
 
@@ -366,7 +366,7 @@ def descend(
     )
 
 
-def optimize(
+def optimize_annealed(
     objective: Callable[
         [Float[Array, "members"], float | Float[Array, ""]], Float[Array, ""]
     ],
@@ -424,7 +424,7 @@ def optimize(
         def round_objective(x, sharpness=sharpness):
             return objective(x, sharpness)
 
-        walked = descend(
+        walked = minimize_bounded(
             round_objective,
             q,
             bounds=bounds,

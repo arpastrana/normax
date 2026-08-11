@@ -53,20 +53,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from normax.analysis.smax import buckling
-from normax.analysis.smax import prepare
+from normax.analysis.smax import buckling_modes
+from normax.analysis.smax import prepare_model
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import is_plastic
-from normax.ec3.sizing import mass as mass_of_tubes
+from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.formfinding import equilibrium
-from normax.formfinding import graph
-from normax.pipeline import design
-from normax.pipeline import governing
-from normax.pipeline import mass
-from normax.pipeline import stability
-from normax.structures import arch
+from normax.formfinding import equilibrium_graph
+from normax.formfinding import equilibrium_state
+from normax.pipeline import design_members
+from normax.pipeline import frame_stability
+from normax.pipeline import governing_states
+from normax.pipeline import total_mass
+from normax.structures import arch_2d
 from normax.visualization import figure_convergence
 from normax.visualization import figure_modes
 from normax.visualization import figure_sections
@@ -133,12 +132,12 @@ def setup(num_edges):
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     load = TOTAL_LOAD / (num_edges - 1)
-    structure = arch(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
-    graph_fdm = graph(structure)
-    model = prepare(structure, STEEL, CATALOGUE_SEED, normal=NORMAL)
+    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
+    graph_fdm = equilibrium_graph(structure)
+    model = prepare_model(structure, STEEL, CATALOGUE_SEED, normal=NORMAL)
 
     trial = jnp.full(num_edges, -1.0)
-    reached = jnp.max(equilibrium(trial, structure, graph_fdm).xyz[:, 2])
+    reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
 
     return structure, graph_fdm, model, trial * reached / RISE
 
@@ -162,7 +161,7 @@ def disagreement(exact, numeric, scale):
     return abs(exact - numeric) / scale
 
 
-def relaxed(q, structure, graph_fdm, model, catalogue, *, plastic, passes):
+def relaxed(q, structure, graph_fdm, model, catalogue, *, section_class, passes):
     """
     Repeat the staggered analysis and check, reporting how far each pass moves.
     """
@@ -171,7 +170,7 @@ def relaxed(q, structure, graph_fdm, model, catalogue, *, plastic, passes):
     masses = []
 
     for _ in range(passes):
-        result = design(
+        result = design_members(
             q,
             diameters,
             structure,
@@ -179,7 +178,7 @@ def relaxed(q, structure, graph_fdm, model, catalogue, *, plastic, passes):
             model,
             STEEL,
             catalogue,
-            plastic=plastic,
+            section_class=section_class,
         )
         moves.append(
             float(jnp.max(jnp.abs(result.diameters - diameters) / result.diameters))
@@ -195,7 +194,7 @@ def main():
     seed = jnp.full(NUM_EDGES, SEED)
 
     print("The arch")
-    state = equilibrium(q, structure, graph_fdm)
+    state = equilibrium_state(q, structure, graph_fdm)
     print(f"  span                {SPAN / 1e3:.1f} m over {NUM_EDGES} members")
     print(f"  crown rise          {float(jnp.max(state.xyz[:, 2])):.4f} mm")
     print(f"  force density       {float(q[0]):.6f} N/mm")
@@ -203,23 +202,30 @@ def main():
 
     worst_utilization = 0.0
     designs = {}
-    for cross_section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, cross_section_class)
-        plastic = is_plastic(cross_section_class)
-        result = design(
-            q, seed, structure, graph_fdm, model, STEEL, catalogue, plastic=plastic
+    for section_class in (2, 3):
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        result = design_members(
+            q,
+            seed,
+            structure,
+            graph_fdm,
+            model,
+            STEEL,
+            catalogue,
+            section_class=section_class,
         )
-        codes = governing(result, STEEL, catalogue, plastic=plastic)
+        codes = governing_states(result, STEEL, catalogue, section_class=section_class)
         departure = float(jnp.max(jnp.abs(result.utilization - 1.0)))
         worst_utilization = max(worst_utilization, departure)
-        designs[cross_section_class] = (catalogue, plastic, result)
+        designs[section_class] = (catalogue, section_class, result)
 
-        print(f"\nClass {cross_section_class}, d/t = {float(catalogue.ratio):.3f}")
+        print(f"\nClass {section_class}, d/t = {float(catalogue.ratio):.3f}")
         print(f"  {'member':>7} {'N [kN]':>10} {'M [kNm]':>10} {'d [mm]':>9} {'u':>18}")
         for member in range(NUM_EDGES):
+            force = float(result.actions.axial_force[member]) / 1e3
+            moment = float(result.actions.moment_major[member]) / 1e6
             print(
-                f"  {member:>7} {float(result.actions.n_ed[member]) / 1e3:>10.4f}"
-                f" {float(result.actions.m_y_ed[member]) / 1e6:>10.5f}"
+                f"  {member:>7} {force:>10.4f} {moment:>10.5f}"
                 f" {float(result.diameters[member]):>9.4f}"
                 f" {float(result.utilization[member]):>18.16f}"
             )
@@ -228,13 +234,20 @@ def main():
         limits = {LIMIT_NAMES[float(code)] for code in codes}
         print(f"  governing           {', '.join(sorted(limits))}")
 
-    catalogue, plastic, result = designs[3]
+    catalogue, section_class, result = designs[3]
 
     print("\nThe central difference plateaus before it is trusted")
 
     def objective(q):
-        return mass(
-            q, seed, structure, graph_fdm, model, STEEL, catalogue, plastic=plastic
+        return total_mass(
+            q,
+            seed,
+            structure,
+            graph_fdm,
+            model,
+            STEEL,
+            catalogue,
+            section_class=section_class,
         )
 
     gradient = jax.grad(objective)(q)
@@ -264,7 +277,13 @@ def main():
 
     print("\nThe staggered coupling closes geometrically")
     _, moves, masses = relaxed(
-        q, structure, graph_fdm, model, catalogue, plastic=plastic, passes=PASSES
+        q,
+        structure,
+        graph_fdm,
+        model,
+        catalogue,
+        section_class=section_class,
+        passes=PASSES,
     )
     print(f"  {'pass':>5} {'relative move':>15} {'mass [t]':>14} {'ratio':>8}")
     for step, (move, total) in enumerate(zip(moves, masses)):
@@ -284,7 +303,7 @@ def main():
     for count in MESHES:
         refined, refined_graph, refined_model, refined_q = setup(count)
         refined_seed = jnp.full(count, SEED)
-        free = design(
+        free = design_members(
             refined_q,
             refined_seed,
             refined,
@@ -292,9 +311,9 @@ def main():
             refined_model,
             STEEL,
             catalogue,
-            plastic=plastic,
+            section_class=section_class,
         )
-        held = design(
+        held = design_members(
             refined_q,
             refined_seed,
             refined,
@@ -302,8 +321,8 @@ def main():
             refined_model,
             STEEL,
             catalogue,
-            plastic=plastic,
-            l_cr=jnp.full(count, BUCKLING_LENGTH),
+            section_class=section_class,
+            buckling_length=jnp.full(count, BUCKLING_LENGTH),
         )
         by_member.append(float(free.mass))
         by_fixed.append(float(held.mass))
@@ -326,7 +345,7 @@ def main():
     print(f"  worst departure from first order  {worst_order:.3f}")
 
     print("\nThe global stability check, EN 1993-1-1 5.2.1(3)")
-    checked = stability(
+    checked = frame_stability(
         result,
         model,
         STEEL,
@@ -353,12 +372,12 @@ def main():
         print(
             f"  {member:>7} {from_length:>15.4f} {from_factor:>15.4f}"
             f" {from_factor / from_length:>7.2f}"
-            f" {float(checked.l_cr_global[member]):>17.1f}"
+            f" {float(checked.buckling_length_equivalent[member]):>17.1f}"
         )
 
     print("\nWhat the member-length assumption is worth")
 
-    unbraced = design(
+    unbraced = design_members(
         q,
         seed,
         structure,
@@ -366,8 +385,8 @@ def main():
         model,
         STEEL,
         catalogue,
-        plastic=plastic,
-        l_cr=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc),
+        section_class=section_class,
+        buckling_length=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc),
     )
     penalty = float(unbraced.mass) / float(result.mass)
 
@@ -389,7 +408,7 @@ def main():
 
     FIGURES.mkdir(exist_ok=True)
 
-    assumed_mass = float(mass_of_tubes(catalogue.tube(seed), result.lengths, STEEL))
+    assumed_mass = float(mass_of_tubes(catalogue.tube_at(seed), result.lengths, STEEL))
     sections = figure_sections(
         result.xyz,
         structure.edges,
@@ -410,7 +429,7 @@ def main():
     )
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
 
-    modes = buckling(
+    modes = buckling_modes(
         model,
         result.xyz,
         result.diameters,

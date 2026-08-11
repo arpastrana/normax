@@ -35,28 +35,27 @@ uv sync --extra spike
 import jax
 import jax.numpy as jnp
 
-from normax.analysis.smax import prepare
+from normax.analysis.smax import prepare_model
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import is_plastic
-from normax.formfinding import graph
-from normax.pipeline import mass
-from normax.structures import arch
+from normax.formfinding import equilibrium_graph
+from normax.pipeline import total_mass
+from normax.structures import arch_2d
 
 steel = SteelGrade()
 catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
-structure = arch(num_edges=20, span=10_000.0, rise=3_000.0, load=9_474.0)
-connectivity = graph(structure)
-model = prepare(structure, steel, catalogue, normal=1)
+structure = arch_2d(num_edges=20, span=10_000.0, rise=3_000.0, load=9_474.0)
+connectivity = equilibrium_graph(structure)
+model = prepare_model(structure, steel, catalogue, normal=1)
 
 seed = jnp.full(20, 100.0)
 
 
 def total(q):
-    return mass(
+    return total_mass(
         q, seed, structure, connectivity, model, steel, catalogue,
-        plastic=is_plastic(3),
+        section_class=catalogue.section_class(steel.f_y),
     )
 
 
@@ -65,8 +64,8 @@ print(total(q))                  # tonnes of steel EN 1993-1-1 requires
 print(jax.grad(total)(q))        # its gradient in the force densities
 ```
 
-`prepare` and `graph` are built once on the host and reused; only the force
-densities enter the traced call. See `experiments/` for the arch optimization,
+`prepare_model` and `equilibrium_graph` are built once on the host and reused;
+only the force densities enter the traced call. See `experiments/` for the arch optimization,
 the two analysis backends measured against each other, and the same pipeline
 composed across three Tesseracts.
 

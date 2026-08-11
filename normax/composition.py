@@ -56,7 +56,7 @@ from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
-from normax.ec3.sizing import mass as mass_ec3
+from normax.ec3.sizing import mass_of_tubes as mass_ec3
 from normax.ec3.sizing import utilization_design as utilization_ec3
 from normax.pipeline import Design
 from normax.pipeline import Envelope
@@ -73,7 +73,7 @@ BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
 
 
 @contextmanager
-def backend(name: str) -> Iterator[None]:
+def analysis_backend(name: str) -> Iterator[None]:
     """
     Run the analysis stage on a named solver for the duration of a block.
 
@@ -135,7 +135,7 @@ class Chain(NamedTuple):
     ec3: Tesseract
 
 
-def local(root: Path = TESSERACTS) -> Chain:
+def local_chain(root: Path = TESSERACTS) -> Chain:
     """
     A chain that imports the three API modules into this process.
 
@@ -174,7 +174,7 @@ def local(root: Path = TESSERACTS) -> Chain:
     )
 
 
-def design(
+def design_members(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
     structure: Structure,
@@ -183,9 +183,9 @@ def design(
     catalogue: TubeCatalogue,
     *,
     normal: int | None,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
-    l_cr: Float[Array, "members"] | None = None,
+    buckling_length: Float[Array, "members"] | None = None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Design:
     """
@@ -209,12 +209,12 @@ def design(
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
-    l_cr :
+    buckling_length :
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
@@ -248,9 +248,9 @@ def design(
     """
     shape = _form_find(q, structure, chain)
     lengths = shape["lengths"]
-    buckling = lengths if l_cr is None else l_cr
+    buckling = lengths if buckling_length is None else buckling_length
 
-    member, sized = _check(
+    member, sized = _check_case(
         shape["xyz"],
         diameters,
         buckling,
@@ -260,7 +260,7 @@ def design(
         steel,
         catalogue,
         normal=normal,
-        plastic=plastic,
+        section_class=section_class,
         resultant=resultant,
         loads=loads,
     )
@@ -269,13 +269,13 @@ def design(
         xyz=shape["xyz"],
         lengths=lengths,
         actions=MemberActions(
-            member["n_ed"],
-            sized["m_y_ed"],
-            sized["m_z_ed"],
-            sized["c_my"],
-            sized["c_mz"],
+            member["axial_force"],
+            sized["moment_major"],
+            sized["moment_minor"],
+            sized["moment_factor_major"],
+            sized["moment_factor_minor"],
         ),
-        l_cr=buckling,
+        buckling_length=buckling,
         diameters=sized["diameter"],
         utilization=sized["utilization"],
         mass=sized["mass"],
@@ -317,7 +317,7 @@ def _form_find(
     )
 
 
-def _check(
+def _check_case(
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
     buckling: Float[Array, "members"],
@@ -328,7 +328,7 @@ def _check(
     catalogue: TubeCatalogue,
     *,
     normal: int | None,
-    plastic: bool,
+    section_class: int,
     resultant: bool,
     loads: Float[Array, "nodes 3"] | None,
 ):
@@ -355,7 +355,7 @@ def _check(
         The section family every member is drawn from.
     normal :
         Index of the global axis a planar structure has no thickness along.
-    plastic :
+    section_class :
         Whether the section is Class 1 or 2.
     resultant :
         Whether the two moments combine as a resultant.
@@ -394,11 +394,11 @@ def _check(
     sized = apply_tesseract(
         chain.ec3,
         {
-            "n_ed": member["n_ed"],
-            "m_y_ed": member["m_y_ed"],
-            "m_z_ed": member["m_z_ed"],
+            "axial_force": member["axial_force"],
+            "end_moments_major": member["end_moments_major"],
+            "end_moments_minor": member["end_moments_minor"],
             "lengths": lengths,
-            "l_cr": buckling,
+            "buckling_length": buckling,
             "f_y": steel.f_y,
             "e_mod": steel.e_mod,
             "density": steel.density,
@@ -407,7 +407,7 @@ def _check(
             "ratio": catalogue.ratio,
             "alpha": steel.alpha,
             "diameter_min": catalogue.diameter_min,
-            "plastic": plastic,
+            "section_class": section_class,
             "resultant": resultant,
         },
     )
@@ -415,7 +415,7 @@ def _check(
     return member, sized
 
 
-def mass(
+def total_mass(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
     structure: Structure,
@@ -424,9 +424,9 @@ def mass(
     catalogue: TubeCatalogue,
     *,
     normal: int | None,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
-    l_cr: Float[Array, "members"] | None = None,
+    buckling_length: Float[Array, "members"] | None = None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Float[Array, ""]:
     """
@@ -450,12 +450,12 @@ def mass(
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
-    l_cr :
+    buckling_length :
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
@@ -473,7 +473,7 @@ def mass(
     one cotangent, so each stage is asked for a single reverse pass and the
     chain costs three round trips rather than three per output component.
     """
-    return design(
+    return design_members(
         q,
         diameters,
         structure,
@@ -481,14 +481,14 @@ def mass(
         steel,
         catalogue,
         normal=normal,
-        plastic=plastic,
+        section_class=section_class,
         resultant=resultant,
-        l_cr=l_cr,
+        buckling_length=buckling_length,
         loads=loads,
     ).mass
 
 
-def envelope(
+def design_envelope(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
     structure: Structure,
@@ -499,9 +499,9 @@ def envelope(
     beta: float | Float[Array, ""],
     *,
     normal: int | None,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
-    l_cr: Float[Array, "members"] | None = None,
+    buckling_length: Float[Array, "members"] | None = None,
 ) -> Envelope:
     """
     Form-find once, analyse every load case, and size for the worst of them,
@@ -530,12 +530,12 @@ def envelope(
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
-    l_cr :
+    buckling_length :
         Buckling length of every member. If None, each member buckles over its
         own length.
 
@@ -571,10 +571,10 @@ def envelope(
     """
     shape = _form_find(q, structure, chain)
     lengths = shape["lengths"]
-    buckling = lengths if l_cr is None else l_cr
+    buckling = lengths if buckling_length is None else buckling_length
 
     stages = [
-        _check(
+        _check_case(
             shape["xyz"],
             diameters,
             buckling,
@@ -584,7 +584,7 @@ def envelope(
             steel,
             catalogue,
             normal=normal,
-            plastic=plastic,
+            section_class=section_class,
             resultant=resultant,
             loads=case,
         )
@@ -594,22 +594,30 @@ def envelope(
     required = jnp.stack([sized["diameter"] for _, sized in stages])
     covering = envelope_ec3(required, beta)
 
-    n_ed = jnp.stack([member["n_ed"] for member, _ in stages])
-    m_y_ed = jnp.stack([sized["m_y_ed"] for _, sized in stages])
-    m_z_ed = jnp.stack([sized["m_z_ed"] for _, sized in stages])
-    c_my = jnp.stack([sized["c_my"] for _, sized in stages])
-    c_mz = jnp.stack([sized["c_mz"] for _, sized in stages])
+    axial_force = jnp.stack([member["axial_force"] for member, _ in stages])
+    moment_major = jnp.stack([sized["moment_major"] for _, sized in stages])
+    moment_minor = jnp.stack([sized["moment_minor"] for _, sized in stages])
+    moment_factor_major = jnp.stack(
+        [sized["moment_factor_major"] for _, sized in stages]
+    )
+    moment_factor_minor = jnp.stack(
+        [sized["moment_factor_minor"] for _, sized in stages]
+    )
 
     used = jnp.stack(
         [
             utilization_ec3(
-                catalogue.tube(covering),
+                catalogue.tube_at(covering),
                 MemberActions(
-                    n_ed[case], m_y_ed[case], m_z_ed[case], c_my[case], c_mz[case]
+                    axial_force[case],
+                    moment_major[case],
+                    moment_minor[case],
+                    moment_factor_major[case],
+                    moment_factor_minor[case],
                 ),
                 buckling,
                 steel,
-                plastic=plastic,
+                section_class=section_class,
                 resultant=resultant,
             )
             for case in range(required.shape[0])
@@ -619,14 +627,14 @@ def envelope(
     return Envelope(
         xyz=shape["xyz"],
         lengths=lengths,
-        l_cr=buckling,
-        n_ed=n_ed,
-        m_y_ed=m_y_ed,
-        m_z_ed=m_z_ed,
-        c_my=c_my,
-        c_mz=c_mz,
+        buckling_length=buckling,
+        axial_force=axial_force,
+        moment_major=moment_major,
+        moment_minor=moment_minor,
+        moment_factor_major=moment_factor_major,
+        moment_factor_minor=moment_factor_minor,
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(catalogue.tube(covering), lengths, steel),
+        mass=mass_ec3(catalogue.tube_at(covering), lengths, steel),
     )

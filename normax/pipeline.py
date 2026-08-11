@@ -45,8 +45,8 @@ from jaxtyping import Float
 from jaxtyping import Int
 
 from normax.analysis.smax import Model
-from normax.analysis.smax import buckling
-from normax.analysis.smax import forces
+from normax.analysis.smax import buckling_modes
+from normax.analysis.smax import member_forces
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
@@ -56,7 +56,7 @@ from normax.ec3.sizing import diameter_envelope as envelope_ec3
 from normax.ec3.sizing import diameter_required as diameter_ec3
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state as governing_ec3
-from normax.ec3.sizing import mass as mass_ec3
+from normax.ec3.sizing import mass_of_tubes as mass_ec3
 from normax.ec3.sizing import utilization_design as utilization_ec3
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.ec3.stability import amplifier_resistance
@@ -64,11 +64,11 @@ from normax.ec3.stability import buckling_length_global
 from normax.ec3.stability import is_adequate
 from normax.ec3.stability import slenderness_global
 from normax.ec3.stability import utilization_frame as utilization_stability
-from normax.formfinding import equilibrium
+from normax.formfinding import equilibrium_state
 from normax.structures import Structure
 
 
-def actions(
+def member_actions(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -100,12 +100,22 @@ def actions(
     actions :
         Axial force, both design moments and both moment factors.
     """
-    member = forces(model, xyz, diameters, steel, catalogue, loads=loads)
+    member = member_forces(model, xyz, diameters, steel, catalogue, loads=loads)
 
-    m_y_ed, c_my = end_moments(member.m_y_ed[:, 0], member.m_y_ed[:, 1])
-    m_z_ed, c_mz = end_moments(member.m_z_ed[:, 0], member.m_z_ed[:, 1])
+    moment_major, moment_factor_major = end_moments(
+        member.moment_major[:, 0], member.moment_major[:, 1]
+    )
+    moment_minor, moment_factor_minor = end_moments(
+        member.moment_minor[:, 0], member.moment_minor[:, 1]
+    )
 
-    return MemberActions(member.n_ed, m_y_ed, m_z_ed, c_my, c_mz)
+    return MemberActions(
+        member.axial_force,
+        moment_major,
+        moment_minor,
+        moment_factor_major,
+        moment_factor_minor,
+    )
 
 
 class Design(NamedTuple):
@@ -121,7 +131,7 @@ class Design(NamedTuple):
     actions :
         Axial force, both design moments and both moment factors of every
         member.
-    l_cr :
+    buckling_length :
         Buckling length used for every member.
     diameters :
         Outer diameter EN 1993-1-1 requires of every member.
@@ -144,13 +154,13 @@ class Design(NamedTuple):
     xyz: Float[Array, "nodes 3"]
     lengths: Float[Array, "members"]
     actions: MemberActions
-    l_cr: Float[Array, "members"]
+    buckling_length: Float[Array, "members"]
     diameters: Float[Array, "members"]
     utilization: Float[Array, "members"]
     mass: Float[Array, ""]
 
 
-def design(
+def design_members(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
     structure: Structure,
@@ -159,9 +169,9 @@ def design(
     steel: SteelGrade,
     catalogue: TubeCatalogue,
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
-    l_cr: Float[Array, "members"] | None = None,
+    buckling_length: Float[Array, "members"] | None = None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Design:
     """
@@ -184,12 +194,12 @@ def design(
         Material properties and partial factors.
     catalogue :
         The section family every member is drawn from.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
-    l_cr :
+    buckling_length :
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
@@ -230,23 +240,28 @@ def design(
     approaches one, and the mass converges to the squash limit instead of to a
     mesh-independent design.
     """
-    state = equilibrium(q, structure, graph)
+    state = equilibrium_state(q, structure, graph)
     lengths = state.lengths[:, 0]
 
-    acting = actions(model, state.xyz, diameters, steel, catalogue, loads=loads)
+    acting = member_actions(model, state.xyz, diameters, steel, catalogue, loads=loads)
 
-    buckling = lengths if l_cr is None else l_cr
+    buckling_modes = lengths if buckling_length is None else buckling_length
 
     required = diameter_ec3(
-        acting, buckling, steel, catalogue, plastic=plastic, resultant=resultant
+        acting,
+        buckling_modes,
+        steel,
+        catalogue,
+        section_class=section_class,
+        resultant=resultant,
     )
 
     used = utilization_ec3(
-        catalogue.tube(required),
+        catalogue.tube_at(required),
         acting,
-        buckling,
+        buckling_modes,
         steel,
-        plastic=plastic,
+        section_class=section_class,
         resultant=resultant,
     )
 
@@ -254,14 +269,14 @@ def design(
         xyz=state.xyz,
         lengths=lengths,
         actions=acting,
-        l_cr=buckling,
+        buckling_length=buckling_modes,
         diameters=required,
         utilization=used,
-        mass=mass_ec3(catalogue.tube(required), lengths, steel),
+        mass=mass_ec3(catalogue.tube_at(required), lengths, steel),
     )
 
 
-def mass(
+def total_mass(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
     structure: Structure,
@@ -270,9 +285,9 @@ def mass(
     steel: SteelGrade,
     catalogue: TubeCatalogue,
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
-    l_cr: Float[Array, "members"] | None = None,
+    buckling_length: Float[Array, "members"] | None = None,
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Float[Array, ""]:
     """
@@ -294,12 +309,12 @@ def mass(
         Material properties and partial factors.
     catalogue :
         The section family every member is drawn from.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
-    l_cr :
+    buckling_length :
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
@@ -320,7 +335,7 @@ def mass(
     One load case only. A structure has to carry all of them, so the objective
     an optimizer sees is `envelope` rather than this.
     """
-    return design(
+    return design_members(
         q,
         diameters,
         structure,
@@ -328,9 +343,9 @@ def mass(
         model,
         steel,
         catalogue,
-        plastic=plastic,
+        section_class=section_class,
         resultant=resultant,
-        l_cr=l_cr,
+        buckling_length=buckling_length,
         loads=loads,
     ).mass
 
@@ -345,17 +360,17 @@ class Envelope(NamedTuple):
         Position of every node at equilibrium.
     lengths :
         Length of every member.
-    l_cr :
+    buckling_length :
         Buckling length used for every member.
-    n_ed :
+    axial_force :
         Axial force of every member under every case, tension positive.
-    m_y_ed :
+    moment_major :
         Larger major-axis end moment of every member under every case.
-    m_z_ed :
+    moment_minor :
         Larger minor-axis end moment of every member under every case.
-    c_my :
+    moment_factor_major :
         Major-axis moment factor of every member under every case.
-    c_mz :
+    moment_factor_minor :
         Minor-axis moment factor of every member under every case.
     required :
         Diameter every case demands of every member on its own.
@@ -384,19 +399,19 @@ class Envelope(NamedTuple):
 
     xyz: Float[Array, "nodes 3"]
     lengths: Float[Array, "members"]
-    l_cr: Float[Array, "members"]
-    n_ed: Float[Array, "cases members"]
-    m_y_ed: Float[Array, "cases members"]
-    m_z_ed: Float[Array, "cases members"]
-    c_my: Float[Array, "cases members"]
-    c_mz: Float[Array, "cases members"]
+    buckling_length: Float[Array, "members"]
+    axial_force: Float[Array, "cases members"]
+    moment_major: Float[Array, "cases members"]
+    moment_minor: Float[Array, "cases members"]
+    moment_factor_major: Float[Array, "cases members"]
+    moment_factor_minor: Float[Array, "cases members"]
     required: Float[Array, "cases members"]
     diameters: Float[Array, "members"]
     utilization: Float[Array, "cases members"]
     mass: Float[Array, ""]
 
 
-def envelope(
+def design_envelope(
     q: Float[Array, "members"],
     diameters: Float[Array, "members"],
     structure: Structure,
@@ -407,9 +422,9 @@ def envelope(
     loads: Float[Array, "cases nodes 3"],
     beta: float | Float[Array, ""],
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
-    l_cr: Float[Array, "members"] | None = None,
+    buckling_length: Float[Array, "members"] | None = None,
 ) -> Envelope:
     """
     Form-find once, analyse every load case, and size for the worst of them.
@@ -437,12 +452,12 @@ def envelope(
     beta :
         Sharpness of the envelope. The design approaches the smallest adequate
         one from above as it grows.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
-    l_cr :
+    buckling_length :
         Buckling length of every member. If None, each member buckles over its
         own length.
 
@@ -472,19 +487,24 @@ def envelope(
     Cases are looped over rather than mapped, the analysis stage not being
     traceable through `vmap`, so the cost is linear in their number.
     """
-    state = equilibrium(q, structure, graph)
+    state = equilibrium_state(q, structure, graph)
     lengths = state.lengths[:, 0]
-    buckling = lengths if l_cr is None else l_cr
+    buckling_modes = lengths if buckling_length is None else buckling_length
 
     acting = [
-        actions(model, state.xyz, diameters, steel, catalogue, loads=case)
+        member_actions(model, state.xyz, diameters, steel, catalogue, loads=case)
         for case in loads
     ]
 
     required = jnp.stack(
         [
             diameter_ec3(
-                case, buckling, steel, catalogue, plastic=plastic, resultant=resultant
+                case,
+                buckling_modes,
+                steel,
+                catalogue,
+                section_class=section_class,
+                resultant=resultant,
             )
             for case in acting
         ]
@@ -495,11 +515,11 @@ def envelope(
     used = jnp.stack(
         [
             utilization_ec3(
-                catalogue.tube(covering),
+                catalogue.tube_at(covering),
                 case,
-                buckling,
+                buckling_modes,
                 steel,
-                plastic=plastic,
+                section_class=section_class,
                 resultant=resultant,
             )
             for case in acting
@@ -508,21 +528,27 @@ def envelope(
 
     # Stacked field by field rather than as a MemberActions, whose fields carry
     # one member axis and not the case axis these gain.
-    n_ed, m_y_ed, m_z_ed, c_my, c_mz = (jnp.stack(field) for field in zip(*acting))
+    (
+        axial_force,
+        moment_major,
+        moment_minor,
+        moment_factor_major,
+        moment_factor_minor,
+    ) = (jnp.stack(field) for field in zip(*acting))
 
     return Envelope(
         xyz=state.xyz,
         lengths=lengths,
-        l_cr=buckling,
-        n_ed=n_ed,
-        m_y_ed=m_y_ed,
-        m_z_ed=m_z_ed,
-        c_my=c_my,
-        c_mz=c_mz,
+        buckling_length=buckling_modes,
+        axial_force=axial_force,
+        moment_major=moment_major,
+        moment_minor=moment_minor,
+        moment_factor_major=moment_factor_major,
+        moment_factor_minor=moment_factor_minor,
         required=required,
         diameters=covering,
         utilization=used,
-        mass=mass_ec3(catalogue.tube(covering), lengths, steel),
+        mass=mass_ec3(catalogue.tube_at(covering), lengths, steel),
     )
 
 
@@ -553,12 +579,12 @@ class Unsmoothed(NamedTuple):
     mass: Float[Array, ""]
 
 
-def unsmoothed(
+def unsmoothed_design(
     result: Envelope,
     steel: SteelGrade,
     catalogue: TubeCatalogue,
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
 ) -> Unsmoothed:
     """
@@ -572,8 +598,8 @@ def unsmoothed(
         Material properties and partial factors.
     catalogue :
         The section family every member is drawn from.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
@@ -598,17 +624,17 @@ def unsmoothed(
     used = jnp.stack(
         [
             utilization_ec3(
-                catalogue.tube(sizes),
+                catalogue.tube_at(sizes),
                 MemberActions(
-                    result.n_ed[case],
-                    result.m_y_ed[case],
-                    result.m_z_ed[case],
-                    result.c_my[case],
-                    result.c_mz[case],
+                    result.axial_force[case],
+                    result.moment_major[case],
+                    result.moment_minor[case],
+                    result.moment_factor_major[case],
+                    result.moment_factor_minor[case],
                 ),
-                result.l_cr,
+                result.buckling_length,
                 steel,
-                plastic=plastic,
+                section_class=section_class,
                 resultant=resultant,
             )
             for case in range(result.required.shape[0])
@@ -618,7 +644,7 @@ def unsmoothed(
     return Unsmoothed(
         diameters=sizes,
         utilization=used,
-        mass=mass_ec3(catalogue.tube(sizes), result.lengths, steel),
+        mass=mass_ec3(catalogue.tube_at(sizes), result.lengths, steel),
     )
 
 
@@ -648,12 +674,12 @@ def governing_case(result: Envelope) -> Int[Array, "members"]:
     return jnp.argmax(result.utilization, axis=0)
 
 
-def governing(
+def governing_states(
     result: Design,
     steel: SteelGrade,
     catalogue: TubeCatalogue,
     *,
-    plastic: bool,
+    section_class: int,
     resultant: bool = True,
 ) -> Float[Array, "members"]:
     """
@@ -667,8 +693,8 @@ def governing(
         Material properties and partial factors.
     catalogue :
         The section family every member is drawn from.
-    plastic :
-        Whether the section is Class 1 or 2. Static, never a traced value.
+    section_class :
+        Cross-section class, 1, 2 or 3. Static, never a traced value.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
@@ -688,12 +714,12 @@ def governing(
     on a subset of them.
     """
     return governing_ec3(
-        catalogue.tube(result.diameters),
+        catalogue.tube_at(result.diameters),
         result.actions,
-        result.l_cr,
+        result.buckling_length,
         steel,
         catalogue,
-        plastic=plastic,
+        section_class=section_class,
         resultant=resultant,
     )
 
@@ -716,7 +742,7 @@ class Stability(NamedTuple):
     slenderness_global :
         Slenderness each member has from the frame's critical load factor,
         §6.3.4(3).
-    l_cr_global :
+    buckling_length_equivalent :
         Buckling length the critical load factor is equivalent to.
 
     Notes
@@ -734,10 +760,10 @@ class Stability(NamedTuple):
     adequate: Bool[Array, ""]
     slenderness_member: Float[Array, "members"]
     slenderness_global: Float[Array, "members"]
-    l_cr_global: Float[Array, "members"]
+    buckling_length_equivalent: Float[Array, "members"]
 
 
-def stability(
+def frame_stability(
     result: Design,
     model: Model,
     steel: SteelGrade,
@@ -792,7 +818,7 @@ def stability(
     equivalent buckling length, a factor scaling the whole load having nothing to
     say about a member the load never reaches.
     """
-    modes = buckling(
+    modes = buckling_modes(
         model,
         result.xyz,
         result.diameters,
@@ -803,20 +829,20 @@ def stability(
     )
     alpha_cr = modes.factors[0]
 
-    gross = catalogue.tube(result.diameters).area
-    inertia = catalogue.tube(result.diameters).second_moment
+    gross = catalogue.tube_at(result.diameters).area
+    inertia = catalogue.tube_at(result.diameters).second_moment
 
     return Stability(
         factors=modes.factors,
         utilization=utilization_stability(alpha_cr, threshold),
         adequate=is_adequate(alpha_cr, threshold),
         slenderness_member=slenderness_from_force(
-            gross, steel, force_critical(inertia, result.l_cr, steel)
+            gross, steel, force_critical(inertia, result.buckling_length, steel)
         ),
         slenderness_global=slenderness_global(
-            amplifier_resistance(gross, steel, result.actions.n_ed), alpha_cr
+            amplifier_resistance(gross, steel, result.actions.axial_force), alpha_cr
         ),
-        l_cr_global=buckling_length_global(
-            alpha_cr, result.actions.n_ed, inertia, steel
+        buckling_length_equivalent=buckling_length_global(
+            alpha_cr, result.actions.axial_force, inertia, steel
         ),
     )

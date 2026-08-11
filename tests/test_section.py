@@ -11,7 +11,7 @@ RATIOS = [10.0, 24.45, 59.58, 90.0]
 
 
 def sample(d, r):
-    return TubeCatalogue(r).tube(d)
+    return TubeCatalogue(r).tube_at(d)
 
 
 # ---- The two leaves ---- #
@@ -195,13 +195,13 @@ def test_a_tube_is_two_leaves():
 
 
 def test_properties_are_jittable():
-    jitted = jax.jit(lambda d, r: TubeCatalogue(r).tube(d).area)
+    jitted = jax.jit(lambda d, r: TubeCatalogue(r).tube_at(d).area)
 
     assert jitted(244.5, 24.45) == pytest.approx(sample(244.5, 24.45).area)
 
 
 def test_properties_are_differentiable():
-    slope = jax.grad(lambda d: TubeCatalogue(24.45).tube(d).area)(244.5)
+    slope = jax.grad(lambda d: TubeCatalogue(24.45).tube_at(d).area)(244.5)
 
     # A = pi d^2 (r - 1) / r^2, so dA/dd is twice the area over the diameter.
     assert float(slope) == pytest.approx(2.0 * float(sample(244.5, 24.45).area) / 244.5)
