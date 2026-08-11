@@ -63,6 +63,7 @@ Run with `uv run --group pipeline python experiments/03_optimize_arch.py`.
 """
 
 from pathlib import Path
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -165,8 +166,32 @@ FLOOR_WEIGHT = 50.0
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = SteelGrade()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 SECTION_CLASS = 3
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, SECTION_CLASS)
+
+# The reads the reports make, compiled. Left eager each one costs an XLA
+# compilation per primitive, which is most of what reporting a design costs.
+unsmoothed_compiled = eqx.filter_jit(unsmoothed_design)
+governing_compiled = eqx.filter_jit(governing_load_case)
+stability_compiled = eqx.filter_jit(frame_stability)
+shortest_compiled = eqx.filter_jit(shortest_member)
+
+
+class SweepReport(NamedTuple):
+    masses: object
+    exact: object
+    numeric: object
+    best: int
+    worst: float
+
+
+class FinalReport(NamedTuple):
+    result: object
+    sized: object
+    decided: object
+    stagger: float
+    alpha_cr: float
+    lengths: object
 
 
 def setup():
@@ -241,7 +266,7 @@ def report_load_cases(problem, load_cases, q):
     What each case demands of each member at the starting shape.
     """
     result = build(q, problem, load_cases, BETA_STOP)
-    decided = np.asarray(governing_load_case(result))
+    decided = np.asarray(governing_compiled(result))
 
     print("The three load cases, each carrying 180 kN")
     print(f"  {'member':>7} {'d LC1':>9} {'d LC2':>9} {'d LC3':>9} {'governs':>16}")
@@ -268,7 +293,7 @@ def report_smoothing(problem, load_cases, q):
 
     for beta in SHARPNESSES:
         result = build(q, problem, load_cases, beta)
-        exact = unsmoothed_design(result, problem, section_class=SECTION_CLASS)
+        exact = unsmoothed_compiled(result, problem, section_class=SECTION_CLASS)
 
         excess = float(result.mass) / float(exact.mass) - 1.0
         bound = float(load_cases.shape[0] ** (2.0 / float(beta))) - 1.0
@@ -333,10 +358,12 @@ def report_sweep(problem, load_cases, q):
     worst = max(abs(a - b) / largest for a, b in zip(exact, numeric))
 
     print(f"  best uniform scale {SCALES[best]:.2f}, mass {masses[best]:.9f} t")
-    print(f"  interior minimum   {interior}")
+    print(f"  interior minimum {interior}")
     print(f"  worst scaled gradient error {worst:.2e}")
 
-    return np.asarray(masses), np.asarray(exact), np.asarray(numeric), best, worst
+    return SweepReport(
+        np.asarray(masses), np.asarray(exact), np.asarray(numeric), best, worst
+    )
 
 
 def report_descent(problem, load_cases, q, *, floor):
@@ -373,206 +400,184 @@ def report_descent(problem, load_cases, q, *, floor):
     return walked, bounds
 
 
+def design_under(envelope, sized, load_case=0):
+    """
+    A finished Design: unsmoothed sizes, actions of one load case.
+    """
+    actions = MemberActions(
+        envelope.axial_force[load_case],
+        envelope.moment_major[load_case],
+        envelope.moment_minor[load_case],
+        envelope.moment_factor_major[load_case],
+        envelope.moment_factor_minor[load_case],
+    )
+    return Design(
+        envelope.xyz,
+        envelope.lengths,
+        actions,
+        envelope.buckling_length,
+        sized.diameters,
+        sized.utilization[load_case],
+        sized.mass,
+    )
+
+
 def report_final(problem, load_cases, walked, bounds, label):
     """
     The design the descent arrived at, read back against the standard.
     """
     q = walked.q[-1]
     result = build(q, problem, load_cases, BETA_STOP)
-    exact = unsmoothed_design(result, problem, section_class=SECTION_CLASS)
-    decided = np.asarray(governing_load_case(result))
-
-    lower = int(jnp.sum(jnp.abs(q - bounds[0]) < 1e-6))
-    upper = int(jnp.sum(jnp.abs(q - bounds[1]) < 1e-6))
-
+    sized = unsmoothed_compiled(result, problem, section_class=SECTION_CLASS)
+    decided = np.asarray(governing_compiled(result))
     lengths = np.asarray(result.lengths)
 
-    print(f"\nThe design the descent arrived at, {label}")
-    print(f"  mass, enveloped      {float(result.mass):.9f} t")
-    print(f"  mass, unsmoothed     {float(exact.mass):.9f} t")
-    print(f"  worst utilization    {float(jnp.max(exact.utilization)):.15f}")
-    print(
-        f"  diameters            {float(jnp.min(exact.diameters)):.2f}"
-        f" .. {float(jnp.max(exact.diameters)):.2f} mm"
-    )
-    print(f"  rise                 {float(jnp.max(result.xyz[:, 2])):.1f} mm")
-    print(f"  developed length     {float(jnp.sum(result.lengths)):.1f} mm")
-    print(
-        f"  member length        {lengths.min():.1f} .. {lengths.max():.1f} mm,"
-        f" ratio {lengths.max() / lengths.min():.1f}"
-    )
-    smoothed = float(shortest_member(result.lengths, FLOOR_BETA))
-    print(f"  shortest, smoothed   {smoothed:.1f} mm")
+    at_lower = int(jnp.sum(jnp.abs(q - bounds[0]) < 1e-6))
+    at_upper = int(jnp.sum(jnp.abs(q - bounds[1]) < 1e-6))
+    d_lo, d_hi = float(jnp.min(sized.diameters)), float(jnp.max(sized.diameters))
+    shortest, longest = lengths.min(), lengths.max()
+    smoothed = float(shortest_compiled(result.lengths, FLOOR_BETA))
     stubs = int(np.sum(lengths < FLOOR))
-    print(f"  members under {FLOOR:.0f} mm   {stubs} of {NUM_EDGES}")
-    print(f"  force densities at the lower bound {lower}, at the upper {upper}")
 
-    counts = [int(np.sum(decided == load_case)) for load_case in range(3)]
-    for name, count in zip(CASE_NAMES, counts):
-        print(f"  {name:>16} governs {count:>3} of {NUM_EDGES}")
+    print(f"\nThe design the descent arrived at, {label}")
+    print(f"  mass, enveloped: {float(result.mass):.9f} t")
+    print(f"  mass, unsmoothed: {float(sized.mass):.9f} t")
+    print(f"  worst utilization: {float(jnp.max(sized.utilization)):.15f}")
+    print(f"  diameters: {d_lo:.2f} .. {d_hi:.2f} mm")
+    print(f"  rise: {float(jnp.max(result.xyz[:, 2])):.1f} mm")
+    print(f"  developed length: {float(jnp.sum(result.lengths)):.1f} mm")
+    ratio = longest / shortest
+    print(f"  member length: {shortest:.1f} .. {longest:.1f} mm (ratio {ratio:.1f})")
+    print(f"  shortest, smoothed: {smoothed:.1f} mm")
+    print(f"  members under {FLOOR:.0f} mm: {stubs} of {NUM_EDGES}")
+    print(f"  force densities at bounds: {at_lower} lower, {at_upper} upper")
+    for index, name in enumerate(CASE_NAMES):
+        print(f"  {name} governs {int(np.sum(decided == index))} of {NUM_EDGES}")
 
-    relaxed = result
+    # One analysis, then size, then re-analyse at those sizes. The first pass is
+    # what the objective uses; the rest measure how much that one-shot costs.
+    print("\n  Staggered re-analysis")
     diameters = jnp.full(NUM_EDGES, SEED)
-    print(f"\n  {'pass':>6} {'relative move':>15} {'mass [t]':>14}")
+    relaxed = result
     for step in range(PASSES):
         relaxed = build(q, problem, load_cases, BETA_STOP, diameters)
-        move = float(
-            jnp.max(jnp.abs(relaxed.diameters - diameters) / relaxed.diameters)
-        )
-        print(f"  {step:>6} {move:>15.3e} {float(relaxed.mass):>14.9f}")
+        shift = jnp.abs(relaxed.diameters - diameters) / relaxed.diameters
+        move = float(jnp.max(shift))
+        print(f"  pass {step}: move {move:.3e}, mass {float(relaxed.mass):.9f} t")
         diameters = relaxed.diameters
-
     stagger = abs(float(result.mass) - float(relaxed.mass)) / float(relaxed.mass)
     print(f"  one pass costs {stagger:.3%} of the mass")
 
-    single = Design(
-        result.xyz,
-        result.lengths,
-        MemberActions(
-            result.axial_force[0],
-            result.moment_major[0],
-            result.moment_minor[0],
-            result.moment_factor_major[0],
-            result.moment_factor_minor[0],
-        ),
-        result.buckling_length,
-        exact.diameters,
-        exact.utilization[0],
-        exact.mass,
-    )
     # A critical load factor belongs to a load case, and the case the shape was
     # found under is not the one that sized it, so quoting only that one would
     # flatter the design.
-    print(f"\n  {'case':>16} {'alpha_cr':>10} {'adequate':>10}")
-    weakest = None
-    for name, load_case in zip(CASE_NAMES, load_cases):
-        factors = frame_stability(single, problem, num_modes=1, loads=load_case)
-        alpha_cr = float(factors.factors[0])
-        weakest = alpha_cr if weakest is None else min(weakest, alpha_cr)
-        print(f"  {name:>16} {alpha_cr:>10.4f} {str(bool(factors.adequate)):>10}")
+    print("\n  Critical load factor by case")
+    frame = design_under(result, sized)
+    weakest = float("inf")
+    for name, loads in zip(CASE_NAMES, load_cases):
+        checked = stability_compiled(frame, problem, num_modes=1, loads=loads)
+        alpha_cr = float(checked.factors[0])
+        weakest = min(weakest, alpha_cr)
+        verdict = "adequate" if bool(checked.adequate) else "inadequate"
+        print(f"  {name}: alpha_cr {alpha_cr:.4f}, {verdict}")
 
-    return result, exact, decided, stagger, weakest, lengths
+    return FinalReport(result, sized, decided, stagger, weakest, lengths)
 
 
 def main():
     problem, q = setup()
     load_cases = build_load_cases(problem.structure)
 
-    start, _ = report_load_cases(problem, load_cases, q)
+    report_load_cases(problem, load_cases, q)
     report_smoothing(problem, load_cases, q)
-    masses, exact, numeric, best, worst = report_sweep(problem, load_cases, q)
+    sweep = report_sweep(problem, load_cases, q)
     walked, bounds = report_descent(problem, load_cases, q, floor=0.0)
-    final, sized, decided_final, stagger, alpha_cr, lengths = report_final(
-        problem, load_cases, walked, bounds, "no length floor"
-    )
+    loose = report_final(problem, load_cases, walked, bounds, "no length floor")
 
     # The funicular design, which is where the descent starts and the only
     # reference either reduction means anything against.
     funicular = int(np.argmin(np.abs(SCALES - 1.0)))
-    reduction = 1.0 - float(sized.mass) / masses[funicular]
-    against_best = 1.0 - float(sized.mass) / masses[best]
+    reduction = 1.0 - float(loose.sized.mass) / sweep.masses[funicular]
+    against_best = 1.0 - float(loose.sized.mass) / sweep.masses[sweep.best]
 
     floored, _ = report_descent(problem, load_cases, q, floor=FLOOR)
-    held, held_sized, decided_held, _, held_alpha, held_lengths = report_final(
-        problem, load_cases, floored, bounds, f"a {FLOOR:.0f} mm floor"
-    )
+    floor_label = f"a {FLOOR:.0f} mm floor"
+    held = report_final(problem, load_cases, floored, bounds, floor_label)
 
     # The best the single force density can do, which is the design the twenty
     # variables have to beat and the one the figures compare against.
-    single = build(q * SCALES[best], problem, load_cases, BETA_STOP)
-    single_sized = unsmoothed_design(single, problem, section_class=SECTION_CLASS)
-    decided_single = np.asarray(governing_load_case(single))
+    single = build(q * SCALES[sweep.best], problem, load_cases, BETA_STOP)
+    single_sized = unsmoothed_compiled(single, problem, section_class=SECTION_CLASS)
+    decided_single = np.asarray(governing_compiled(single))
 
     FIGURES.mkdir(exist_ok=True)
-    figure_optimization(
-        MassSweep(SCALES, masses, funicular),
-        GradientCheck(exact, numeric),
-        (
-            Descent(
-                "no length floor",
-                np.asarray(walked.mass),
-                np.asarray(walked.beta),
-            ),
-            Descent(
-                f"{FLOOR:.0f} mm floor",
-                np.asarray(floored.mass),
-                np.asarray(floored.beta),
-            ),
-        ),
-    ).savefig(FIGURES / "03_optimization.png", dpi=200)
-    figure_load_cases(
-        problem.structure.edges,
-        (
-            Form(
-                f"Best single $q$, {masses[best]:.4f} t",
-                single.xyz,
-                single_sized.diameters,
-                decided_single,
-            ),
-            Form(
-                f"Per member, no floor, {float(sized.mass):.4f} t",
-                final.xyz,
-                sized.diameters,
-                decided_final,
-            ),
-            Form(
-                f"Per member, {FLOOR:.0f} mm floor, {float(held_sized.mass):.4f} t",
-                held.xyz,
-                held_sized.diameters,
-                decided_held,
-            ),
-        ),
-        CASE_NAMES,
-    ).savefig(FIGURES / "03_load_cases.png", dpi=200)
+    loose_descent = Descent(
+        "no length floor", np.asarray(walked.mass), np.asarray(walked.beta)
+    )
+    floor_name = f"{FLOOR:.0f} mm floor"
+    held_descent = Descent(
+        floor_name, np.asarray(floored.mass), np.asarray(floored.beta)
+    )
+    sweep_plot = MassSweep(SCALES, sweep.masses, funicular)
+    grad_plot = GradientCheck(sweep.exact, sweep.numeric)
+    opt_fig = figure_optimization(sweep_plot, grad_plot, (loose_descent, held_descent))
+    opt_fig.savefig(FIGURES / "03_optimization.png", dpi=200)
+
+    title_single = f"Best single $q$, {sweep.masses[sweep.best]:.4f} t"
+    title_loose = f"Per member, no floor, {float(loose.sized.mass):.4f} t"
+    title_held = f"Per member, {FLOOR:.0f} mm floor, {float(held.sized.mass):.4f} t"
+    forms = (
+        Form(title_single, single.xyz, single_sized.diameters, decided_single),
+        Form(title_loose, loose.result.xyz, loose.sized.diameters, loose.decided),
+        Form(title_held, held.result.xyz, held.sized.diameters, held.decided),
+    )
+    cases_fig = figure_load_cases(problem.structure.edges, forms, CASE_NAMES)
+    cases_fig.savefig(FIGURES / "03_load_cases.png", dpi=200)
 
     print("\nSummary")
-    print(f"  interior minimum in the uniform sweep   {0 < best < len(SCALES) - 1}")
     print(
-        f"  worst scaled gradient error             {worst:.2e}"
-        f"  (target {TOLERANCE_GRADIENT:.0e})"
+        f"  interior minimum in the uniform sweep: {0 < sweep.best < len(SCALES) - 1}"
     )
     print(
-        f"  worst utilization of the final design   "
-        f"{float(jnp.max(sized.utilization)):.12f}"
+        f"  worst scaled gradient error: {sweep.worst:.2e} ({TOLERANCE_GRADIENT:.0e})"
     )
-    print(f"  lighter than the funicular arch         {reduction:.1%}")
-    print(f"  lighter than the best uniform arch      {against_best:.1%}")
+    worst_utilization = float(jnp.max(loose.sized.utilization))
+    print(f"  worst utilization of the final design: {worst_utilization:.12f}")
+    print(f"  lighter than the funicular arch: {reduction:.1%}")
+    print(f"  lighter than the best uniform arch: {against_best:.1%}")
 
     print("\nWhat a length floor costs, and what it buys")
-    print(f"  {'':>22} {'unconstrained':>16} {'floored':>16}")
+    loose_ratio = loose.lengths.max() / loose.lengths.min()
+    held_ratio = held.lengths.max() / held.lengths.min()
     rows = (
-        ("mass [t]", float(sized.mass), float(held_sized.mass)),
-        ("shortest member [mm]", lengths.min(), held_lengths.min()),
-        ("longest member [mm]", lengths.max(), held_lengths.max()),
-        (
-            "length ratio",
-            lengths.max() / lengths.min(),
-            held_lengths.max() / held_lengths.min(),
-        ),
+        ("mass [t]", float(loose.sized.mass), float(held.sized.mass)),
+        ("shortest member [mm]", loose.lengths.min(), held.lengths.min()),
+        ("longest member [mm]", loose.lengths.max(), held.lengths.max()),
+        ("length ratio", loose_ratio, held_ratio),
         (
             "members under floor",
-            int(np.sum(lengths < FLOOR)),
-            int(np.sum(held_lengths < FLOOR)),
+            int(np.sum(loose.lengths < FLOOR)),
+            int(np.sum(held.lengths < FLOOR)),
         ),
-        ("alpha_cr, weakest", alpha_cr, held_alpha),
+        ("alpha_cr, weakest", loose.alpha_cr, held.alpha_cr),
     )
-    for name, loose, tight in rows:
-        print(f"  {name:>22} {loose:>16.4f} {tight:>16.4f}")
-    kept = 1.0 - float(held_sized.mass) / masses[funicular]
+    for name, free, floored_value in rows:
+        print(f"  {name}: unconstrained {free:.4f}, floored {floored_value:.4f}")
+    kept = 1.0 - float(held.sized.mass) / sweep.masses[funicular]
     print(f"  the floored design is {kept:.1%} lighter than the funicular arch")
 
     print("\nWhat the answer is not")
-    print(f"  one staggered pass costs                {stagger:.2%} of the mass")
-    print(f"  critical load factor of the design      {alpha_cr:.4f}")
+    print(f"  one staggered pass costs: {loose.stagger:.2%} of the mass")
+    print(f"  critical load factor of the design: {loose.alpha_cr:.4f}")
     print("  the descent spent the stability margin the starting arch had, and")
     print("  nothing in a member check was ever going to stop it. Global")
     print("  stability is outside the pipeline by design; this is what that costs.")
 
     passed = (
-        0 < best < len(SCALES) - 1
-        and worst < TOLERANCE_GRADIENT
-        and float(jnp.max(sized.utilization)) < 1.0 + 1e-9
-        and float(sized.mass) < masses[best]
+        0 < sweep.best < len(SCALES) - 1
+        and sweep.worst < TOLERANCE_GRADIENT
+        and float(jnp.max(loose.sized.utilization)) < 1.0 + 1e-9
+        and float(loose.sized.mass) < sweep.masses[sweep.best]
     )
     print(f"\n{'PASS' if passed else 'FAIL'}")
 

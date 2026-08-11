@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+### P9d — the annealed descent compiled once instead of once per round
+
+A profile of `experiments/03_optimize_arch.py` found the run compile-bound
+rather than arithmetic-bound: **81% of 25.0 s went to XLA compilation**, and the
+whole pipeline — form finding, frame analysis and the standard — evaluated its
+value and gradient in 13 ms. Half the run, 12.6 s over 11 compilations, was
+attributable to one line.
+
+- **`optimize_annealed` captured the sharpness instead of passing it.** Each
+  round built a fresh closure and handed it to a fresh `eqx.filter_jit`, so five
+  rounds were five programs and no compilation carried over. Both halves of that
+  mattered independently: a new `filter_jit` per round starts an empty cache, and
+  a captured array is baked in as a constant rather than traced. One compiled
+  value-and-gradient over `(q, beta)` is now built before the loop and every
+  round calls it. `jax.value_and_grad` already differentiates argument zero
+  alone, so `value_and_gradient`'s body did not change — only its type and its
+  docstring.
+- **The schedule is converted to an array first.** The signature accepts a
+  `Sequence[float]`, and a Python float leaf is *static* under `eqx.filter_jit`:
+  left alone it would compile a program per round and silently give the cost
+  back. Converting once also settles the weak/strong dtype, so a list and an
+  array trace the same program rather than two.
+- **Two docstrings asserted the retrace was unavoidable** — `value_and_gradient`
+  claimed rounds "cannot" share, `minimize_bounded` that a schedule "pays for as
+  many as it has rounds". Both were false and both would have talked the next
+  reader out of the fix, so both now state why one traced sharpness parameterizes
+  one program.
+- **The experiment's reporting path was eager**, costing 286 XLA compilations for
+  3.5 s because `unsmoothed_design`, `governing_load_case`, `frame_stability` and
+  `shortest_member` compiled a program per primitive. All four take their clause
+  selectors as static keywords, so `eqx.filter_jit` applies unchanged.
+
+**25.0 s to 10.3 s measured, 530 compilations to 226**; the dominant site falls
+from 11 compilations and 12.6 s to 2 and 2.5 s, which is one per descent, the
+unconstrained and floored objectives being genuinely different functions.
+
+Two tests guard it, because a refactor away from either would be silent. One
+counts traces of the objective across a five-round schedule and asserts exactly
+one; the other does the same for a schedule of plain floats.
+`test_the_sharpness_reaches_the_objective` had read `float(beta)` from inside the
+objective, which worked only because the sharpness was concrete; it now asserts
+the recorded mass equals the objective recomputed at each iterate's own
+sharpness, which tests the same claim from outside.
+
+The value is unchanged to 1.3e-15 and the gradient to 1.4e-11 — the latter being
+bisection's root tolerance carried into the implicit adjoint, three orders inside
+the experiment's own 2e-7 target. **The floored result is unmoved at 31.7%
+lighter than the funicular arch**, `alpha_cr` 1.7227 to 1.7158. The unconstrained
+descent lands elsewhere, 0.0663 t against 0.0700 t, which is the plateau already
+recorded under P4 rather than a consequence of this change.
+
+`experiments/03_optimize_arch.py` also picked up `ruff format` and three E501
+fixes it had been carrying unformatted, and carries the tail of P9's container
+work that had been sitting uncommitted in the tree: `SweepReport` and
+`FinalReport` in place of the bare tuples `report_sweep` and `report_final`
+returned, and a `design_under` helper. Same thread as P9 and P9b, recorded here
+because it rode along on this commit rather than on its own.
+
 ### P9c — experiment 10, and why it had been failing
 
 Three causes, only one of which was a tolerance.

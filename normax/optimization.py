@@ -204,23 +204,22 @@ def annealing_schedule(
 
 
 def value_and_gradient(
-    objective: Callable[[Float[Array, "members"]], Float[Array, ""]],
-) -> Callable[
-    [Float[Array, "members"]], tuple[Float[Array, ""], Float[Array, "members"]]
-]:
+    objective: Callable[..., Float[Array, ""]],
+) -> Callable[..., tuple[Float[Array, ""], Float[Array, "members"]]]:
     """
     The value and the gradient of an objective together, compiled once.
 
     Parameters
     ----------
     objective :
-        The mass, as a function of the force densities alone.
+        The mass, as a function of the force densities and of anything else it
+        is parameterized by. Differentiated in its first argument alone.
 
     Returns
     -------
     value_and_gradient :
-        A function returning both, tracing on its first call and running the
-        compiled program on every later one.
+        A function of the same arguments returning both, tracing on its first
+        call and running the compiled program on every later one.
 
     Notes
     -----
@@ -231,9 +230,15 @@ def value_and_gradient(
     charging a descent for it measures the tracer.
 
     Reusing one across several searches is what makes the compilation a cost per
-    objective rather than per search. Two searches over the same objective can
-    share this; two rounds of an annealing schedule cannot, their sharpnesses
-    being different constants captured in different programs.
+    objective rather than per search, and an objective that takes what varies as
+    an argument rather than capturing it is what makes that reuse possible. An
+    annealing schedule shares one program across all of its rounds this way: a
+    traced sharpness parameterizes a single program instead of selecting between
+    one program per round.
+
+    **What varies must reach the objective as an array.** A Python float is a
+    static argument under `eqx.filter_jit` and compiles a program of its own,
+    which gives back the cost this exists to avoid.
     """
     return eqx.filter_jit(jax.value_and_grad(objective))
 
@@ -294,12 +299,10 @@ def minimize_bounded(
     of the search then includes a fixed cost that has nothing to do with either
     the objective or the optimizer.
 
-    One compilation covers one objective, so an annealing schedule pays for as
-    many as it has rounds: the sharpness reaches the objective as a captured
-    constant rather than an argument, and a captured array is baked into the
-    program rather than traced. That is the price of staying generic over any
-    scalar objective, and it is a fixed cost per round against a saving on every
-    evaluation within it.
+    One compilation covers one objective, and a schedule of them covers all its
+    rounds provided the sharpness reaches the objective as a traced argument
+    rather than a captured constant. `optimize_annealed` hands one compiled
+    function down for that reason.
 
     The value at an iterate the search never evaluated directly is recovered from
     this same compiled function and its gradient discarded, rather than by
@@ -409,15 +412,22 @@ def optimize_annealed(
     safe side, and stopping early leaves a heavier structure rather than an
     inadequate one.
 
-    **Each round compiles its own objective, and does so here rather than inside
-    the search.** A sharpness reaches the objective as a captured constant, so a
-    round is a different program from its neighbour and no compilation carries
-    over. Building it at this level is what keeps that cost outside the descent it
-    pays for, and visible to anything timing one.
+    **Every round shares one compiled objective, built here rather than inside
+    the search.** The sharpness is an argument of that program rather than a
+    constant captured in it, so a round is the same program as its neighbour at a
+    different value and the compilation is paid once for the whole schedule.
+    Building it at this level is what keeps that cost outside the descent it pays
+    for, and visible to anything timing one.
+
+    The schedule is converted to an array first, so that a sequence of floats is
+    traced rather than compiled into a program per round.
     """
     iterates = []
     masses = []
     sharpnesses = []
+
+    compiled = value_and_gradient(objective)
+    schedule = jnp.asarray(schedule)
 
     for sharpness in schedule:
 
@@ -430,7 +440,7 @@ def optimize_annealed(
             bounds=bounds,
             iterations=iterations,
             sharpness=sharpness,
-            gradient=value_and_gradient(round_objective),
+            gradient=lambda x, sharpness=sharpness: compiled(x, sharpness),
         )
         q = walked.q[-1]
 

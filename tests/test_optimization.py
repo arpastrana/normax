@@ -161,18 +161,50 @@ def test_the_annealed_descent_reaches_the_same_minimum():
 
 def test_the_sharpness_reaches_the_objective():
     # A round has to be taken under its own sharpness, or annealing does nothing
-    # at all and the schedule is decoration.
-    seen = []
+    # at all and the schedule is decoration. Read off the objective rather than
+    # inside it: the sharpness arrives traced, so only its effect is concrete.
+    walked = optimize_annealed(
+        bowl, START, annealing_schedule(2.0, 8.0, 3), bounds=BOUNDS, iterations=3
+    )
 
-    def watched(q, beta):
-        seen.append(float(beta))
+    assert sorted(set(np.asarray(walked.beta).tolist())) == pytest.approx(
+        [2.0, 4.0, 8.0]
+    )
+    for q, beta, mass in zip(walked.q, walked.beta, walked.mass):
+        assert float(mass) == pytest.approx(float(bowl(q, beta)), rel=1e-12)
+
+
+def test_the_schedule_traces_the_objective_once():
+    # The sharpness parameterizes one compiled program rather than selecting
+    # between one per round. Capturing it again would compile the pipeline as
+    # many times as the schedule is long, which is most of what a descent costs.
+    traces = 0
+
+    def counted(q, beta):
+        nonlocal traces
+        traces += 1
         return bowl(q, beta)
 
     optimize_annealed(
-        watched, START, annealing_schedule(2.0, 8.0, 3), bounds=BOUNDS, iterations=3
+        counted, START, annealing_schedule(2.0, 8.0, 5), bounds=BOUNDS, iterations=3
     )
 
-    assert sorted(set(seen)) == pytest.approx([2.0, 4.0, 8.0])
+    assert traces == 1
+
+
+def test_a_schedule_of_plain_floats_also_traces_once():
+    # A float leaf is static under `eqx.filter_jit`, so a sequence that is not
+    # converted to an array compiles a program per round without saying so.
+    traces = 0
+
+    def counted(q, beta):
+        nonlocal traces
+        traces += 1
+        return bowl(q, beta)
+
+    optimize_annealed(counted, START, [2.0, 4.0, 8.0], bounds=BOUNDS, iterations=3)
+
+    assert traces == 1
 
 
 # --------------------------------------------------------------------------- #
