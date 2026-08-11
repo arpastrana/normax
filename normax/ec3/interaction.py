@@ -30,6 +30,8 @@ cross-section class, which is fixed by the configured diameter-to-thickness
 ratio. It is therefore a static choice, never a branch on a traced value.
 """
 
+from typing import NamedTuple
+
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -43,6 +45,34 @@ C_M_MINIMUM = 0.4
 # utilization as a non-differentiable diagnostic.
 GOVERNING_MAJOR = 0.0
 GOVERNING_MINOR = 1.0
+
+
+class InteractionFactors(NamedTuple):
+    """
+    The four factors coupling each buckling axis to each bending moment.
+
+    Attributes
+    ----------
+    yy :
+        Major-axis buckling against major-axis bending.
+    yz :
+        Major-axis buckling against minor-axis bending.
+    zy :
+        Minor-axis buckling against major-axis bending.
+    zz :
+        Minor-axis buckling against minor-axis bending.
+
+    Notes
+    -----
+    EN 1993-1-1 Annex B, Table B.1. Named rather than positional because the two
+    off-diagonal factors differ, and swapping them produces a plausible number
+    that no check can refuse.
+    """
+
+    yy: Float[Array, "members"]
+    yz: Float[Array, "members"]
+    zy: Float[Array, "members"]
+    zz: Float[Array, "members"]
 
 
 def c_m_linear(psi: Float[Array, "members"]) -> Float[Array, "members"]:
@@ -381,20 +411,14 @@ def interaction_factors(
     gamma_m1: float | Float[Array, ""] = GAMMA_M1,
     *,
     plastic: bool,
-) -> tuple[
-    Float[Array, "members"],
-    Float[Array, "members"],
-    Float[Array, "members"],
-    Float[Array, "members"],
-]:
+) -> InteractionFactors:
     """
     All four interaction factors for a hollow section.
 
     Returns
     -------
     factors :
-        The factors coupling each axis to each moment, in the order major to
-        major, major to minor, minor to major, minor to minor.
+        The factors coupling each axis to each moment.
 
     Notes
     -----
@@ -408,11 +432,11 @@ def interaction_factors(
     diagonal_y = k_yy(c_my, lam_y, ratio_y, plastic=plastic)
     diagonal_z = k_zz(c_mz, lam_z, ratio_z, plastic=plastic)
 
-    return (
-        diagonal_y,
-        k_yz(diagonal_z, plastic=plastic),
-        k_zy(diagonal_y, plastic=plastic),
-        diagonal_z,
+    return InteractionFactors(
+        yy=diagonal_y,
+        yz=k_yz(diagonal_z, plastic=plastic),
+        zy=k_zy(diagonal_y, plastic=plastic),
+        zz=diagonal_z,
     )
 
 
@@ -424,10 +448,7 @@ def checks(
     chi_z: Float[Array, "members"],
     n_rk: Float[Array, "members"],
     m_rk: Float[Array, "members"],
-    factor_yy: Float[Array, "members"],
-    factor_yz: Float[Array, "members"],
-    factor_zy: Float[Array, "members"],
-    factor_zz: Float[Array, "members"],
+    factors: InteractionFactors,
     gamma_m1: float | Float[Array, ""] = GAMMA_M1,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
@@ -449,14 +470,8 @@ def checks(
         Characteristic resistance to axial force.
     m_rk :
         Characteristic bending resistance.
-    factor_yy :
-        Interaction factor coupling major-axis buckling to major-axis bending.
-    factor_yz :
-        Interaction factor coupling major-axis buckling to minor-axis bending.
-    factor_zy :
-        Interaction factor coupling minor-axis buckling to major-axis bending.
-    factor_zz :
-        Interaction factor coupling minor-axis buckling to minor-axis bending.
+    factors :
+        The four interaction factors of Table B.1.
     gamma_m1 :
         Partial factor for member instability.
 
@@ -482,8 +497,8 @@ def checks(
     major = jnp.asarray(m_y_ed) / bending
     minor = jnp.asarray(m_z_ed) / bending
 
-    first = ratio_y + factor_yy * major + factor_yz * minor
-    second = ratio_z + factor_zy * major + factor_zz * minor
+    first = ratio_y + factors.yy * major + factors.yz * minor
+    second = ratio_z + factors.zy * major + factors.zz * minor
 
     return first, second
 
@@ -530,7 +545,7 @@ def _checks(
         plastic=plastic,
     )
 
-    return checks(n_ed, m_y_ed, m_z_ed, chi_y, chi_z, n_rk, m_rk, *factors, gamma_m1)
+    return checks(n_ed, m_y_ed, m_z_ed, chi_y, chi_z, n_rk, m_rk, factors, gamma_m1)
 
 
 def governing_equation(

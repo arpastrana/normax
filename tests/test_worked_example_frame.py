@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.ec3.interaction import InteractionFactors
 from normax.ec3.interaction import checks
 from normax.ec3.interaction import interaction_factors
 from normax.ec3.interaction import utilization
@@ -61,10 +62,7 @@ def rafter_checks(n_ed, m_y_ed):
         CHI_Z,
         N_PL_RD,
         M_PL_Y_RD,
-        FACTOR_YY,
-        0.0,
-        FACTOR_ZY,
-        0.0,
+        InteractionFactors(yy=FACTOR_YY, yz=0.0, zy=FACTOR_ZY, zz=0.0),
     )
 
 
@@ -138,7 +136,14 @@ def test_segment_matches_the_book(
     # gives 0.64. See the errata section of docs/clauses.md -- this asserts the
     # corrected value, so a fixture built on the printed one would fail here.
     _, second = checks(
-        n_ed, m_y_ed, 0.0, 1.0, 1.0, n_b_rd, m_b_rd, 0.0, 0.0, factor_zy, 0.0
+        n_ed,
+        m_y_ed,
+        0.0,
+        1.0,
+        1.0,
+        n_b_rd,
+        m_b_rd,
+        InteractionFactors(yy=0.0, yz=0.0, zy=factor_zy, zz=0.0),
     )
 
     assert second == pytest.approx(expected, abs=TOLERANCE), label
@@ -147,7 +152,18 @@ def test_segment_matches_the_book(
 def test_the_governing_segment_is_the_one_the_book_identifies():
     # B3X reaches 0.99 and is the critical segment of the rafter.
     values = [
-        float(checks(n, m, 0.0, 1.0, 1.0, n_b, m_b, 0.0, 0.0, k, 0.0)[1])
+        float(
+            checks(
+                n,
+                m,
+                0.0,
+                1.0,
+                1.0,
+                n_b,
+                m_b,
+                InteractionFactors(yy=0.0, yz=0.0, zy=k, zz=0.0),
+            )[1]
+        )
         for _, n, m, n_b, m_b, k, _ in SEGMENTS
     ]
 
@@ -181,7 +197,7 @@ def test_supplying_the_factors_agrees_with_deriving_them():
         1.00,
         N_PL_RD,
         M_PL_Y_RD,
-        *factors,
+        factors,
     )
     derived = utilization(
         480.3e3,
