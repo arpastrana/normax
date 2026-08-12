@@ -27,7 +27,7 @@ as the square of the radius of gyration over the member length, so the gap
 closes as the members thin, and it depends on neither the modulus nor the scale
 of the loading. The table below shows all three.
 
-Run with `uv run --group pipeline python experiments/08_arch_formfind_analyse.py`.
+Run with `uv run --group pipeline python experiments/08_arch_formfind_analyze.py`.
 """
 
 from collections.abc import Callable
@@ -63,7 +63,7 @@ from normax.visualization import HandoffForces
 from normax.visualization import figure_handoff
 
 # A 10 m arch of ten members under a 20 kN load at every free node. Units are
-# millimetres and newtons throughout, as in every other module here.
+# millimeters and newtons throughout, as in every other module here.
 SPAN = 10_000.0
 LOAD = 20_000.0
 NUM_EDGES = 10
@@ -125,7 +125,7 @@ class FunicularArch(NamedTuple):
 
 class HandoffGap(NamedTuple):
     """
-    How far the analysed forces depart from the ones form finding implied.
+    How far the analyzed forces depart from the ones form finding implied.
 
     Attributes
     ----------
@@ -255,11 +255,11 @@ def report_members(
     rows = []
     for edge in range(NUM_EDGES):
         expected = float(arch.axial_force[edge])
-        analysed = float(member.axial_force[edge])
+        analyzed = float(member.axial_force[edge])
         peak = float(jnp.max(jnp.abs(member.moment_major[edge])))
-        gap = abs(analysed - expected) / abs(expected)
+        gap = abs(analyzed - expected) / abs(expected)
         bending = peak / abs(expected * float(arch.lengths[edge]))
-        rows.append((edge, expected / 1e3, analysed / 1e3, gap, bending))
+        rows.append((edge, expected / 1e3, analyzed / 1e3, gap, bending))
 
     report.write_heading(f"Member by member, at a diameter of {DIAMETER:.0f} mm")
     report.write_table(columns, rows)
@@ -349,9 +349,9 @@ def main(verbose: bool = True) -> None:
 
     def objective(q):
         state = equilibrium_state(q, arch.structure, arch.graph)
-        analysed = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
+        analyzed = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
 
-        return jnp.sum(analysed.axial_force**2)
+        return jnp.sum(analyzed.axial_force**2)
 
     q = jnp.full(NUM_EDGES, FORCE_DENSITY)
     gradient = jax.grad(objective)(q)

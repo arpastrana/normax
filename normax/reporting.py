@@ -204,7 +204,7 @@ class ReportWriter:
 
     def write_entries(self, entries: Sequence[tuple[str, str]]) -> None:
         """
-        Labelled values, the labels widened to the longest of them.
+        Labeled values, the labels widened to the longest of them.
         """
         if not self.verbose:
             return

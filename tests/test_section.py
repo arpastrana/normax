@@ -158,7 +158,7 @@ def test_thin_walls_approach_the_thin_ring(r):
     assert tube.second_moment == pytest.approx(np.pi * d**3 * t / 8.0, rel=4.0 / r)
 
 
-# ---- Array behaviour ---- #
+# ---- Array behavior ---- #
 
 
 def test_properties_are_float64():

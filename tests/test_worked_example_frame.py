@@ -17,7 +17,7 @@ from normax.ec3.material import SteelGrade
 # rafter checked segment by segment, pp. 397-404.
 #
 # The member forces below are the book's own, taken as inputs. This is a parity
-# check on the member check alone: we are not analysing the frame. T1 and T2 do
+# check on the member check alone: we are not analyzing the frame. T1 and T2 do
 # not exist yet, so nothing here computes a force from a geometry -- the point
 # is only to confirm that, given the same forces and the same resistances, our
 # assembly of Eqs. 6.61 and 6.62 reproduces the published numbers.

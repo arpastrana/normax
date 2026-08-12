@@ -59,9 +59,9 @@ from normax.analysis import support_fixities
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
-from normax.units import MILLIMETRE
-from normax.units import to_metres
-from normax.units import to_newton_millimetres
+from normax.units import MILLIMETER
+from normax.units import to_meters
+from normax.units import to_newton_millimeters
 from normax.units import to_pascals
 
 # Integration points along a force-based element. The first and the last sit on
@@ -86,7 +86,7 @@ class Model(NamedTuple):
     structure :
         The structure supplying the connectivity, the supports and the loads.
     spanned :
-        The plane the frame is modelled in.
+        The plane the frame is modeled in.
 
     Notes
     -----
@@ -108,7 +108,7 @@ class Model(NamedTuple):
 
 class Plane(NamedTuple):
     """
-    The two global axes a planar frame is modelled in.
+    The two global axes a planar frame is modeled in.
 
     Attributes
     ----------
@@ -196,7 +196,7 @@ def frame_plane(
     something else.
 
     Loads are checked where they are applied rather than here, since a structure
-    is analysed under load cases other than its own and only the one reaching the
+    is analyzed under load cases other than its own and only the one reaching the
     solver can be the one vouched for.
     """
     if normal is None:
@@ -222,7 +222,7 @@ def prepare_model(
     normal: int | None,
 ) -> Model:
     """
-    Settle the plane the frame is modelled in, and nothing else.
+    Settle the plane the frame is modeled in, and nothing else.
 
     Parameters
     ----------
@@ -250,7 +250,7 @@ def prepare_model(
     -----
     The plane is read from the starting geometry rather than from a form-found
     one, which makes planarity a property of the structure and fixes the axis map
-    before any force density is chosen. The geometry actually analysed is checked
+    before any force density is chosen. The geometry actually analyzed is checked
     again per call, so a shape that leaves the plane is still refused.
 
     The material and the section family are accepted and ignored, so that this
@@ -329,12 +329,12 @@ def _build_model(
             f"loads have components along the normal axis {spanned.normal}"
         )
 
-    coordinates = np.asarray(to_metres(xyz))[:, list(spanned.axes)]
+    coordinates = np.asarray(to_meters(xyz))[:, list(spanned.axes)]
     edges = np.asarray(structure.edges)
     applied = np.asarray(applied)[:, list(spanned.axes)]
     flags = support_fixities(structure, spanned.normal)
 
-    outer = to_metres(diameters)
+    outer = to_meters(diameters)
     areas = np.asarray(catalogue.tube_at(outer).area)
     inertias = np.asarray(catalogue.tube_at(outer).second_moment)
     e_mod = float(to_pascals(steel.e_mod))
@@ -517,7 +517,7 @@ def member_forces(
 
     return MemberForces(
         axial_force=jnp.asarray(axial),
-        moment_major=jnp.asarray(to_newton_millimetres(moments)),
+        moment_major=jnp.asarray(to_newton_millimeters(moments)),
         moment_minor=jnp.zeros_like(jnp.asarray(moments)),
     )
 
@@ -539,23 +539,23 @@ def _section_slopes(
     Returns
     -------
     slopes :
-        Derivative of the area and of the second moment, in SI per millimetre.
+        Derivative of the area and of the second moment, in SI per millimeter.
 
     Notes
     -----
     Taken with `jax.grad` of the closed forms the check itself uses, so the two
-    stages cannot drift apart in what a section is. The result is per millimetre
-    of diameter because the schema states diameters in millimetres while the
-    model is assembled in metres.
+    stages cannot drift apart in what a section is. The result is per millimeter
+    of diameter because the schema states diameters in millimeters while the
+    model is assembled in meters.
     """
-    outer = to_metres(diameters)
+    outer = to_meters(diameters)
 
     d_area = jax.vmap(jax.grad(lambda d: catalogue.tube_at(d).area))(outer)
     d_inertia = jax.vmap(jax.grad(lambda d: catalogue.tube_at(d).second_moment))(outer)
 
     return (
-        np.asarray(d_area) * MILLIMETRE,
-        np.asarray(d_inertia) * MILLIMETRE,
+        np.asarray(d_area) * MILLIMETER,
+        np.asarray(d_inertia) * MILLIMETER,
     )
 
 
@@ -709,7 +709,7 @@ def _assemble_blocks(
     catalogue :
         The section family, whose ratio fixes the wall thickness.
     spanned :
-        The plane the frame is modelled in.
+        The plane the frame is modeled in.
 
     Returns
     -------
@@ -724,8 +724,8 @@ def _assemble_blocks(
     section slopes into one derivative per diameter, which is the variable the
     schema actually carries.
 
-    Millimetres re-enter on both. Coordinates are differentiated per metre and
-    moments returned in newton metres, so each block is scaled once rather than
+    Millimeters re-enter on both. Coordinates are differentiated per meter and
+    moments returned in newton meters, so each block is scaled once rather than
     at every use.
     """
     axial = sweep.axial
@@ -741,16 +741,16 @@ def _assemble_blocks(
 
     for index, axis in enumerate(spanned.axes):
         columns = slice(index, coordinates, 2)
-        axial_force_xyz[:, :, axis] = axial[:, columns] * MILLIMETRE
+        axial_force_xyz[:, :, axis] = axial[:, columns] * MILLIMETER
         moment_major_xyz[:, :, :, axis] = (
-            to_newton_millimetres(moments[:, :, columns]) * MILLIMETRE
+            to_newton_millimeters(moments[:, :, columns]) * MILLIMETER
         )
 
     sections = axial[:, coordinates:].reshape(num_members, num_members, 2)
     axial_force_diameter = sections[:, :, 0] * d_area + sections[:, :, 1] * d_inertia
 
     sections = moments[:, :, coordinates:].reshape(num_members, 2, num_members, 2)
-    moment_major_diameter = to_newton_millimetres(
+    moment_major_diameter = to_newton_millimeters(
         sections[:, :, :, 0] * d_area + sections[:, :, :, 1] * d_inertia
     )
 

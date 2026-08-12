@@ -66,29 +66,29 @@ class InputSchema(BaseModel):
     """Design axial force of every member, in newtons. Tension positive."""
 
     end_moments_major: Differentiable[Array[(None, 2), Float64]]
-    """Major-axis moment at each end of every member, in newton-millimetres."""
+    """Major-axis moment at each end of every member, in newton-millimeters."""
 
     end_moments_minor: Differentiable[Array[(None, 2), Float64]]
-    """Minor-axis moment at each end of every member, in newton-millimetres."""
+    """Minor-axis moment at each end of every member, in newton-millimeters."""
 
     lengths: Differentiable[Array[(None,), Float64]]
-    """Length of every member, in millimetres. Sets the mass, not the check."""
+    """Length of every member, in millimeters. Sets the mass, not the check."""
 
     buckling_length: Differentiable[Array[(None,), Float64]]
-    """Buckling length of every member, in millimetres.
+    """Buckling length of every member, in millimeters.
 
     An input and never derived from the mesh. Passing the member's own length
     assumes every node is held in position by structure outside the model.
     """
 
     f_y: Differentiable[Float64]
-    """Yield strength, in newtons per square millimetre."""
+    """Yield strength, in newtons per square millimeter."""
 
     e_mod: Differentiable[Float64]
-    """Modulus of elasticity, in newtons per square millimetre."""
+    """Modulus of elasticity, in newtons per square millimeter."""
 
     density: Differentiable[Float64]
-    """Density, in tonnes per cubic millimetre, so the mass comes out in tonnes."""
+    """Density, in tonnes per cubic millimeter, so the mass comes out in tonnes."""
 
     gamma_m0: Differentiable[Float64]
     """Partial factor for cross-section resistance."""
@@ -103,7 +103,7 @@ class InputSchema(BaseModel):
     """Imperfection factor of the buckling curve, EN 1993-1-1 Table 6.1."""
 
     diameter_min: Float64
-    """Smallest diameter the section family offers, in millimetres."""
+    """Smallest diameter the section family offers, in millimeters."""
 
     section_class: int
     """Cross-section class, 1, 2 or 3. Static: it selects a clause.
@@ -123,7 +123,7 @@ class OutputSchema(BaseModel):
     """
 
     diameter: Differentiable[Array[(None,), Float64]]
-    """Outer diameter of every member, in millimetres."""
+    """Outer diameter of every member, in millimeters."""
 
     mass: Differentiable[Float64]
     """Total mass of the members, in tonnes. The objective of the pipeline."""
@@ -136,10 +136,10 @@ class OutputSchema(BaseModel):
     """
 
     moment_major: Differentiable[Array[(None,), Float64]]
-    """Larger major-axis end moment of every member, in newton-millimetres."""
+    """Larger major-axis end moment of every member, in newton-millimeters."""
 
     moment_minor: Differentiable[Array[(None,), Float64]]
-    """Larger minor-axis end moment of every member, in newton-millimetres."""
+    """Larger minor-axis end moment of every member, in newton-millimeters."""
 
     moment_factor_major: Differentiable[Array[(None,), Float64]]
     """Major-axis moment factor of every member, EN 1993-1-1 Table B.3."""
@@ -149,7 +149,7 @@ class OutputSchema(BaseModel):
 
     Reported alongside the major axis rather than folded away, so a caller can
     check a finished design at a size the standard did not choose without
-    analysing anything again.
+    analyzing anything again.
     """
 
     governing: Array[(None,), Float64]

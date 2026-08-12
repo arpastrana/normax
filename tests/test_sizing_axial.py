@@ -81,7 +81,7 @@ def test_the_default_steel_is_s355():
     assert STEEL.gamma_m1 == 1.0
 
 
-def test_the_default_density_is_steel_in_tonnes_per_cubic_millimetre():
+def test_the_default_density_is_steel_in_tonnes_per_cubic_millimeter():
     assert STEEL.density == pytest.approx(7.85e-9)
 
 

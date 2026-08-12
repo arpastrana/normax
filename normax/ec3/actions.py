@@ -54,7 +54,7 @@ class MemberActions(NamedTuple):
 
     Both moment factors default to one, the value they take under a uniform
     moment and the largest Table B.3 permits, so a member given no factor is
-    checked conservatively rather than favourably.
+    checked conservatively rather than favorably.
     """
 
     axial_force: Float[Array, "members"]

@@ -74,7 +74,7 @@ print(jax.grad(total)(q))  # its gradient in the force densities
 ```
 
 `ProblemSetup` is built once on the host and reused; only the force densities and
-the analysed diameters enter the traced call. See `experiments/` for the arch
+the analyzed diameters enter the traced call. See `experiments/` for the arch
 optimization, the two analysis backends measured against each other, and the same
 pipeline composed across three Tesseracts.
 

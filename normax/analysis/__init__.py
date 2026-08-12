@@ -15,7 +15,7 @@
 Frame analysis of a form-found geometry, the second stage of the pipeline.
 
 Form finding hands over a geometry and nothing else: no prestress, no initial
-member forces. The frame is analysed from an unstressed reference state, so it
+member forces. The frame is analyzed from an unstressed reference state, so it
 must deform elastically before any internal force appears, and the axial forces
 that come back are the analysis's own product rather than a restatement of the
 force densities that shaped it. Their agreement is a prediction, and it is what
@@ -112,7 +112,7 @@ class Buckling(NamedTuple):
     an assumed buckling length, while this reads the mode the whole structure
     has.
 
-    Mode shapes are not normalised to any physical amplitude. An eigenvector
+    Mode shapes are not normalized to any physical amplitude. An eigenvector
     fixes a shape and not a size, so only ratios within a mode mean anything.
     """
 
@@ -152,7 +152,7 @@ def support_fixities(
     moment. Form finding restrains translation and nothing else, and a fixed
     base would inject end moments the form-finder never saw.
 
-    A planar structure analysed by a three-dimensional solver is a mechanism:
+    A planar structure analyzed by a three-dimensional solver is a mechanism:
     rotating the whole of it about the line joining its supports strains no
     member and moves no support, so the stiffness matrix is singular and the
     solve returns nan rather than a plausible wrong answer. Restraining the one

@@ -4,20 +4,20 @@ import pytest
 
 from normax.ec3.material import DENSITY
 from normax.ec3.material import E_MODULUS
-from normax.units import to_kilograms_per_cubic_metre
-from normax.units import to_metres
-from normax.units import to_millimetres
-from normax.units import to_newton_metres
-from normax.units import to_newton_millimetres
-from normax.units import to_newtons_per_square_millimetre
+from normax.units import to_kilograms_per_cubic_meter
+from normax.units import to_meters
+from normax.units import to_millimeters
+from normax.units import to_newton_meters
+from normax.units import to_newton_millimeters
+from normax.units import to_newtons_per_square_millimeter
 from normax.units import to_pascals
-from normax.units import to_tonnes_per_cubic_millimetre
+from normax.units import to_tonnes_per_cubic_millimeter
 
 PAIRS = [
-    (to_metres, to_millimetres),
-    (to_pascals, to_newtons_per_square_millimetre),
-    (to_newton_metres, to_newton_millimetres),
-    (to_kilograms_per_cubic_metre, to_tonnes_per_cubic_millimetre),
+    (to_meters, to_millimeters),
+    (to_pascals, to_newtons_per_square_millimeter),
+    (to_newton_meters, to_newton_millimeters),
+    (to_kilograms_per_cubic_meter, to_tonnes_per_cubic_millimeter),
 ]
 
 
@@ -47,26 +47,26 @@ def test_a_conversion_acts_elementwise_on_an_array(into, out):
     assert into(values).shape == values.shape
 
 
-def test_a_millimetre_is_a_thousandth_of_a_metre():
-    assert to_metres(1000.0) == pytest.approx(1.0, rel=1e-15)
-    assert to_millimetres(1.0) == pytest.approx(1000.0, rel=1e-15)
+def test_a_millimeter_is_a_thousandth_of_a_meter():
+    assert to_meters(1000.0) == pytest.approx(1.0, rel=1e-15)
+    assert to_millimeters(1.0) == pytest.approx(1000.0, rel=1e-15)
 
 
 def test_the_modulus_of_steel_is_two_hundred_and_ten_gigapascals():
     assert to_pascals(E_MODULUS) == pytest.approx(210e9, rel=1e-15)
 
 
-def test_a_newton_per_square_millimetre_is_a_megapascal():
+def test_a_newton_per_square_millimeter_is_a_megapascal():
     assert to_pascals(1.0) == pytest.approx(1e6, rel=1e-15)
 
 
 def test_the_density_of_steel_is_seven_thousand_eight_hundred_and_fifty():
-    assert to_kilograms_per_cubic_metre(DENSITY) == pytest.approx(7850.0, rel=1e-15)
+    assert to_kilograms_per_cubic_meter(DENSITY) == pytest.approx(7850.0, rel=1e-15)
 
 
-def test_a_newton_millimetre_is_a_thousandth_of_a_newton_metre():
-    assert to_newton_metres(1000.0) == pytest.approx(1.0, rel=1e-15)
-    assert to_newton_millimetres(1.0) == pytest.approx(1000.0, rel=1e-15)
+def test_a_newton_millimeter_is_a_thousandth_of_a_newton_meter():
+    assert to_newton_meters(1000.0) == pytest.approx(1.0, rel=1e-15)
+    assert to_newton_millimeters(1.0) == pytest.approx(1000.0, rel=1e-15)
 
 
 def test_a_stress_times_an_area_is_a_force_in_either_system():
@@ -77,7 +77,7 @@ def test_a_stress_times_an_area_is_a_force_in_either_system():
     area = np.pi * thickness * (diameter - thickness)
     force = f_y * area
 
-    area_si = np.pi * to_metres(thickness) * to_metres(diameter - thickness)
+    area_si = np.pi * to_meters(thickness) * to_meters(diameter - thickness)
     force_si = to_pascals(f_y) * area_si
 
     assert force_si == pytest.approx(force, rel=1e-12)
@@ -88,9 +88,9 @@ def test_a_force_times_a_length_is_a_moment_in_either_system():
     length = 4000.0
 
     moment = force * length
-    moment_si = force * to_metres(length)
+    moment_si = force * to_meters(length)
 
-    assert to_newton_millimetres(moment_si) == pytest.approx(moment, rel=1e-12)
+    assert to_newton_millimeters(moment_si) == pytest.approx(moment, rel=1e-12)
 
 
 def test_a_density_times_a_volume_is_a_mass_in_either_system():
@@ -98,7 +98,7 @@ def test_a_density_times_a_volume_is_a_mass_in_either_system():
 
     mass_tonnes = DENSITY * volume
     mass_kilograms = (
-        to_kilograms_per_cubic_metre(DENSITY) * to_metres(1.0) ** 3 * volume
+        to_kilograms_per_cubic_meter(DENSITY) * to_meters(1.0) ** 3 * volume
     )
 
     assert mass_kilograms == pytest.approx(mass_tonnes * 1000.0, rel=1e-12)

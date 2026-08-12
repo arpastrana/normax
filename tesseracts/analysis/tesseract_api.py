@@ -61,10 +61,10 @@ class InputSchema(BaseModel):
     """
 
     xyz: Differentiable[Array[(None, 3), Float64]]
-    """Position of every node, in millimetres. From form finding."""
+    """Position of every node, in millimeters. From form finding."""
 
     diameter: Differentiable[Array[(None,), Float64]]
-    """Outer diameter of every member, in millimetres.
+    """Outer diameter of every member, in millimeters.
 
     The coupling with the check downstream is staggered: sizing needs forces and
     forces need sizes, so this is the previous outer iterate. One pass is taken,
@@ -81,13 +81,13 @@ class InputSchema(BaseModel):
     """Force applied at every node, in newtons. One load case per call."""
 
     f_y: Float64
-    """Yield strength, in newtons per square millimetre."""
+    """Yield strength, in newtons per square millimeter."""
 
     e_mod: Float64
-    """Modulus of elasticity, in newtons per square millimetre."""
+    """Modulus of elasticity, in newtons per square millimeter."""
 
     density: Float64
-    """Density, in tonnes per cubic millimetre."""
+    """Density, in tonnes per cubic millimeter."""
 
     ratio: Float64
     """Diameter-to-thickness ratio, fixing the wall of every member."""
@@ -114,10 +114,10 @@ class OutputSchema(BaseModel):
     """
 
     end_moments_major: Differentiable[Array[(None, 2), Float64]]
-    """Major-axis moment at each end of every member, in newton-millimetres."""
+    """Major-axis moment at each end of every member, in newton-millimeters."""
 
     end_moments_minor: Differentiable[Array[(None, 2), Float64]]
-    """Minor-axis moment at each end of every member, in newton-millimetres.
+    """Minor-axis moment at each end of every member, in newton-millimeters.
 
     Both ends rather than a peak, because nodal loads leave the moment varying
     linearly in between. That is what makes the first row of EN 1993-1-1 Table
@@ -170,7 +170,7 @@ def _selected_backend() -> Any:
 
 def apply(inputs: InputSchema) -> OutputSchema:
     """
-    Analyse the frame.
+    Analyze the frame.
 
     Parameters
     ----------
@@ -187,7 +187,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
 
 def abstract_eval(abstract_inputs):
     """
-    Output shapes and dtypes, without analysing anything.
+    Output shapes and dtypes, without analyzing anything.
 
     Parameters
     ----------

@@ -89,7 +89,7 @@ from normax.visualization import figure_modes
 from normax.visualization import figure_sections
 
 # A 10 m arch rising 3 m, carrying 180 kN spread over its free nodes. Units are
-# millimetres and newtons.
+# millimeters and newtons.
 SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
@@ -98,7 +98,7 @@ NUM_EDGES = 10
 # The arch lies in the XZ plane, so it has no thickness along Y.
 NORMAL = 1
 
-# The diameter the frame is analysed with before the check has spoken. Only the
+# The diameter the frame is analyzed with before the check has spoken. Only the
 # stiffness depends on it, and the check overwrites it.
 SEED = 100.0
 
@@ -178,7 +178,7 @@ class ArchSetup(NamedTuple):
     @property
     def seed(self) -> Float[Array, "edges"]:
         """
-        The diameter the frame is analysed with before the check has spoken.
+        The diameter the frame is analyzed with before the check has spoken.
         """
         return jnp.full(self.num_edges, SEED)
 

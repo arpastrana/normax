@@ -37,8 +37,8 @@ GAMMA_M2 = 1.25
 # EN 1993-1-1 3.2.6.
 E_MODULUS = 210000.0
 
-# Density of structural steel, in tonnes per cubic millimetre, so that a mass
-# in tonnes follows from millimetres and newtons.
+# Density of structural steel, in tonnes per cubic millimeter, so that a mass
+# in tonnes follows from millimeters and newtons.
 DENSITY = 7.85e-9
 
 # EN 1993-1-1 Table 6.1. Table 6.2 selects the curve: hollow sections are

@@ -533,7 +533,7 @@ held to two different requirements. As `N → 0⁻` the member check tends to th
 **linear sum** `C_my·M_y + k_yz·M_z`, while the cross-section check compares the
 **resultant**. They do not meet.
 
-| Branch | `k_yz` | jump in utilisation at `M_y = M_z`, `C_m = 1` | jump in area |
+| Branch | `k_yz` | jump in utilization at `M_y = M_z`, `C_m = 1` | jump in area |
 |---|---|---|---|
 | Class 1/2 (plastic) | `0.6 k_zz` | `1.6/√2` = **1.131** | ~21% |
 | Class 3 (elastic) | `k_zz` | `2.0/√2` = **1.414** | ~26% |

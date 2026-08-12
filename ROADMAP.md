@@ -175,7 +175,7 @@ pins the disagreement.
 > never assert a guide number tighter than 1%.
 >
 > Tests FIRST:
-> - **Reduction checks** (these catch most sign and normalisation errors):
+> - **Reduction checks** (these catch most sign and normalization errors):
 >   with `M_y = M_z = 0`, the 6.61 check must equal the pure-compression check to
 >   1e-12; with `N_Ed = 0` it must equal the pure-bending check.
 > - **CHS collapse identities**, no external source needed: `χ_y == χ_z`;
@@ -186,7 +186,7 @@ pins the disagreement.
 > - `k_yy` respects its `≤ C_my(1 + 0.8 n_y)` cap; monotone in `n_y` below it.
 > - Eq. 6.41 vs blueprints `Form6Dot41BiaxialBendingCheck` — note it returns a
 >   **bool**, not a ratio, so compare verdicts not values. Tests only, never copy.
-> - Whole-check monotonicity: utilisation strictly decreasing in `d` at fixed
+> - Whole-check monotonicity: utilization strictly decreasing in `d` at fixed
 >   forces. This is what keeps the P2 bisection valid — assert it directly.
 
 **Two numerical traps, both new:**
@@ -303,7 +303,7 @@ one bisection for both.
 > - Backward: `jax.grad` on the residual for ∂R/∂d and ∂R/∂L; hand-derive only
 >   the implicit inversion. Branch on sign(N_Ed).
 > Then `experiments/01_single_strut_gradcheck.py`: verify `jax.grad` of
-> utilisation w.r.t. N_Ed against central differences AND a hand-derived
+> utilization w.r.t. N_Ed against central differences AND a hand-derived
 > expression. Target 1e-8.
 
 **Step 1 done when:** 1e-8 agreement on a single strut. **This is the milestone
@@ -379,9 +379,9 @@ therefore out of scope for this pipeline** — do not run it through T2 and expe
 sense. The arch and the gridshell are the targets.
 
 **Scope:**
-> `experiments/08_arch_formfind_analyse.py`. Take the 2D funicular arch from
+> `experiments/08_arch_formfind_analyze.py`. Take the 2D funicular arch from
 > `normax/structures.py`, form-find it with `jax-fdm` under LC1, and hand **only
-> the geometry** to `smax`, which analyses it from an unstressed reference state.
+> the geometry** to `smax`, which analyzes it from an unstressed reference state.
 > **Write the unit adapter first and test it on its own**: `smax` works in
 > coherent SI (N, m, Pa), `normax` in mm / N / N·mm⁻².
 > Then `tests/test_equilibrium_consistency.py`, asserting on forces rather than
@@ -397,7 +397,7 @@ sense. The arch and the gridshell are the targets.
 demonstrably secondary, and `jax.grad` of a scalar of `smax`'s output w.r.t. `q`
 is finite and matches central differences.~~ — **PASSED.** Recorded tolerances
 **2.5e-4 axial and 1.0e-3 bending at `d = 100 mm`**, gradient to **2.9e-10**.
-`experiments/08_arch_formfind_analyse.py`, 29 cases in
+`experiments/08_arch_formfind_analyze.py`, 29 cases in
 `tests/test_equilibrium_consistency.py`. Full write-up in `CHANGELOG.md` under
 `## P3 step 1`.
 
@@ -430,9 +430,9 @@ displacement was a property of the prestressed interface, not of the physics.
 > Gradcheck `dmass/dq` against central differences, and exercise both class
 > branches.
 
-**Gate:** ~~utilisation is `1.0 ± 1e-9` for every member (invariant 6.5),
+**Gate:** ~~utilization is `1.0 ± 1e-9` for every member (invariant 6.5),
 `dmass/dq` matches central differences, and the mass is stable under mesh
-refinement.~~ — **PASSED, with the third clause corrected.** Utilisation
+refinement.~~ — **PASSED, with the third clause corrected.** Utilization
 **1.7e-15** on both class branches; `dmass/dq` to **1.2e-8** at the swept step;
 and the mass is **convergent, first order in the member count**, not stable.
 `experiments/09_arch_pipeline_jax.py`, 24 cases in `tests/test_pipeline.py`.
@@ -688,7 +688,7 @@ submission.**
    **Warm up before timing** still holds, and now so does *compile before timing*
    and *block before timing*.
 
-   The composition favoured DDM 2.6x–3.2x while the solve behind the boundary was
+   The composition favored DDM 2.6x–3.2x while the solve behind the boundary was
    still eager. Compiling it inside the backend closes that to **1.12x–1.31x**, so
    the composed comparison is now a wash and what remains is the price of the
    boundary itself, paid equally by both.
@@ -829,8 +829,8 @@ the writeup to quote.
 
 **Scope:**
 > `normax/visualization.py` + `figures/`. Produce:
-> 1. Animation: arch morphing over iterations, members coloured by utilisation.
-> 2. Animation: members coloured by GOVERNING LOAD CASE, showing the pattern
+> 1. Animation: arch morphing over iterations, members colored by utilization.
+> 2. Animation: members colored by GOVERNING LOAD CASE, showing the pattern
 >    reorganise as form changes. This is the money shot — only a differentiable
 >    code check can produce it.
 > 3. The mass-vs-q curve with optimizer trajectory (P4).
@@ -1126,8 +1126,8 @@ sweeps produce roughly 1170 cases from 115 functions — about ten apiece.
 The axes are the inputs the check actually takes, by frequency: axial force (15),
 yield strength (14), class branch (13 + 10 + 8 across three argument names),
 buckling curve (11), `d/t` ratio (11), then slenderness, buckling length, profile
-name, diameter and end moments. That is one behaviour checked across its specified
-range, not 1401 opinions. The names are behavioural rather
+name, diameter and end moments. That is one behavior checked across its specified
+range, not 1401 opinions. The names are behavioral rather
 than mechanical — `test_a_longer_member_never_needs_a_smaller_tube`,
 `test_the_check_jumps_as_the_axial_force_changes_sign` — so a reader who opens a
 file sees intent. And the volume is policy: invariants 1 and 2 require a

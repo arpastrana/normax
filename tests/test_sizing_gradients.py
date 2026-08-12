@@ -35,23 +35,23 @@ FORCE = -5e5
 # check_grads perturbs by a small ABSOLUTE step, so an argument of 1e7 is
 # perturbed by a relative 1e-11 and its central difference is cancellation
 # noise. The map is therefore wrapped so that every argument it sees is of
-# order one: forces in kilonewtons, moments in kilonewton-metres, lengths in
-# metres. Nothing about the map changes, only the units it is probed in.
+# order one: forces in kilonewtons, moments in kilonewton-meters, lengths in
+# meters. Nothing about the map changes, only the units it is probed in.
 KILONEWTON = 1e3
-KILONEWTON_METRE = 1e6
-METRE = 1e3
+KILONEWTON_METER = 1e6
+METER = 1e3
 
 
 def scaled(force_kn, moment_y_knm, moment_z_knm, length_m, moment_factor=0.9):
     return diameter_required(
         MemberActions(
             force_kn * KILONEWTON,
-            moment_y_knm * KILONEWTON_METRE,
-            moment_z_knm * KILONEWTON_METRE,
+            moment_y_knm * KILONEWTON_METER,
+            moment_z_knm * KILONEWTON_METER,
             moment_factor,
             moment_factor,
         ),
-        length_m * METRE,
+        length_m * METER,
         STEEL,
         CATALOGUE,
         section_class=SECTION_CLASS,
@@ -186,7 +186,7 @@ def test_a_stocky_member_has_no_length_sensitivity():
 )
 def test_every_action_agrees_with_a_central_difference(label, index, value, step):
     # The step is chosen per argument, since one absolute step cannot serve
-    # arguments spanning newtons to newton-millimetres.
+    # arguments spanning newtons to newton-millimeters.
     base = [-5e5, 4e7, 1.5e7, 4000.0]
 
     def at(x):
@@ -285,7 +285,7 @@ def test_check_grads_passes_through_the_mass_objective():
     def objective(force_kn, length_m):
         sizes = scaled(force_kn, 40.0, 15.0, length_m)
 
-        return mass_of_tubes(CATALOGUE.tube_at(sizes), length_m * METRE, STEEL)
+        return mass_of_tubes(CATALOGUE.tube_at(sizes), length_m * METER, STEEL)
 
     check_grads(objective, (-500.0, 4.0), order=1, modes=("rev",))
 

@@ -26,7 +26,7 @@ baseline that reproduces the same mass and the same gradient is what turns
 "the Tesseracts run" into "the boundary is transparent".
 
 **The coupling between the analysis and the check is staggered.** A frame cannot
-be analysed without sections, and the sections are what the check returns, so
+be analyzed without sections, and the sections are what the check returns, so
 the diameters the frame is built from are an input here and the diameters the
 check requires are an output. One pass is taken, not a fixed point. On a
 funicular arch the two are close because the analysis barely depends on the
@@ -116,7 +116,7 @@ def member_actions(
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> MemberActions:
     """
-    Analyse a geometry and read the result as the check states its terms.
+    Analyze a geometry and read the result as the check states its terms.
 
     Parameters
     ----------
@@ -127,7 +127,7 @@ def member_actions(
     diameters :
         Outer diameter of every member, setting the stiffness.
     loads :
-        Load case to analyse under. If None, the structure's own loads.
+        Load case to analyze under. If None, the structure's own loads.
 
     Returns
     -------
@@ -212,14 +212,14 @@ def design_members(
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Design:
     """
-    Form-find, analyse and size, in that order.
+    Form-find, analyze and size, in that order.
 
     Parameters
     ----------
     q :
         Force density of every member. Negative in compression.
     diameters :
-        Diameters the frame is analysed with, being the previous outer iterate
+        Diameters the frame is analyzed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
     problem :
         The structure, the compiled model, the steel and the section family.
@@ -232,7 +232,7 @@ def design_members(
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
-        Load case the frame is analysed under. If None, the structure's own
+        Load case the frame is analyzed under. If None, the structure's own
         loads, which are also the ones it is form-found under.
 
     Returns
@@ -242,7 +242,7 @@ def design_members(
 
     Notes
     -----
-    Differentiable in the force densities, in the analysed diameters, and in
+    Differentiable in the force densities, in the analyzed diameters, and in
     every material property. The cross-section class selects a clause rather
     than scaling a number, so it stays a static Python value throughout.
 
@@ -323,7 +323,7 @@ def total_mass(
     q :
         Force density of every member. Negative in compression.
     diameters :
-        Diameters the frame is analysed with, being the previous outer iterate.
+        Diameters the frame is analyzed with, being the previous outer iterate.
     problem :
         The structure, the compiled model, the steel and the section family.
     section_class :
@@ -335,7 +335,7 @@ def total_mass(
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
-        Load case the frame is analysed under. If None, the structure's own
+        Load case the frame is analyzed under. If None, the structure's own
         loads.
 
     Returns
@@ -409,7 +409,7 @@ class Envelope(NamedTuple):
 
     The actions are carried in full, rather than only the ones a report would
     print, so the design can be checked again at a different set of sizes
-    without analysing anything a second time. `unsmoothed` is what does that.
+    without analyzing anything a second time. `unsmoothed` is what does that.
     """
 
     xyz: Float[Array, "nodes 3"]
@@ -438,14 +438,14 @@ def design_envelope(
     buckling_length: Float[Array, "members"] | None = None,
 ) -> Envelope:
     """
-    Form-find once, analyse every load case, and size for the worst of them.
+    Form-find once, analyze every load case, and size for the worst of them.
 
     Parameters
     ----------
     q :
         Force density of every member. Negative in compression.
     diameters :
-        Diameters the frame is analysed with, being the previous outer iterate
+        Diameters the frame is analyzed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
     problem :
         The structure, the compiled model, the steel and the section family.
@@ -614,8 +614,8 @@ def unsmoothed_design(
     never understates what a load case demands, so this is always the lighter
     design and the difference is what annealing is driving to zero.
 
-    Nothing is analysed again. The actions belong to the geometry and the
-    diameters the frame was analysed with, neither of which changes here, so
+    Nothing is analyzed again. The actions belong to the geometry and the
+    diameters the frame was analyzed with, neither of which changes here, so
     only the check is repeated.
     """
     sizes = jnp.max(result.required, axis=0)

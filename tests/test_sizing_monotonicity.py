@@ -197,7 +197,7 @@ def test_slenderness_falls_with_diameter():
     assert jnp.all(jnp.diff(non_dimensional) < 0.0)
 
 
-def test_the_elastic_branch_is_the_more_utilised_of_the_two():
+def test_the_elastic_branch_is_the_more_utilized_of_the_two():
     # Class 3 forfeits the shape factor, so at equal diameter and equal actions
     # it must never look better than Class 2.
     plastic = member_utilization(DIAMETERS, 500e3, 40e6, 15e6, section_class=2)

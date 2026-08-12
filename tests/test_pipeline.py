@@ -46,7 +46,7 @@ from normax.visualization import figure_sections
 matplotlib.use("Agg")
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
-# millimetres and newtons.
+# millimeters and newtons.
 SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
@@ -55,7 +55,7 @@ NUM_EDGES = 10
 # The arch lies in the XZ plane, so it has no thickness along Y.
 NORMAL = 1
 
-# The diameter the frame is analysed with before the check has spoken.
+# The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
 # Invariant 6.5 of CLAUDE.md. Measured at 1.7e-15, so this is generous.
@@ -297,7 +297,7 @@ def test_forward_and_reverse_mode_agree_on_the_mass(setup, steel, seed):
     assert np.allclose(jax.jacfwd(objective)(q), jax.grad(objective)(q), rtol=1e-12)
 
 
-def test_the_mass_is_differentiable_in_the_analysed_diameters(setup, steel, seed):
+def test_the_mass_is_differentiable_in_the_analyzed_diameters(setup, steel, seed):
     # The staggered coupling is one-way, but it is not a dead input: the sections
     # the frame is built from move the forces, and so the sizes.
     structure, fdm, q = setup
@@ -1164,7 +1164,7 @@ def test_the_load_case_counts_share_one_scale(setup, steel, load_cases):
     )
     figure = figure_load_cases(structure.edges, forms, ("LC1", "LC2", "LC3"))
 
-    # The drawings come first, then the counts, then the colour bar.
+    # The drawings come first, then the counts, then the color bar.
     counts = figure.axes[len(forms) : 2 * len(forms)]
     limits = {ax.get_ylim() for ax in counts}
 

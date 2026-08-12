@@ -11,13 +11,13 @@ from normax.optimization import shortest_member
 
 # A bowl whose minimum is known exactly, so the driver is tested against
 # arithmetic rather than against the pipeline it usually drives.
-CENTRE = jnp.asarray([-2.0, -3.0, -1.5])
+CENTER = jnp.asarray([-2.0, -3.0, -1.5])
 START = jnp.asarray([-8.0, -8.0, -8.0])
 BOUNDS = (-10.0, -0.1)
 
 
 def bowl(q, beta=1.0):
-    return beta * jnp.sum((q - CENTRE) ** 2)
+    return beta * jnp.sum((q - CENTER) ** 2)
 
 
 def wall(q, beta=1.0):
@@ -67,7 +67,7 @@ def test_the_schedule_refuses_to_have_no_rounds():
 def test_the_descent_finds_a_minimum_it_can_reach():
     walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
 
-    assert np.allclose(np.asarray(walked.q[-1]), np.asarray(CENTRE), atol=1e-6)
+    assert np.allclose(np.asarray(walked.q[-1]), np.asarray(CENTER), atol=1e-6)
 
 
 def test_the_descent_never_goes_uphill():
@@ -156,7 +156,7 @@ def test_the_annealed_descent_reaches_the_same_minimum():
     schedule = annealing_schedule(1.0, 4.0, 3)
     walked = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=25)
 
-    assert np.allclose(np.asarray(walked.q[-1]), np.asarray(CENTRE), atol=1e-6)
+    assert np.allclose(np.asarray(walked.q[-1]), np.asarray(CENTER), atol=1e-6)
 
 
 def test_the_sharpness_reaches_the_objective():

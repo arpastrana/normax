@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### American English, including in the units API
+
+The repo was written in two dialects at once — `utilization` in the clause code
+beside `analysed` in the docstring above it — and `normax/units.py` had the
+British spelling in its exported names.
+
+- **`normax.units` is renamed.** `MILLIMETRE`, `NEWTON_MILLIMETRE` and
+  `TONNE_PER_CUBIC_MILLIMETRE` become `MILLIMETER`, `NEWTON_MILLIMETER` and
+  `TONNE_PER_CUBIC_MILLIMETER`; `to_metres`, `to_millimetres`,
+  `to_newtons_per_square_millimetre`, `to_newton_metres`, `to_newton_millimetres`,
+  `to_kilograms_per_cubic_metre` and `to_tonnes_per_cubic_millimetre` follow.
+  `tests/test_units.py` is the only caller and moves with it.
+- **Everything else is prose**: docstrings, comments, the Pydantic field
+  descriptions of all three Tesseracts, and the markdown. A field *description*
+  is schema documentation and not a field *name*, so nothing that crosses a
+  boundary changed and the parity numbers are untouched.
+- **`analysis` and `analyses` are American already** and were left alone; only the
+  three verb uses of `analyses` became `analyzes`. Replacement was case-sensitive
+  throughout, which is what kept `DescentResult` — which contains `centRes` — from
+  being mangled by the `centre` rule.
+
 ### Experiments — one module prints, and no result travels as a bare tuple
 
 Every script in `experiments/` was hand-formatting its own stdout. A table was
@@ -45,6 +66,13 @@ alignment expressed as whitespace the author has to count.
   comprehensions made the reader hold the callee, the argument and the argument's
   contents at once. An AST check over `experiments/` and `normax/reporting.py`
   reports zero of either pattern.
+- **`08_arch_formfind_analyse` is now `08_arch_formfind_analyze`.** The old name listed
+  the two stages and left out what the script measures, and read as though
+  analyzing were the point rather than the thing under test. What it measures is
+  whether the two stages agree on a force neither told the other, which is the
+  same shape of claim as `04_backend_agreement` makes about two solvers. The word
+  was already in the file: the figure is `08_handoff.png` and the containers are
+  `HandoffForces` and `HandoffGap`.
 - **`experiments/02` claimed Class 3 was plastic.** The branch label read
   `"plastic" if section_class else "elastic"`, which is true for every class that
   is not zero. It now asks `normax.ec3.classification.is_plastic`. This is the
@@ -116,7 +144,7 @@ Three causes, only one of which was a tolerance.
 
 - **It compared a container as one array.** The loop ran over `Design._fields`
   and called `np.asarray` on `actions`, stacking an axial force in newtons with
-  two moments in newton-millimetres and two dimensionless factors, then divided
+  two moments in newton-millimeters and two dimensionless factors, then divided
   the worst difference by the largest element of the lot. That ratio is not a
   relative error of anything: the moment's disagreement was being scaled by the
   axial force, which happens to be 1.8x larger, so the reported figure was also
@@ -386,7 +414,7 @@ Three causes, only one of which was a tolerance.
   for that separability: it supplies Simões da Silva's published reduction
   factors and interaction factors and has no slendernesses at all.
 - **`MemberSlenderness` carries the pair, and `about_both_axes` states the
-  axisymmetry once.** `lam_y` and `lam_z` travelled as two positional arguments
+  axisymmetry once.** `lam_y` and `lam_z` traveled as two positional arguments
   through four signatures, so every call site for a circular section passed the
   same value twice — `properties.slenderness, properties.slenderness` in both
   `_demands` and `governing_limit_state`. Two adjacent positional floats of the
@@ -449,7 +477,7 @@ Three causes, only one of which was a tolerance.
   disagree about what governed" while the diagnostic recomputed the block
   independently, so they could. `_modulus` also lost the `resultant` parameter
   none of its callers passed.
-- **`cap_is_active`'s docstring labelled its own parameter wrong**, calling
+- **`cap_is_active`'s docstring labeled its own parameter wrong**, calling
   `c_m` `moment_factor_linear` — collateral from the rename sweep, which
   rewrote a numpydoc label as if it were an identifier.
 - **Two AST traps recurred and both were caught by tests, not review.** A call
@@ -566,7 +594,7 @@ examples, and it has no circular-hollow reduced moment either.
 `tests/test_worked_example_frame.py` takes the ECCS manual's 47 m portal frame
 (Design Example 2) and Example 5.2's segment-by-segment rafter check, feeds the
 book's own member forces and resistances in, and confirms our assembly of
-Eqs. 6.61 and 6.62 reproduces its numbers. Nothing here analyses a frame —
+Eqs. 6.61 and 6.62 reproduces its numbers. Nothing here analyzes a frame —
 T1 and T2 do not exist — but it does establish parity on the member check
 against a real structure rather than an isolated member.
 
@@ -1059,10 +1087,10 @@ Every conclusion above survived a rerun after all four were fixed.
 
 ## P3 step 1 — the T1 to T2 handoff
 
-`jax-fdm` finds the shape and `smax` analyses it. They exchange a geometry and
+`jax-fdm` finds the shape and `smax` analyzes it. They exchange a geometry and
 nothing else — no prestress, no initial member forces — so the axial forces that
 come back are `smax`'s own product and their agreement with `q · L` is a
-prediction rather than an identity. `experiments/08_arch_formfind_analyse.py`
+prediction rather than an identity. `experiments/08_arch_formfind_analyze.py`
 runs it and `tests/test_equilibrium_consistency.py` gates it.
 
 ### The dependency question, and the interim guard
@@ -1153,7 +1181,7 @@ both. **Tolerances recorded at `d = 100 mm`: 2.5e-4 axial, 1.0e-3 bending.**
 ### Two modules, and the unit adapter written first
 
 `normax/units.py` carries the conversions and nothing else, and was tested on
-its own before either stage was wired: `normax` is millimetres, newtons and
+its own before either stage was wired: `normax` is millimeters, newtons and
 `N·mm⁻²` with masses in tonnes, `smax` is coherent SI. **Force is the newton in
 both and needs no conversion** — the one quantity crossing untouched, and its
 absence from the module is deliberate rather than an oversight. 40 cases,
@@ -1299,8 +1327,8 @@ to `design` rather than a convention inside it.
 
 ### The staggered coupling is weak, and now quantified
 
-A frame cannot be analysed without sections and the sections are what the check
-returns, so `design` takes the analysed diameters as an input and returns the
+A frame cannot be analyzed without sections and the sections are what the check
+returns, so `design` takes the analyzed diameters as an input and returns the
 required ones. Repeating the pass contracts by a **constant factor of about
 1/39**: relative moves of 3.80e-1, 1.17e-2, 3.05e-4, 7.91e-6, 2.05e-7, 5.31e-9.
 
@@ -1316,7 +1344,7 @@ experiments compute and it draws, so a figure can be recomposed without touching
 what produced it. Three, in `figures/`:
 
 - **`09_sections.png`** — the arch before and after the check has spoken, members
-  drawn at a width proportional to diameter and coloured on one shared scale, over
+  drawn at a width proportional to diameter and colored on one shared scale, over
   a per-member bar chart. 36.3% lighter than the uniform 100 mm assumption.
 - **`09_convergence.png`** — the mass against mesh density for both buckling-length
   conventions, the order of convergence against a first-order reference line, and
@@ -1983,7 +2011,7 @@ P5's scaling plot needs.
 Two things had to change to make it fit. **The check now reports both moment
 axes** — `m_y_ed`, `m_z_ed`, `c_my`, `c_mz` where it previously reported only the
 major ones — so a finished design can be re-read at a size the standard did not
-choose without analysing anything again. And **form finding runs once for all the
+choose without analyzing anything again. And **form finding runs once for all the
 cases**, the shape answering to one load case by construction, so only the
 analysis and the check are walked per case.
 
@@ -2013,7 +2041,7 @@ the length floor, the held plan and the figures on top of those. The CI gap is
 tests drive analytic bowls rather than the pipeline, so they run in CI: the
 driver is tested against arithmetic, not against the thing it usually drives.
 
-Two behaviours of the driver are pinned because they surprised: **L-BFGS-B steps
+Two behaviors of the driver are pinned because they surprised: **L-BFGS-B steps
 once before honouring a limit of zero**, returning a clipped trial point, so
 `descend` refuses to report it; and the point it reports last is not always the
 best it found, so the trajectory's last row is scipy's answer rather than the
@@ -2120,7 +2148,7 @@ one interior node for that reason.
 
 The roadmap expected DDM to be the expensive side — "T2's VJP scales with
 parameter count, T1's and T3's don't". Both halves turn out to be true and the
-conclusion does not follow, because the constant favours DDM enormously.
+conclusion does not follow, because the constant favors DDM enormously.
 
 Analysis stage alone, steady state:
 
@@ -2173,7 +2201,7 @@ descending.
   backend module each. `__init__.py` holds what the stage means — `MemberForces`,
   `Buckling`, `fixities` — and imports no solver, so the contracts are readable
   without one installed and neither backend inherits the other's dependencies.
-  `smax.py` is the move of the old module; `opensees.py` is new. Behaviour is
+  `smax.py` is the move of the old module; `opensees.py` is new. Behavior is
   unchanged, pinned by the suite passing at the same count across the split.
 - **A backend owns its derivative rules.** `tesseract_api.py` is now a
   dispatcher: `apply`, `jacobian_vector_product` and `vector_jacobian_product`
@@ -2382,7 +2410,7 @@ Three defects, all of which mattered:
   on whatever the call returns, which is why the timed callables return their
   results.
 
-The composition still favours DDM, **2.6x to 3.2x**, and that is honest: the
+The composition still favors DDM, **2.6x to 3.2x**, and that is honest: the
 composed path crosses a stateless Tesseract boundary, so every crossing rebuilds
 the solver behind it and the traced side pays its eager assembly inside the
 Tesseract. That is the deferred caching work, and the two panels of

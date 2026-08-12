@@ -94,7 +94,7 @@ class ClassBranch(NamedTuple):
         return branch
 
     @property
-    def behaviour(self) -> str:
+    def behavior(self) -> str:
         """
         Whether the branch takes plastic or elastic section properties.
         """
@@ -112,7 +112,7 @@ class MassComparison(NamedTuple):
     diameters :
         Fully-stressed diameter on each branch, in the order the branches came.
     masses :
-        Mass of the member on each branch, in kilogrammes.
+        Mass of the member on each branch, in kilograms.
     """
 
     moment: float
@@ -244,7 +244,7 @@ def diameter_for(
 
 def mass_for(branch: ClassBranch, moment_major: float) -> float:
     """
-    Mass in kilogrammes of one member on one class branch.
+    Mass in kilograms of one member on one class branch.
     """
     diameter = diameter_for(branch, moment_major)
     tube = branch.catalogue.tube_at(diameter)
@@ -332,7 +332,7 @@ def report_branches(report: ReportWriter, branches: Sequence[ClassBranch]) -> No
     for branch in branches:
         ratio = float(branch.catalogue.ratio)
         label = f"Class {branch.section_class}"
-        proportion = f"d/t = {ratio:.3f} ({branch.behaviour})"
+        proportion = f"d/t = {ratio:.3f} ({branch.behavior})"
         entries.append((label, proportion))
 
     title = "Class 2 limit against Class 3 limit, S355, 6 m member, 600 kN compression"

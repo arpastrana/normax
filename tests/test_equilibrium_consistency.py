@@ -85,7 +85,7 @@ def member(model, state, steel, catalogue):
 
 def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY):
     """
-    Largest relative gap between the analysed and the funicular axial force.
+    Largest relative gap between the analyzed and the funicular axial force.
     """
     structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
     q = jnp.full(NUM_EDGES, force_density)

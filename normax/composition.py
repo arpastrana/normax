@@ -96,7 +96,7 @@ def analysis_backend(name: str) -> Iterator[None]:
     previous value is restored on the way out, exceptions included.
 
     Nothing is rebuilt. The same chain serves either solver, which is the claim
-    the boundary makes rather than an optimisation.
+    the boundary makes rather than an optimization.
     """
     previous = os.environ.get(BACKEND_VARIABLE)
     os.environ[BACKEND_VARIABLE] = name
@@ -220,14 +220,14 @@ def design_members(
     loads: Float[Array, "nodes 3"] | None = None,
 ) -> Design:
     """
-    Form-find, analyse and size, each in its own Tesseract.
+    Form-find, analyze and size, each in its own Tesseract.
 
     Parameters
     ----------
     q :
         Force density of every member. Negative in compression.
     diameters :
-        Diameters the frame is analysed with, being the previous outer iterate
+        Diameters the frame is analyzed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
     problem :
         The structure, the three Tesseracts, the steel and the section family.
@@ -243,7 +243,7 @@ def design_members(
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
-        Load case the frame is analysed under. If None, the structure's own
+        Load case the frame is analyzed under. If None, the structure's own
         loads, which are also the ones it is form-found under.
 
     Returns
@@ -350,14 +350,14 @@ def _check_load_case(
     loads: Float[Array, "nodes 3"] | None,
 ):
     """
-    Analyse one load case and size the members it acts on.
+    Analyze one load case and size the members it acts on.
 
     Parameters
     ----------
     xyz :
         Position of every node, from form finding.
     diameters :
-        Diameters the frame is analysed with.
+        Diameters the frame is analyzed with.
     buckling :
         Buckling length of every member.
     lengths :
@@ -371,7 +371,7 @@ def _check_load_case(
     resultant :
         Whether the two moments combine as a resultant.
     loads :
-        Load case to analyse under. If None, the structure's own loads.
+        Load case to analyze under. If None, the structure's own loads.
 
     Returns
     -------
@@ -450,7 +450,7 @@ def total_mass(
     q :
         Force density of every member. Negative in compression.
     diameters :
-        Diameters the frame is analysed with, being the previous outer iterate.
+        Diameters the frame is analyzed with, being the previous outer iterate.
     problem :
         The structure, the three Tesseracts, the steel and the section family.
     normal :
@@ -465,7 +465,7 @@ def total_mass(
         Buckling length of every member. If None, each member buckles over its
         own length.
     loads :
-        Load case the frame is analysed under. If None, the structure's own
+        Load case the frame is analyzed under. If None, the structure's own
         loads.
 
     Returns
@@ -504,7 +504,7 @@ def design_envelope(
     buckling_length: Float[Array, "members"] | None = None,
 ) -> Envelope:
     """
-    Form-find once, analyse every load case, and size for the worst of them,
+    Form-find once, analyze every load case, and size for the worst of them,
     across three Tesseracts.
 
     Parameters
@@ -512,7 +512,7 @@ def design_envelope(
     q :
         Force density of every member. Negative in compression.
     diameters :
-        Diameters the frame is analysed with, being the previous outer iterate
+        Diameters the frame is analyzed with, being the previous outer iterate
         of the check. They set the stiffness, not the resistance.
     problem :
         The structure, the three Tesseracts, the steel and the section family.

@@ -16,7 +16,7 @@ The `smax` backend of the analysis stage, differentiated by tracing autodiff.
 
 A JAX frame solver, so the assembly and the solve are traced end to end and the
 derivatives come out of the same machinery that produced the geometry upstream.
-The frame is analysed from an unstressed reference state, so it must deform
+The frame is analyzed from an unstressed reference state, so it must deform
 elastically before any internal force appears, and the axial forces that come
 back are `smax`'s own product rather than a restatement of the force densities
 that shaped it. Their agreement is a prediction, and it is what
@@ -68,9 +68,9 @@ from normax.analysis import support_fixities
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
-from normax.units import to_kilograms_per_cubic_metre
-from normax.units import to_metres
-from normax.units import to_newton_millimetres
+from normax.units import to_kilograms_per_cubic_meter
+from normax.units import to_meters
+from normax.units import to_newton_millimeters
 from normax.units import to_pascals
 
 # EN 1993-1-1 3.2.6. Enters only the torsional and out-of-plane response, both
@@ -154,14 +154,14 @@ def frame_model(
     material = Material(
         elasticity_modulus=to_pascals(steel.e_mod),
         yield_stress=to_pascals(steel.f_y),
-        density=to_kilograms_per_cubic_metre(steel.density),
+        density=to_kilograms_per_cubic_meter(steel.density),
         poissons_ratio=POISSONS_RATIO,
     )
 
-    positions = to_metres(xyz)
+    positions = to_meters(xyz)
     nodes = [Node(index, xyz=positions[index]) for index in range(xyz.shape[0])]
 
-    outer = to_metres(diameters)
+    outer = to_meters(diameters)
     wall = outer / catalogue.ratio
     edges = np.asarray(structure.edges)
     elements = [
@@ -286,16 +286,16 @@ def _injected_assembly(
     indexed by the global member ids it holds. One group is the usual case here,
     every member being a beam.
     """
-    outer = to_metres(diameters)
+    outer = to_meters(diameters)
     gross = catalogue.tube_at(outer).area
     inertia = catalogue.tube_at(outer).second_moment
 
     e_mod = to_pascals(jnp.asarray(steel.e_mod))
     f_y = to_pascals(jnp.asarray(steel.f_y))
-    density = to_kilograms_per_cubic_metre(jnp.asarray(steel.density))
+    density = to_kilograms_per_cubic_meter(jnp.asarray(steel.density))
 
     compiled = eqx.tree_at(
-        lambda c: c.params.xyz, model.compiled, to_metres(jnp.asarray(xyz))
+        lambda c: c.params.xyz, model.compiled, to_meters(jnp.asarray(xyz))
     )
 
     groups = enumerate(compiled.topology.element_group_ids)
@@ -414,8 +414,8 @@ def member_forces(
 
     return MemberForces(
         axial_force=field.nx[:, 0],
-        moment_major=to_newton_millimetres(field.my),
-        moment_minor=to_newton_millimetres(field.mz),
+        moment_major=to_newton_millimeters(field.my),
+        moment_minor=to_newton_millimeters(field.mz),
     )
 
 

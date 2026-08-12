@@ -108,7 +108,7 @@ from normax.visualization import figure_load_cases
 from normax.visualization import figure_optimization
 
 # A 10 m arch rising 3 m over twenty members, carrying 180 kN. Units are
-# millimetres and newtons.
+# millimeters and newtons.
 SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
@@ -117,7 +117,7 @@ NUM_EDGES = 20
 # The arch lies in the XZ plane, so it has no thickness along Y.
 NORMAL = 1
 
-# The diameter the frame is analysed with before the check has spoken.
+# The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
 # Every case carries the same total, so the three differ in where the load sits
@@ -590,7 +590,7 @@ def report_stagger(
     """
     What the objective's single analysis pass costs, by repeating it.
 
-    One analysis, then size, then re-analyse at those sizes. The first pass is
+    One analysis, then size, then re-analyze at those sizes. The first pass is
     what the objective uses; the rest measure how much that one-shot costs.
     """
     diameters = jnp.full(NUM_EDGES, SEED)

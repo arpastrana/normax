@@ -19,7 +19,7 @@ an axis, so a figure can be recomposed without touching what produced it, and
 nothing here calls `show` — the experiments save and move on.
 
 Sizes are drawn to a stated exaggeration rather than to scale. A hundred
-millimetre tube on a ten metre arch is a line one percent of the span wide, so
+millimeter tube on a ten meter arch is a line one percent of the span wide, so
 drawing it truthfully would show nothing; the factor is written into the axis
 label instead of being left for the reader to guess.
 """
@@ -39,7 +39,7 @@ from matplotlib.figure import Figure
 # Points of line width given to the thickest member of a drawing.
 WIDTH_MAX = 9.0
 
-# Colour of everything that is a reference rather than a result.
+# Color of everything that is a reference rather than a result.
 GREY = "0.55"
 
 
@@ -57,7 +57,7 @@ class DrawnStructure(NamedTuple):
         Outer diameter of every member, setting its drawn width.
     widest :
         Diameter drawn at the full width. Shared between drawings, so that two
-        of them may be compared rather than each being normalised to itself.
+        of them may be compared rather than each being normalized to itself.
     """
 
     xyz: Float[Array, "nodes 3"]
@@ -68,12 +68,12 @@ class DrawnStructure(NamedTuple):
 
 class ColorRange(NamedTuple):
     """
-    What members are coloured by, and the range the colours span.
+    What members are colored by, and the range the colors span.
 
     Attributes
     ----------
     values :
-        Quantity to colour members by. If None, the diameters are used.
+        Quantity to color members by. If None, the diameters are used.
     vmin :
         Lower end of the range. If None, taken from the data.
     vmax :
@@ -81,8 +81,8 @@ class ColorRange(NamedTuple):
 
     Notes
     -----
-    Every field defaults, so a drawing that has no opinion about colour passes
-    nothing. Fixing the ends is what lets two drawings share one colour bar.
+    Every field defaults, so a drawing that has no opinion about color passes
+    nothing. Fixing the ends is what lets two drawings share one color bar.
     """
 
     values: Float[Array, "members"] | None = None
@@ -105,12 +105,12 @@ def draw_members(
     drawn :
         The structure and the widths its members are drawn at.
     coloring :
-        What to colour members by, and over what range.
+        What to color members by, and over what range.
 
     Returns
     -------
     members :
-        The drawn collection, for a colour bar to be attached to.
+        The drawn collection, for a color bar to be attached to.
     """
     nodes = np.asarray(drawn.xyz)
     pairs = np.asarray(drawn.edges)
@@ -187,8 +187,8 @@ def figure_sections(
 
     Notes
     -----
-    The two drawings share one width scale and one colour range, so a member
-    that shrank looks thinner rather than merely differently normalised.
+    The two drawings share one width scale and one color range, so a member
+    that shrank looks thinner rather than merely differently normalized.
     """
     assumed = np.asarray(before.diameters)
     required = np.asarray(after.diameters)
@@ -376,7 +376,7 @@ class HandoffForces(NamedTuple):
         Length of every member.
     funicular :
         Axial force form finding predicts, being force density times length.
-    analysed :
+    analyzed :
         Axial force the frame analysis reports.
     moments :
         Largest end moment of every member, in magnitude.
@@ -384,7 +384,7 @@ class HandoffForces(NamedTuple):
 
     lengths: Float[Array, "members"]
     funicular: Float[Array, "members"]
-    analysed: Float[Array, "members"]
+    analyzed: Float[Array, "members"]
     moments: Float[Array, "members"]
 
 
@@ -447,7 +447,7 @@ def figure_handoff(
     """
     lengths = forces.lengths
     funicular = forces.funicular
-    analysed = forces.analysed
+    analyzed = forces.analyzed
     moments = forces.moments
 
     figure, axes = plt.subplots(2, 2, figsize=(12.0, 8.0), layout="constrained")
@@ -455,7 +455,7 @@ def figure_handoff(
     ax = axes[0, 0]
     index = np.arange(len(np.asarray(funicular)))
     ax.plot(index, np.asarray(funicular) / 1e3, "o-", color="#440154", label=r"$q\,L$")
-    ax.plot(index, np.asarray(analysed) / 1e3, "x--", color="#fde725", label="smax")
+    ax.plot(index, np.asarray(analyzed) / 1e3, "x--", color="#fde725", label="smax")
     ax.set_xlabel("member")
     ax.set_ylabel("axial force [kN]")
     ax.set_title("Form finding against the frame analysis", fontsize=11)
@@ -463,7 +463,7 @@ def figure_handoff(
     ax.grid(alpha=0.3)
 
     ax = axes[0, 1]
-    gap = np.abs(np.asarray(analysed) - np.asarray(funicular)) / np.abs(
+    gap = np.abs(np.asarray(analyzed) - np.asarray(funicular)) / np.abs(
         np.asarray(funicular)
     )
     share = np.abs(np.asarray(moments)) / np.abs(

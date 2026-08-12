@@ -54,13 +54,13 @@ class InputSchema(BaseModel):
     """
 
     q: Differentiable[Array[(None,), Float64]]
-    """Force density of every edge, in newtons per millimetre.
+    """Force density of every edge, in newtons per millimeter.
 
     The design variable of the whole pipeline. Negative in compression.
     """
 
     nodes: Array[(None, 3), Float64]
-    """Starting position of every node, in millimetres.
+    """Starting position of every node, in millimeters.
 
     Read only at the supports, whose positions are held. Everywhere else the
     equilibrium discards it.
@@ -82,10 +82,10 @@ class OutputSchema(BaseModel):
     """
 
     xyz: Differentiable[Array[(None, 3), Float64]]
-    """Position of every node at equilibrium, in millimetres."""
+    """Position of every node at equilibrium, in millimeters."""
 
     lengths: Differentiable[Array[(None,), Float64]]
-    """Length of every edge, in millimetres."""
+    """Length of every edge, in millimeters."""
 
     forces: Differentiable[Array[(None,), Float64]]
     """Axial force of every edge, in newtons. Tension positive.

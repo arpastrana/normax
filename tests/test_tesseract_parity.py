@@ -43,7 +43,7 @@ NUM_EDGES = 10
 # The arch lies in the XZ plane, so it has no thickness along Y.
 NORMAL = 1
 
-# The diameter the frame is analysed with before the check has spoken.
+# The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
 # The boundary serializes float64 losslessly and both sides run the same code, so

@@ -15,7 +15,7 @@
 Does OpenSees' Direct Differentiation Method reach a nodal coordinate?
 
 T1 hands T2 a geometry, so the analysis backend has to return `∂N/∂xyz`. DDM
-parametrises material and section properties by design, and whether a nodal
+parametrizes material and section properties by design, and whether a nodal
 coordinate can be registered at all decides which of three architectures T2
 gets. This script answers that empirically rather than from the documentation,
 in five passes:

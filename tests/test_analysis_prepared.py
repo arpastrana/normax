@@ -85,7 +85,7 @@ def diameters():
 def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
     structure, state, steel, catalogue, diameters
 ):
-    # The placeholder geometry differs from the analysed one by the whole of form
+    # The placeholder geometry differs from the analyzed one by the whole of form
     # finding, so if it reached the assembly the two would not agree at all.
     from_start = prepare_model(structure, steel, catalogue, normal=NORMAL)
     from_found = prepare_model(

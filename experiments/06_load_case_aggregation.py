@@ -91,7 +91,7 @@ class AnnealStep(NamedTuple):
     beta :
         Sharpness of the envelope.
     mass :
-        Mass of the smoothly sized structure, in kilogrammes.
+        Mass of the smoothly sized structure, in kilograms.
     excess :
         Fraction by which that exceeds the mass of the exact largest.
     bound :

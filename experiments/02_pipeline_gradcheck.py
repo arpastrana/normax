@@ -67,7 +67,7 @@ LIMIT_NAMES = {
 }
 
 # A relative step for each argument, since one absolute step cannot serve
-# newtons and newton-millimetres at once.
+# newtons and newton-millimeters at once.
 STEP = 1e-6
 
 # The actions a case is probed in, and how each reads in a table.
@@ -154,10 +154,10 @@ class ClassBranch(NamedTuple):
         """
         The branch as a heading, with the proportion it stands for.
         """
-        behaviour = "plastic" if is_plastic(self.section_class) else "elastic"
+        behavior = "plastic" if is_plastic(self.section_class) else "elastic"
 
         return (
-            f"Class {self.section_class} ({behaviour}), "
+            f"Class {self.section_class} ({behavior}), "
             f"d/t = {float(self.catalogue.ratio):.2f}"
         )
 

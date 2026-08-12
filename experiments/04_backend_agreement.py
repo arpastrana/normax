@@ -89,7 +89,7 @@ NUM_EDGES = 10
 # The arch lies in the XZ plane, so it has no thickness along Y.
 NORMAL = 1
 
-# The diameter the frame is analysed with before the check has spoken.
+# The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
 # Frame sizes for the cost sweep. Each adds two coordinate parameters per node
@@ -145,7 +145,7 @@ class ArchSetup(NamedTuple):
     @property
     def seed(self) -> Float[Array, "edges"]:
         """
-        The diameter the frame is analysed with before the check has spoken.
+        The diameter the frame is analyzed with before the check has spoken.
         """
         return jnp.full(self.num_edges, SEED)
 
