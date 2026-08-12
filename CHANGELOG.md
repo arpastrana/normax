@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Experiments — one module prints, and no result travels as a bare tuple
+
+Every script in `experiments/` was hand-formatting its own stdout. A table was
+written twice — once as a header string of padded literals and once as a row
+f-string of the same widths guessed again — so the two drifted apart as soon as a
+column changed, and eleven scripts had eleven house styles. The columns were held
+apart by runs of two and three spaces inside the format strings, which is
+alignment expressed as whitespace the author has to count.
+
+- **`normax/reporting.py` is new, and stands to stdout as `normax.visualization`
+  stands to matplotlib.** A `ColumnSpec` states a column's heading and the format
+  its cells take, exactly once; the width follows from the text that is actually
+  printed, so a heading cannot fall out of step with the row beneath it and no
+  string in an experiment pads anything by hand. `ReportWriter` carries the
+  verbosity, so a caller silences a whole report by constructing a quiet writer
+  rather than by threading a flag down through the functions that compute.
+  `ToleranceCheck` and `checks_passed` replace the summary-and-verdict block that
+  six scripts had each written out longhand.
+- **Prose is written as prose and rewrapped when printed.** `write_note` dedents
+  a triple-quoted paragraph and fills it to the width of a banner, which retires
+  the runs of consecutive `print` calls holding one hand-wrapped line each.
+- **Results travel in named containers.** `geometry` returned a four-tuple the
+  callers destructured positionally, `setup` returned three things in a fixed
+  order, `gap` returned two floats distinguishable only by position, and
+  `classify` returned a status, a count and a string. Each is now a `NamedTuple`
+  with an `Attributes` docstring, and the quantities derived from those fields —
+  a worst-case ratio, a label, a pass rate — are properties on the container
+  rather than expressions repeated at each call site.
+- **No signature takes more than five arguments.** The prepared problem, the load
+  cases and the funicular force density of `experiments/03` travel as one
+  `ArchProblem`; `experiments/07`'s assembly arguments travel as one `ModelSpec`,
+  which also makes a perturbed model a single `_replace` instead of two
+  hand-written dictionary copies. `experiments/09` no longer solves the stability
+  problem twice, which the split into report functions exposed.
+- **Nothing is built inside a call's argument list, or inside a `return`.** Every
+  column tuple, row list, entry tuple and container is assembled as its own
+  statement, bound to a name that says what it is, and only then passed or
+  returned. This is the general form of the rule `## JAX array construction`
+  already stated for arrays, and it is what the table-building code above was
+  violating worst: a `write_table` whose two arguments were both multi-line
+  comprehensions made the reader hold the callee, the argument and the argument's
+  contents at once. An AST check over `experiments/` and `normax/reporting.py`
+  reports zero of either pattern.
+- **`experiments/02` claimed Class 3 was plastic.** The branch label read
+  `"plastic" if section_class else "elastic"`, which is true for every class that
+  is not zero. It now asks `normax.ec3.classification.is_plastic`. This is the
+  only number or word in any experiment's output that the refactor changes;
+  everything else was diffed against a captured baseline and is identical,
+  wall-clock timings excepted.
+
 ### P9d — the annealed descent compiled once instead of once per round
 
 A profile of `experiments/03_optimize_arch.py` found the run compile-bound

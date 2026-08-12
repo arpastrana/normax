@@ -30,8 +30,12 @@ member whose axial force changes sign between load cases.
 Run with `uv run python experiments/06_load_case_aggregation.py`.
 """
 
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
+from jaxtyping import Array
+from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import SteelGrade
@@ -39,154 +43,252 @@ from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import mass_of_tubes
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
 
 STEEL = SteelGrade()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 SECTION_CLASS = 3
 
+# Moment factors of a member bent in single curvature, as Table B.3 reads them.
+MOMENT_FACTOR = 0.9
+
 LENGTHS = jnp.asarray([4000.0, 6000.0, 5000.0, 4500.0])
 
 # Three load cases over four members: symmetric, half-span asymmetric, and a
 # crown point load. The third member reverses from compression to tension.
-FORCES = jnp.asarray(
-    [
-        [-6e5, -4e5, -3e5, -5e5],
-        [-8e5, -2e5, 2e5, -6e5],
-        [-3e5, -7e5, -1e5, -9e5],
-    ]
-)
-MOMENTS = jnp.asarray(
-    [
-        [2e7, 1e7, 5e6, 1.5e7],
-        [5e7, 3e7, 2e7, 4e7],
-        [1e7, 6e7, 1e7, 2e7],
-    ]
-)
+FORCES_BY_CASE = [
+    [-6e5, -4e5, -3e5, -5e5],
+    [-8e5, -2e5, 2e5, -6e5],
+    [-3e5, -7e5, -1e5, -9e5],
+]
+MOMENTS_BY_CASE = [
+    [2e7, 1e7, 5e6, 1.5e7],
+    [5e7, 3e7, 2e7, 4e7],
+    [1e7, 6e7, 1e7, 2e7],
+]
 
-SHARPNESS = [5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0]
+FORCES = jnp.asarray(FORCES_BY_CASE)
+MOMENTS = jnp.asarray(MOMENTS_BY_CASE)
+
+SHARPNESSES = (5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0)
+
+# The sharpness the live-case comparison is made at.
+SHARPNESS = 50.0
+
+# The member whose axial force reverses between load cases.
+REVERSING = 2
+
+NUM_CASES, NUM_MEMBERS = FORCES.shape
 
 
-def sizes_per_load_case():
+class AnnealStep(NamedTuple):
+    """
+    What the smooth envelope gives away at one sharpness.
+
+    Attributes
+    ----------
+    beta :
+        Sharpness of the envelope.
+    mass :
+        Mass of the smoothly sized structure, in kilogrammes.
+    excess :
+        Fraction by which that exceeds the mass of the exact largest.
+    bound :
+        Fraction the envelope's own bound allows it to exceed by.
+    finite :
+        Whether the gradient of the mass is finite throughout.
+    """
+
+    beta: float
+    mass: float
+    excess: float
+    bound: float
+    finite: bool
+
+
+class LiveCases(NamedTuple):
+    """
+    How many load cases reach one member's size with a gradient.
+
+    Attributes
+    ----------
+    member :
+        Index of the member.
+    smooth :
+        Cases with a non-zero gradient under the smooth envelope.
+    hard :
+        Cases with a non-zero gradient under a hard maximum.
+    """
+
+    member: int
+    smooth: int
+    hard: int
+
+
+def diameters_per_case(forces: Float[Array, "cases members"]) -> Float[Array, "..."]:
     """
     Fully-stressed diameter of every member under every load case.
     """
-    return diameter_required(
-        MemberActions(FORCES, MOMENTS, 0.0, 0.9, 0.9),
+    actions = MemberActions(forces, MOMENTS, 0.0, MOMENT_FACTOR, MOMENT_FACTOR)
+    diameters = diameter_required(
+        actions,
         LENGTHS,
         STEEL,
         CATALOGUE,
         section_class=SECTION_CLASS,
     )
 
+    return diameters
 
-def total_mass(beta):
+
+def mass_smooth(forces: Float[Array, "cases members"], beta: float) -> Float[Array, ""]:
     """
     Mass of the structure sized by the smooth envelope at a given sharpness.
     """
-    return mass_of_tubes(
-        CATALOGUE.tube_at(diameter_envelope(sizes_per_load_case(), beta)),
-        LENGTHS,
-        STEEL,
+    per_case = diameters_per_case(forces)
+    sizes = diameter_envelope(per_case, beta)
+    tubes = CATALOGUE.tube_at(sizes)
+
+    return mass_of_tubes(tubes, LENGTHS, STEEL)
+
+
+def mass_hard(forces: Float[Array, "cases members"]) -> Float[Array, ""]:
+    """
+    Mass of the same structure sized by the true largest of the load cases.
+    """
+    per_case = diameters_per_case(forces)
+    sizes = jnp.max(per_case, axis=0)
+    tubes = CATALOGUE.tube_at(sizes)
+
+    return mass_of_tubes(tubes, LENGTHS, STEEL)
+
+
+def anneal_step(exact_mass: float, beta: float) -> AnnealStep:
+    """
+    The smoothed mass at one sharpness, against the exact one and its bound.
+    """
+    smoothed = float(mass_smooth(FORCES, beta)) * 1e3
+    gradient = jax.grad(mass_smooth)(FORCES, beta)
+    excess = (smoothed - exact_mass) / exact_mass
+    bound = float(jnp.log(NUM_CASES) / beta)
+    finite = bool(jnp.all(jnp.isfinite(gradient)))
+    step = AnnealStep(beta, smoothed, excess, bound, finite)
+
+    return step
+
+
+def live_cases(member: int, smooth: Float[Array, "..."], hard: Float[Array, "..."]):
+    """
+    Cases that reach one member's size with a gradient, under either aggregation.
+    """
+    live_smooth = int(jnp.sum(jnp.abs(smooth[:, member]) > 0.0))
+    live_hard = int(jnp.sum(jnp.abs(hard[:, member]) > 0.0))
+    counted = LiveCases(member, live_smooth, live_hard)
+
+    return counted
+
+
+def report_sizes(report: ReportWriter, per_case: Float[Array, "..."]) -> float:
+    """
+    What each load case asks of each member, and the exact largest of them.
+    """
+    exact = jnp.max(per_case, axis=0)
+    tubes = CATALOGUE.tube_at(exact)
+    exact_mass = float(mass_of_tubes(tubes, LENGTHS, STEEL)) * 1e3
+
+    per_case_columns = [
+        ColumnSpec(f"case {case + 1} [mm]", ".2f") for case in range(NUM_CASES)
+    ]
+    columns = (
+        ColumnSpec("member"),
+        *per_case_columns,
+        ColumnSpec("exact max [mm]", ".2f"),
+    )
+    rows = []
+    for member in range(NUM_MEMBERS):
+        sizes = [float(per_case[case, member]) for case in range(NUM_CASES)]
+        rows.append((member, *sizes, float(exact[member])))
+
+    entries = (("exact mass", f"{exact_mass:.2f} kg"),)
+
+    report.write_line("Three load cases over four members, S355 at the Class 3 limit")
+    report.write_table(columns, rows)
+    report.write_entries(entries)
+
+    return exact_mass
+
+
+def report_annealing(report: ReportWriter, exact_mass: float) -> None:
+    """
+    What the smoothing costs at each sharpness, and what bounds it.
+    """
+    columns = (
+        ColumnSpec("beta", ".0f"),
+        ColumnSpec("mass [kg]", ".2f"),
+        ColumnSpec("excess", ".3%"),
+        ColumnSpec("bound log(cases)/beta", ".3%"),
+        ColumnSpec("gradient finite"),
+    )
+    annealed = [anneal_step(exact_mass, beta) for beta in SHARPNESSES]
+    rows = [
+        (step.beta, step.mass, step.excess, step.bound, str(step.finite))
+        for step in annealed
+    ]
+
+    report.write_heading("Annealing the sharpness")
+    report.write_table(columns, rows)
+    report.write_note(
+        """
+        The excess is an overestimate of the size, never an underestimate, so
+        every intermediate design satisfies the standard.
+        """
     )
 
 
-def main() -> None:
+def report_live_cases(report: ReportWriter, per_case: Float[Array, "..."]) -> None:
+    """
+    That every case sees a gradient, which a hard maximum would not give.
+    """
+    smooth = jax.grad(mass_smooth)(FORCES, SHARPNESS)
+    hard = jax.grad(mass_hard)(FORCES)
+
+    columns = (
+        ColumnSpec("member"),
+        ColumnSpec("smooth, cases with a gradient"),
+        ColumnSpec("hard maximum"),
+    )
+    counted = [live_cases(member, smooth, hard) for member in range(NUM_MEMBERS)]
+    rows = [(found.member, found.smooth, found.hard) for found in counted]
+
+    report.write_heading("Every case sees a gradient, which a hard maximum would not")
+    report.write_table(columns, rows)
+
+    entries = (
+        (f"member {REVERSING} forces per case", f"{FORCES[:, REVERSING]}"),
+        ("sizes per case", f"{per_case[:, REVERSING]}"),
+        ("gradient per case", f"{smooth[:, REVERSING]}"),
+    )
+
+    report.write_heading("The member that changes sign between cases")
+    report.write_entries(entries)
+    report.write_note(
+        """
+        Finite throughout, despite the standard being discontinuous at zero.
+        """
+    )
+
+
+def main(verbose: bool = True) -> None:
     """
     Anneal the sharpness and report what the smoothing costs.
     """
-    per_case = sizes_per_load_case()
-    exact = jnp.max(per_case, axis=0)
-    exact_mass = float(mass_of_tubes(CATALOGUE.tube_at(exact), LENGTHS, STEEL)) * 1e3
+    report = ReportWriter(verbose)
+    per_case = diameters_per_case(FORCES)
 
-    print("Three load cases over four members, S355 at the Class 3 limit\n")
-    print(f"  {'member':<10}{'case 1':<12}{'case 2':<12}{'case 3':<12}{'exact max'}")
-    for member in range(per_case.shape[1]):
-        row = "".join(
-            f"{float(per_case[load_case, member]):<12.2f}" for load_case in range(3)
-        )
-        print(f"  {member:<10}{row}{float(exact[member]):.2f}")
-
-    print(f"\n  exact mass {exact_mass:.2f} kg")
-
-    print("\nAnnealing the sharpness")
-    print(
-        f"  {'beta':<10}{'mass [kg]':<14}{'excess':<12}"
-        f"{'bound log(cases)/beta':<24}{'gradient finite'}"
-    )
-
-    for beta in SHARPNESS:
-        smoothed = float(total_mass(beta)) * 1e3
-        excess = (smoothed - exact_mass) / exact_mass * 100.0
-        bound = float(jnp.log(per_case.shape[0]) / beta) * 100.0
-        gradient = jax.grad(
-            lambda f: mass_of_tubes(
-                CATALOGUE.tube_at(
-                    diameter_envelope(
-                        diameter_required(
-                            MemberActions(f, MOMENTS, 0.0, 0.9, 0.9),
-                            LENGTHS,
-                            STEEL,
-                            CATALOGUE,
-                            section_class=SECTION_CLASS,
-                        ),
-                        beta,
-                    )
-                ),
-                LENGTHS,
-                STEEL,
-            )
-        )(FORCES)
-        finite = bool(jnp.all(jnp.isfinite(gradient)))
-        print(
-            f"  {beta:<10.0f}{smoothed:<14.2f}{excess:>7.3f}%    "
-            f"{bound:>17.3f}%      {finite}"
-        )
-
-    print("\n  The excess is an overestimate of the size, never an underestimate,")
-    print("  so every intermediate design satisfies the standard.")
-
-    print("\nEvery case sees a gradient, which a hard maximum would not give")
-    beta = 50.0
-
-    def objective(forces):
-        sizes = diameter_required(
-            MemberActions(forces, MOMENTS, 0.0, 0.9, 0.9),
-            LENGTHS,
-            STEEL,
-            CATALOGUE,
-            section_class=SECTION_CLASS,
-        )
-
-        return mass_of_tubes(
-            CATALOGUE.tube_at(diameter_envelope(sizes, beta)), LENGTHS, STEEL
-        )
-
-    def hard(forces):
-        sizes = diameter_required(
-            MemberActions(forces, MOMENTS, 0.0, 0.9, 0.9),
-            LENGTHS,
-            STEEL,
-            CATALOGUE,
-            section_class=SECTION_CLASS,
-        )
-
-        return mass_of_tubes(CATALOGUE.tube_at(jnp.max(sizes, axis=0)), LENGTHS, STEEL)
-
-    smooth_gradient = jax.grad(objective)(FORCES)
-    hard_gradient = jax.grad(hard)(FORCES)
-
-    print(f"  {'':<10}{'smooth, cases with a gradient':<34}{'hard maximum'}")
-    for member in range(FORCES.shape[1]):
-        live_smooth = int(jnp.sum(jnp.abs(smooth_gradient[:, member]) > 0.0))
-        live_hard = int(jnp.sum(jnp.abs(hard_gradient[:, member]) > 0.0))
-        print(f"  member {member:<3}{live_smooth:<34}{live_hard}")
-
-    print("\nThe member that changes sign between cases")
-    reversing = 2
-    print(f"  member {reversing} forces per case: {FORCES[:, reversing]}")
-    print(f"  sizes per case: {per_case[:, reversing]}")
-    print(f"  gradient per case: {smooth_gradient[:, reversing]}")
-    print("  finite throughout, despite the standard being discontinuous at zero")
+    exact_mass = report_sizes(report, per_case)
+    report_annealing(report, exact_mass)
+    report_live_cases(report, per_case)
 
 
 if __name__ == "__main__":

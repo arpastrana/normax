@@ -44,12 +44,18 @@ with `pass` one of agreement, blind, scaling, optimize, or omitted for all.
 
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax_fdm.equilibrium import EquilibriumStructure
+from jaxtyping import Array
+from jaxtyping import Float
 
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
@@ -62,8 +68,12 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
+from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
+from normax.structures import Structure
 from normax.structures import arch_2d
 from normax.visualization import BackendAgreement
 from normax.visualization import BackendTimings
@@ -107,21 +117,161 @@ CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 BACKENDS = ("smax", "opensees")
 
 
-def setup(num_edges):
+class ArchSetup(NamedTuple):
+    """
+    The arch every pass below is run on.
+
+    Attributes
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    graph :
+        The form-finding connectivity, from `normax.formfinding`.
+    q :
+        Force densities that reach the target rise.
+    """
+
+    structure: Structure
+    graph: EquilibriumStructure
+    q: Float[Array, "edges"]
+
+    @property
+    def num_edges(self) -> int:
+        """
+        Number of members in this mesh.
+        """
+        return int(self.q.shape[0])
+
+    @property
+    def seed(self) -> Float[Array, "edges"]:
+        """
+        The diameter the frame is analysed with before the check has spoken.
+        """
+        return jnp.full(self.num_edges, SEED)
+
+    @property
+    def xyz(self) -> Float[Array, "nodes 3"]:
+        """
+        The form-found geometry the analysis stage is handed.
+        """
+        state = equilibrium_state(self.q, self.structure, self.graph)
+
+        return state.xyz
+
+    @property
+    def bounds(self) -> tuple[float, float]:
+        """
+        The box the force densities may move in, a decade either side.
+        """
+        box = (float(self.q[0]) * DECADES, float(self.q[0]) / DECADES)
+
+        return box
+
+
+class BackendSeconds(NamedTuple):
+    """
+    What one piece of work cost each backend.
+
+    Attributes
+    ----------
+    smax :
+        Seconds the traced JAX solver took.
+    opensees :
+        Seconds the C++ solver differentiated by DDM took.
+    """
+
+    smax: float
+    opensees: float
+
+    @property
+    def ratio(self) -> float:
+        """
+        Traced over DDM, below one where tracing wins.
+        """
+        return self.smax / self.opensees
+
+
+class ScalingRow(NamedTuple):
+    """
+    What one frame size cost, and how closely the two backends agreed on it.
+
+    Attributes
+    ----------
+    num_edges :
+        Number of members in the frame.
+    parameters :
+        Number of quantities the direct differentiation sweep registers.
+    gap :
+        Worst relative disagreement in the mass gradient at this size.
+    stage :
+        Seconds the analysis stage alone spends on its derivatives.
+    value :
+        Seconds the whole composition spends on one mass.
+    pipeline :
+        Seconds the whole composition spends on a value and gradient.
+    """
+
+    num_edges: int
+    parameters: int
+    gap: float
+    stage: BackendSeconds
+    value: BackendSeconds
+    pipeline: BackendSeconds
+
+
+class DescentResult(NamedTuple):
+    """
+    One descent, driven by one backend.
+
+    Attributes
+    ----------
+    backend :
+        Which solver drove it.
+    walked :
+        Force densities and objective values, step by step.
+    elapsed :
+        Seconds the search took, the compilation excluded.
+    compiling :
+        Seconds the objective took to compile, paid once before the clock.
+    """
+
+    backend: str
+    walked: Trajectory
+    elapsed: float
+    compiling: float
+
+    @property
+    def steps(self) -> int:
+        """
+        Steps the search took.
+        """
+        return int(self.walked.mass.shape[0])
+
+    @property
+    def per_step(self) -> float:
+        """
+        Milliseconds spent per step of the search.
+        """
+        return self.elapsed / self.steps * 1e3
+
+
+def arch_setup(num_edges: int) -> ArchSetup:
     """
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     load = TOTAL_LOAD / (num_edges - 1)
     structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
-    graph_fdm = equilibrium_graph(structure)
+    graph = equilibrium_graph(structure)
 
     trial = jnp.full(num_edges, -1.0)
-    reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
+    state = equilibrium_state(trial, structure, graph)
+    reached = jnp.max(state.xyz[:, 2])
+    setup = ArchSetup(structure, graph, trial * reached / RISE)
 
-    return structure, graph_fdm, trial * reached / RISE
+    return setup
 
 
-def relative(actual, expected):
+def relative(actual, expected) -> float:
     """
     Worst absolute gap over the largest entry of the reference.
     """
@@ -132,17 +282,16 @@ def relative(actual, expected):
     return float(np.max(np.abs(actual - expected))) / (scale if scale > 0.0 else 1.0)
 
 
-def objective(chain, structure, num_edges):
+def mass_objective(setup: ArchSetup, chain) -> Callable[[Float[Array, "edges"]], Any]:
     """
     Force densities to a mass, through whichever backend is selected.
     """
-    seed = jnp.full(num_edges, SEED)
 
     def total(q):
         return mass_composed(
             q,
-            seed,
-            ComposedSetup(structure, chain, STEEL, CATALOGUE),
+            setup.seed,
+            ComposedSetup(setup.structure, chain, STEEL, CATALOGUE),
             normal=NORMAL,
             section_class=3,
         )
@@ -150,223 +299,7 @@ def objective(chain, structure, num_edges):
     return total
 
 
-def agreement():
-    """Member forces, Jacobian blocks, and the mass gradient end to end."""
-    print("=" * 78)
-    print("Two solvers on one schema -- agreement")
-    print("=" * 78)
-
-    structure, graph_fdm, q = setup(NUM_EDGES)
-    xyz = equilibrium_state(q, structure, graph_fdm).xyz
-    diameters = jnp.full(NUM_EDGES, SEED)
-
-    mine = backend_opensees.member_forces(
-        backend_opensees.prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL),
-        xyz,
-        diameters,
-        STEEL,
-        CATALOGUE,
-    )
-    theirs = forces_smax(
-        prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL),
-        xyz,
-        diameters,
-        STEEL,
-        CATALOGUE,
-    )
-
-    print("\nmember forces, DDM backend against the traced one")
-    for name in ("axial_force", "moment_major"):
-        gap = relative(getattr(mine, name), getattr(theirs, name))
-        print(f"  {name:<12} worst relative {gap:.3e}")
-    minor = float(np.max(np.abs(np.asarray(mine.moment_minor))))
-    print(f"  {'moment_minor':<12} exactly zero in a plane frame, max {minor:.1e}")
-
-    blocks = backend_opensees.force_jacobian(
-        backend_opensees.prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL),
-        xyz,
-        diameters,
-        STEEL,
-        CATALOGUE,
-    )
-
-    def run(coords, sizes):
-        member = forces_smax(
-            prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL),
-            coords,
-            sizes,
-            STEEL,
-            CATALOGUE,
-        )
-
-        return {
-            "axial_force": member.axial_force,
-            "end_moments_major": member.moment_major,
-        }
-
-    by_coordinate = jax.jacfwd(run, argnums=0)(xyz, diameters)
-    by_diameter = jax.jacfwd(run, argnums=1)(xyz, diameters)
-
-    print("\nJacobian blocks, hand-derived C++ against traced autodiff")
-    pairs = (
-        ("axial_force_xyz", blocks.axial_force_xyz, by_coordinate["axial_force"]),
-        (
-            "moment_major_xyz",
-            blocks.moment_major_xyz,
-            by_coordinate["end_moments_major"],
-        ),
-        (
-            "axial_force_diameter",
-            blocks.axial_force_diameter,
-            by_diameter["axial_force"],
-        ),
-        (
-            "moment_major_diameter",
-            blocks.moment_major_diameter,
-            by_diameter["end_moments_major"],
-        ),
-    )
-    worst = 0.0
-    for name, ddm, traced in pairs:
-        gap = relative(ddm, traced)
-        worst = max(worst, gap)
-        shape = str(np.asarray(ddm).shape)
-        print(f"  {name:<18} {shape:<22} worst relative {gap:.3e}")
-    print(f"  worst over every block  {worst:.3e}")
-
-    chain = local_chain()
-    total = objective(chain, structure, NUM_EDGES)
-
-    print("\nend to end, force densities to a mass")
-    results = {}
-    for name in BACKENDS:
-        with analysis_backend(name):
-            results[name] = (float(total(q)), np.asarray(jax.grad(total)(q)))
-        print(f"  {name:<10} mass {results[name][0]:.9f} t")
-
-    mass_gap = abs(results["opensees"][0] - results["smax"][0]) / results["smax"][0]
-    grad_gap = relative(results["opensees"][1], results["smax"][1])
-    print(f"  mass       relative gap {mass_gap:.3e}")
-    print(f"  dmass/dq   worst relative {grad_gap:.3e}, asked {TOLERANCE_ASKED:.0e}")
-
-    return grad_gap
-
-
-def blind():
-    """The one derivative the plane cannot carry, and why nothing asks for it."""
-    print("=" * 78)
-    print("The block a two-dimensional model cannot reach")
-    print("=" * 78)
-
-    structure, graph_fdm, q = setup(NUM_EDGES)
-    xyz = equilibrium_state(q, structure, graph_fdm).xyz
-    diameters = jnp.full(NUM_EDGES, SEED)
-
-    def run(coords):
-        member = forces_smax(
-            prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL),
-            coords,
-            diameters,
-            STEEL,
-            CATALOGUE,
-        )
-
-        return {
-            "axial_force": member.axial_force,
-            "end_moments_major": member.moment_major,
-            "end_moments_minor": member.moment_minor,
-        }
-
-    jacobian = jax.jacfwd(run)(xyz)
-
-    print("\nthe three-dimensional Jacobian, by global axis")
-    print(f"  {'output':<10} {'d/dx':>14} {'d/dy':>14} {'d/dz':>14}")
-    for name, block in jacobian.items():
-        sizes = [
-            float(np.max(np.abs(np.asarray(block)[..., axis]))) for axis in range(3)
-        ]
-        mark = " <- normal" if name == "end_moments_minor" else ""
-        print(f"  {name:<10} " + " ".join(f"{s:>14.6e}" for s in sizes) + mark)
-
-    print("\n  The response separates: nothing in the plane moves when a node")
-    print("  leaves it, and the minor-axis moment moves only then. A plane model")
-    print("  carries every block but that one.")
-
-    interior = xyz.shape[0] // 2
-    tangent = jnp.zeros_like(xyz).at[interior, NORMAL].set(1.0)
-    _, pushed = jax.jvp(run, (xyz,), (tangent,))
-
-    print(f"\nthe same, pushing node {interior} alone out of the plane")
-    for name, value in pushed.items():
-        print(f"  {name:<10} {float(np.max(np.abs(np.asarray(value)))):.6e}")
-    print("  One node, because translating every node out of the plane together")
-    print("  is a rigid motion and strains nothing — it would read as blindness")
-    print("  where there is none.")
-
-    reachable = jax.jacfwd(lambda qq: equilibrium_state(qq, structure, graph_fdm).xyz)(
-        q
-    )
-    out_of_plane = float(np.max(np.abs(np.asarray(reachable)[:, NORMAL, :])))
-
-    print("\nand what form finding can do about it")
-    print(f"  worst |d xyz[normal] / dq|  {out_of_plane:.3e}")
-    print("  The force density method decouples per coordinate, so a planar arch")
-    print("  stays planar for every q. The blind block is multiplied by zero.")
-
-
-def stage_cost(structure, xyz, diameters):
-    """
-    Seconds each backend spends on the analysis stage's derivatives alone.
-
-    Isolated from the composition on purpose. The whole pipeline pays for form
-    finding, a sizing bisection and two boundary crossings whoever solves the
-    frame, and those dominate at these sizes; the scaling claim is about the
-    stage.
-
-    Notes
-    -----
-    **Both backends are prepared once and timed on the work that remains**, which
-    is how the stage's contract says to use them. Preparing inside the timed call
-    would charge the traced backend for compiling an assembly it is meant to reuse
-    and charge neither for what an optimizer actually pays per iterate.
-
-    **The traced Jacobian is compiled.** Uncompiled it runs two orders of
-    magnitude slower, and comparing that against a C++ sweep measures Python
-    dispatch rather than either differentiation strategy. The compilation is a
-    fixed cost per frame size and the warm-up excludes it, exactly as it excludes
-    the kernel the section slopes need on the other side.
-    """
-    prepared_ddm = backend_opensees.prepare_model(
-        structure, STEEL, CATALOGUE, normal=NORMAL
-    )
-    prepared_smax = prepare_smax(structure, STEEL, CATALOGUE, normal=NORMAL)
-
-    def ddm():
-        return backend_opensees.force_jacobian(
-            prepared_ddm, xyz, diameters, STEEL, CATALOGUE
-        )
-
-    def run(coords, sizes):
-        member = forces_smax(prepared_smax, coords, sizes, STEEL, CATALOGUE)
-
-        return {
-            "axial_force": member.axial_force,
-            "end_moments_major": member.moment_major,
-        }
-
-    coordinates = eqx.filter_jit(jax.jacfwd(run, argnums=0))
-    sections = eqx.filter_jit(jax.jacfwd(run, argnums=1))
-
-    def traced():
-        return (
-            coordinates(xyz, diameters),
-            sections(xyz, diameters),
-        )
-
-    return {"opensees": steady(ddm), "smax": steady(traced)}
-
-
-def steady(call, repeats=REPEATS):
+def steady(call: Callable[[], Any], repeats: int = REPEATS) -> float:
     """
     Seconds per call once nothing is being compiled for the first time.
 
@@ -414,7 +347,278 @@ def steady(call, repeats=REPEATS):
     return float(np.median(samples))
 
 
-def scaling():
+def stage_cost(setup: ArchSetup) -> BackendSeconds:
+    """
+    Seconds each backend spends on the analysis stage's derivatives alone.
+
+    Isolated from the composition on purpose. The whole pipeline pays for form
+    finding, a sizing bisection and two boundary crossings whoever solves the
+    frame, and those dominate at these sizes; the scaling claim is about the
+    stage.
+
+    Notes
+    -----
+    **Both backends are prepared once and timed on the work that remains**, which
+    is how the stage's contract says to use them. Preparing inside the timed call
+    would charge the traced backend for compiling an assembly it is meant to reuse
+    and charge neither for what an optimizer actually pays per iterate.
+
+    **The traced Jacobian is compiled.** Uncompiled it runs two orders of
+    magnitude slower, and comparing that against a C++ sweep measures Python
+    dispatch rather than either differentiation strategy. The compilation is a
+    fixed cost per frame size and the warm-up excludes it, exactly as it excludes
+    the kernel the section slopes need on the other side.
+    """
+    xyz = setup.xyz
+    diameters = setup.seed
+    prepared_ddm = backend_opensees.prepare_model(
+        setup.structure, STEEL, CATALOGUE, normal=NORMAL
+    )
+    prepared_smax = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
+
+    def ddm():
+        return backend_opensees.force_jacobian(
+            prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+        )
+
+    run = traced_forces(prepared_smax)
+    coordinates = eqx.filter_jit(jax.jacfwd(run, argnums=0))
+    sections = eqx.filter_jit(jax.jacfwd(run, argnums=1))
+
+    def traced():
+        blocks = (coordinates(xyz, diameters), sections(xyz, diameters))
+
+        return blocks
+
+    seconds = BackendSeconds(steady(traced), steady(ddm))
+
+    return seconds
+
+
+def traced_forces(prepared) -> Callable[..., dict[str, Float[Array, "..."]]]:
+    """
+    The two member forces the composition consumes, as a differentiable map.
+    """
+
+    def run(coords, sizes):
+        member = forces_smax(prepared, coords, sizes, STEEL, CATALOGUE)
+        forces = {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+        }
+
+        return forces
+
+    return run
+
+
+def agreement(report: ReportWriter) -> float:
+    """
+    Member forces, Jacobian blocks, and the mass gradient end to end.
+    """
+    report.write_banner("Two solvers on one schema -- agreement")
+
+    setup = arch_setup(NUM_EDGES)
+    xyz = setup.xyz
+    diameters = setup.seed
+    prepared_ddm = backend_opensees.prepare_model(
+        setup.structure, STEEL, CATALOGUE, normal=NORMAL
+    )
+    prepared_smax = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
+
+    mine = backend_opensees.member_forces(
+        prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+    )
+    theirs = forces_smax(prepared_smax, xyz, diameters, STEEL, CATALOGUE)
+
+    force_columns = (
+        ColumnSpec("force", align="<"),
+        ColumnSpec("worst relative", ".3e"),
+        ColumnSpec("", align="<"),
+    )
+    force_rows = []
+    for name in ("axial_force", "moment_major"):
+        gap = relative(getattr(mine, name), getattr(theirs, name))
+        force_rows.append((name, gap, ""))
+    minor = float(np.max(np.abs(np.asarray(mine.moment_minor))))
+    force_rows.append(("moment_minor", minor, "exactly zero in a plane frame"))
+
+    report.write_heading("member forces, DDM backend against the traced one")
+    report.write_table(force_columns, force_rows)
+
+    blocks = backend_opensees.force_jacobian(
+        prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+    )
+    run = traced_forces(prepared_smax)
+    by_coordinate = jax.jacfwd(run, argnums=0)(xyz, diameters)
+    by_diameter = jax.jacfwd(run, argnums=1)(xyz, diameters)
+
+    axial_xyz = ("axial_force_xyz", blocks.axial_force_xyz)
+    moment_xyz = ("moment_major_xyz", blocks.moment_major_xyz)
+    axial_diameter = ("axial_force_diameter", blocks.axial_force_diameter)
+    moment_diameter = ("moment_major_diameter", blocks.moment_major_diameter)
+    pairs = (
+        (*axial_xyz, by_coordinate["axial_force"]),
+        (*moment_xyz, by_coordinate["end_moments_major"]),
+        (*axial_diameter, by_diameter["axial_force"]),
+        (*moment_diameter, by_diameter["end_moments_major"]),
+    )
+
+    block_columns = (
+        ColumnSpec("block", align="<"),
+        ColumnSpec("shape", align="<"),
+        ColumnSpec("worst relative", ".3e"),
+    )
+    block_rows = [
+        (name, str(np.asarray(ddm).shape), relative(ddm, traced))
+        for name, ddm, traced in pairs
+    ]
+    worst = max(relative(ddm, traced) for _, ddm, traced in pairs)
+    block_entries = (("worst over every block", f"{worst:.3e}"),)
+
+    report.write_heading("Jacobian blocks, hand-derived C++ against traced autodiff")
+    report.write_table(block_columns, block_rows)
+    report.write_entries(block_entries)
+
+    total = mass_objective(setup, local_chain())
+    masses = {}
+    gradients = {}
+    for name in BACKENDS:
+        with analysis_backend(name):
+            masses[name] = float(total(setup.q))
+            gradients[name] = np.asarray(jax.grad(total)(setup.q))
+
+    mass_gap = abs(masses["opensees"] - masses["smax"]) / masses["smax"]
+    grad_gap = relative(gradients["opensees"], gradients["smax"])
+
+    by_backend = [(name, f"mass {masses[name]:.9f} t") for name in BACKENDS]
+    asked = f"worst relative {grad_gap:.3e}, asked {TOLERANCE_ASKED:.0e}"
+    entries = (
+        *by_backend,
+        ("mass", f"relative gap {mass_gap:.3e}"),
+        ("dmass/dq", asked),
+    )
+
+    report.write_heading("end to end, force densities to a mass")
+    report.write_entries(entries)
+
+    return grad_gap
+
+
+def blind(report: ReportWriter) -> None:
+    """
+    The one derivative the plane cannot carry, and why nothing asks for it.
+    """
+    report.write_banner("The block a two-dimensional model cannot reach")
+
+    setup = arch_setup(NUM_EDGES)
+    xyz = setup.xyz
+    diameters = setup.seed
+    prepared = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
+
+    def run(coords):
+        member = forces_smax(prepared, coords, diameters, STEEL, CATALOGUE)
+        forces = {
+            "axial_force": member.axial_force,
+            "end_moments_major": member.moment_major,
+            "end_moments_minor": member.moment_minor,
+        }
+
+        return forces
+
+    jacobian = jax.jacfwd(run)(xyz)
+
+    columns = (
+        ColumnSpec("output", align="<"),
+        ColumnSpec("d/dx", ".6e"),
+        ColumnSpec("d/dy", ".6e"),
+        ColumnSpec("d/dz", ".6e"),
+        ColumnSpec("", align="<"),
+    )
+    rows = []
+    for name, block in jacobian.items():
+        sizes = [
+            float(np.max(np.abs(np.asarray(block)[..., axis]))) for axis in range(3)
+        ]
+        mark = "<- normal" if name == "end_moments_minor" else ""
+        rows.append((name, *sizes, mark))
+
+    report.write_heading("the three-dimensional Jacobian, by global axis")
+    report.write_table(columns, rows)
+    report.write_note(
+        """
+        The response separates: nothing in the plane moves when a node leaves it,
+        and the minor-axis moment moves only then. A plane model carries every
+        block but that one.
+        """
+    )
+
+    interior = xyz.shape[0] // 2
+    tangent = jnp.zeros_like(xyz).at[interior, NORMAL].set(1.0)
+    _, pushed = jax.jvp(run, (xyz,), (tangent,))
+
+    entries = [
+        (name, f"{float(np.max(np.abs(np.asarray(value)))):.6e}")
+        for name, value in pushed.items()
+    ]
+
+    report.write_heading(f"the same, pushing node {interior} alone out of the plane")
+    report.write_entries(entries)
+    report.write_note(
+        """
+        One node, because translating every node out of the plane together is a
+        rigid motion and strains nothing — it would read as blindness where there
+        is none.
+        """
+    )
+
+    def positions(q):
+        state = equilibrium_state(q, setup.structure, setup.graph)
+
+        return state.xyz
+
+    reachable = jax.jacfwd(positions)(setup.q)
+    out_of_plane = float(np.max(np.abs(np.asarray(reachable)[:, NORMAL, :])))
+    entries = (("worst |d xyz[normal] / dq|", f"{out_of_plane:.3e}"),)
+
+    report.write_heading("and what form finding can do about it")
+    report.write_entries(entries)
+    report.write_note(
+        """
+        The force density method decouples per coordinate, so a planar arch stays
+        planar for every q. The blind block is multiplied by zero.
+        """
+    )
+
+
+def scaling_row(num_edges: int) -> ScalingRow:
+    """
+    One frame size, timed through the composition and through the stage alone.
+    """
+    setup = arch_setup(num_edges)
+    total = mass_objective(setup, local_chain())
+
+    gradients = {}
+    values = {}
+    seconds = {}
+    for name in BACKENDS:
+        with analysis_backend(name):
+            gradient = jax.grad(total)
+            values[name] = steady(lambda f=total: f(setup.q))
+            seconds[name] = steady(lambda f=gradient: f(setup.q))
+            gradients[name] = np.asarray(gradient(setup.q))
+
+    parameters = 2 * (num_edges + 1) + 2 * num_edges
+    gap = relative(gradients["opensees"], gradients["smax"])
+    stage = stage_cost(setup)
+    value = BackendSeconds(values["smax"], values["opensees"])
+    pipeline = BackendSeconds(seconds["smax"], seconds["opensees"])
+    row = ScalingRow(num_edges, parameters, gap, stage, value, pipeline)
+
+    return row
+
+
+def scaling(report: ReportWriter) -> None:
     """
     What a value and a gradient cost each backend, against frame size.
 
@@ -433,95 +637,117 @@ def scaling():
     in-process pipeline is the one that also reuses a prepared model, and
     `experiments/03` is where that shows.
     """
-    print("=" * 78)
-    print("Cost against frame size")
-    print("=" * 78)
+    report.write_banner("Cost against frame size")
 
-    members = []
-    parameters = []
-    gaps = []
-    stage = {name: [] for name in BACKENDS}
-    pipeline = {name: [] for name in BACKENDS}
+    rows = [scaling_row(num_edges) for num_edges in MESHES]
 
-    print("\n  the whole composition, one value then a value and gradient")
-    print("  through the Tesseracts, warmed, the assembly rebuilt at each crossing")
-    print(f"  {'members':>8} {'params':>7} {'backend':>9} {'value':>9} {'grad':>9}")
-    for num_edges in MESHES:
-        structure, graph_fdm, q = setup(num_edges)
-        xyz = equilibrium_state(q, structure, graph_fdm).xyz
-        diameters = jnp.full(num_edges, SEED)
-        chain = local_chain()
-        total = objective(chain, structure, num_edges)
-
-        grads = {}
-        count = 2 * (num_edges + 1) + 2 * num_edges
-        for name in BACKENDS:
-            with analysis_backend(name):
-                gradient = jax.grad(total)
-
-                seconds_value = steady(lambda f=total: f(q))
-                seconds_grad = steady(lambda f=gradient: f(q))
-                grads[name] = np.asarray(gradient(q))
-
-            pipeline[name].append(seconds_grad)
-            print(
-                f"  {num_edges:>8} {count:>7} {name:>9}"
-                f" {seconds_value:>9.3f} {seconds_grad:>9.3f}"
-            )
-
-        alone = stage_cost(structure, xyz, diameters)
-        for name in BACKENDS:
-            stage[name].append(alone[name])
-
-        members.append(num_edges)
-        parameters.append(count)
-        gaps.append(relative(grads["opensees"], grads["smax"]))
-
-    print("\n  the analysis stage alone, every derivative it can report")
-    print("  both prepared once, the traced one compiled, warm-up excluded")
-    print(f"  {'members':>8} {'params':>7} {'DDM [ms]':>10} {'traced [ms]':>12}")
-    for index, num_edges in enumerate(members):
-        print(
-            f"  {num_edges:>8} {parameters[index]:>7}"
-            f" {stage['opensees'][index] * 1e3:>10.1f}"
-            f" {stage['smax'][index] * 1e3:>12.1f}"
-        )
-
-    print("\n  agreement at every size")
-    for num_edges, gap in zip(members, gaps):
-        print(f"    {num_edges:>4} members   worst relative {gap:.3e}")
-
-    print("\n  cost per registered parameter, which is what DDM pays by")
-    for index, num_edges in enumerate(members):
-        per = stage["opensees"][index] / parameters[index] * 1e3
-        print(f"    {num_edges:>4} members   {per:.3f} ms/param")
-
-    print("\n  the traced gradient over the DDM one, below one where tracing wins")
-    for index, num_edges in enumerate(members):
-        alone = stage["smax"][index] / stage["opensees"][index]
-        whole = pipeline["smax"][index] / pipeline["opensees"][index]
-        print(
-            f"    {num_edges:>4} members   stage {alone:.2f}x"
-            f"   composition {whole:.2f}x"
-        )
-    print("    both are compiled; the composition prepares its assembly per")
-    print("    crossing, a boundary keeping nothing between calls")
-
-    figure = figure_backends(
-        BackendAgreement(np.asarray(members), np.asarray(gaps), TOLERANCE_ASKED),
-        BackendTimings(
-            np.asarray(parameters),
-            {name: np.asarray(series) for name, series in stage.items()},
-            {name: np.asarray(series) for name, series in pipeline.items()},
-        ),
+    composed_columns = (
+        ColumnSpec("members"),
+        ColumnSpec("params"),
+        ColumnSpec("backend"),
+        ColumnSpec("value [s]", ".3f"),
+        ColumnSpec("grad [s]", ".3f"),
     )
+    composed_rows = []
+    for row in rows:
+        for name in BACKENDS:
+            value = getattr(row.value, name)
+            gradient = getattr(row.pipeline, name)
+            composed_rows.append((row.num_edges, row.parameters, name, value, gradient))
+
+    report.write_heading("the whole composition, one value then a value and gradient")
+    report.write_note(
+        "through the Tesseracts, warmed, the assembly rebuilt at each crossing"
+    )
+    report.write_table(composed_columns, composed_rows)
+
+    stage_columns = (
+        ColumnSpec("members"),
+        ColumnSpec("params"),
+        ColumnSpec("DDM [ms]", ".1f"),
+        ColumnSpec("traced [ms]", ".1f"),
+    )
+    stage_rows = [
+        (row.num_edges, row.parameters, row.stage.opensees * 1e3, row.stage.smax * 1e3)
+        for row in rows
+    ]
+
+    report.write_heading("the analysis stage alone, every derivative it can report")
+    report.write_note("both prepared once, the traced one compiled, warm-up excluded")
+    report.write_table(stage_columns, stage_rows)
+
+    winner_columns = (
+        ColumnSpec("members"),
+        ColumnSpec("worst relative", ".3e"),
+        ColumnSpec("ms per param", ".3f"),
+        ColumnSpec("stage traced/DDM", ".2f"),
+        ColumnSpec("composition traced/DDM", ".2f"),
+    )
+    winner_rows = []
+    for row in rows:
+        per_param = row.stage.opensees / row.parameters * 1e3
+        winner_rows.append(
+            (row.num_edges, row.gap, per_param, row.stage.ratio, row.pipeline.ratio)
+        )
+
+    report.write_heading("agreement, cost per parameter, and which backend wins")
+    report.write_table(winner_columns, winner_rows)
+    report.write_note(
+        """
+        Below one the traced gradient wins. Both are compiled; the composition
+        prepares its assembly per crossing, a boundary keeping nothing between
+        calls.
+        """
+    )
+
+    members = np.asarray([row.num_edges for row in rows])
+    gaps = np.asarray([row.gap for row in rows])
+    agreed = BackendAgreement(members, gaps, TOLERANCE_ASKED)
+
+    parameters = np.asarray([row.parameters for row in rows])
+    stage = {}
+    pipeline = {}
+    for name in BACKENDS:
+        stage[name] = np.asarray([getattr(row.stage, name) for row in rows])
+        pipeline[name] = np.asarray([getattr(row.pipeline, name) for row in rows])
+    timings = BackendTimings(parameters, stage, pipeline)
+
+    figure = figure_backends(agreed, timings)
     FIGURES.mkdir(exist_ok=True)
     path = FIGURES / "04_backends.png"
     figure.savefig(path, dpi=200)
-    print(f"\n  wrote {path}")
+    report.write_heading(f"wrote {path}")
 
 
-def optimize():
+def descend_with(setup: ArchSetup, backend: str) -> DescentResult:
+    """
+    The descent driven by one backend, its compilation timed separately.
+    """
+    total = mass_objective(setup, local_chain())
+
+    with analysis_backend(backend):
+        gradient = value_and_gradient(total)
+
+        start = time.perf_counter()
+        jax.block_until_ready(gradient(setup.q))
+        compiling = time.perf_counter() - start
+
+        start = time.perf_counter()
+        walked = minimize_bounded(
+            total,
+            setup.q,
+            bounds=setup.bounds,
+            iterations=ITERATIONS,
+            gradient=gradient,
+        )
+        elapsed = time.perf_counter() - start
+
+    found = DescentResult(backend, walked, elapsed, compiling)
+
+    return found
+
+
+def optimize(report: ReportWriter) -> None:
     """
     The same descent, driven by each backend in turn.
 
@@ -529,7 +755,7 @@ def optimize():
     -----
     **Compiled before the clock starts, and the compilation reported beside the
     search rather than inside it.** Each objective is traced once here and the
-    compiled program handed to `descend`, so the elapsed time of a descent is the
+    compiled program handed to the search, so the elapsed time of a descent is the
     work it did. Leaving it inside would charge one backend a fixed cost the other
     never pays and call the difference a solver comparison.
 
@@ -537,52 +763,42 @@ def optimize():
     objective however long the search runs, so it matters on a descent of seven
     steps and vanishes on one of several hundred.
     """
-    print("=" * 78)
-    print("The same optimization, one solver swapped for the other")
-    print("=" * 78)
+    report.write_banner("The same optimization, one solver swapped for the other")
 
-    structure, _, q = setup(NUM_EDGES)
-    chain = local_chain()
-    total = objective(chain, structure, NUM_EDGES)
+    setup = arch_setup(NUM_EDGES)
+    report.write_heading(f"one variable per member, bounds {setup.bounds}")
 
-    bounds = (float(q[0]) * DECADES, float(q[0]) / DECADES)
-    print(f"\n  one variable per member, bounds {bounds}")
+    results = [descend_with(setup, name) for name in BACKENDS]
+    columns = (
+        ColumnSpec("backend", align="<"),
+        ColumnSpec("mass [t]", ".9f"),
+        ColumnSpec("steps"),
+        ColumnSpec("seconds", ".1f"),
+        ColumnSpec("ms/step", ".0f"),
+        ColumnSpec("compiled in [s]", ".2f"),
+    )
+    rows = []
+    for found in results:
+        mass = float(found.walked.mass[-1])
+        timings = (found.elapsed, found.per_step, found.compiling)
+        rows.append((found.backend, mass, found.steps, *timings))
 
-    results = {}
-    for name in BACKENDS:
-        with analysis_backend(name):
-            gradient = value_and_gradient(total)
+    report.write_table(columns, rows)
 
-            start = time.perf_counter()
-            jax.block_until_ready(gradient(q))
-            compiling = time.perf_counter() - start
+    first, second = results
+    first_mass = float(first.walked.mass[-1])
+    reached = abs(float(second.walked.mass[-1]) - first_mass)
+    q_gap = relative(second.walked.q[-1], first.walked.q[-1])
+    speedup = first.elapsed / second.elapsed
+    entries = (
+        ("mass", f"relative gap {reached / first_mass:.3e}"),
+        ("q", f"worst relative {q_gap:.3e}"),
+        ("steps", f"{first.steps} against {second.steps}"),
+        ("wall clock", f"{speedup:.1f}x faster on the C++ backend, compiled"),
+    )
 
-            start = time.perf_counter()
-            result = minimize_bounded(
-                total, q, bounds=bounds, iterations=ITERATIONS, gradient=gradient
-            )
-            elapsed = time.perf_counter() - start
-
-        results[name] = (result, elapsed)
-        steps = result.mass.shape[0]
-        print(
-            f"\n  {name:<9} mass {float(result.mass[-1]):.9f} t"
-            f"  in {steps} steps, {elapsed:.1f} s"
-            f"  ({elapsed / steps * 1e3:.0f} ms/step)"
-        )
-        print(f"  {'':<9} compiled in {compiling:.2f} s, before the clock started")
-
-    first, _ = results["smax"]
-    second, _ = results["opensees"]
-
-    reached = abs(float(second.mass[-1]) - float(first.mass[-1]))
-    print("\n  the two answers")
-    print(f"    mass         relative gap {reached / float(first.mass[-1]):.3e}")
-    print(f"    q            worst relative {relative(second.q[-1], first.q[-1]):.3e}")
-    print(f"    steps        {first.mass.shape[0]} against {second.mass.shape[0]}")
-
-    speedup = results["smax"][1] / results["opensees"][1]
-    print(f"    wall clock   {speedup:.1f}x faster on the C++ backend, compiled")
+    report.write_heading("the two answers")
+    report.write_entries(entries)
 
 
 PASSES = {
@@ -593,16 +809,20 @@ PASSES = {
 }
 
 
-def main():
+def main(verbose: bool = True) -> None:
+    """
+    Run the requested passes, or every one of them.
+    """
     requested = sys.argv[1:] or list(PASSES)
 
     for name in requested:
         if name not in PASSES:
             raise SystemExit(f"unknown pass {name!r}; choose from {list(PASSES)}")
 
+    report = ReportWriter(verbose)
     for name in requested:
-        PASSES[name]()
-        print()
+        PASSES[name](report)
+        report.write_line()
 
 
 if __name__ == "__main__":

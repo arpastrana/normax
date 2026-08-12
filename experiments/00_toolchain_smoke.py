@@ -44,24 +44,42 @@ import jax.numpy as jnp
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
+from normax.reporting import ReportWriter
+
 A = jnp.array([1.0, 2.0, 3.0])
 B = jnp.array([4.0, 5.0, 6.0])
 
+IMAGE = "vectoradd_jax"
 
-def main() -> None:
+
+def main(verbose: bool = True) -> None:
     """
     Apply the upstream vector-addition Tesseract, then differentiate through it.
     """
-    with Tesseract.from_image("vectoradd_jax", user="root") as tesseract:
+    report = ReportWriter(verbose)
+
+    with Tesseract.from_image(IMAGE, user="root") as tesseract:
 
         def total(a):
-            out = apply_tesseract(tesseract, {"a": {"v": a}, "b": {"v": B}})
+            inputs = {"a": {"v": a}, "b": {"v": B}}
+            out = apply_tesseract(tesseract, inputs)
+
             return jnp.sum(out["vector_add"]["result"])
 
-        print("apply     :", apply_tesseract(tesseract, {"a": {"v": A}, "b": {"v": B}}))
-        print("sum       :", total(A), " expected 21.0")
-        print("grad      :", jax.grad(total)(A), " expected [1. 1. 1.]")
-        print("jit(grad) :", jax.jit(jax.grad(total))(A), " expected [1. 1. 1.]")
+        inputs = {"a": {"v": A}, "b": {"v": B}}
+        applied = apply_tesseract(tesseract, inputs)
+        gradient = jax.grad(total)(A)
+        compiled = jax.jit(jax.grad(total))(A)
+
+        entries = (
+            ("apply", f"{applied}"),
+            ("sum", f"{total(A)}, expected 21.0"),
+            ("grad", f"{gradient}, expected [1. 1. 1.]"),
+            ("jit(grad)", f"{compiled}, expected [1. 1. 1.]"),
+        )
+
+        report.write_heading(f"The upstream {IMAGE} image, applied and differentiated")
+        report.write_entries(entries)
 
 
 if __name__ == "__main__":

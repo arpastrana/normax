@@ -25,10 +25,16 @@ reports which limit state decides each member.
 Run with `uv run python experiments/02_pipeline_gradcheck.py`.
 """
 
+from collections.abc import Callable
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
+from jaxtyping import Array
+from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.classification import is_plastic
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
@@ -40,11 +46,19 @@ from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.sizing import utilization_design
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
+from normax.reporting import ToleranceCheck
+from normax.reporting import checks_passed
 
 STEEL = SteelGrade()
 TARGET = 1e-6
+TOLERANCE_UNITY = 1e-9
 
-NAMES = {
+# Moment factors of a member bent in single curvature, as Table B.3 reads them.
+MOMENT_FACTOR = 0.9
+
+LIMIT_NAMES = {
     LIMIT_MINIMUM_SIZE: "minimum size",
     LIMIT_TENSION: "tension",
     LIMIT_CROSS_SECTION: "cross-section",
@@ -52,180 +66,367 @@ NAMES = {
     LIMIT_MINOR: "Eq. 6.62",
 }
 
-# force [N], major moment [N mm], minor moment [N mm], buckling length [mm]
-CASES = [
-    (-5e5, 4e7, 1.5e7, 4000.0),
-    (-5e5, 4e7, 0.0, 4000.0),
-    (-9e5, 8e7, 6e7, 12000.0),
-    (0.0, 4e7, 1.5e7, 4000.0),
-    (5e5, 4e7, 1.5e7, 4000.0),
-    (-5e4, 5e6, 5e6, 8000.0),
-]
-
 # A relative step for each argument, since one absolute step cannot serve
 # newtons and newton-millimetres at once.
-STEPS = (1e-6, 1e-6, 1e-6, 1e-6)
+STEP = 1e-6
 
-LABELS = ("force", "major moment", "minor moment", "length")
+# The actions a case is probed in, and how each reads in a table.
+ARGUMENTS = (
+    ("axial_force", "force"),
+    ("moment_major", "major moment"),
+    ("moment_minor", "minor moment"),
+    ("buckling_length", "length"),
+)
+
+CLASSES = (2, 3)
 
 
-def size(
-    axial_force, moment_major, moment_minor, buckling_length, catalogue, section_class
-):
+class MemberCase(NamedTuple):
+    """
+    One member's design actions, and the length it may buckle over.
+
+    Attributes
+    ----------
+    axial_force :
+        Design axial force, negative in compression.
+    moment_major :
+        Design moment about the major axis.
+    moment_minor :
+        Design moment about the minor axis.
+    buckling_length :
+        Length the member is checked against in buckling.
+    """
+
+    axial_force: float
+    moment_major: float
+    moment_minor: float
+    buckling_length: float
+
+    @property
+    def label(self) -> str:
+        """
+        The case as it appears in the leftmost column of a table.
+        """
+        moments = f"{self.moment_major / 1e6:.0f}/{self.moment_minor / 1e6:.0f}"
+
+        return f"{self.axial_force / 1e3:.0f} kN {moments} kNm"
+
+    @property
+    def actions(self) -> MemberActions:
+        """
+        The same actions as the clause functions take them.
+        """
+        moments = (self.moment_major, self.moment_minor)
+        actions = MemberActions(
+            self.axial_force, *moments, MOMENT_FACTOR, MOMENT_FACTOR
+        )
+
+        return actions
+
+
+class ClassBranch(NamedTuple):
+    """
+    A section class, and the wall proportion that sits at its limit.
+
+    Attributes
+    ----------
+    section_class :
+        Class the resistances are evaluated on.
+    catalogue :
+        Tube family whose ratio holds the section at that class limit.
+    """
+
+    section_class: int
+    catalogue: TubeCatalogue
+
+    @classmethod
+    def at_limit(cls, section_class: int) -> "ClassBranch":
+        """
+        The branch whose wall proportion sits exactly at a class limit.
+        """
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        branch = cls(section_class, catalogue)
+
+        return branch
+
+    @property
+    def label(self) -> str:
+        """
+        The branch as a heading, with the proportion it stands for.
+        """
+        behaviour = "plastic" if is_plastic(self.section_class) else "elastic"
+
+        return (
+            f"Class {self.section_class} ({behaviour}), "
+            f"d/t = {float(self.catalogue.ratio):.2f}"
+        )
+
+
+class ProbeResult(NamedTuple):
+    """
+    One action's derivative, beside a central difference of the same solve.
+
+    Attributes
+    ----------
+    label :
+        The case the derivative was taken at.
+    argument :
+        Action the derivative is with respect to.
+    reverse :
+        Derivative from the transposed implicit rule.
+    numeric :
+        Central difference of the forward solve.
+    """
+
+    label: str
+    argument: str
+    reverse: float
+    numeric: float
+
+    @property
+    def relative(self) -> float:
+        """
+        Relative departure of the derivative from the central difference.
+        """
+        return abs(self.reverse - self.numeric) / max(abs(self.numeric), 1e-300)
+
+
+CASES = (
+    MemberCase(-5e5, 4e7, 1.5e7, 4000.0),
+    MemberCase(-5e5, 4e7, 0.0, 4000.0),
+    MemberCase(-9e5, 8e7, 6e7, 12000.0),
+    MemberCase(0.0, 4e7, 1.5e7, 4000.0),
+    MemberCase(5e5, 4e7, 1.5e7, 4000.0),
+    MemberCase(-5e4, 5e6, 5e6, 8000.0),
+)
+
+PROBE_COLUMNS = (
+    ColumnSpec("case", align="<"),
+    ColumnSpec("argument", align="<"),
+    ColumnSpec("reverse", "+.12e"),
+    ColumnSpec("central diff", "+.12e"),
+    ColumnSpec("rel", ".2e"),
+)
+
+
+def diameter_of(case: MemberCase, branch: ClassBranch) -> Float[Array, ""]:
     """
     Fully-stressed diameter under the full interaction.
     """
-    return diameter_required(
-        MemberActions(axial_force, moment_major, moment_minor, 0.9, 0.9),
-        buckling_length,
+    diameter = diameter_required(
+        case.actions,
+        case.buckling_length,
         STEEL,
-        catalogue,
-        section_class=section_class,
+        branch.catalogue,
+        section_class=branch.section_class,
     )
 
+    return diameter
 
-def central(f, x, step):
+
+def central_difference(function: Callable[[float], float], x: float, step: float):
     """
     Central difference of a scalar function.
     """
-    return (f(x + step) - f(x - step)) / (2.0 * step)
+    return (function(x + step) - function(x - step)) / (2.0 * step)
 
 
-def main() -> None:
+def probe_case(case: MemberCase, branch: ClassBranch) -> list[ProbeResult]:
     """
-    Gradcheck every action, on both class branches.
+    Every action of one case differentiated, and central-differenced beside it.
     """
-    print("The sizing map under axial force and biaxial bending\n")
+    probed = []
+    for field, argument in ARGUMENTS:
+        value = getattr(case, field)
+        if value == 0.0:
+            continue
 
-    worst = 0.0
-    for section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-        branch = "plastic" if section_class else "elastic"
-        ratio = float(catalogue.ratio)
-        print(f"Class {section_class} ({branch}), d/t = {ratio:.2f}")
-        print(
-            f"  {'case':<26}{'argument':<15}{'reverse':<22}"
-            f"{'central diff':<22}{'rel':<10}"
+        def sized(x, field=field):
+            moved = case._replace(**{field: x})
+
+            return diameter_of(moved, branch)
+
+        reverse = float(jax.grad(sized)(value))
+        quotient = central_difference(
+            lambda x: float(sized(x)), value, abs(value) * STEP
         )
+        result = ProbeResult(case.label, argument, reverse, float(quotient))
+        probed.append(result)
 
-        for actions in CASES:
-            for index, label in enumerate(LABELS):
+    return probed
 
-                def at(x, actions=actions, index=index):
-                    probed = list(actions)
-                    probed[index] = x
 
-                    return size(*probed, catalogue, section_class)
+def report_probes(report: ReportWriter, branch: ClassBranch) -> float:
+    """
+    Every action of every case on one class branch, and the worst disagreement.
+    """
+    probed = [result for case in CASES for result in probe_case(case, branch)]
+    rows = [
+        (result.label, result.argument, result.reverse, result.numeric, result.relative)
+        for result in probed
+    ]
 
-                value = actions[index]
-                if value == 0.0:
-                    continue
+    report.write_heading(branch.label)
+    report.write_table(PROBE_COLUMNS, rows)
 
-                reverse = float(jax.grad(at)(value))
-                numeric = float(
-                    central(lambda x: float(at(x)), value, abs(value) * STEPS[index])
-                )
-                relative = abs(reverse - numeric) / max(abs(numeric), 1e-300)
-                worst = max(worst, relative)
+    return max(result.relative for result in probed)
 
-                name = (
-                    f"{actions[0] / 1e3:.0f} kN "
-                    f"{actions[1] / 1e6:.0f}/{actions[2] / 1e6:.0f} kNm"
-                )
-                print(
-                    f"  {name:<26}{label:<15}{reverse:+.12e}  "
-                    f"{numeric:+.12e}  {relative:8.2e}"
-                )
-        print()
 
-    print("Forward and reverse are the same derivative")
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-    for actions in CASES[:3]:
+def report_modes(report: ReportWriter, branch: ClassBranch) -> None:
+    """
+    That forward mode and reverse mode return the same number.
+    """
+    rows = []
+    for case in CASES[:3]:
 
-        def at(x, actions=actions):
-            probed = list(actions)
-            probed[0] = x
+        def sized(axial_force, case=case):
+            moved = case._replace(axial_force=axial_force)
 
-            return size(*probed, catalogue, 3)
+            return diameter_of(moved, branch)
 
-        forward = float(jax.jacfwd(at)(actions[0]))
-        reverse = float(jax.grad(at)(actions[0]))
+        forward = float(jax.jacfwd(sized)(case.axial_force))
+        reverse = float(jax.grad(sized)(case.axial_force))
         gap = abs(forward - reverse) / max(abs(reverse), 1e-300)
-        print(f"  {actions[0] / 1e3:>8.0f} kN   forward-reverse gap {gap:.2e}")
+        rows.append((f"{case.axial_force / 1e3:.0f} kN", gap))
 
-    print("\nRemoving the moments reproduces the axial answer")
-    for section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-        with_moment = float(size(-5e5, 0.0, 0.0, 4000.0, catalogue, section_class))
-        axial_only = float(
-            diameter_required(
-                MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0),
-                4000.0,
-                STEEL,
-                catalogue,
-                section_class=section_class,
-            )
+    columns = (ColumnSpec("case", align="<"), ColumnSpec("forward-reverse gap", ".2e"))
+
+    report.write_heading("Forward and reverse are the same derivative")
+    report.write_table(columns, rows)
+
+
+def report_axial_limit(report: ReportWriter) -> None:
+    """
+    That removing the moments reproduces the axial answer on either branch.
+    """
+    rows = []
+    for section_class in CLASSES:
+        branch = ClassBranch.at_limit(section_class)
+        case = MemberCase(-5e5, 0.0, 0.0, 4000.0)
+        actions = MemberActions(case.axial_force, 0.0, 0.0, 1.0, 1.0)
+        bare = diameter_required(
+            actions,
+            case.buckling_length,
+            STEEL,
+            branch.catalogue,
+            section_class=section_class,
         )
-        print(
-            f"  Class {section_class}   {with_moment:.12f}  vs  "
-            f"{axial_only:.12f}   gap {abs(with_moment - axial_only):.2e}"
+        with_moment = float(diameter_of(case, branch))
+        axial_only = float(bare)
+        gap = abs(with_moment - axial_only)
+        rows.append((f"Class {section_class}", with_moment, axial_only, gap))
+
+    columns = (
+        ColumnSpec("branch", align="<"),
+        ColumnSpec("interaction", ".12f"),
+        ColumnSpec("axial only", ".12f"),
+        ColumnSpec("gap", ".2e"),
+    )
+
+    report.write_heading("Removing the moments reproduces the axial answer")
+    report.write_table(columns, rows)
+
+
+def report_limit_states(report: ReportWriter, branch: ClassBranch) -> float:
+    """
+    Utilization and governing limit state at the solved diameter.
+    """
+    rows = []
+    worst = 0.0
+    for case in CASES:
+        diameter = diameter_of(case, branch)
+        tube = branch.catalogue.tube_at(diameter)
+        utilization = utilization_design(
+            tube,
+            case.actions,
+            case.buckling_length,
+            STEEL,
+            section_class=branch.section_class,
+        )
+        limit_state = governing_limit_state(
+            tube,
+            case.actions,
+            case.buckling_length,
+            STEEL,
+            branch.catalogue,
+            section_class=branch.section_class,
+        )
+        demand = float(utilization)
+        worst = max(worst, abs(demand - 1.0))
+        rows.append(
+            (case.label, float(diameter), demand, LIMIT_NAMES[float(limit_state)])
         )
 
-    print("\nUtilization and governing limit state at the solved diameter")
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-    worst_check = 0.0
-    for actions in CASES:
-        d = size(*actions, catalogue, 3)
-        demand = float(
-            utilization_design(
-                catalogue.tube_at(d),
-                MemberActions(*actions[:3], 0.9, 0.9),
-                actions[3],
-                STEEL,
-                section_class=3,
-            )
-        )
-        code = float(
-            governing_limit_state(
-                catalogue.tube_at(d),
-                MemberActions(*actions[:3], 0.9, 0.9),
-                actions[3],
-                STEEL,
-                catalogue,
-                section_class=3,
-            )
-        )
-        worst_check = max(worst_check, abs(demand - 1.0))
-        name = (
-            f"{actions[0] / 1e3:.0f} kN "
-            f"{actions[1] / 1e6:.0f}/{actions[2] / 1e6:.0f} kNm"
-        )
-        print(f"  {name:<26}d = {float(d):8.3f} mm   u = {demand:.15f}   {NAMES[code]}")
+    columns = (
+        ColumnSpec("case", align="<"),
+        ColumnSpec("d [mm]", ".3f"),
+        ColumnSpec("utilization", ".15f"),
+        ColumnSpec("governing", align="<"),
+    )
 
-    print("\nThe mass objective is differentiable end to end")
+    report.write_heading("Utilization and governing limit state at the solved diameter")
+    report.write_table(columns, rows)
+
+    return worst
+
+
+def report_objective(report: ReportWriter, branch: ClassBranch) -> None:
+    """
+    That the mass of several members is differentiable in their axial forces.
+    """
     forces = jnp.asarray([-5e5, -9e5, 5e5, -5e4])
     lengths = jnp.asarray([4000.0, 12000.0, 4000.0, 8000.0])
 
     def objective(axial_force):
+        actions = MemberActions(axial_force, 4e7, 1.5e7, MOMENT_FACTOR, MOMENT_FACTOR)
         sizes = diameter_required(
-            MemberActions(axial_force, 4e7, 1.5e7, 0.9, 0.9),
+            actions,
             lengths,
             STEEL,
-            catalogue,
-            section_class=3,
+            branch.catalogue,
+            section_class=branch.section_class,
         )
+        tubes = branch.catalogue.tube_at(sizes)
 
-        return mass_of_tubes(catalogue.tube_at(sizes), lengths, STEEL)
+        return mass_of_tubes(tubes, lengths, STEEL)
 
-    total = float(objective(forces))
     gradient = jax.grad(objective)(forces)
-    print(f"  mass {total * 1e3:.2f} kg")
-    print(f"  d(mass)/d(force) {jnp.asarray(gradient)}")
-    print(f"  all finite: {bool(jnp.all(jnp.isfinite(gradient)))}")
+    total = float(objective(forces)) * 1e3
+    finite = bool(jnp.all(jnp.isfinite(gradient)))
+    entries = (
+        ("mass", f"{total:.2f} kg"),
+        ("d(mass)/d(force)", f"{gradient}"),
+        ("all finite", f"{finite}"),
+    )
 
-    print(f"\nworst derivative disagreement   {worst:.2e}")
-    print(f"worst departure from unity      {worst_check:.2e}")
-    print("\nPASS" if worst < TARGET and worst_check < 1e-9 else "\nFAIL")
+    report.write_heading("The mass objective is differentiable end to end")
+    report.write_entries(entries)
+
+
+def main(verbose: bool = True) -> None:
+    """
+    Gradcheck every action, on both class branches.
+    """
+    report = ReportWriter(verbose)
+    report.write_line("The sizing map under axial force and biaxial bending")
+
+    branches = [ClassBranch.at_limit(section_class) for section_class in CLASSES]
+    probed = [report_probes(report, branch) for branch in branches]
+    worst_derivative = max(probed)
+
+    elastic = ClassBranch.at_limit(3)
+    report_modes(report, elastic)
+    report_axial_limit(report)
+    worst_unity = report_limit_states(report, elastic)
+    report_objective(report, elastic)
+
+    checks = (
+        ToleranceCheck("derivative disagreement", worst_derivative, TARGET),
+        ToleranceCheck("departure from unity", worst_unity, TOLERANCE_UNITY),
+    )
+    report.write_heading("Summary")
+    report.write_checks(checks)
+    report.write_verdict(checks_passed(checks))
 
 
 if __name__ == "__main__":

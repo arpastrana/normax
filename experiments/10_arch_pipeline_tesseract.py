@@ -40,11 +40,18 @@ Run with `uv run --group pipeline python experiments/10_arch_pipeline_tesseract.
 
 import os
 import time
+from collections.abc import Callable
+from collections.abc import Iterator
+from typing import Any
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax_fdm.equilibrium import EquilibriumStructure
+from jaxtyping import Array
+from jaxtyping import Float
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
@@ -62,6 +69,11 @@ from normax.pipeline import ProblemSetup
 from normax.pipeline import design_members as design_in_process
 from normax.pipeline import governing_states
 from normax.pipeline import total_mass as mass_in_process
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
+from normax.reporting import ToleranceCheck
+from normax.reporting import checks_passed
+from normax.structures import Structure
 from normax.structures import arch_2d
 
 # The oracle is compiled, as experiment 09, the parity test and the README all
@@ -82,6 +94,8 @@ NORMAL = 1
 
 # The diameter the frame is analysed with before the check has spoken.
 SEED = 100.0
+
+CLASSES = (2, 3)
 
 # Values cross the boundary exactly. Derivatives do not, and not because of the
 # boundary: each stage linearizes on its own here and all three linearize
@@ -124,21 +138,95 @@ LIMIT_NAMES = {
 }
 
 
-def setup():
+class ArchSetup(NamedTuple):
+    """
+    The arch every comparison below is made on.
+
+    Attributes
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    graph :
+        The form-finding connectivity, from `normax.formfinding`.
+    q :
+        Force densities that reach the target rise.
+    """
+
+    structure: Structure
+    graph: EquilibriumStructure
+    q: Float[Array, "edges"]
+
+    @property
+    def seed(self) -> Float[Array, "edges"]:
+        """
+        The diameter the frame is analysed with before the check has spoken.
+        """
+        return jnp.full(NUM_EDGES, SEED)
+
+
+class TimedCall(NamedTuple):
+    """
+    What a call returned, and how long the call took.
+
+    Attributes
+    ----------
+    result :
+        Whatever the call returned.
+    seconds :
+        Wall-clock seconds it took, the first call excluded as warm-up.
+    """
+
+    result: Any
+    seconds: float
+
+
+class ParityWorst(NamedTuple):
+    """
+    The worst disagreement between the composed chain and the oracle.
+
+    Attributes
+    ----------
+    value :
+        Worst scaled difference on a quantity that is not an end moment.
+    moment :
+        Worst scaled difference on an end moment or a moment factor.
+    gradient :
+        Worst scaled difference on the gradient of the mass.
+    """
+
+    value: float
+    moment: float
+    gradient: float
+
+    def worse_than(self, other: "ParityWorst") -> "ParityWorst":
+        """
+        The worse of two measurements, field by field.
+        """
+        value = max(self.value, other.value)
+        moment = max(self.moment, other.moment)
+        gradient = max(self.gradient, other.gradient)
+        worst = ParityWorst(value, moment, gradient)
+
+        return worst
+
+
+def arch_setup() -> ArchSetup:
     """
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     load = TOTAL_LOAD / (NUM_EDGES - 1)
     structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
-    graph_fdm = equilibrium_graph(structure)
+    graph = equilibrium_graph(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium_state(trial, structure, graph_fdm).xyz[:, 2])
+    state = equilibrium_state(trial, structure, graph)
+    reached = jnp.max(state.xyz[:, 2])
+    setup = ArchSetup(structure, graph, trial * reached / RISE)
 
-    return structure, graph_fdm, trial * reached / RISE
+    return setup
 
 
-def named_fields(container):
+def named_fields(container: NamedTuple) -> Iterator[tuple[str, Any]]:
     """
     Every field of a result, with a nested container expanded one level.
 
@@ -155,7 +243,7 @@ def named_fields(container):
             yield field, value
 
 
-def relative(oracle, composed):
+def relative(oracle, composed) -> float:
     """
     Largest disagreement between two arrays, scaled by the size of the first.
     """
@@ -166,22 +254,24 @@ def relative(oracle, composed):
     return float(np.max(np.abs(left - right))) / scale
 
 
-def timed(call):
+def timed(call: Callable[[], Any]) -> TimedCall:
     """
     A call's result and how long it took, the first call excluded as warm-up.
     """
     call()
     start = time.perf_counter()
     result = call()
+    seconds = time.perf_counter() - start
+    call = TimedCall(result, seconds)
 
-    return result, time.perf_counter() - start
+    return call
 
 
-def report_schemas(chain):
+def report_schemas(report: ReportWriter, chain: Chain) -> None:
     """
     What every stage carries, and what it will differentiate.
     """
-    print("The three schemas")
+    report.write_line("The three schemas")
     for stage, tesseract in zip(chain._fields, chain):
         schemas = tesseract.openapi_schema["components"]["schemas"]
         inputs = schemas["Apply_InputSchema"]["properties"]
@@ -189,60 +279,218 @@ def report_schemas(chain):
         wrt = schemas["ApplyInputSchema"]["differentiable_arrays"]
         of = schemas["ApplyOutputSchema"]["differentiable_arrays"]
 
-        print(f"\n  {stage}")
-        print(f"    in          {', '.join(sorted(inputs))}")
-        print(f"    out         {', '.join(sorted(outputs))}")
-        print(f"    d/d         {', '.join(sorted(wrt))}")
-        print(f"    d of        {', '.join(sorted(of))}")
-        print(f"    not diff    {', '.join(sorted(set(outputs) - set(of))) or '-'}")
+        opaque = ", ".join(sorted(set(outputs) - set(of))) or "-"
+        entries = (
+            ("in", ", ".join(sorted(inputs))),
+            ("out", ", ".join(sorted(outputs))),
+            ("d/d", ", ".join(sorted(wrt))),
+            ("d of", ", ".join(sorted(of))),
+            ("not diff", opaque),
+        )
+
+        report.write_heading(stage)
+        report.write_entries(entries)
 
 
-def refusal(chain, structure, seed, catalogue):
+def report_parity(
+    report: ReportWriter,
+    setup: ArchSetup,
+    chain: Chain,
+    section_class: int,
+) -> ParityWorst:
+    """
+    The design and the gradient, taken in process and taken across the boundary.
+    """
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+    model = prepare_model(setup.structure, STEEL, catalogue, normal=NORMAL)
+    problem = ProblemSetup(setup.structure, setup.graph, model, STEEL, catalogue)
+    composed_problem = ComposedSetup(setup.structure, chain, STEEL, catalogue)
+
+    oracle = timed(
+        lambda: design_compiled(
+            setup.q, setup.seed, problem, section_class=section_class
+        )
+    )
+    composed = timed(
+        lambda: design_composed(
+            setup.q,
+            setup.seed,
+            composed_problem,
+            normal=NORMAL,
+            section_class=section_class,
+        )
+    )
+
+    rows = []
+    worst_value = 0.0
+    worst_moment = 0.0
+    for (label, oracle_leaf), (_, composed_leaf) in zip(
+        named_fields(oracle.result), named_fields(composed.result)
+    ):
+        left = np.asarray(oracle_leaf, dtype=np.float64)
+        right = np.asarray(composed_leaf, dtype=np.float64)
+        scaled = relative(left, right)
+
+        if label.rpartition(".")[2] in MOMENT_FIELDS:
+            limit = TOLERANCE_MOMENT
+            worst_moment = max(worst_moment, scaled)
+        else:
+            limit = TOLERANCE_PARITY
+            worst_value = max(worst_value, scaled)
+
+        first = (float(left.ravel()[0]), float(right.ravel()[0]))
+        rows.append((label, *first, scaled, limit))
+
+    columns = (
+        ColumnSpec("field", align="<"),
+        ColumnSpec("in process", ".14e"),
+        ColumnSpec("composed", ".14e"),
+        ColumnSpec("scaled", ".2e"),
+        ColumnSpec("held to", ".0e"),
+    )
+    ratio = float(catalogue.ratio)
+
+    report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
+    report.write_table(columns, rows)
+
+    codes = governing_states(oracle.result, problem, section_class=section_class)
+    limits = {LIMIT_NAMES[float(code)] for code in codes}
+    departure = float(jnp.max(jnp.abs(composed.result.utilization - 1.0)))
+    seconds = (
+        f"{oracle.seconds:.4f} in process, {composed.seconds:.4f} composed,"
+        " both compiled"
+    )
+    entries = (
+        ("governing", ", ".join(sorted(limits))),
+        ("mass", f"{float(composed.result.mass):.12f} t"),
+        ("worst |u-1|", f"{departure:.2e}"),
+        ("seconds", seconds),
+    )
+
+    report.write_entries(entries)
+
+    def in_process(q):
+        return mass_compiled(q, setup.seed, problem, section_class=section_class)
+
+    def composed_mass(q):
+        return mass_composed(
+            q,
+            setup.seed,
+            composed_problem,
+            normal=NORMAL,
+            section_class=section_class,
+        )
+
+    exact = timed(lambda: jax.grad(in_process)(setup.q))
+    crossed = timed(lambda: jax.grad(composed_mass)(setup.q))
+    scale = float(jnp.max(jnp.abs(exact.result)))
+
+    gradients = []
+    for edge in range(NUM_EDGES):
+        in_process_value = float(exact.result[edge])
+        composed_value = float(crossed.result[edge])
+        scaled = abs(in_process_value - composed_value) / scale
+        gradients.append((edge, in_process_value, composed_value, scaled))
+
+    columns = (
+        ColumnSpec("edge"),
+        ColumnSpec("in process", ".14e"),
+        ColumnSpec("composed", ".14e"),
+        ColumnSpec("scaled", ".2e"),
+    )
+    seconds = (
+        f"{exact.seconds:.4f} in process, {crossed.seconds:.4f} composed, both compiled"
+    )
+    entries = (
+        ("sum", f"{float(jnp.sum(crossed.result)):.14e}"),
+        ("seconds", seconds),
+    )
+
+    report.write_table(columns, gradients)
+    report.write_entries(entries)
+
+    worst_gradient = max(row[3] for row in gradients)
+    worst = ParityWorst(worst_value, worst_moment, worst_gradient)
+
+    return worst
+
+
+def report_modes(report: ReportWriter, setup: ArchSetup, chain: Chain) -> float:
+    """
+    Forward mode against reverse mode, through all three stages.
+    """
+    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+
+    composed_problem = ComposedSetup(setup.structure, chain, STEEL, catalogue)
+
+    def objective(q):
+        return mass_composed(
+            q,
+            setup.seed,
+            composed_problem,
+            normal=NORMAL,
+            section_class=3,
+        )
+
+    direction = jnp.ones_like(setup.q)
+    _, forward = jax.jvp(objective, (setup.q,), (direction,))
+    gradient = jax.grad(objective)(setup.q)
+    reverse = float(jnp.sum(gradient * direction))
+    modes = relative(reverse, forward)
+    entries = (
+        ("forward", f"{float(forward):.14e}"),
+        ("reverse", f"{reverse:.14e}"),
+        ("scaled difference", f"{modes:.2e}"),
+    )
+
+    report.write_heading("Forward mode and reverse mode, through all three stages")
+    report.write_entries(entries)
+
+    return modes
+
+
+def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) -> str:
     """
     What the check says when asked to differentiate its own diagnostic.
     """
-    member = apply_tesseract(
-        chain.analysis,
-        {
-            "xyz": jnp.asarray(structure.nodes),
-            "diameter": seed,
-            "edges": np.asarray(structure.edges, dtype=np.int64),
-            "supports": np.asarray(structure.supports, dtype=np.int64),
-            "loads": np.asarray(structure.loads, dtype=np.float64),
+    nodes = jnp.asarray(setup.structure.nodes)
+    edges = np.asarray(setup.structure.edges, dtype=np.int64)
+    analysis_inputs = {
+        "xyz": nodes,
+        "diameter": setup.seed,
+        "edges": edges,
+        "supports": np.asarray(setup.structure.supports, dtype=np.int64),
+        "loads": np.asarray(setup.structure.loads, dtype=np.float64),
+        "f_y": STEEL.f_y,
+        "e_mod": STEEL.e_mod,
+        "density": STEEL.density,
+        "ratio": catalogue.ratio,
+        "normal": NORMAL,
+    }
+    member = apply_tesseract(chain.analysis, analysis_inputs)
+
+    spans = nodes[edges[:, 1]] - nodes[edges[:, 0]]
+    lengths = jnp.linalg.norm(spans, axis=1)
+
+    def limit_states(axial_force):
+        check_inputs = {
+            "axial_force": axial_force,
+            "end_moments_major": member["end_moments_major"],
+            "end_moments_minor": member["end_moments_minor"],
+            "lengths": lengths,
+            "buckling_length": lengths,
             "f_y": STEEL.f_y,
             "e_mod": STEEL.e_mod,
             "density": STEEL.density,
+            "gamma_m0": STEEL.gamma_m0,
+            "gamma_m1": STEEL.gamma_m1,
             "ratio": catalogue.ratio,
-            "normal": NORMAL,
-        },
-    )
-    lengths = jnp.linalg.norm(
-        jnp.asarray(structure.nodes)[structure.edges[:, 1]]
-        - jnp.asarray(structure.nodes)[structure.edges[:, 0]],
-        axis=1,
-    )
-
-    def limit_states(axial_force):
-        sized = apply_tesseract(
-            chain.ec3,
-            {
-                "axial_force": axial_force,
-                "end_moments_major": member["end_moments_major"],
-                "end_moments_minor": member["end_moments_minor"],
-                "lengths": lengths,
-                "buckling_length": lengths,
-                "f_y": STEEL.f_y,
-                "e_mod": STEEL.e_mod,
-                "density": STEEL.density,
-                "gamma_m0": STEEL.gamma_m0,
-                "gamma_m1": STEEL.gamma_m1,
-                "ratio": catalogue.ratio,
-                "alpha": STEEL.alpha,
-                "diameter_min": catalogue.diameter_min,
-                "section_class": 3,
-                "resultant": True,
-            },
-        )
+            "alpha": STEEL.alpha,
+            "diameter_min": catalogue.diameter_min,
+            "section_class": 3,
+            "resultant": True,
+        }
+        sized = apply_tesseract(chain.ec3, check_inputs)
 
         return jnp.sum(sized["governing"])
 
@@ -254,7 +502,12 @@ def refusal(chain, structure, seed, catalogue):
     return "nothing was refused, which means the diagnostic is differentiable"
 
 
-def report_served(chain, structure, q, seed, catalogue):
+def report_served(
+    report: ReportWriter,
+    setup: ArchSetup,
+    chain: Chain,
+    catalogue: TubeCatalogue,
+) -> float | None:
     """
     The same mass and gradient with two stages in containers, if asked for.
 
@@ -265,206 +518,92 @@ def report_served(chain, structure, q, seed, catalogue):
     """
     directory = os.environ.get("NORMAX_SERVED_OUTPUT")
     if directory is None:
-        print("\nServed containers skipped; set NORMAX_SERVED_OUTPUT to run them")
+        skipped = "Served containers skipped; set NORMAX_SERVED_OUTPUT to run them"
+        report.write_heading(skipped)
+
         return None
 
-    print("\nThe same chain with form finding and the check in containers")
-
     def objective(stages):
-        return lambda q: mass_composed(
-            q,
-            seed,
-            ComposedSetup(structure, stages, STEEL, catalogue),
-            normal=NORMAL,
-            section_class=3,
-        )
+        composed_problem = ComposedSetup(setup.structure, stages, STEEL, catalogue)
 
-    reference, _ = timed(lambda: objective(chain)(q))
-    gradient, _ = timed(lambda: jax.grad(objective(chain))(q))
+        def total(q):
+            return mass_composed(
+                q,
+                setup.seed,
+                composed_problem,
+                normal=NORMAL,
+                section_class=3,
+            )
+
+        return total
+
+    reference = timed(lambda: objective(chain)(setup.q))
+    gradient = timed(lambda: jax.grad(objective(chain))(setup.q))
 
     with (
         Tesseract.from_image(f"{IMAGES[0]}:{VERSION}", output_path=directory) as first,
         Tesseract.from_image(f"{IMAGES[1]}:{VERSION}", output_path=directory) as third,
     ):
         served = Chain(formfinding=first, analysis=chain.analysis, ec3=third)
-        total, seconds_mass = timed(lambda: objective(served)(q))
-        crossed, seconds_gradient = timed(lambda: jax.grad(objective(served))(q))
+        total = timed(lambda: objective(served)(setup.q))
+        crossed = timed(lambda: jax.grad(objective(served))(setup.q))
 
-    print(f"  mass                {float(total):.14e}")
-    print(f"  scaled difference   {relative(reference, total):.2e}")
-    print(f"  gradient difference {relative(gradient, crossed):.2e}")
-    print(
-        f"  seconds             {seconds_mass:.3f} for a mass,"
-        f" {seconds_gradient:.3f} for a gradient"
+    value_gap = relative(reference.result, total.result)
+    gradient_gap = relative(gradient.result, crossed.result)
+    seconds = f"{total.seconds:.3f} for a mass, {crossed.seconds:.3f} for a gradient"
+    entries = (
+        ("mass", f"{float(total.result):.14e}"),
+        ("scaled difference", f"{value_gap:.2e}"),
+        ("gradient difference", f"{gradient_gap:.2e}"),
+        ("seconds", seconds),
     )
 
-    return relative(gradient, crossed)
+    report.write_heading("The same chain with form finding and the check in containers")
+    report.write_entries(entries)
+
+    return gradient_gap
 
 
-def main():
-    structure, graph_fdm, q = setup()
-    seed = jnp.full(NUM_EDGES, SEED)
+def main(verbose: bool = True) -> None:
+    """
+    Run the pipeline across three schemas, and compare it against one process.
+    """
+    report = ReportWriter(verbose)
+    setup = arch_setup()
     chain = local_chain()
 
-    report_schemas(chain)
+    report_schemas(report, chain)
 
-    print("\nThe same design, taken twice")
-    worst_value = 0.0
-    worst_moment = 0.0
-    worst_gradient = 0.0
+    report.write_heading("The same design, taken twice")
+    worst = ParityWorst(0.0, 0.0, 0.0)
+    for section_class in CLASSES:
+        found = report_parity(report, setup, chain, section_class)
+        worst = worst.worse_than(found)
 
-    for section_class in (2, 3):
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-        model = prepare_model(structure, STEEL, catalogue, normal=NORMAL)
-        problem = ProblemSetup(structure, graph_fdm, model, STEEL, catalogue)
-        composed_problem = ComposedSetup(structure, chain, STEEL, catalogue)
+    modes = report_modes(report, setup, chain)
 
-        oracle, seconds_oracle = timed(
-            lambda problem=problem, section_class=section_class: design_compiled(
-                q,
-                seed,
-                problem,
-                section_class=section_class,
-            )
-        )
-        composed, seconds_chain = timed(
-            lambda composed_problem=composed_problem, section_class=section_class: (
-                design_composed(
-                    q,
-                    seed,
-                    composed_problem,
-                    normal=NORMAL,
-                    section_class=section_class,
-                )
-            )
-        )
-
-        print(f"\n  Class {section_class}, d/t = {float(catalogue.ratio):.3f}")
-        print(
-            f"    {'field':>27} {'in process':>22} {'composed':>22}"
-            f" {'scaled':>10} {'held to':>9}"
-        )
-        for (label, oracle_leaf), (_, composed_leaf) in zip(
-            named_fields(oracle), named_fields(composed)
-        ):
-            left = np.asarray(oracle_leaf, dtype=np.float64)
-            right = np.asarray(composed_leaf, dtype=np.float64)
-            scaled = relative(left, right)
-
-            leaf = label.rpartition(".")[2]
-            if leaf in MOMENT_FIELDS:
-                limit = TOLERANCE_MOMENT
-                worst_moment = max(worst_moment, scaled)
-            else:
-                limit = TOLERANCE_PARITY
-                worst_value = max(worst_value, scaled)
-
-            print(
-                f"    {label:>27} {float(left.ravel()[0]):>22.14e}"
-                f" {float(right.ravel()[0]):>22.14e} {scaled:>10.2e}"
-                f" {limit:>9.0e}"
-            )
-
-        codes = governing_states(oracle, problem, section_class=section_class)
-        limits = {LIMIT_NAMES[float(code)] for code in codes}
-        print(f"    governing    {', '.join(sorted(limits))}")
-        print(f"    mass         {float(composed.mass):.12f} t")
-        departure = float(jnp.max(jnp.abs(composed.utilization - 1.0)))
-        print(f"    worst |u-1|  {departure:.2e}")
-        print(
-            f"    seconds      {seconds_oracle:.4f} in process,"
-            f" {seconds_chain:.4f} composed, both compiled"
-        )
-
-        def in_process(q, problem=problem, section_class=section_class):
-            return mass_compiled(
-                q,
-                seed,
-                problem,
-                section_class=section_class,
-            )
-
-        def composed_mass(
-            q, composed_problem=composed_problem, section_class=section_class
-        ):
-            return mass_composed(
-                q,
-                seed,
-                composed_problem,
-                normal=NORMAL,
-                section_class=section_class,
-            )
-
-        exact, seconds_oracle = timed(lambda: jax.grad(in_process)(q))
-        crossed, seconds_chain = timed(lambda: jax.grad(composed_mass)(q))
-
-        print(f"\n    {'edge':>5} {'in process':>22} {'composed':>22} {'scaled':>10}")
-        for edge in range(NUM_EDGES):
-            scaled = abs(float(exact[edge]) - float(crossed[edge])) / float(
-                jnp.max(jnp.abs(exact))
-            )
-            worst_gradient = max(worst_gradient, scaled)
-            print(
-                f"    {edge:>5} {float(exact[edge]):>22.14e}"
-                f" {float(crossed[edge]):>22.14e} {scaled:>10.2e}"
-            )
-        print(f"    sum          {float(jnp.sum(crossed)):.14e}")
-        print(
-            f"    seconds      {seconds_oracle:.4f} in process,"
-            f" {seconds_chain:.4f} composed, both compiled"
-        )
-
-    print("\nForward mode and reverse mode, through all three stages")
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+    refused = refusal_message(setup, chain, catalogue)
+    entries = (("refused", refused),)
 
-    def objective(q):
-        return mass_composed(
-            q,
-            seed,
-            ComposedSetup(structure, chain, STEEL, catalogue),
-            normal=NORMAL,
-            section_class=3,
-        )
+    report.write_heading("A cotangent on a non-differentiable output is refused")
+    report.write_entries(entries)
 
-    direction = jnp.ones_like(q)
-    _, forward = jax.jvp(objective, (q,), (direction,))
-    reverse = float(jnp.sum(jax.grad(objective)(q) * direction))
-    modes = relative(reverse, forward)
-    print(f"  forward             {float(forward):.14e}")
-    print(f"  reverse             {reverse:.14e}")
-    print(f"  scaled difference   {modes:.2e}")
+    served = report_served(report, setup, chain, catalogue)
 
-    print("\nA cotangent on a non-differentiable output is refused")
-    refused = refusal(chain, structure, seed, catalogue)
-    print(f"  {refused}")
-
-    served = report_served(chain, structure, q, seed, catalogue)
-
-    print("\nSummary")
-    print(
-        f"  worst value error       {worst_value:.2e}  (target {TOLERANCE_PARITY:.0e})"
-    )
-    print(
-        f"  worst end moment error  {worst_moment:.2e}  (target {TOLERANCE_MOMENT:.0e})"
-    )
-    print(
-        f"  worst gradient error    {worst_gradient:.2e}"
-        f"  (target {TOLERANCE_DERIVATIVE:.0e})"
-    )
-    print(f"  forward against reverse {modes:.2e}  (target {TOLERANCE_DERIVATIVE:.0e})")
+    checks = [
+        ToleranceCheck("value error", worst.value, TOLERANCE_PARITY),
+        ToleranceCheck("end moment error", worst.moment, TOLERANCE_MOMENT),
+        ToleranceCheck("gradient error", worst.gradient, TOLERANCE_DERIVATIVE),
+        ToleranceCheck("forward against reverse", modes, TOLERANCE_DERIVATIVE),
+    ]
     if served is not None:
-        print(
-            f"  served against imported {served:.2e}  (target {TOLERANCE_SERVED:.0e})"
-        )
+        crossing = ToleranceCheck("served against imported", served, TOLERANCE_SERVED)
+        checks.append(crossing)
 
-    passed = (
-        worst_value < TOLERANCE_PARITY
-        and worst_moment < TOLERANCE_MOMENT
-        and worst_gradient < TOLERANCE_DERIVATIVE
-        and modes < TOLERANCE_DERIVATIVE
-        and (served is None or served < TOLERANCE_SERVED)
-    )
-    print(f"\n{'PASS' if passed else 'FAIL'}")
+    report.write_heading("Summary")
+    report.write_checks(checks)
+    report.write_verdict(checks_passed(checks))
 
 
 if __name__ == "__main__":

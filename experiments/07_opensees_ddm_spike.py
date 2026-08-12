@@ -44,9 +44,15 @@ with `pass` one of matrix, coord3d, forces, printb, timing, or omitted for all.
 import subprocess
 import sys
 import time
+from collections.abc import Callable
+from collections.abc import Sequence
+from typing import NamedTuple
 
 import numpy as np
 import openseespy.opensees as ops
+
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
 
 E0 = 210e9
 A0 = 7.37e-3
@@ -56,8 +62,138 @@ J0 = 9.92e-5
 LOAD6 = [-100e3, -8e3, -10e3, 0.0, 0.0, 0.0]
 TOL = 1e-5
 
+# Relative step every central difference in this file is taken at.
+STEP = 1e-6
 
-def geometry(element, ndm):
+ELEMENTS = ("truss", "elasticBeamColumn", "dispBeamColumn", "forceBeamColumn")
+
+
+class FrameGeometry(NamedTuple):
+    """
+    One test frame: where its nodes are, what holds it, and what loads it.
+
+    Attributes
+    ----------
+    coords :
+        Coordinates of every node, by tag.
+    fixed :
+        Tags of the fully restrained nodes.
+    loaded :
+        Tag of the node the load is applied at.
+    bars :
+        Node pairs every element spans, in tag order.
+    """
+
+    coords: dict[int, list[float]]
+    fixed: tuple[int, ...]
+    loaded: int
+    bars: tuple[tuple[int, int], ...]
+
+
+class ModelSpec(NamedTuple):
+    """
+    Everything one assembly needs, so that a perturbed copy is one `_replace`.
+
+    Attributes
+    ----------
+    element :
+        Element formulation under test.
+    ndm :
+        Dimensions the model is built in.
+    coords :
+        Coordinates of every node, by tag.
+    properties :
+        Section properties of every element, by tag. Each element carries its
+        own, so a parameter registered on element 1 can be central-differenced
+        by perturbing element 1 alone.
+    """
+
+    element: str
+    ndm: int
+    coords: dict[int, list[float]]
+    properties: dict[int, dict[str, float]]
+
+    @property
+    def ndf(self) -> int:
+        """
+        Degrees of freedom per node, which the formulation decides.
+        """
+        if self.element == "truss":
+            return self.ndm
+
+        return 3 if self.ndm == 2 else 6
+
+    @property
+    def inertia(self) -> str:
+        """
+        Name the second moment is registered under, `I` in 2D and `Iz` in 3D.
+
+        The wrong name binds to nothing and reads as a missing derivative.
+        """
+        return "I" if self.ndm == 2 else "Iz"
+
+
+class ParameterSpec(NamedTuple):
+    """
+    One quantity registered with the direct differentiation method.
+
+    Attributes
+    ----------
+    kind :
+        Either `element`, for a section property, or `node`, for a coordinate.
+    tag :
+        Tag of the element or node the quantity belongs to.
+    name :
+        Property name, or `coord` for a coordinate.
+    direction :
+        Global axis of a coordinate, one-based, and unused otherwise.
+    """
+
+    kind: str
+    tag: int
+    name: str
+    direction: int = 0
+
+    @property
+    def command(self) -> tuple[str | int, ...]:
+        """
+        The arguments `ops.parameter` takes after its tag.
+        """
+        if self.kind == "node":
+            arguments = (self.kind, self.tag, self.name, self.direction)
+        else:
+            arguments = (self.kind, self.tag, self.name)
+
+        return arguments
+
+    @property
+    def label(self) -> str:
+        """
+        How the quantity reads in a table.
+        """
+        return f"coord{self.direction}" if self.kind == "node" else self.name
+
+
+class ParameterVerdict(NamedTuple):
+    """
+    How one registered parameter fared against its difference quotient.
+
+    Attributes
+    ----------
+    status :
+        One of OK, WRONG, MISSING, or NO-SIGNAL.
+    informative :
+        Degrees of freedom whose difference quotient rose above the noise.
+    detail :
+        The worst disagreeing degree of freedom, spelled out.
+    """
+
+    status: str
+    informative: int
+    detail: str
+
+
+def geometry(element: str, ndm: int) -> FrameGeometry:
     """
     Coordinates, restrained nodes, loaded node and connectivity per case.
 
@@ -66,79 +202,128 @@ def geometry(element, ndm):
     transversely, so that perturbing a coordinate reorients the members
     instead of only changing a length.
     """
+    if element == "truss" and ndm == 2:
+        coords = {1: [0.0, 0.0], 2: [4.0, 0.0], 3: [2.0, -1.5]}
+        bars = ((1, 3), (2, 3))
+        frame = FrameGeometry(coords, (1, 2), 3, bars)
+
+        return frame
+
     if element == "truss":
-        if ndm == 2:
-            coords = {1: [0.0, 0.0], 2: [4.0, 0.0], 3: [2.0, -1.5]}
-            return coords, [1, 2], 3, [(1, 3), (2, 3)]
         coords = {
             1: [0.0, 0.0, 0.0],
             2: [4.0, 0.0, 0.0],
             3: [2.0, 3.0, 0.0],
             4: [2.0, 1.0, -2.0],
         }
-        return coords, [1, 2, 3], 4, [(1, 4), (2, 4), (3, 4)]
+        bars = ((1, 4), (2, 4), (3, 4))
+        frame = FrameGeometry(coords, (1, 2, 3), 4, bars)
+
+        return frame
+
     coords = {
         1: [0.0, 0.0, 0.0][:ndm],
         2: [2.0, 0.5, 0.0][:ndm],
         3: [4.0, 0.0, 0.0][:ndm],
     }
-    return coords, [1], 3, [(1, 2), (2, 3)]
+    bars = ((1, 2), (2, 3))
+    frame = FrameGeometry(coords, (1,), 3, bars)
+
+    return frame
 
 
-def build(element, ndm, coords, props, specs=()):
+def model_spec(element: str, ndm: int) -> ModelSpec:
+    """
+    The unperturbed model of one case, every element carrying its own section.
+
+    `G` and `J` are held independent of `E` and `I` on purpose: a shared
+    expression would make the difference quotient perturb quantities the DDM
+    parameter does not.
+    """
+    frame = geometry(element, ndm)
+    section = {"E": E0, "A": A0, "Iz": I0, "Iy": I0}
+    properties = {tag: dict(section) for tag in range(1, len(frame.bars) + 1)}
+    spec = ModelSpec(element, ndm, frame.coords, properties)
+
+    return spec
+
+
+def build_model(spec: ModelSpec, parameters: Sequence[ParameterSpec] = ()) -> None:
     """
     Assemble and solve one model, optionally with DDM parameters registered.
-
-    Every element carries its own section and its own property values, so a
-    parameter registered on element 1 can be central-differenced by perturbing
-    element 1 alone. `G` and `J` are held independent of `E` and `I` for the
-    same reason: a shared expression would make the difference quotient
-    perturb quantities the DDM parameter does not.
     """
-    ndf = ndm if element == "truss" else (3 if ndm == 2 else 6)
-    _, fixed, loaded, bars = geometry(element, ndm)
+    frame = geometry(spec.element, spec.ndm)
+    ndf = spec.ndf
 
     ops.wipe()
-    ops.model("basic", "-ndm", ndm, "-ndf", ndf)
-    for tag, xyz in coords.items():
+    ops.model("basic", "-ndm", spec.ndm, "-ndf", ndf)
+    for tag, xyz in spec.coords.items():
         ops.node(tag, *xyz)
-    for tag in fixed:
+    for tag in frame.fixed:
         ops.fix(tag, *([1] * ndf))
 
-    if element == "truss":
-        for e, (i, j) in enumerate(bars, 1):
-            ops.uniaxialMaterial("Elastic", e, props[e]["E"])
-            ops.element("truss", e, i, j, props[e]["A"], e)
+    if spec.element == "truss":
+        for tag, (start, end) in enumerate(frame.bars, 1):
+            ops.uniaxialMaterial("Elastic", tag, spec.properties[tag]["E"])
+            ops.element("truss", tag, start, end, spec.properties[tag]["A"], tag)
     else:
-        if ndm == 2:
+        if spec.ndm == 2:
             ops.geomTransf("Linear", 1)
         else:
             ops.geomTransf("Linear", 1, 0.0, 0.0, 1.0)
-        for e, (i, j) in enumerate(bars, 1):
-            p = props[e]
-            if element == "elasticBeamColumn":
-                if ndm == 2:
+        for tag, (start, end) in enumerate(frame.bars, 1):
+            section = spec.properties[tag]
+            if spec.element == "elasticBeamColumn":
+                if spec.ndm == 2:
                     ops.element(
-                        "elasticBeamColumn", e, i, j, p["A"], p["E"], p["Iz"], 1
+                        "elasticBeamColumn",
+                        tag,
+                        start,
+                        end,
+                        section["A"],
+                        section["E"],
+                        section["Iz"],
+                        1,
                     )
                 else:
-                    args = (p["A"], p["E"], G0, J0, p["Iy"], p["Iz"])
-                    ops.element("elasticBeamColumn", e, i, j, *args, 1)
+                    ops.element(
+                        "elasticBeamColumn",
+                        tag,
+                        start,
+                        end,
+                        section["A"],
+                        section["E"],
+                        G0,
+                        J0,
+                        section["Iy"],
+                        section["Iz"],
+                        1,
+                    )
                 continue
-            if ndm == 2:
-                ops.section("Elastic", e, p["E"], p["A"], p["Iz"])
+            if spec.ndm == 2:
+                ops.section("Elastic", tag, section["E"], section["A"], section["Iz"])
             else:
-                ops.section("Elastic", e, p["E"], p["A"], p["Iz"], p["Iy"], G0, J0)
-            rule = "Lobatto" if element == "forceBeamColumn" else "Legendre"
-            ops.beamIntegration(rule, e, e, 5 if element == "forceBeamColumn" else 3)
-            ops.element(element, e, i, j, 1, e)
+                ops.section(
+                    "Elastic",
+                    tag,
+                    section["E"],
+                    section["A"],
+                    section["Iz"],
+                    section["Iy"],
+                    G0,
+                    J0,
+                )
+            forced = spec.element == "forceBeamColumn"
+            rule = "Lobatto" if forced else "Legendre"
+            ops.beamIntegration(rule, tag, tag, 5 if forced else 3)
+            ops.element(spec.element, tag, start, end, 1, tag)
 
     ops.timeSeries("Constant", 1)
     ops.pattern("Plain", 1, 1)
-    ops.load(loaded, *LOAD6[:ndf])
+    ops.load(frame.loaded, *LOAD6[:ndf])
 
-    for k, spec in enumerate(specs, 1):
-        ops.parameter(k, *spec)
+    for tag, parameter in enumerate(parameters, 1):
+        ops.parameter(tag, *parameter.command)
 
     ops.system("FullGeneral")
     ops.numberer("Plain")
@@ -146,13 +331,79 @@ def build(element, ndm, coords, props, specs=()):
     ops.integrator("LoadControl", 1.0)
     ops.algorithm("Linear")
     ops.analysis("Static")
-    if specs:
+    if parameters:
         ops.sensitivityAlgorithm("-computeAtEachStep")
     ops.analyze(1)
-    return ndf, loaded
 
 
-def classify(ddm, cd, floor):
+def property_shifted(spec: ModelSpec, name: str, step: float) -> ModelSpec:
+    """
+    The same model with one property of element 1 moved by a step.
+    """
+    properties = {tag: dict(values) for tag, values in spec.properties.items()}
+    properties[1][name] += step
+    moved = spec._replace(properties=properties)
+
+    return moved
+
+
+def coordinate_shifted(spec: ModelSpec, parameter: ParameterSpec, step) -> ModelSpec:
+    """
+    The same model with one coordinate of one node moved by a step.
+    """
+    coords = {tag: list(xyz) for tag, xyz in spec.coords.items()}
+    coords[parameter.tag][parameter.direction - 1] += step
+    moved = spec._replace(coords=coords)
+
+    return moved
+
+
+def displacements_of(node: int, ndf: int) -> list[float]:
+    """
+    Every displacement of one node of the model standing in the interpreter.
+    """
+    displacements = [ops.nodeDisp(node, dof) for dof in range(1, ndf + 1)]
+
+    return displacements
+
+
+def difference_quotient(
+    spec: ModelSpec,
+    parameter: ParameterSpec,
+    step: float,
+    read: Callable[[], list[float]],
+) -> list[float]:
+    """
+    Central difference of whatever `read` returns, in one parameter.
+    """
+    shifted = []
+    for sign in (+1, -1):
+        if parameter.kind == "node":
+            moved = coordinate_shifted(spec, parameter, sign * step)
+        else:
+            name = "Iz" if parameter.name == "I" else parameter.name
+            moved = property_shifted(spec, name, sign * step)
+        build_model(moved)
+        shifted.append(read())
+
+    quotient = [(high - low) / (2 * step) for high, low in zip(*shifted)]
+
+    return quotient
+
+
+def base_step(spec: ModelSpec, parameter: ParameterSpec) -> float:
+    """
+    The quantity a relative step is taken against, and the step itself.
+    """
+    if parameter.kind == "node":
+        return max(abs(spec.coords[parameter.tag][parameter.direction - 1]), 1.0)
+
+    name = "Iz" if parameter.name == "I" else parameter.name
+
+    return spec.properties[1][name]
+
+
+def classify(ddm: Sequence[float], quotient: Sequence[float], floor: float):
     """
     Compare one parameter's sensitivity vector against its difference quotient.
 
@@ -161,95 +412,95 @@ def classify(ddm, cd, floor):
     legitimately zero — a transverse response does not depend on the area.
     """
     status, worst, detail, seen = "NO-SIGNAL", 0.0, "", 0
-    for k, (dv, ref) in enumerate(zip(ddm, cd), 1):
-        if abs(ref) <= floor:
+    for dof, (found, reference) in enumerate(zip(ddm, quotient), 1):
+        if abs(reference) <= floor:
             continue
         seen += 1
         if status == "NO-SIGNAL":
             status = "OK"
-        if dv == 0.0:
-            return "MISSING", seen, f"dof{k}: cd={ref:+.5e} ddm=0"
-        rel = abs(dv - ref) / abs(ref)
-        if rel > worst:
-            worst, detail = rel, f"dof{k}: ddm={dv:+.6e} cd={ref:+.6e} rel={rel:.2e}"
-        if rel > TOL:
+        if found == 0.0:
+            missing = f"dof{dof}: cd={reference:+.5e} ddm=0"
+            verdict = ParameterVerdict("MISSING", seen, missing)
+
+            return verdict
+        error = abs(found - reference) / abs(reference)
+        if error > worst:
+            worst = error
+            detail = f"dof{dof}: ddm={found:+.6e} cd={reference:+.6e} rel={error:.2e}"
+        if error > TOL:
             status = "WRONG"
-    return status, seen, detail
+
+    verdict = ParameterVerdict(status, seen, detail)
+
+    return verdict
 
 
-def capability_matrix():
-    """Every (element, dimension, parameter) pair against central differences."""
-    print("=" * 78)
-    print("DDM capability matrix -- sensNodeDisp vs central differences")
-    print("=" * 78)
-    verdicts = {}
-    for element in ("truss", "elasticBeamColumn", "dispBeamColumn", "forceBeamColumn"):
+def capability_matrix(report: ReportWriter) -> None:
+    """
+    Every (element, dimension, parameter) pair against central differences.
+    """
+    report.write_banner("DDM capability matrix -- sensNodeDisp vs central differences")
+
+    matrix_columns = (
+        ColumnSpec("parameter"),
+        ColumnSpec("status"),
+        ColumnSpec("signal", align="<"),
+        ColumnSpec("worst", align="<"),
+    )
+    summary_columns = (
+        ColumnSpec("case", align="<"),
+        ColumnSpec("parameter"),
+        ColumnSpec("status"),
+    )
+    summary = []
+    for element in ELEMENTS:
         for ndm in (2, 3):
-            coords, _, _, bars = geometry(element, ndm)
-            props = {
-                e: {"E": E0, "A": A0, "Iz": I0, "Iy": I0}
-                for e in range(1, len(bars) + 1)
-            }
-            # The second moment is named `I` in 2D and `Iz` in 3D; the wrong
-            # name binds to nothing and reads as a missing derivative.
-            inertia = "I" if ndm == 2 else "Iz"
-            keys = ["E", "A"] if element == "truss" else ["E", "A", inertia]
-            specs = [("element", 1, k) for k in keys]
-            _, loaded = build(element, ndm, coords, props, specs)
-            specs += [("node", loaded, "coord", d) for d in range(1, ndm + 1)]
-            ndf, loaded = build(element, ndm, coords, props, specs)
+            spec = model_spec(element, ndm)
+            frame = geometry(element, ndm)
+            names = ["E", "A"] if element == "truss" else ["E", "A", spec.inertia]
+            parameters = [ParameterSpec("element", 1, name) for name in names]
+            parameters += [
+                ParameterSpec("node", frame.loaded, "coord", axis)
+                for axis in range(1, ndm + 1)
+            ]
 
-            u0 = [ops.nodeDisp(loaded, k) for k in range(1, ndf + 1)]
-            ddm = {
-                i: [ops.sensNodeDisp(loaded, k, i) for k in range(1, ndf + 1)]
-                for i in range(1, len(specs) + 1)
-            }
-            umax = max(abs(v) for v in u0)
-            print(f"\n  {element}  ndm={ndm}  ndf={ndf}")
-            row = {}
-            for i, spec in enumerate(specs, 1):
-                if spec[0] == "element":
-                    label = spec[2]
-                    key = "Iz" if label == "I" else label
-                    base = props[1][key]
-                    step = base * 1e-6
-                    shifted = []
-                    for sign in (+1, -1):
-                        pert = {e: dict(p) for e, p in props.items()}
-                        pert[1][key] += sign * step
-                        build(element, ndm, coords, pert)
-                        shifted.append(
-                            [ops.nodeDisp(loaded, k) for k in range(1, ndf + 1)]
-                        )
-                else:
-                    node, direction = spec[1], spec[3]
-                    label = f"coord{direction}"
-                    base = max(abs(coords[node][direction - 1]), 1.0)
-                    step = base * 1e-6
-                    shifted = []
-                    for sign in (+1, -1):
-                        pert = {t: list(c) for t, c in coords.items()}
-                        pert[node][direction - 1] += sign * step
-                        build(element, ndm, pert, props)
-                        shifted.append(
-                            [ops.nodeDisp(loaded, k) for k in range(1, ndf + 1)]
-                        )
+            build_model(spec, parameters)
+            reference = displacements_of(frame.loaded, spec.ndf)
+            ddm = {}
+            for index in range(1, len(parameters) + 1):
+                ddm[index] = [
+                    ops.sensNodeDisp(frame.loaded, dof, index)
+                    for dof in range(1, spec.ndf + 1)
+                ]
+            largest = max(abs(value) for value in reference)
 
-                cd = [(a - b) / (2 * step) for a, b in zip(*shifted)]
-                status, seen, detail = classify(ddm[i], cd, 1e-6 * umax / base)
-                row[label] = status
-                print(
-                    f"    {label:>7}  {status:>9}  ({seen} informative dof)  {detail}"
+            rows = []
+            for index, parameter in enumerate(parameters, 1):
+                base = base_step(spec, parameter)
+                step = base * STEP
+
+                def read_displacements(spec=spec, frame=frame):
+                    return displacements_of(frame.loaded, spec.ndf)
+
+                quotient = difference_quotient(
+                    spec, parameter, step, read_displacements
                 )
-            verdicts[f"{element} ndm={ndm}"] = row
+                floor = STEP * largest / base
+                verdict = classify(ddm[index], quotient, floor)
+                signal = f"{verdict.informative} informative dof"
+                row = (parameter.label, verdict.status, signal, verdict.detail)
+                rows.append(row)
+                case = f"{element} ndm={ndm}"
+                summary.append((case, parameter.label, verdict.status))
 
-    print("\n" + "-" * 78)
-    print("SUMMARY")
-    for load_case, row in verdicts.items():
-        print(f"  {load_case:<32} " + "  ".join(f"{k}={v}" for k, v in row.items()))
+            report.write_heading(f"{element}, ndm={ndm}, ndf={spec.ndf}")
+            report.write_table(matrix_columns, rows)
+
+    report.write_heading("SUMMARY")
+    report.write_table(summary_columns, summary)
 
 
-def coord_3d_evidence():
+def coord_3d_evidence(report: ReportWriter) -> None:
     """
     Which number to believe where 3D DDM and central differences disagree.
 
@@ -258,13 +509,11 @@ def coord_3d_evidence():
     The axis-aligned single bar is included because it is the one 3D case with
     a closed form.
     """
-    print("=" * 78)
-    print("3D coordinate sensitivity -- step-size refinement")
-    print("=" * 78)
+    report.write_banner("3D coordinate sensitivity -- step-size refinement")
 
     length, axial = 4.0, -100e3
 
-    def bar(x2, param=False):
+    def bar(x2, registered=False):
         ops.wipe()
         ops.model("basic", "-ndm", 3, "-ndf", 3)
         ops.node(1, 0.0, 0.0, 0.0)
@@ -276,7 +525,7 @@ def coord_3d_evidence():
         ops.timeSeries("Constant", 1)
         ops.pattern("Plain", 1, 1)
         ops.load(2, axial, 0.0, 0.0)
-        if param:
+        if registered:
             ops.parameter(1, "node", 2, "coord", 1)
         ops.system("FullGeneral")
         ops.numberer("Plain")
@@ -284,43 +533,58 @@ def coord_3d_evidence():
         ops.integrator("LoadControl", 1.0)
         ops.algorithm("Linear")
         ops.analysis("Static")
-        if param:
+        if registered:
             ops.sensitivityAlgorithm("-computeAtEachStep")
         ops.analyze(1)
 
-    bar(length, param=True)
-    disp = ops.nodeDisp(2, 1)
-    ddm = ops.sensNodeDisp(2, 1, 1)
-    exact = disp / length
-    print("\n  single bar along global x, u = P L / (E A) so du/dx2 = u / L")
-    print(f"    ddm    {ddm:+.10e}")
-    print(f"    exact  {exact:+.10e}    ratio {ddm / exact:.8f}")
+    bar(length, registered=True)
+    displacement = ops.nodeDisp(2, 1)
+    found = ops.sensNodeDisp(2, 1, 1)
+    exact = displacement / length
 
-    coords, _, loaded, bars = geometry("truss", 3)
-    props = {e: {"E": E0, "A": A0} for e in range(1, len(bars) + 1)}
-    print("\n  tripod, bars not aligned with any global axis")
+    entries = (
+        ("ddm", f"{found:+.10e}"),
+        ("exact", f"{exact:+.10e}, ratio {found / exact:.8f}"),
+    )
+
+    report.write_heading("single bar along global x, u = P L / (E A) so du/dx2 = u / L")
+    report.write_entries(entries)
+
+    spec = model_spec("truss", 3)
+    frame = geometry("truss", 3)
+
+    report.write_heading("tripod, bars not aligned with any global axis")
+    rows = []
     for direction in (1, 2, 3):
-        build("truss", 3, coords, props, [("node", loaded, "coord", direction)])
-        ddm = [ops.sensNodeDisp(loaded, k, 1) for k in (1, 2, 3)]
-        print(f"    coord{direction}  ddm = " + "  ".join(f"{v:+.8e}" for v in ddm))
-        for rel_step in (1e-4, 1e-6, 1e-8):
-            step = rel_step * 4.0
-            shifted = []
-            for sign in (+1, -1):
-                pert = {t: list(c) for t, c in coords.items()}
-                pert[loaded][direction - 1] += sign * step
-                build("truss", 3, pert, props)
-                shifted.append([ops.nodeDisp(loaded, k) for k in (1, 2, 3)])
-            cd = [(a - b) / (2 * step) for a, b in zip(*shifted)]
-            print(
-                f"       h={rel_step:.0e}  cd  = " + "  ".join(f"{v:+.8e}" for v in cd)
-            )
+        parameter = ParameterSpec("node", frame.loaded, "coord", direction)
+        build_model(spec, [parameter])
+        found = [ops.sensNodeDisp(frame.loaded, dof, 1) for dof in (1, 2, 3)]
+        rows.append((f"coord{direction}", "ddm", *found))
+
+        def read_displacements(frame=frame):
+            displacements = [ops.nodeDisp(frame.loaded, dof) for dof in (1, 2, 3)]
+
+            return displacements
+
+        for relative in (1e-4, 1e-6, 1e-8):
+            step = relative * 4.0
+            quotient = difference_quotient(spec, parameter, step, read_displacements)
+            rows.append((f"coord{direction}", f"cd h={relative:.0e}", *quotient))
+
+    columns = (
+        ColumnSpec("parameter"),
+        ColumnSpec("source", align="<"),
+        ColumnSpec("d/dx", "+.8e"),
+        ColumnSpec("d/dy", "+.8e"),
+        ColumnSpec("d/dz", "+.8e"),
+    )
+
+    report.write_table(columns, rows)
 
 
-def force_sensitivity():
+def force_sensitivity(report: ReportWriter) -> None:
     """
-    `∂N/∂xyz`, which is what T3 consumes — not `∂u/∂xyz`, which is what
-    `sensNodeDisp` returns.
+    `∂N/∂xyz`, which is what T3 consumes, rather than `∂u/∂xyz`.
 
     Section forces are one step further down the chain than displacements, and
     the two beam formulations do not agree there even though both get
@@ -329,62 +593,74 @@ def force_sensitivity():
     quietly returns a neighbour. Passing an unregistered parameter tag segfaults
     the process outright.
     """
-    print("=" * 78)
-    print("section-force sensitivity to a nodal coordinate -- 2D")
-    print("=" * 78)
+    report.write_banner("section-force sensitivity to a nodal coordinate -- 2D")
 
     for element in ("forceBeamColumn", "dispBeamColumn"):
-        coords, _, _, _ = geometry(element, 2)
-        props = {e: {"E": E0, "A": A0, "Iz": I0, "Iy": I0} for e in (1, 2)}
-        npt = 5 if element == "forceBeamColumn" else 3
-        specs = [
-            ("node", 3, "coord", 1),
-            ("node", 3, "coord", 2),
-            ("node", 2, "coord", 2),
-        ]
-        build(element, 2, coords, props, specs)
+        spec = model_spec(element, 2)
+        points = 5 if element == "forceBeamColumn" else 3
+        parameters = (
+            ParameterSpec("node", 3, "coord", 1),
+            ParameterSpec("node", 3, "coord", 2),
+            ParameterSpec("node", 2, "coord", 2),
+        )
+        build_model(spec, parameters)
+
+        def section_forces():
+            forces = {}
+            for tag in (1, 2):
+                for station in (1, points):
+                    response = ops.eleResponse(tag, "section", station, "force")
+                    forces[(tag, station)] = response
+
+            return forces
 
         worst = 0.0
-        print(f"\n  {element}")
-        for i, spec in enumerate(specs, 1):
-            node, direction = spec[1], spec[3]
-            step = 1e-6 * max(abs(coords[node][direction - 1]), 1.0)
+        rows = []
+        for index, parameter in enumerate(parameters, 1):
+            place = spec.coords[parameter.tag][parameter.direction - 1]
+            step = STEP * max(abs(place), 1.0)
             shifted = []
             for sign in (+1, -1):
-                pert = {t: list(c) for t, c in coords.items()}
-                pert[node][direction - 1] += sign * step
-                build(element, 2, pert, props)
-                shifted.append(
-                    {
-                        (e, s): ops.eleResponse(e, "section", s, "force")
-                        for e in (1, 2)
-                        for s in (1, npt)
-                    }
-                )
-            build(element, 2, coords, props, specs)
-            for ele in (1, 2):
-                for sec in (1, npt):
+                moved = coordinate_shifted(spec, parameter, sign * step)
+                build_model(moved)
+                shifted.append(section_forces())
+            build_model(spec, parameters)
+
+            for tag in (1, 2):
+                for station in (1, points):
                     for dof in (1, 2):
-                        ddm = ops.sensSectionForce(ele, sec, dof, i)
-                        if isinstance(ddm, list):
-                            ddm = ddm[0]
-                        lo, hi = shifted[1][(ele, sec)], shifted[0][(ele, sec)]
-                        cd = (hi[dof - 1] - lo[dof - 1]) / (2 * step)
-                        if abs(cd) <= 1e3:
+                        found = ops.sensSectionForce(tag, station, dof, index)
+                        if isinstance(found, list):
+                            found = found[0]
+                        low = shifted[1][(tag, station)]
+                        high = shifted[0][(tag, station)]
+                        quotient = (high[dof - 1] - low[dof - 1]) / (2 * step)
+                        if abs(quotient) <= 1e3:
                             continue
-                        rel = abs(ddm - cd) / abs(cd)
-                        worst = max(worst, rel)
+                        error = abs(found - quotient) / abs(quotient)
+                        worst = max(worst, error)
                         name = "N" if dof == 1 else "M"
-                        where = f"n{node} c{direction} e{ele} s{sec} d{name}"
-                        print(
-                            f"    {where:>20}  ddm {ddm:+13.6e}  "
-                            f"cd {cd:+13.6e}  rel {rel:8.2e}"
+                        where = (
+                            f"n{parameter.tag} c{parameter.direction}"
+                            f" e{tag} s{station} d{name}"
                         )
+                        rows.append((where, found, quotient, error))
+
+        columns = (
+            ColumnSpec("where", align="<"),
+            ColumnSpec("ddm", "+.6e"),
+            ColumnSpec("central diff", "+.6e"),
+            ColumnSpec("relative", ".2e"),
+        )
         verdict = "AVAILABLE" if worst < 1e-5 else "NOT RELIABLE"
-        print(f"    worst {worst:.3e}  ->  dN/dxyz {verdict}")
+        entries = (("worst", f"{worst:.3e}, dN/dxyz {verdict}"),)
+
+        report.write_heading(element)
+        report.write_table(columns, rows)
+        report.write_entries(entries)
 
 
-def printb_semantics():
+def printb_semantics(report: ReportWriter) -> None:
     """
     Is the pseudo-load vector reachable, in any sensitivity mode?
 
@@ -393,71 +669,77 @@ def printb_semantics():
     what the vector should look like, but presupposes the very solve it would
     replace.
     """
-    print("=" * 78)
-    print("pseudo-load reachability -- what printB returns")
-    print("=" * 78)
+    report.write_banner("pseudo-load reachability -- what printB returns")
 
-    nel = 6
-    coords = {k + 1: [4.0 * k / nel, 0.0] for k in range(nel + 1)}
+    num_elements = 6
+    coords = {
+        tag + 1: [4.0 * tag / num_elements, 0.0] for tag in range(num_elements + 1)
+    }
 
-    def arch_2d(specs=(), mode=None):
+    def cantilever(parameters=(), mode=None):
         ops.wipe()
         ops.model("basic", "-ndm", 2, "-ndf", 3)
         for tag, xy in coords.items():
             ops.node(tag, *xy)
         ops.fix(1, 1, 1, 1)
         ops.geomTransf("Linear", 1)
-        for e in range(1, nel + 1):
-            ops.section("Elastic", e, E0, A0, I0)
-            ops.beamIntegration("Legendre", e, e, 3)
-            ops.element("dispBeamColumn", e, e, e + 1, 1, e)
+        for tag in range(1, num_elements + 1):
+            ops.section("Elastic", tag, E0, A0, I0)
+            ops.beamIntegration("Legendre", tag, tag, 3)
+            ops.element("dispBeamColumn", tag, tag, tag + 1, 1, tag)
         ops.timeSeries("Constant", 1)
         ops.pattern("Plain", 1, 1)
-        for t in range(2, nel + 2):
-            ops.load(t, 0.0, -20e3, 0.0)
-        for k, spec in enumerate(specs, 1):
-            ops.parameter(k, *spec)
+        for tag in range(2, num_elements + 2):
+            ops.load(tag, 0.0, -20e3, 0.0)
+        for tag, parameter in enumerate(parameters, 1):
+            ops.parameter(tag, *parameter.command)
         ops.system("FullGeneral")
         ops.numberer("Plain")
         ops.constraints("Plain")
         ops.integrator("LoadControl", 1.0)
         ops.algorithm("Linear")
         ops.analysis("Static")
-        if specs and mode:
+        if parameters and mode:
             ops.sensitivityAlgorithm(mode)
         ops.analyze(1)
-        if specs and mode == "-computeByCommand":
+        if parameters and mode == "-computeByCommand":
             ops.computeGradients()
 
-    ndof = 3 * (nel + 1) - 3
+    ndof = 3 * (num_elements + 1) - 3
     for mode in (None, "-computeAtEachStep", "-computeByCommand"):
-        specs = () if mode is None else (("element", 1, "E"),)
-        arch_2d(specs, mode)
+        parameters = () if mode is None else (ParameterSpec("element", 1, "E"),)
+        cantilever(parameters, mode)
         stiffness = np.array(ops.printA("-ret")).reshape(ndof, ndof)
         rhs = np.array(ops.printB("-ret"))
-        disp = np.array(
-            [ops.nodeDisp(t, d) for t in range(2, nel + 2) for d in (1, 2, 3)]
-        )
-        applied = stiffness @ disp
-        print(f"\n  mode {str(mode):>20}   |B| {np.linalg.norm(rhs):12.5e}")
-        print(
-            f"  {'':>25}   |K u| {np.linalg.norm(applied):12.5e}   (the applied load)"
-        )
-        if specs:
-            sens = np.array(
-                [
-                    ops.sensNodeDisp(t, d, 1)
-                    for t in range(2, nel + 2)
-                    for d in (1, 2, 3)
-                ]
-            )
-            pseudo = stiffness @ sens
-            gap = np.linalg.norm(rhs - pseudo) / np.linalg.norm(pseudo)
+        moved = [
+            ops.nodeDisp(tag, dof)
+            for tag in range(2, num_elements + 2)
+            for dof in (1, 2, 3)
+        ]
+        displacement = np.array(moved)
+        applied = stiffness @ displacement
+
+        entries = [
+            ("|B|", f"{np.linalg.norm(rhs):.5e}"),
+            ("|K u|", f"{np.linalg.norm(applied):.5e}, the applied load"),
+        ]
+        if parameters:
+            slopes = [
+                ops.sensNodeDisp(tag, dof, 1)
+                for tag in range(2, num_elements + 2)
+                for dof in (1, 2, 3)
+            ]
+            sensitivity = np.array(slopes)
+            pseudo = stiffness @ sensitivity
             norm = np.linalg.norm(pseudo)
-            print(f"  {'':>25}   |P_1| {norm:12.5e}   |B-P_1|/|P_1| {gap:.3e}")
+            gap = np.linalg.norm(rhs - pseudo) / norm
+            entries.append(("|P_1|", f"{norm:.5e}, |B-P_1|/|P_1| {gap:.3e}"))
+
+        report.write_heading(f"mode {mode}")
+        report.write_entries(entries)
 
 
-def cost_scaling():
+def cost_scaling(report: ReportWriter) -> None:
     """
     What the DDM sweep costs, against the finite-difference fallback.
 
@@ -465,71 +747,94 @@ def cost_scaling():
     factorization and pays a back-substitution per parameter. The ratio is the
     number the P5 scaling plot needs.
     """
-    print("=" * 78)
-    print("cost scaling -- DDM sweep vs finite differences")
-    print("=" * 78)
+    report.write_banner("cost scaling -- DDM sweep vs finite differences")
 
-    def arch_2d(nel, n_params=0, solve=True):
+    columns = (
+        ColumnSpec("n_params"),
+        ColumnSpec("DDM total [ms]", ".2f"),
+        ColumnSpec("sens only [ms]", ".2f"),
+        ColumnSpec("per param [ms]", ".4f"),
+        ColumnSpec("FD equiv [ms]", ".2f"),
+        ColumnSpec("speedup", ".1f"),
+    )
+
+    def arch(num_elements, num_parameters=0, solve=True):
         ops.wipe()
         ops.model("basic", "-ndm", 2, "-ndf", 3)
-        for k in range(nel + 1):
-            x = 40.0 * k / nel
-            ops.node(k + 1, x, 8.0 * 4 * x * (40.0 - x) / 1600.0)
+        for index in range(num_elements + 1):
+            x = 40.0 * index / num_elements
+            ops.node(index + 1, x, 8.0 * 4 * x * (40.0 - x) / 1600.0)
         ops.fix(1, 1, 1, 1)
-        ops.fix(nel + 1, 1, 1, 1)
+        ops.fix(num_elements + 1, 1, 1, 1)
         ops.geomTransf("Linear", 1)
-        for e in range(1, nel + 1):
-            ops.section("Elastic", e, E0, A0, I0)
-            ops.beamIntegration("Legendre", e, e, 3)
-            ops.element("dispBeamColumn", e, e, e + 1, 1, e)
+        for tag in range(1, num_elements + 1):
+            ops.section("Elastic", tag, E0, A0, I0)
+            ops.beamIntegration("Legendre", tag, tag, 3)
+            ops.element("dispBeamColumn", tag, tag, tag + 1, 1, tag)
         ops.timeSeries("Constant", 1)
         ops.pattern("Plain", 1, 1)
-        for t in range(2, nel + 1):
-            ops.load(t, 0.0, -20e3, 0.0)
-        specs = [("element", e, ["E", "A", "Iz"][e % 3]) for e in range(1, nel + 1)]
-        specs += [("node", t, "coord", 2) for t in range(2, nel + 1)]
-        for k, spec in enumerate(specs[:n_params], 1):
-            ops.parameter(k, *spec)
+        for tag in range(2, num_elements + 1):
+            ops.load(tag, 0.0, -20e3, 0.0)
+        parameters = [
+            ParameterSpec("element", tag, ["E", "A", "Iz"][tag % 3])
+            for tag in range(1, num_elements + 1)
+        ]
+        parameters += [
+            ParameterSpec("node", tag, "coord", 2) for tag in range(2, num_elements + 1)
+        ]
+        for tag, parameter in enumerate(parameters[:num_parameters], 1):
+            ops.parameter(tag, *parameter.command)
         ops.system("FullGeneral")
         ops.numberer("Plain")
         ops.constraints("Plain")
         ops.integrator("LoadControl", 1.0)
         ops.algorithm("Linear")
         ops.analysis("Static")
-        if n_params:
+        if num_parameters:
             ops.sensitivityAlgorithm("-computeAtEachStep")
         if solve:
             ops.analyze(1)
 
-    def fastest(fn, reps=3):
+    def fastest(call, repeats=3):
         best = float("inf")
-        for _ in range(reps):
+        for _ in range(repeats):
             start = time.perf_counter()
-            fn()
+            call()
             best = min(best, time.perf_counter() - start)
+
         return best
 
-    for nel in (20, 100, 400):
-        assembly = fastest(lambda nel=nel: arch_2d(nel, solve=False))
-        plain = fastest(lambda nel=nel: arch_2d(nel))
-        ndof = 3 * (nel + 1) - 6
-        solve = (plain - assembly) * 1e3
-        print(
-            f"\n  nel={nel}  ndof={ndof}   "
-            f"assemble {assembly * 1e3:.2f} ms   solve {solve:.3f} ms"
+    for num_elements in (20, 100, 400):
+        assembly = fastest(lambda n=num_elements: arch(n, solve=False))
+        plain = fastest(lambda n=num_elements: arch(n))
+        ndof = 3 * (num_elements + 1) - 6
+
+        entries = (
+            ("assemble", f"{assembly * 1e3:.2f} ms"),
+            ("solve", f"{(plain - assembly) * 1e3:.3f} ms"),
         )
-        print(
-            f"  {'n_params':>9} {'DDM total':>11} {'sens only':>11} "
-            f"{'per param':>11} {'FD equiv':>11} {'speedup':>8}"
-        )
-        for n in (10, 50, 2 * nel - 2):
-            total = fastest(lambda nel=nel, n=n: arch_2d(nel, n))
-            sens = total - plain
-            fd = assembly + (n + 1) * plain
-            print(
-                f"  {n:>9} {total * 1e3:8.2f} ms {sens * 1e3:8.2f} ms "
-                f"{sens / n * 1e3:8.4f} ms {fd * 1e3:8.2f} ms {fd / total:7.1f}x"
+
+        report.write_heading(f"nel={num_elements}, ndof={ndof}")
+        report.write_entries(entries)
+
+        rows = []
+        for count in (10, 50, 2 * num_elements - 2):
+            total = fastest(lambda n=num_elements, k=count: arch(n, k))
+            sensitivity = total - plain
+            fallback = assembly + (count + 1) * plain
+            per_param = sensitivity / count * 1e3
+            speedup = fallback / total
+            row = (
+                count,
+                total * 1e3,
+                sensitivity * 1e3,
+                per_param,
+                fallback * 1e3,
+                speedup,
             )
+            rows.append(row)
+
+        report.write_table(columns, rows)
 
 
 PASSES = {
@@ -541,16 +846,26 @@ PASSES = {
 }
 
 
-def main():
-    """Run one pass, or fan every pass out into its own subprocess."""
+def main(verbose: bool = True) -> None:
+    """
+    Run one pass, or fan every pass out into its own subprocess.
+    """
+    report = ReportWriter(verbose)
+
     if len(sys.argv) > 1:
-        PASSES[sys.argv[1]]()
+        PASSES[sys.argv[1]](report)
         return
+
     for name in PASSES:
-        print(f"\n{'#' * 78}\n# {name}\n{'#' * 78}", flush=True)
+        report.write_heading("#" * 78)
+        report.write_line(f"# {name}")
+        report.write_line("#" * 78)
+        sys.stdout.flush()
         done = subprocess.run([sys.executable, __file__, name], check=False)
         if done.returncode != 0:
-            print(f"\n  pass {name!r} exited {done.returncode} -- OpenSees died")
+            report.write_entries(
+                (("pass", f"{name!r} exited {done.returncode} -- OpenSees died"),)
+            )
 
 
 if __name__ == "__main__":

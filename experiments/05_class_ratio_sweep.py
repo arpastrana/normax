@@ -27,7 +27,12 @@ honest while the design shear stays under half the plastic shear resistance.
 Run with `uv run python experiments/05_class_ratio_sweep.py`.
 """
 
+from collections.abc import Sequence
+from typing import NamedTuple
+
 import jax.numpy as jnp
+from jaxtyping import Array
+from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.classification import is_plastic
@@ -38,150 +43,438 @@ from normax.ec3.resistance import resistance_shear
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import mass_of_tubes
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
 
 STEEL = SteelGrade()
 LENGTH = 6000.0
 
 # A demand mix swept from pure compression to pure bending, holding the axial
 # force and growing the moment.
-MOMENTS = jnp.asarray([0.0, 1e7, 2e7, 4e7, 8e7, 1.6e8])
+MOMENTS = (0.0, 1e7, 2e7, 4e7, 8e7, 1.6e8)
 FORCE = -6e5
+
+# Moment factors of a member bent in single curvature, as Table B.3 reads them.
+MOMENT_FACTOR = 0.9
 
 CLASSES = (2, 3)
 
+# Samples the crossover is looked for over, and the range they span.
+CROSSOVER_SAMPLES = 321
+CROSSOVER_MOMENT_MAX = 1.6e8
 
-def sized(section_class, moment_major, moment_minor=0.0):
+# A simply supported span carrying an end moment has a shear of about four
+# moments over its length, which is the worst plausible pairing.
+SHEAR_FACTOR = 4.0
+
+
+class ClassBranch(NamedTuple):
+    """
+    A section class, and the wall proportion that sits at its limit.
+
+    Attributes
+    ----------
+    section_class :
+        Class the resistances are evaluated on.
+    catalogue :
+        Tube family whose ratio holds the section at that class limit.
+    """
+
+    section_class: int
+    catalogue: TubeCatalogue
+
+    @classmethod
+    def at_limit(cls, section_class: int) -> "ClassBranch":
+        """
+        The branch whose wall proportion sits exactly at a class limit.
+        """
+        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        branch = cls(section_class, catalogue)
+
+        return branch
+
+    @property
+    def behaviour(self) -> str:
+        """
+        Whether the branch takes plastic or elastic section properties.
+        """
+        return "plastic" if is_plastic(self.section_class) else "elastic"
+
+
+class MassComparison(NamedTuple):
+    """
+    What one demand mix costs on each class branch.
+
+    Attributes
+    ----------
+    moment :
+        Major-axis moment the members are sized against.
+    diameters :
+        Fully-stressed diameter on each branch, in the order the branches came.
+    masses :
+        Mass of the member on each branch, in kilogrammes.
+    """
+
+    moment: float
+    diameters: tuple[float, ...]
+    masses: tuple[float, ...]
+
+    @property
+    def lighter(self) -> int:
+        """
+        Index of the branch that is lighter at this demand mix.
+        """
+        indices = range(len(self.masses))
+
+        return int(min(indices, key=lambda index: self.masses[index]))
+
+    @property
+    def saving(self) -> float:
+        """
+        Fraction of the heavier design the lighter one gives back.
+        """
+        return abs(self.masses[0] - self.masses[1]) / max(self.masses)
+
+
+class CrossoverResult(NamedTuple):
+    """
+    Where the two branches weigh the same, if they do so in the swept range.
+
+    Attributes
+    ----------
+    moment :
+        Moment the two masses cross at, or None where they never do.
+    lighter :
+        Section class that is lighter below that moment.
+    """
+
+    moment: float | None
+    lighter: int
+
+
+class ShearCheck(NamedTuple):
+    """
+    The shear the excluded clause 6.2.6 would have seen at one demand mix.
+
+    Attributes
+    ----------
+    moment :
+        Major-axis moment the member is sized against.
+    diameter :
+        Fully-stressed diameter at that moment.
+    resistance :
+        Plastic shear resistance of the sized section.
+    demand :
+        Design shear the worst plausible span pairing implies.
+    """
+
+    moment: float
+    diameter: float
+    resistance: float
+    demand: float
+
+    @property
+    def ratio(self) -> float:
+        """
+        Design shear as a fraction of the plastic shear resistance.
+        """
+        return self.demand / self.resistance
+
+    @property
+    def flag(self) -> str:
+        """
+        Whether the exclusion of 6.2.6 stops being honest at this mix.
+        """
+        return "" if self.ratio < SHEAR_THRESHOLD else "EXCEEDS HALF"
+
+
+class ReadingPair(NamedTuple):
+    """
+    Eq. 6.42 read as a resultant stress, and read as a linear sum.
+
+    Attributes
+    ----------
+    moment :
+        Moment applied about both axes at once.
+    resultant :
+        Diameter the resultant reading asks for.
+    linear :
+        Diameter the linear-sum reading asks for.
+    """
+
+    moment: float
+    resultant: float
+    linear: float
+
+    @property
+    def widening(self) -> float:
+        """
+        Fraction by which the linear reading widens the tube.
+        """
+        return self.linear / self.resultant - 1.0
+
+    @property
+    def area_growth(self) -> float:
+        """
+        Fraction by which that widening grows the area, which is the mass.
+        """
+        return (self.linear / self.resultant) ** 2 - 1.0
+
+
+def diameter_for(
+    branch: ClassBranch,
+    moment_major: float,
+    moment_minor: float = 0.0,
+) -> Float[Array, ""]:
     """
     Fully-stressed diameter on one class branch.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-
-    return diameter_required(
-        MemberActions(FORCE, moment_major, moment_minor, 0.9, 0.9),
+    moments = (moment_major, moment_minor)
+    actions = MemberActions(FORCE, *moments, MOMENT_FACTOR, MOMENT_FACTOR)
+    diameter = diameter_required(
+        actions,
         LENGTH,
         STEEL,
-        catalogue,
-        section_class=section_class,
+        branch.catalogue,
+        section_class=branch.section_class,
+    )
+
+    return diameter
+
+
+def mass_for(branch: ClassBranch, moment_major: float) -> float:
+    """
+    Mass in kilogrammes of one member on one class branch.
+    """
+    diameter = diameter_for(branch, moment_major)
+    tube = branch.catalogue.tube_at(diameter)
+
+    return float(mass_of_tubes(tube, LENGTH, STEEL)) * 1e3
+
+
+def compare_masses(
+    branches: Sequence[ClassBranch],
+    moment: float,
+) -> MassComparison:
+    """
+    Diameter and mass on every branch at one demand mix.
+    """
+    diameters = tuple(float(diameter_for(branch, moment)) for branch in branches)
+    masses = tuple(mass_for(branch, moment) for branch in branches)
+    compared = MassComparison(moment, diameters, masses)
+
+    return compared
+
+
+def crossover_moment(branches: Sequence[ClassBranch]) -> CrossoverResult:
+    """
+    The moment at which the two branches weigh the same, if there is one.
+    """
+    sampled = jnp.linspace(0.0, CROSSOVER_MOMENT_MAX, CROSSOVER_SAMPLES)
+    gaps = [
+        mass_for(branches[0], moment) - mass_for(branches[1], moment)
+        for moment in sampled
+    ]
+    difference = jnp.asarray(gaps)
+    changes = jnp.where(jnp.diff(jnp.sign(difference)) != 0)[0]
+    below = branches[0] if float(difference[0]) < 0.0 else branches[1]
+
+    if changes.size == 0:
+        crossing = CrossoverResult(None, below.section_class)
+    else:
+        moment = float(sampled[int(changes[0])])
+        crossing = CrossoverResult(moment, below.section_class)
+
+    return crossing
+
+
+def shear_check(branch: ClassBranch, moment: float) -> ShearCheck:
+    """
+    What clause 6.2.6 would have seen at one demand mix.
+    """
+    diameter = diameter_for(branch, moment)
+    area = area_shear(branch.catalogue.tube_at(diameter).area)
+    steel = SteelGrade(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0)
+    resistance = resistance_shear(area, steel)
+    demand = SHEAR_FACTOR * moment / LENGTH
+    checked = ShearCheck(moment, float(diameter), float(resistance), demand)
+
+    return checked
+
+
+def reading_pair(branch: ClassBranch, moment: float) -> ReadingPair:
+    """
+    The two readings of Eq. 6.42, under equal moments about both axes.
+    """
+    actions = MemberActions(FORCE, moment, moment, MOMENT_FACTOR, MOMENT_FACTOR)
+    diameters = []
+    for choice in (True, False):
+        diameter = diameter_required(
+            actions,
+            LENGTH,
+            STEEL,
+            branch.catalogue,
+            section_class=branch.section_class,
+            resultant=choice,
+        )
+        diameters.append(float(diameter))
+
+    readings = ReadingPair(moment, diameters[0], diameters[1])
+
+    return readings
+
+
+def report_branches(report: ReportWriter, branches: Sequence[ClassBranch]) -> None:
+    """
+    The wall proportion each class limit stands for.
+    """
+    entries = []
+    for branch in branches:
+        ratio = float(branch.catalogue.ratio)
+        label = f"Class {branch.section_class}"
+        proportion = f"d/t = {ratio:.3f} ({branch.behaviour})"
+        entries.append((label, proportion))
+
+    title = "Class 2 limit against Class 3 limit, S355, 6 m member, 600 kN compression"
+
+    report.write_line(title)
+    report.write_entries(entries)
+
+
+def report_masses(report: ReportWriter, branches: Sequence[ClassBranch]) -> None:
+    """
+    Which class limit is lighter, over the whole demand mix.
+    """
+    compared = [compare_masses(branches, moment) for moment in MOMENTS]
+
+    columns = (
+        ColumnSpec("M_y [kNm]", ".0f"),
+        ColumnSpec("d Class 2 [mm]", ".2f"),
+        ColumnSpec("d Class 3 [mm]", ".2f"),
+        ColumnSpec("kg Class 2", ".2f"),
+        ColumnSpec("kg Class 3", ".2f"),
+        ColumnSpec("lighter", align="<"),
+        ColumnSpec("saving", ".2%"),
+    )
+    rows = []
+    for found in compared:
+        lighter = f"Class {branches[found.lighter].section_class}"
+        sizes = (*found.diameters, *found.masses)
+        rows.append((found.moment / 1e6, *sizes, lighter, found.saving))
+
+    report.write_heading("What each demand mix costs on either branch")
+    report.write_table(columns, rows)
+
+    crossing = crossover_moment(branches)
+    report.write_heading("Where the crossover sits")
+    if crossing.moment is None:
+        report.write_note(
+            f"""
+            No crossover in the swept range; Class {crossing.lighter} is lighter
+            throughout.
+            """
+        )
+    else:
+        report.write_note(
+            f"""
+            The two are equal near M_y = {crossing.moment / 1e6:.1f} kNm.
+            Below it one class wins, above it the other.
+            """
+        )
+
+
+def report_shear(report: ReportWriter, branch: ClassBranch) -> None:
+    """
+    The shear the excluded clause would have seen, open item 0d.
+    """
+    checked = [shear_check(branch, moment) for moment in MOMENTS[1:]]
+    columns = (
+        ColumnSpec("M_y [kNm]", ".0f"),
+        ColumnSpec("d [mm]", ".2f"),
+        ColumnSpec("V_pl,Rd [kN]", ".1f"),
+        ColumnSpec("V_Ed simple span [kN]", ".1f"),
+        ColumnSpec("ratio", ".3f"),
+        ColumnSpec("", align="<"),
+    )
+    rows = []
+    for found in checked:
+        resistance = found.resistance / 1e3
+        demand = found.demand / 1e3
+        row = (
+            found.moment / 1e6,
+            found.diameter,
+            resistance,
+            demand,
+            found.ratio,
+            found.flag,
+        )
+        rows.append(row)
+
+    heading = "Shear the excluded clause would have seen (docs/clauses.md open item 0d)"
+
+    report.write_heading(heading)
+    report.write_table(columns, rows)
+    report.write_note(
+        f"""
+        The exclusion of 6.2.6 stays honest while every ratio is under
+        {SHEAR_THRESHOLD}. Recompute this on the converged design before quoting
+        it.
+        """
     )
 
 
-def member_mass(section_class, moment_major):
+def report_readings(report: ReportWriter, branch: ClassBranch) -> None:
     """
-    Mass of one member of unit count on one class branch.
+    The two readings of Eq. 6.42, and what choosing between them costs.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+    report.write_heading("The two readings of Eq. 6.42, on the Class 3 branch")
+    report.write_note(
+        """
+        The guide says 6.2.9.2 permits only a linear interaction of stresses;
+        the ECCS says the stress is evaluated by an elastic stress analysis.
+        Blueprints implements 6.42 with the stress as an input and so does not
+        settle it; Karamba implements no 6.2.9 at all. See docs/clauses.md.
+        """
+    )
+    columns = (
+        ColumnSpec("M_y = M_z [kNm]", ".0f"),
+        ColumnSpec("resultant [mm]", ".2f"),
+        ColumnSpec("linear sum [mm]", ".2f"),
+        ColumnSpec("diameter", ".2%"),
+        ColumnSpec("area", ".2%"),
+    )
+    readings = [reading_pair(branch, moment) for moment in MOMENTS[1:]]
+    rows = [
+        (
+            found.moment / 1e6,
+            found.resultant,
+            found.linear,
+            found.widening,
+            found.area_growth,
+        )
+        for found in readings
+    ]
 
-    return mass_of_tubes(
-        catalogue.tube_at(sized(section_class, moment_major)), LENGTH, STEEL
+    report.write_table(columns, rows)
+    report.write_note(
+        """
+        The gap closes wherever Eq. 6.61 governs, since that equation already
+        sums the two moments linearly, and vanishes under uniaxial bending.
+        """
     )
 
 
-def main() -> None:
+def main(verbose: bool = True) -> None:
     """
     Sweep the demand mix and report which class limit is lighter.
     """
-    print("Class 2 limit against Class 3 limit, S355, 6 m member, 600 kN compression\n")
+    report = ReportWriter(verbose)
+    branches = [ClassBranch.at_limit(section_class) for section_class in CLASSES]
 
-    for section_class in CLASSES:
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-        branch = "plastic" if is_plastic(section_class) else "elastic"
-        ratio = float(catalogue.ratio)
-        print(f"  Class {section_class}: d/t = {ratio:.3f}  ({branch})")
-
-    print(
-        f"\n  {'M_y [kNm]':<12}{'d Class 2':<14}{'d Class 3':<14}"
-        f"{'kg Class 2':<14}{'kg Class 3':<14}{'lighter':<12}{'saving'}"
-    )
-
-    for moment in MOMENTS:
-        sizes = [float(sized(k, moment)) for k in CLASSES]
-        masses = [float(member_mass(k, moment)) * 1e3 for k in CLASSES]
-        lighter = CLASSES[int(jnp.argmin(jnp.asarray(masses)))]
-        saving = abs(masses[0] - masses[1]) / max(masses) * 100.0
-        print(
-            f"  {float(moment) / 1e6:<12.0f}{sizes[0]:<14.2f}{sizes[1]:<14.2f}"
-            f"{masses[0]:<14.2f}{masses[1]:<14.2f}Class {lighter:<6}{saving:5.2f}%"
-        )
-
-    print("\nWhere the crossover sits")
-    fine = jnp.linspace(0.0, 1.6e8, 321)
-    heavier = jnp.asarray([float(member_mass(2, m)) for m in fine])
-    lighter = jnp.asarray([float(member_mass(3, m)) for m in fine])
-    difference = heavier - lighter
-    sign_change = jnp.where(jnp.diff(jnp.sign(difference)) != 0)[0]
-
-    if sign_change.size == 0:
-        winner = 2 if difference[0] < 0 else 3
-        print(
-            f"  no crossover in the swept range; Class {winner} is lighter throughout"
-        )
-    else:
-        crossing = float(fine[int(sign_change[0])])
-        print(f"  the two are equal near M_y = {crossing / 1e6:.1f} kNm")
-        print("  below it one class wins, above it the other")
-
-    print("\nShear the excluded clause would have seen (docs/clauses.md open item 0d)")
-    print(
-        f"  {'M_y [kNm]':<12}{'d [mm]':<12}{'V_pl,Rd [kN]':<16}"
-        f"{'V_Ed for a simple span [kN]':<30}{'ratio'}"
-    )
-
-    for moment in MOMENTS[1:]:
-        d = sized(3, moment)
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-        resistance = resistance_shear(
-            area_shear(catalogue.tube_at(d).area),
-            SteelGrade(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0),
-        )
-        # A simply supported span carrying that end moment has a shear of about
-        # four moments over its length, which is the worst plausible pairing.
-        shear = 4.0 * float(moment) / LENGTH
-        ratio = shear / float(resistance)
-        flag = "" if ratio < SHEAR_THRESHOLD else "   EXCEEDS HALF"
-        print(
-            f"  {float(moment) / 1e6:<12.0f}{float(d):<12.2f}"
-            f"{float(resistance) / 1e3:<16.1f}{shear / 1e3:<30.1f}{ratio:.3f}{flag}"
-        )
-
-    print(
-        f"\n  The exclusion of 6.2.6 stays honest while every ratio is under "
-        f"{SHEAR_THRESHOLD}."
-    )
-    print("  Recompute this on the converged design before quoting it.")
-
-    print("\nThe two readings of Eq. 6.42, on the Class 3 branch")
-    print("  The guide says 6.2.9.2 permits only a linear interaction of stresses;")
-    print("  the ECCS says the stress is evaluated by an elastic stress analysis.")
-    print("  Blueprints implements 6.42 with the stress as an input and so does not")
-    print("  settle it; Karamba implements no 6.2.9 at all. See docs/clauses.md.\n")
-    print(
-        f"  {'M_y = M_z [kNm]':<18}{'resultant':<14}{'linear sum':<14}"
-        f"{'diameter':<12}{'area'}"
-    )
-
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
-    for moment in MOMENTS[1:]:
-        readings = [
-            float(
-                diameter_required(
-                    MemberActions(FORCE, moment, moment, 0.9, 0.9),
-                    LENGTH,
-                    STEEL,
-                    catalogue,
-                    section_class=3,
-                    resultant=choice,
-                )
-            )
-            for choice in (True, False)
-        ]
-        widening = readings[1] / readings[0]
-        print(
-            f"  {float(moment) / 1e6:<18.0f}{readings[0]:<14.2f}{readings[1]:<14.2f}"
-            f"{widening - 1.0:<12.2%}{widening**2 - 1.0:.2%}"
-        )
-
-    print("\n  The gap closes wherever Eq. 6.61 governs, since that equation already")
-    print("  sums the two moments linearly, and vanishes under uniaxial bending.")
+    report_branches(report, branches)
+    report_masses(report, branches)
+    report_shear(report, branches[1])
+    report_readings(report, branches[1])
 
 
 if __name__ == "__main__":

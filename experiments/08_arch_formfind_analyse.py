@@ -30,13 +30,20 @@ of the loading. The table below shows all three.
 Run with `uv run --group pipeline python experiments/08_arch_formfind_analyse.py`.
 """
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax_fdm.equilibrium import EquilibriumState
+from jax_fdm.equilibrium import EquilibriumStructure
+from jaxtyping import Array
+from jaxtyping import Float
 from smax import diagnose_mechanisms
 
+from normax.analysis import MemberForces
 from normax.analysis.smax import frame_model
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
@@ -44,6 +51,11 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
+from normax.reporting import ColumnSpec
+from normax.reporting import ReportWriter
+from normax.reporting import ToleranceCheck
+from normax.reporting import checks_passed
+from normax.structures import Structure
 from normax.structures import arch_2d
 from normax.visualization import GapScaling
 from normax.visualization import GradientCheck
@@ -65,9 +77,12 @@ NORMAL = 1
 # tolerances belong to.
 DIAMETER = 100.0
 
-DIAMETERS = [50.0, 100.0, 200.0, 400.0]
-MODULI = [70_000.0, 210_000.0, 400_000.0]
-SCALES = [0.1, 1.0, 10.0]
+DIAMETERS = (50.0, 100.0, 200.0, 400.0)
+MODULI = (70_000.0, 210_000.0, 400_000.0)
+SCALES = (0.1, 1.0, 10.0)
+
+# Step the gradient's central differences are taken at, in force density.
+STEP = 1e-3
 
 TOLERANCE_AXIAL = 2.5e-4
 TOLERANCE_BENDING = 1.0e-3
@@ -79,154 +94,299 @@ STEEL = SteelGrade()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
 
-def funicular(load, force_density):
+class FunicularArch(NamedTuple):
+    """
+    The shape form finding found, and the forces it carries by construction.
+
+    Attributes
+    ----------
+    structure :
+        The structure supplying the connectivity, the supports and the loads.
+    graph :
+        The form-finding connectivity, from `normax.formfinding`.
+    state :
+        The equilibrium state at the chosen force densities.
+    axial_force :
+        Member force the force density method implies, as `q` times a length.
+    """
+
+    structure: Structure
+    graph: EquilibriumStructure
+    state: EquilibriumState
+    axial_force: Float[Array, "edges"]
+
+    @property
+    def lengths(self) -> Float[Array, "edges"]:
+        """
+        Length of every member of the found shape.
+        """
+        return self.state.lengths[:, 0]
+
+
+class HandoffGap(NamedTuple):
+    """
+    How far the analysed forces depart from the ones form finding implied.
+
+    Attributes
+    ----------
+    axial :
+        Largest relative disagreement on the member axial force.
+    bending :
+        Largest end moment as a fraction of the axial force times the length,
+        which is what explains the disagreement.
+    """
+
+    axial: float
+    bending: float
+
+
+class GradientRow(NamedTuple):
+    """
+    One force density's derivative, beside a central difference of the same.
+
+    Attributes
+    ----------
+    edge :
+        Index of the edge the force density belongs to.
+    exact :
+        Derivative from tracing form finding and the frame solve together.
+    numeric :
+        Central difference of the same composed objective.
+    """
+
+    edge: int
+    exact: float
+    numeric: float
+
+    @property
+    def relative(self) -> float:
+        """
+        Relative departure of the derivative from the central difference.
+        """
+        return abs(self.exact - self.numeric) / abs(self.numeric)
+
+
+def funicular_arch(load: float, force_density: float) -> FunicularArch:
     """
     Form-find the arch, and report the state the analysis has to reproduce.
     """
     structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
-    fdm = equilibrium_graph(structure)
+    graph = equilibrium_graph(structure)
     q = jnp.full(NUM_EDGES, force_density)
-    state = equilibrium_state(q, structure, fdm)
+    state = equilibrium_state(q, structure, graph)
+    axial_force = q * state.lengths[:, 0]
+    arch = FunicularArch(structure, graph, state, axial_force)
 
-    return structure, fdm, state, q * state.lengths[:, 0]
+    return arch
 
 
-def gap(diameter, steel, load=LOAD, force_density=FORCE_DENSITY):
+def handoff_gap(
+    diameter: float,
+    steel: SteelGrade,
+    load: float = LOAD,
+    force_density: float = FORCE_DENSITY,
+) -> HandoffGap:
     """
-    Largest relative disagreement on axial force, and the bending that explains it.
+    Largest relative disagreement on axial force, and the bending behind it.
     """
-    structure, _, state, axial = funicular(load, force_density)
-    member = member_forces(
-        prepare_model(structure, steel, CATALOGUE, normal=NORMAL),
-        state.xyz,
-        jnp.full(NUM_EDGES, diameter),
-        steel,
-        CATALOGUE,
-    )
+    arch = funicular_arch(load, force_density)
+    prepared = prepare_model(arch.structure, steel, CATALOGUE, normal=NORMAL)
+    diameters = jnp.full(NUM_EDGES, diameter)
+    member = member_forces(prepared, arch.state.xyz, diameters, steel, CATALOGUE)
 
-    deviation = jnp.max(jnp.abs(member.axial_force - axial) / jnp.abs(axial))
+    departure = jnp.abs(member.axial_force - arch.axial_force)
+    axial = jnp.max(departure / jnp.abs(arch.axial_force))
     peak = jnp.max(jnp.abs(member.moment_major), axis=1)
-    bending = jnp.max(peak / jnp.abs(axial * state.lengths[:, 0]))
+    reference = jnp.abs(arch.axial_force * arch.lengths)
+    bending = jnp.max(peak / reference)
+    gap = HandoffGap(float(axial), float(bending))
 
-    return float(deviation), float(bending)
+    return gap
 
 
-def central(f, x, index, step):
+def central_difference(
+    function: Callable[[Float[Array, "edges"]], Float[Array, ""]],
+    x: Float[Array, "edges"],
+    index: int,
+    step: float,
+) -> float:
     """
     Central difference of a scalar function in one entry of its argument.
     """
-    return (f(x.at[index].add(step)) - f(x.at[index].add(-step))) / (2.0 * step)
+    forward = function(x.at[index].add(step))
+    backward = function(x.at[index].add(-step))
+
+    return float((forward - backward) / (2.0 * step))
 
 
-def main():
-    structure, fdm, state, axial = funicular(LOAD, FORCE_DENSITY)
+def report_shape(report: ReportWriter, arch: FunicularArch, mechanisms: int) -> None:
+    """
+    What form finding returned, and that the frame built on it is not a mechanism.
+    """
+    rise = float(jnp.max(arch.state.xyz[:, 2]))
+    spread = float(jnp.max(jnp.abs(arch.state.xyz[:, 1])))
+    residual = float(jnp.max(jnp.abs(arch.state.residuals[1:-1])))
+    entries = (
+        ("crown rise", f"{rise:.1f} mm"),
+        ("out-of-plane spread", f"{spread:.1e} mm"),
+        ("worst residual at a free node", f"{residual:.1e} N"),
+        ("zero-energy modes in the frame", f"{mechanisms}"),
+    )
+
+    report.write_line("The shape form finding found")
+    report.write_entries(entries)
+
+
+def report_members(
+    report: ReportWriter,
+    arch: FunicularArch,
+    member: MemberForces,
+) -> None:
+    """
+    What each member was handed, and what the frame solver made of it.
+    """
+    columns = (
+        ColumnSpec("edge"),
+        ColumnSpec("q L [kN]", ".4f"),
+        ColumnSpec("smax N [kN]", ".4f"),
+        ColumnSpec("gap", ".2e"),
+        ColumnSpec("M/(N L)", ".2e"),
+    )
+    rows = []
+    for edge in range(NUM_EDGES):
+        expected = float(arch.axial_force[edge])
+        analysed = float(member.axial_force[edge])
+        peak = float(jnp.max(jnp.abs(member.moment_major[edge])))
+        gap = abs(analysed - expected) / abs(expected)
+        bending = peak / abs(expected * float(arch.lengths[edge]))
+        rows.append((edge, expected / 1e3, analysed / 1e3, gap, bending))
+
+    report.write_heading(f"Member by member, at a diameter of {DIAMETER:.0f} mm")
+    report.write_table(columns, rows)
+
+
+def report_scaling(report: ReportWriter) -> list[HandoffGap]:
+    """
+    That the gap is quadratic in the diameter, and free of modulus and scale.
+
+    Returns the gap at every diameter, which the figure draws as well.
+    """
+    by_diameter = [handoff_gap(diameter, STEEL) for diameter in DIAMETERS]
+    diameter_columns = (
+        ColumnSpec("d [mm]", ".1f"),
+        ColumnSpec("gap", ".2e"),
+        ColumnSpec("M/(N L)", ".2e"),
+        ColumnSpec("gap / (d/100)^2", ".2e"),
+    )
+    diameter_rows = []
+    for diameter, found in zip(DIAMETERS, by_diameter):
+        scaled = found.axial / (diameter / DIAMETER) ** 2
+        diameter_rows.append((diameter, found.axial, found.bending, scaled))
+
+    report.write_heading("The gap is quadratic in the diameter")
+    report.write_table(diameter_columns, diameter_rows)
+
+    gap_columns = (ColumnSpec("E [N/mm2]", ".0f"), ColumnSpec("gap", ".12e"))
+    modulus_rows = []
+    for e_mod in MODULI:
+        steel = STEEL._replace(e_mod=e_mod)
+        modulus_rows.append((e_mod, handoff_gap(DIAMETER, steel).axial))
+
+    heading = "And free of the modulus, which cancels between bending and axial"
+    report.write_heading(heading)
+    report.write_table(gap_columns, modulus_rows)
+
+    scale_columns = (ColumnSpec("loads and q times", ".1f"), ColumnSpec("gap", ".12e"))
+    scale_rows = []
+    for scale in SCALES:
+        found = handoff_gap(DIAMETER, STEEL, LOAD * scale, FORCE_DENSITY * scale)
+        scale_rows.append((scale, found.axial))
+
+    heading = "And free of the scale of the loading, which leaves the shape alone"
+    report.write_heading(heading)
+    report.write_table(scale_columns, scale_rows)
+
+    return by_diameter
+
+
+def report_gradient(report: ReportWriter, rows: list[GradientRow]) -> float:
+    """
+    The gradient that crosses both stages, and the worst error in it.
+    """
+    columns = (
+        ColumnSpec("edge"),
+        ColumnSpec("autodiff", ".4f"),
+        ColumnSpec("central", ".4f"),
+        ColumnSpec("relative", ".2e"),
+    )
+    printed = [(row.edge, row.exact, row.numeric, row.relative) for row in rows]
+
+    report.write_heading("The gradient crosses both stages")
+    report.write_table(columns, printed)
+
+    return max(row.relative for row in rows)
+
+
+def main(verbose: bool = True) -> None:
+    """
+    Hand one shape across the boundary, and measure what came back.
+    """
+    report = ReportWriter(verbose)
+
+    arch = funicular_arch(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    prepared = prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL)
-    member = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
+    prepared = prepare_model(arch.structure, STEEL, CATALOGUE, normal=NORMAL)
+    member = member_forces(prepared, arch.state.xyz, diameters, STEEL, CATALOGUE)
 
     model = frame_model(
-        structure, state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL
+        arch.structure, arch.state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL
     )
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
-    rise = float(jnp.max(state.xyz[:, 2]))
-    spread = float(jnp.max(jnp.abs(state.xyz[:, 1])))
-    residual = float(jnp.max(jnp.abs(state.residuals[1:-1])))
-
-    print("The shape form finding found")
-    print(f"  crown rise                     {rise:.1f} mm")
-    print(f"  out-of-plane spread            {spread:.1e} mm")
-    print(f"  worst residual at a free node  {residual:.1e} N")
-    print(f"  zero-energy modes in the frame {mechanisms}")
-
-    print(f"\nMember by member, at a diameter of {DIAMETER:.0f} mm")
-    print(f"  {'':>4} {'q L [kN]':>12} {'smax N [kN]':>13} {'gap':>10} {'M/(N L)':>10}")
-    for edge in range(NUM_EDGES):
-        peak = float(jnp.max(jnp.abs(member.moment_major[edge])))
-        length = float(state.lengths[edge, 0])
-        expected = float(axial[edge])
-        analysed = float(member.axial_force[edge])
-        print(
-            f"  {edge:>4} {expected / 1e3:>12.4f} {analysed / 1e3:>13.4f}"
-            f" {abs(analysed - expected) / abs(expected):>10.2e}"
-            f" {peak / abs(expected * length):>10.2e}"
-        )
-
-    print("\nThe gap is quadratic in the diameter")
-    print(f"  {'d [mm]':>8} {'gap':>10} {'M/(N L)':>10} {'gap / (d/100)^2':>16}")
-    for diameter in DIAMETERS:
-        deviation, bending = gap(diameter, STEEL)
-        print(
-            f"  {diameter:>8.1f} {deviation:>10.2e} {bending:>10.2e}"
-            f" {deviation / (diameter / DIAMETER) ** 2:>16.2e}"
-        )
-
-    print("\nAnd free of the modulus, which cancels between bending and axial")
-    for e_mod in MODULI:
-        deviation, _ = gap(DIAMETER, STEEL._replace(e_mod=e_mod))
-        print(f"  E = {e_mod:>9.0f} N/mm2   gap = {deviation:.12e}")
-
-    print("\nAnd free of the scale of the loading, which leaves the shape alone")
-    for scale in SCALES:
-        deviation, _ = gap(DIAMETER, STEEL, LOAD * scale, FORCE_DENSITY * scale)
-        print(f"  loads and q x {scale:<5.1f}     gap = {deviation:.12e}")
+    report_shape(report, arch, mechanisms)
+    report_members(report, arch, member)
+    by_diameter = report_scaling(report)
 
     def objective(q):
-        state = equilibrium_state(q, structure, fdm)
-        member = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
+        state = equilibrium_state(q, arch.structure, arch.graph)
+        analysed = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
 
-        return jnp.sum(member.axial_force**2)
+        return jnp.sum(analysed.axial_force**2)
 
     q = jnp.full(NUM_EDGES, FORCE_DENSITY)
     gradient = jax.grad(objective)(q)
-
-    print("\nThe gradient crosses both stages")
-    print(f"  {'edge':>4} {'autodiff':>18} {'central':>18} {'relative':>10}")
-    worst_gradient = 0.0
-    differences = []
+    rows = []
     for edge in range(NUM_EDGES):
-        differences.append(float(central(objective, q, edge, 1e-3)))
-        exact = float(gradient[edge])
-        relative = abs(exact - differences[-1]) / abs(differences[-1])
-        worst_gradient = max(worst_gradient, relative)
-        print(f"  {edge:>4} {exact:>18.4f} {differences[-1]:>18.4f} {relative:>10.2e}")
+        numeric = central_difference(objective, q, edge, STEP)
+        rows.append(GradientRow(edge, float(gradient[edge]), numeric))
 
-    deviation, bending = gap(DIAMETER, STEEL)
+    worst_gradient = report_gradient(report, rows)
+    found = handoff_gap(DIAMETER, STEEL)
+
+    peaks = jnp.max(jnp.abs(member.moment_major), axis=1)
+    forces = HandoffForces(arch.lengths, arch.axial_force, member.axial_force, peaks)
+    axial_gaps = np.asarray([found.axial for found in by_diameter])
+    scaling = GapScaling(np.asarray(DIAMETERS), axial_gaps, DIAMETER)
+    numeric = np.asarray([row.numeric for row in rows])
+    checked = GradientCheck(gradient, numeric)
 
     FIGURES.mkdir(exist_ok=True)
-    handoff = figure_handoff(
-        HandoffForces(
-            state.lengths[:, 0],
-            axial,
-            member.axial_force,
-            jnp.max(jnp.abs(member.moment_major), axis=1),
-        ),
-        GapScaling(
-            np.asarray(DIAMETERS),
-            np.asarray([gap(diameter, STEEL)[0] for diameter in DIAMETERS]),
-            DIAMETER,
-        ),
-        GradientCheck(gradient, np.asarray(differences)),
-    )
-    handoff.savefig(FIGURES / "08_handoff.png", dpi=160, bbox_inches="tight")
-    print(f"\nfigure written to {FIGURES / '08_handoff.png'}")
+    handoff = figure_handoff(forces, scaling, checked)
+    path = FIGURES / "08_handoff.png"
+    handoff.savefig(path, dpi=160, bbox_inches="tight")
+    report.write_heading(f"figure written to {path}")
 
-    print()
-    for label, worst, tolerance in (
-        ("axial disagreement", deviation, TOLERANCE_AXIAL),
-        ("bending share", bending, TOLERANCE_BENDING),
-        ("gradient error", worst_gradient, TOLERANCE_GRADIENT),
-    ):
-        print(f"worst {label:<20} {worst:.2e}   of {tolerance:.1e}")
-
-    passed = (
-        mechanisms == 0
-        and deviation < TOLERANCE_AXIAL
-        and bending < TOLERANCE_BENDING
-        and worst_gradient < TOLERANCE_GRADIENT
-        and bool(jnp.all(jnp.isfinite(gradient)))
+    checks = (
+        ToleranceCheck("axial disagreement", found.axial, TOLERANCE_AXIAL),
+        ToleranceCheck("bending share", found.bending, TOLERANCE_BENDING),
+        ToleranceCheck("gradient error", worst_gradient, TOLERANCE_GRADIENT),
     )
-    print("\nPASS" if passed else "\nFAIL")
+    finite = bool(jnp.all(jnp.isfinite(gradient)))
+    passed = checks_passed(checks) and mechanisms == 0 and finite
+
+    report.write_heading("Summary")
+    report.write_checks(checks)
+    report.write_verdict(passed)
 
 
 if __name__ == "__main__":
