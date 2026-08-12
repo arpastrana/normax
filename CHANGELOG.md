@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### Experiment 09 was eager, and it cost 47 of its 52 seconds
+
+Experiments 03 and 10 compile the calls they make in a loop; 09 never did, so
+every call ran eager and each primitive compiled a kernel of its own per shape.
+Profiling by hooking `jax._src.compiler.backend_compile_and_load` and attributing
+each compilation to the running phase: **66% of the run was compilation, spread
+over 2726 separate compiles**, and the arithmetic was never the cost.
+
+- **Four calls are compiled at module scope**, in the idiom 03 already uses:
+  `design_compiled`, `state_compiled`, `stability_compiled`, `modes_compiled`,
+  plus `value_of` and `gradient_of` for the objective and its gradient. Measured
+  per call: the gradient goes 4.659 s eager to 0.21 ms compiled, one design 0.140
+  to 0.24 ms, the stability check 0.561 s to 0.50 ms. **52.5 s to 14.1 s, and
+  2726 compiles to 540.**
+- **The compiled programs are kept between runs.** `jax_compilation_cache_dir` was
+  unset, so every run repaid compilation; a 5 MB `.jax_cache/` holds it. The
+  default `jax_persistent_cache_min_compile_time_secs` of 1.0 would have cached
+  none of these, every one being smaller than that, so it is set to zero.
+  **14.1 s to 5.9 s warm** — and 52.5 s to 13.9 s on the *uncompiled* script, the
+  two being independent. Cold and warm runs print identically.
+- **Compiling moves the last two or three bits, and one printed column by more.**
+  The refinement, stagger, stability and assumption blocks are byte-identical;
+  forces, moments, diameters and both masses are unchanged. The autodiff gradient
+  agrees to 1e-14 relative. **The central differences move in their third
+  significant figure** — they are differences of nearly equal numbers, so XLA's
+  re-association shows up there rather than in the quantities themselves. Worst
+  scaled gradient error 6.90e-09 against 6.70e-09, both far inside 5e-8, and
+  `worst |u - 1|` 2.89e-15 against 2.44e-15. **That column is not bit-stable and
+  should not be quoted to three figures.**
+- **What is left is not arithmetic.** `refinement_study` is 8.6 s of the 13.7 s
+  uncached run: six meshes, each paying host-side setup plus its own compilations.
+  The setup is upstream — `jax_fdm`'s `_indices_free` and `_connectivity_free`
+  build index data with JAX ops, one kernel compile each, 54 of them for a
+  40-member graph.
+
+### Experiment 10's composed side was eager, so its seconds compared unlike things
+
+The report claimed "both compiled" on every timing line and only half of it was
+true: the oracle went through `design_compiled` and `mass_compiled`, while the
+composed side was never jitted and only `_backend_smax.solve` was compiled inside
+it. So the in-process column measured a compiled program and the composed column
+measured eager dispatch around three crossings. **14.15 s to 11.4 s cold and 5.1 s
+warm**, on the same persistent cache as experiment 09.
+
+- **The composed side compiles as a closure, not as an alias.** `eqx.filter_jit`
+  on `composition.design_members` traces the problem's array leaves, and
+  `_form_find` serializes `structure.nodes` with `np.asarray` to build the payload
+  — which raises `TracerArrayConversionError` on a traced structure. Capturing the
+  problem keeps it concrete and leaves only the force densities varying, which is
+  what actually varies per call. The oracle takes its problem as an argument and is
+  unaffected, `normax.pipeline` never serializing anything.
+- **Compiling does not fold the boundary away.** A Tesseract is a primitive JAX
+  lowers a callback for, so all three stages are crossed on every call of the
+  compiled program rather than once while tracing. Counted at the stages' own
+  `apply` endpoints: **three crossings per call, eager or compiled.** What
+  compiling removes is the per-primitive compilation around the crossings.
+- **Every composed number is bit-identical**, value and gradient alike. What moved
+  is the *oracle* gradient column, which was an eager `jax.grad` of a compiled mass
+  and is now a compiled gradient — and it moved **toward** the composed answer:
+  worst gradient error **5.49e-14 to 3.66e-14**, back to the 3.6e-14 on record. The
+  parity fields, the masses and `worst |u-1|` are untouched.
+- **The seconds now measure one thing.** In process reads 0.0003 s on all four rows
+  where it used to range 0.0003 to 0.0713, the spread having been eager dispatch
+  rather than anything structural; composed reads 0.026 s for a design against
+  0.062, and 0.118 s for a gradient against 0.221. The boundary costs about **90x
+  on a design and 390x on a gradient**, and that is now a claim about serializing
+  and reassembling rather than about who got compiled.
+
 ### American English, including in the units API
 
 The repo was written in two dialects at once — `utilization` in the clause code

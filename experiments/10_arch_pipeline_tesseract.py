@@ -35,6 +35,12 @@ slots in behind the same schema without anything above it changing. It is not
 free in wall clock, and the seconds below say so: both sides are compiled, and
 crossing three schemas still costs what serializing and reassembling costs.
 
+**Compiling the composed side does not fold the boundary away.** A Tesseract is a
+primitive JAX lowers a callback for, so all three stages are crossed on every call
+of the compiled program rather than once while tracing — three crossings per call,
+counted at the stages' own apply endpoints. Compiling changes nothing in the
+answers here, to the last bit, and the programs are kept between runs.
+
 Run with `uv run --group pipeline python experiments/10_arch_pipeline_tesseract.py`.
 """
 
@@ -42,6 +48,7 @@ import os
 import time
 from collections.abc import Callable
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from typing import NamedTuple
 
@@ -75,6 +82,14 @@ from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import Structure
 from normax.structures import arch_2d
+
+# Compiled programs outlive the process, so a second run pays for arithmetic and
+# for crossings alone. Every compilation here is well under the one second the
+# persistent cache keeps by default, which would otherwise leave all of them out.
+COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
+COMPILATION_CACHE.mkdir(exist_ok=True)
+jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
 # The oracle is compiled, as experiment 09, the parity test and the README all
 # run it. The Tesseract stages compile internally, so an eager oracle would put
@@ -311,15 +326,23 @@ def report_parity(
             setup.q, setup.seed, problem, section_class=section_class
         )
     )
-    composed = timed(
-        lambda: design_composed(
-            setup.q,
+
+    # The composed side compiles as a closure rather than as an alias like the
+    # oracle: its problem holds the structure, every crossing serializes that to
+    # numpy for the payload, and an argument of a compiled function arrives as a
+    # tracer that `np.asarray` refuses. Only the force densities vary per call.
+    def composed_design(q):
+        return design_composed(
+            q,
             setup.seed,
             composed_problem,
             normal=NORMAL,
             section_class=section_class,
         )
-    )
+
+    design_of = eqx.filter_jit(composed_design)
+
+    composed = timed(lambda: design_of(setup.q))
 
     rows = []
     worst_value = 0.0
@@ -381,8 +404,11 @@ def report_parity(
             section_class=section_class,
         )
 
-    exact = timed(lambda: jax.grad(in_process)(setup.q))
-    crossed = timed(lambda: jax.grad(composed_mass)(setup.q))
+    exact_of = eqx.filter_jit(jax.grad(in_process))
+    crossed_of = eqx.filter_jit(jax.grad(composed_mass))
+
+    exact = timed(lambda: exact_of(setup.q))
+    crossed = timed(lambda: crossed_of(setup.q))
     scale = float(jnp.max(jnp.abs(exact.result)))
 
     gradients = []
@@ -432,9 +458,17 @@ def report_modes(report: ReportWriter, setup: ArchSetup, chain: Chain) -> float:
             section_class=3,
         )
 
+    def forward_derivative(q, tangent):
+        _, derivative = jax.jvp(objective, (q,), (tangent,))
+
+        return derivative
+
+    forward_of = eqx.filter_jit(forward_derivative)
+    gradient_of = eqx.filter_jit(jax.grad(objective))
+
     direction = jnp.ones_like(setup.q)
-    _, forward = jax.jvp(objective, (setup.q,), (direction,))
-    gradient = jax.grad(objective)(setup.q)
+    forward = forward_of(setup.q, direction)
+    gradient = gradient_of(setup.q)
     reverse = float(jnp.sum(gradient * direction))
     modes = relative(reverse, forward)
     entries = (
@@ -537,16 +571,24 @@ def report_served(
 
         return total
 
-    reference = timed(lambda: objective(chain)(setup.q))
-    gradient = timed(lambda: jax.grad(objective(chain))(setup.q))
+    imported = objective(chain)
+    imported_of = eqx.filter_jit(imported)
+    imported_gradient_of = eqx.filter_jit(jax.grad(imported))
+
+    reference = timed(lambda: imported_of(setup.q))
+    gradient = timed(lambda: imported_gradient_of(setup.q))
 
     with (
         Tesseract.from_image(f"{IMAGES[0]}:{VERSION}", output_path=directory) as first,
         Tesseract.from_image(f"{IMAGES[1]}:{VERSION}", output_path=directory) as third,
     ):
         served = Chain(formfinding=first, analysis=chain.analysis, ec3=third)
-        total = timed(lambda: objective(served)(setup.q))
-        crossed = timed(lambda: jax.grad(objective(served))(setup.q))
+        crossing = objective(served)
+        served_of = eqx.filter_jit(crossing)
+        served_gradient_of = eqx.filter_jit(jax.grad(crossing))
+
+        total = timed(lambda: served_of(setup.q))
+        crossed = timed(lambda: served_gradient_of(setup.q))
 
     value_gap = relative(reference.result, total.result)
     gradient_gap = relative(gradient.result, crossed.result)

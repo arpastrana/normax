@@ -44,6 +44,14 @@ load is fixed here and the force densities are rescaled so the crown rise is
 exactly the target — the force density method is linear in the coordinates, so
 one trial solve fixes the scale with no formula and no iteration.
 
+**Every call made in a loop is compiled, and the programs are kept between
+runs.** A mesh, an edge or a pass is one call of the same program on different
+numbers, so tracing once and reusing it is the whole difference between minutes
+and seconds here. What compiling changes about the arithmetic is the order XLA
+associates it in, which moves the last two or three bits: the sizes and the
+critical load factors are unchanged, while the central differences below, being
+differences of nearly equal numbers, move in their third significant figure.
+
 Run with `uv run --group pipeline python experiments/09_arch_pipeline_jax.py`.
 """
 
@@ -52,6 +60,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -130,6 +139,14 @@ TOLERANCE_ORDER = 0.15
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
+# Compiled programs outlive the process, so a second run pays for arithmetic
+# alone. Every compilation here is well under the one second the persistent
+# cache keeps by default, which would otherwise leave all of them out of it.
+COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
+COMPILATION_CACHE.mkdir(exist_ok=True)
+jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+
 STEEL = SteelGrade()
 
 # Preparing the analysis model needs a section family to stand up a frame, and
@@ -145,6 +162,15 @@ LIMIT_NAMES = {
     3.0: "6.61 major",
     4.0: "6.62 minor",
 }
+
+# Every one of these is called in a loop, over a mesh or over an edge, so each is
+# traced once and run from its compiled program afterwards. Left eager they cost
+# an XLA compilation per primitive per shape, which is most of what this
+# experiment used to spend its time on.
+design_compiled = eqx.filter_jit(design_members)
+state_compiled = eqx.filter_jit(equilibrium_state)
+stability_compiled = eqx.filter_jit(frame_stability)
+modes_compiled = eqx.filter_jit(buckling_modes)
 
 
 class ArchSetup(NamedTuple):
@@ -232,14 +258,14 @@ class GradientRow(NamedTuple):
         Derivative from tracing all three stages together.
     numeric :
         Central difference of the same composed objective.
-    scaled :
+    difference :
         Their difference, measured against the size of the whole gradient.
     """
 
     edge: int
     exact: float
     numeric: float
-    scaled: float
+    difference: float
 
 
 class StaggerRun(NamedTuple):
@@ -356,7 +382,7 @@ def arch_setup(num_edges: int) -> ArchSetup:
     model = prepare_model(structure, STEEL, CATALOGUE_SEED, normal=NORMAL)
 
     trial = jnp.full(num_edges, -1.0)
-    state = equilibrium_state(trial, structure, graph)
+    state = state_compiled(trial, structure, graph)
     reached = jnp.max(state.xyz[:, 2])
     q = trial * reached / RISE
     setup = ArchSetup(structure, graph, model, q)
@@ -397,7 +423,7 @@ def design_for(setup: ArchSetup, section_class: int) -> ClassDesign:
     """
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
     problem = setup.problem_for(catalogue)
-    design = design_members(setup.q, setup.seed, problem, section_class=section_class)
+    design = design_compiled(setup.q, setup.seed, problem, section_class=section_class)
     branch = ClassDesign(section_class, catalogue, problem, design)
 
     return branch
@@ -412,7 +438,7 @@ def stagger_run(setup: ArchSetup, branch: ClassDesign, passes: int) -> StaggerRu
     masses = []
 
     for _ in range(passes):
-        result = design_members(
+        result = design_compiled(
             setup.q,
             diameters,
             branch.problem,
@@ -436,11 +462,11 @@ def refinement_study(catalogue: TubeCatalogue, section_class: int) -> Refinement
     for count in MESHES:
         refined = arch_setup(count)
         problem = refined.problem_for(catalogue)
-        free = design_members(
+        free = design_compiled(
             refined.q, refined.seed, problem, section_class=section_class
         )
         fixed_length = jnp.full(count, BUCKLING_LENGTH)
-        held = design_members(
+        held = design_compiled(
             refined.q,
             refined.seed,
             problem,
@@ -466,7 +492,7 @@ def report_arch(report: ReportWriter, setup: ArchSetup) -> None:
     """
     The shape every number below belongs to.
     """
-    state = equilibrium_state(setup.q, setup.structure, setup.graph)
+    state = state_compiled(setup.q, setup.structure, setup.graph)
     rise = float(jnp.max(state.xyz[:, 2]))
     entries = (
         ("span", f"{SPAN / 1e3:.1f} m over {setup.num_edges} members"),
@@ -553,12 +579,12 @@ def report_gradient(report: ReportWriter, rows: Sequence[GradientRow]) -> float:
         ColumnSpec("central", ".14e"),
         ColumnSpec("scaled", ".2e"),
     )
-    printed = [(row.edge, row.exact, row.numeric, row.scaled) for row in rows]
+    printed = [(row.edge, row.exact, row.numeric, row.difference) for row in rows]
 
     report.write_heading(f"The gradient of the mass, at a relative step of {STEP:.0e}")
     report.write_table(columns, printed)
 
-    return max(row.scaled for row in rows)
+    return max(row.difference for row in rows)
 
 
 def report_stagger(report: ReportWriter, run: StaggerRun) -> None:
@@ -652,7 +678,7 @@ def report_assumption(
     """
     arc = float(jnp.sum(branch.design.lengths))
     global_length = jnp.full(setup.num_edges, GLOBAL_MODE_FACTOR * arc)
-    unbraced = design_members(
+    unbraced = design_compiled(
         setup.q,
         setup.seed,
         branch.problem,
@@ -708,7 +734,7 @@ def write_figures(
     convergence = figure_convergence(refinement, staggered)
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
 
-    modes = buckling_modes(
+    modes = modes_compiled(
         setup.model,
         design.xyz,
         design.diameters,
@@ -743,24 +769,27 @@ def main(verbose: bool = True) -> None:
             q, setup.seed, elastic.problem, section_class=elastic.section_class
         )
 
-    gradient = jax.grad(objective)(setup.q)
+    value_of = eqx.filter_jit(objective)
+    gradient_of = eqx.filter_jit(jax.grad(objective))
+
+    gradient = gradient_of(setup.q)
     scale = float(jnp.max(jnp.abs(gradient)))
 
-    report_steps(report, objective, setup, gradient)
+    report_steps(report, value_of, setup, gradient)
 
     rows = []
     for edge in range(setup.num_edges):
         step = abs(float(setup.q[edge])) * STEP
-        numeric = central_difference(objective, setup.q, edge, step)
+        numeric = central_difference(value_of, setup.q, edge, step)
         exact = float(gradient[edge])
-        scaled = disagreement(exact, numeric, scale)
-        rows.append(GradientRow(edge, exact, numeric, scaled))
+        difference = disagreement(exact, numeric, scale)
+        rows.append(GradientRow(edge, exact, numeric, difference))
 
     worst_gradient = report_gradient(report, rows)
 
     refinement = refinement_study(elastic.catalogue, elastic.section_class)
     stagger = stagger_run(setup, elastic, PASSES)
-    stability = frame_stability(elastic.design, elastic.problem, num_modes=NUM_MODES)
+    stability = stability_compiled(elastic.design, elastic.problem, num_modes=NUM_MODES)
     results = ArchResults(refinement, stagger, stability)
 
     report_stagger(report, results.stagger)

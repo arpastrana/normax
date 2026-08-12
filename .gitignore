@@ -6,6 +6,10 @@ venv
 .eggs
 .pytest_cache
 .ruff_cache
+
+# Compiled XLA programs, keyed by computation, so an experiment run twice pays
+# for arithmetic alone. Reproducible and machine-specific.
+.jax_cache/
 *.egg-info
 .DS_Store
 dist
