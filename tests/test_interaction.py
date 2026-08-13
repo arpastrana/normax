@@ -18,7 +18,7 @@ from normax.ec3.interaction import k_zy
 from normax.ec3.interaction import k_zz
 from normax.ec3.interaction import moment_factor_linear
 from normax.ec3.interaction import utilization_member
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 
 # EN 1993-1-1 Annex B, method 2. See docs/clauses.md for the two interpretations
 # taken here: a circular hollow section reads the RHS row of Table B.1, which
@@ -139,13 +139,13 @@ def test_eccs_example_moment_factor():
 
 
 def test_eccs_example_axial_ratio():
-    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK, SteelGrade())
+    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK, Steel())
 
     assert ratio == pytest.approx(0.6209, rel=TOLERANCE)
 
 
 def test_eccs_example_k_yy():
-    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK, SteelGrade())
+    ratio = axial_ratio(ECCS_N_ED, ECCS_CHI_Y, ECCS_N_RK, Steel())
     factor = k_yy(moment_factor_linear(ECCS_PSI), ECCS_LAMBDA_Y, ratio, section_class=2)
 
     assert factor == pytest.approx(0.53, rel=TOLERANCE)
@@ -165,7 +165,7 @@ def test_eccs_example_utilization():
         ),
         MemberResistance(ECCS_CHI_Y, ECCS_CHI_Z, ECCS_N_RK, ECCS_M_Y_RK),
         MemberSlenderness.about_both_axes(ECCS_LAMBDA_Y),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
 
@@ -180,7 +180,7 @@ def test_reduces_to_pure_compression_when_moments_vanish():
         CompressionBendingState(965e3, 0.0, 0.0, 0.4, 0.4),
         MemberResistance(0.83, 0.72, 1872.6e3, 127.4e6),
         MemberSlenderness(0.74, 0.92),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
     pure = 965e3 / (0.72 * 1872.6e3)
@@ -193,7 +193,7 @@ def test_reduces_to_pure_bending_when_the_axial_force_vanishes():
         CompressionBendingState(0.0, 67.5e6, 0.0, 0.4, 0.4),
         MemberResistance(0.83, 0.72, 1872.6e3, 127.4e6),
         MemberSlenderness(0.74, 0.92),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
     # With no axial force every k_ij collapses to its C_m.
@@ -213,7 +213,7 @@ def used(axial_force, m_y, m_z, chi, lam, moment_factor, *, section_class=2):
         CompressionBendingState(axial_force, m_y, m_z, moment_factor, moment_factor),
         MemberResistance(chi, chi, 2.6e6, 150e6),
         MemberSlenderness.about_both_axes(lam),
-        SteelGrade(),
+        Steel(),
         section_class=section_class,
     )
 
@@ -245,7 +245,7 @@ def test_utilization_falls_as_the_reduction_factor_rises():
             CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
             MemberResistance(chi, chi, 2.6e6, 150e6),
             MemberSlenderness.about_both_axes(0.9),
-            SteelGrade(),
+            Steel(),
             section_class=2,
         )
         for chi in (0.4, 0.6, 0.8, 1.0)
@@ -260,7 +260,7 @@ def test_utilization_falls_as_the_resistances_rise():
             CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
             MemberResistance(0.8, 0.8, 2.6e6 * s, 150e6 * s),
             MemberSlenderness.about_both_axes(0.9),
-            SteelGrade(),
+            Steel(),
             section_class=2,
         )
         for s in (1.0, 1.5, 2.0, 3.0)
@@ -274,7 +274,7 @@ def test_utilization_rises_with_every_action():
         CompressionBendingState(400e3, 40e6, 10e6, 0.8, 0.8),
         MemberResistance(0.8, 0.8, 2.6e6, 150e6),
         MemberSlenderness.about_both_axes(0.9),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
     for bumped in (
@@ -282,21 +282,21 @@ def test_utilization_rises_with_every_action():
             CompressionBendingState(500e3, 40e6, 10e6, 0.8, 0.8),
             MemberResistance(0.8, 0.8, 2.6e6, 150e6),
             MemberSlenderness.about_both_axes(0.9),
-            SteelGrade(),
+            Steel(),
             section_class=2,
         ),
         utilization_member(
             CompressionBendingState(400e3, 50e6, 10e6, 0.8, 0.8),
             MemberResistance(0.8, 0.8, 2.6e6, 150e6),
             MemberSlenderness.about_both_axes(0.9),
-            SteelGrade(),
+            Steel(),
             section_class=2,
         ),
         utilization_member(
             CompressionBendingState(400e3, 40e6, 20e6, 0.8, 0.8),
             MemberResistance(0.8, 0.8, 2.6e6, 150e6),
             MemberSlenderness.about_both_axes(0.9),
-            SteelGrade(),
+            Steel(),
             section_class=2,
         ),
     ):
@@ -310,7 +310,7 @@ def test_elastic_first_equation_never_falls_below_the_second():
             CompressionBendingState(500e3, m_y, m_z, 0.8, 0.8),
             MemberResistance(0.8, 0.8, 2.6e6, 150e6),
             MemberSlenderness.about_both_axes(0.9),
-            SteelGrade(),
+            Steel(),
             section_class=3,
         )
 
@@ -332,7 +332,7 @@ def governs(m_y, m_z, *, section_class=2):
         CompressionBendingState(500e3, m_y, m_z, DIAGNOSTIC_FACTOR, DIAGNOSTIC_FACTOR),
         DIAGNOSTIC_RESISTANCE,
         MemberSlenderness.about_both_axes(DIAGNOSTIC_SLENDERNESS),
-        SteelGrade(),
+        Steel(),
         section_class=section_class,
     )
 
@@ -427,7 +427,7 @@ def test_utilization_is_float64():
         CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
         MemberResistance(0.8, 0.8, 2.6e6, 150e6),
         MemberSlenderness.about_both_axes(0.9),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
 
@@ -441,7 +441,7 @@ def test_utilization_vectorizes_over_members():
         CompressionBendingState(forces, 60e6, 20e6, 0.8, 0.8),
         MemberResistance(0.8, 0.8, 2.6e6, 150e6),
         MemberSlenderness.about_both_axes(0.9),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
 
@@ -457,7 +457,7 @@ def test_utilization_is_jittable():
         CompressionBendingState(500e3, 60e6, 20e6, 0.8, 0.8),
         MemberResistance(0.8, 0.8, 2.6e6, 150e6),
         MemberSlenderness.about_both_axes(0.9),
-        SteelGrade(),
+        Steel(),
         section_class=2,
     )
 

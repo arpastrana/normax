@@ -3,7 +3,7 @@ import math
 import pytest
 
 from normax.ec3.material import IMPERFECTION_FACTORS
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import buckling_auxiliary
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import reduction_buckling
@@ -46,8 +46,8 @@ CURVE_C = IMPERFECTION_FACTORS["c"]
 
 
 def buckling_chain(area, second_moment, length_buckling, f_y, alpha):
-    critical = force_critical(second_moment, length_buckling, SteelGrade(e_mod=MODULUS))
-    non_dimensional = slenderness_from_force(area, SteelGrade(f_y=f_y), critical)
+    critical = force_critical(second_moment, length_buckling, Steel(e_mod=MODULUS))
+    non_dimensional = slenderness_from_force(area, Steel(f_y=f_y), critical)
     reduction = reduction_buckling(non_dimensional, alpha)
 
     return {
@@ -56,7 +56,7 @@ def buckling_chain(area, second_moment, length_buckling, f_y, alpha):
         "phi": buckling_auxiliary(non_dimensional, alpha),
         "chi": reduction,
         "n_b_rd": resistance_buckling(
-            reduction, area, SteelGrade(f_y=f_y, gamma_m1=GAMMA_M1)
+            reduction, area, Steel(f_y=f_y, gamma_m1=GAMMA_M1)
         ),
     }
 
@@ -134,7 +134,7 @@ def test_rhs_matches_the_guide(rhs, axis, quantity):
 
 def test_rhs_cross_section_resistance():
     resistance = resistance_compression(
-        RHS_AREA, SteelGrade(f_y=RHS_YIELD, gamma_m0=GAMMA_M0)
+        RHS_AREA, Steel(f_y=RHS_YIELD, gamma_m0=GAMMA_M0)
     )
 
     assert resistance * 1e-3 == pytest.approx(2946.5, rel=TOLERANCE_EXACT)
@@ -225,7 +225,7 @@ def test_ukc_cross_section_resistance():
     # The guide later writes this as 8415 kN, which is the same area at 275
     # rather than 265. See the errata in docs/clauses.md.
     resistance = resistance_compression(
-        UKC_AREA, SteelGrade(f_y=UKC_YIELD, gamma_m0=GAMMA_M0)
+        UKC_AREA, Steel(f_y=UKC_YIELD, gamma_m0=GAMMA_M0)
     )
 
     assert resistance * 1e-3 == pytest.approx(8109.0, rel=TOLERANCE_EXACT)
@@ -262,12 +262,8 @@ CHANNEL_N_CR_TORSIONAL_FLEXURAL = 114e3
 
 
 def test_channel_flexural_critical_forces():
-    critical_y = force_critical(
-        CHANNEL_INERTIA_Y, CHANNEL_LENGTH, SteelGrade(e_mod=MODULUS)
-    )
-    critical_z = force_critical(
-        CHANNEL_INERTIA_Z, CHANNEL_LENGTH, SteelGrade(e_mod=MODULUS)
-    )
+    critical_y = force_critical(CHANNEL_INERTIA_Y, CHANNEL_LENGTH, Steel(e_mod=MODULUS))
+    critical_z = force_critical(CHANNEL_INERTIA_Z, CHANNEL_LENGTH, Steel(e_mod=MODULUS))
 
     assert critical_y * 1e-3 == pytest.approx(787.0, rel=TOLERANCE_GUIDE)
     assert critical_z * 1e-3 == pytest.approx(127.0, rel=TOLERANCE_GUIDE)
@@ -276,7 +272,7 @@ def test_channel_flexural_critical_forces():
 def test_channel_buckling_chain():
     non_dimensional = slenderness_from_force(
         CHANNEL_AREA_EFFECTIVE,
-        SteelGrade(f_y=CHANNEL_YIELD),
+        Steel(f_y=CHANNEL_YIELD),
         CHANNEL_N_CR_TORSIONAL_FLEXURAL,
     )
     auxiliary = buckling_auxiliary(non_dimensional, CURVE_C)
@@ -298,7 +294,7 @@ def test_channel_buckling_resistance():
     resistance = resistance_buckling(
         reduction,
         CHANNEL_AREA_EFFECTIVE,
-        SteelGrade(f_y=CHANNEL_YIELD, gamma_m1=GAMMA_M1),
+        Steel(f_y=CHANNEL_YIELD, gamma_m1=GAMMA_M1),
     )
 
     assert resistance * 1e-3 == pytest.approx(69.2, rel=TOLERANCE_GUIDE)

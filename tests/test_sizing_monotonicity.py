@@ -10,7 +10,7 @@ from normax.ec3.interaction import MemberSlenderness
 from normax.ec3.interaction import utilization_member
 from normax.ec3.material import E_MODULUS
 from normax.ec3.material import IMPERFECTION_FACTORS
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import moment_resultant
 from normax.ec3.resistance import reduction_buckling
@@ -57,8 +57,8 @@ def member_utilization(
 
     non_dimensional = slenderness_from_force(
         gross,
-        SteelGrade(f_y=YIELD),
-        force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=E_MODULUS)),
+        Steel(f_y=YIELD),
+        force_critical(inertia, LENGTH_BUCKLING, Steel(e_mod=E_MODULUS)),
     )
     reduction = reduction_buckling(non_dimensional, ALPHA)
 
@@ -66,7 +66,7 @@ def member_utilization(
         CompressionBendingState(axial_force, moment_major, moment_minor, C_M, C_M),
         MemberResistance(reduction, reduction, gross * YIELD, modulus * YIELD),
         MemberSlenderness.about_both_axes(non_dimensional),
-        SteelGrade(),
+        Steel(),
         section_class=section_class,
     )
 
@@ -75,9 +75,9 @@ def cross_section_utilization(diameter, axial_force, moment_major, moment_minor)
     ratio = RATIO_PLASTIC
     gross = TubeCatalogue(ratio).tube_at(diameter).area
     plastic_moment = resistance_bending_plastic(
-        TubeCatalogue(ratio).tube_at(diameter).modulus_plastic, SteelGrade(f_y=YIELD)
+        TubeCatalogue(ratio).tube_at(diameter).modulus_plastic, Steel(f_y=YIELD)
     )
-    axial = axial_force / resistance_yielding(gross, SteelGrade(f_y=YIELD))
+    axial = axial_force / resistance_yielding(gross, Steel(f_y=YIELD))
 
     return moment_resultant(moment_major, moment_minor) / resistance_bending_reduced(
         plastic_moment, axial
@@ -158,10 +158,10 @@ def test_reduced_moment_grows_with_diameter():
     gross = TubeCatalogue(RATIO_PLASTIC).tube_at(diameters).area
     plastic_moment = resistance_bending_plastic(
         TubeCatalogue(RATIO_PLASTIC).tube_at(diameters).modulus_plastic,
-        SteelGrade(f_y=YIELD),
+        Steel(f_y=YIELD),
     )
     reduced = resistance_bending_reduced(
-        plastic_moment, 500e3 / resistance_yielding(gross, SteelGrade(f_y=YIELD))
+        plastic_moment, 500e3 / resistance_yielding(gross, Steel(f_y=YIELD))
     )
 
     assert jnp.all(jnp.diff(reduced) > 0.0)
@@ -176,8 +176,8 @@ def test_the_reduction_factor_grows_with_diameter():
     reduction = reduction_buckling(
         slenderness_from_force(
             gross,
-            SteelGrade(f_y=YIELD),
-            force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=E_MODULUS)),
+            Steel(f_y=YIELD),
+            force_critical(inertia, LENGTH_BUCKLING, Steel(e_mod=E_MODULUS)),
         ),
         ALPHA,
     )
@@ -190,8 +190,8 @@ def test_slenderness_falls_with_diameter():
     inertia = TubeCatalogue(RATIO_PLASTIC).tube_at(DIAMETERS).second_moment
     non_dimensional = slenderness_from_force(
         gross,
-        SteelGrade(f_y=YIELD),
-        force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=E_MODULUS)),
+        Steel(f_y=YIELD),
+        force_critical(inertia, LENGTH_BUCKLING, Steel(e_mod=E_MODULUS)),
     )
 
     assert jnp.all(jnp.diff(non_dimensional) < 0.0)
@@ -217,7 +217,7 @@ def test_elastic_and_plastic_moduli_differ_by_the_shape_factor():
     elastic = TubeCatalogue(24.45).tube_at(244.5).modulus_elastic
 
     assert resistance_bending_plastic(
-        plastic, SteelGrade(f_y=YIELD)
-    ) / resistance_bending_elastic(elastic, SteelGrade(f_y=YIELD)) == pytest.approx(
+        plastic, Steel(f_y=YIELD)
+    ) / resistance_bending_elastic(elastic, Steel(f_y=YIELD)) == pytest.approx(
         1.326, rel=1e-3
     )

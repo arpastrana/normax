@@ -5,7 +5,7 @@ import pytest
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.interaction import C_M_MINIMUM
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import DIAMETER_MINIMUM
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
@@ -24,7 +24,7 @@ from normax.ec3.sizing import utilization_design
 # applies only in compression, and the cross-section check of 6.2.9, which it
 # applies always. Neither bounds the other.
 
-STEEL = SteelGrade()
+STEEL = Steel()
 LENGTH = 4000.0
 
 ACTIONS = [
@@ -602,7 +602,7 @@ def test_a_root_above_the_search_interval_returns_nan_not_a_diameter():
     # The lower end of the interval brackets by construction; the upper end is
     # assumed. Were the root above it, the untested top would come back looking
     # like an answer, and it would fail the very check it claims to satisfy.
-    steel = SteelGrade()
+    steel = Steel()
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     sized = diameter_required(
@@ -616,7 +616,7 @@ def test_the_ceiling_is_out_of_physical_reach():
     # Twelve orders separate the two ends of the interval, so only a buckling
     # length of order 1e28 mm can push the root past it. Anything a structure
     # could have still finds its root.
-    steel = SteelGrade()
+    steel = Steel()
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     for buckling_length in (1e3, 1e6, 1e12, 1e18, 1e24):
@@ -642,7 +642,7 @@ def test_the_ceiling_is_out_of_physical_reach():
 def test_the_guard_does_not_fire_on_a_member_carrying_nothing():
     # A flat check has no root but never exceeds one, so the interval is not the
     # reason it has no root and the catalogue decides the size.
-    steel = SteelGrade()
+    steel = Steel()
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     sized = diameter_required(
@@ -660,7 +660,7 @@ def test_the_guard_does_not_fire_on_a_member_carrying_nothing():
 def test_a_failed_bracket_poisons_the_gradient_too():
     # Loud in both passes: there is no valid design, so there is no sensitivity
     # of one either.
-    steel = SteelGrade()
+    steel = Steel()
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     def size(axial_force):
@@ -677,7 +677,7 @@ def test_a_failed_bracket_poisons_the_gradient_too():
 
 def test_the_guard_costs_one_evaluation_and_changes_no_answer():
     # Every ordinary case must return exactly what it returned before the guard.
-    steel = SteelGrade()
+    steel = Steel()
     catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
     for axial_force, moment_major, buckling_length in (

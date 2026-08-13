@@ -9,7 +9,7 @@ from normax.ec3.interaction import MemberSlenderness
 from normax.ec3.interaction import interaction_checks
 from normax.ec3.interaction import interaction_factors
 from normax.ec3.interaction import utilization_member
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 
 # Simões da Silva, Simões & Gervásio, *Design of Steel Structures* (ECCS).
 # Design Example 2, a 47 m single-span pitched-roof portal frame in S355J2,
@@ -62,7 +62,7 @@ def rafter_checks(axial_force, moment_major):
         CompressionBendingState(axial_force, moment_major, 0.0),
         MemberResistance(CHI_Y, CHI_Z, N_PL_RD, M_PL_Y_RD),
         InteractionFactors(yy=FACTOR_YY, yz=0.0, zy=FACTOR_ZY, zz=0.0),
-        SteelGrade(),
+        Steel(),
     )
 
 
@@ -148,7 +148,7 @@ def test_segment_matches_the_book(
         CompressionBendingState(axial_force, moment_major, 0.0),
         MemberResistance(1.0, 1.0, n_b_rd, m_b_rd),
         InteractionFactors(yy=0.0, yz=0.0, zy=factor_zy, zz=0.0),
-        SteelGrade(),
+        Steel(),
     )
 
     assert second == pytest.approx(expected, abs=TOLERANCE), label
@@ -162,7 +162,7 @@ def test_the_governing_segment_is_the_one_the_book_identifies():
                 CompressionBendingState(n, m, 0.0),
                 MemberResistance(1.0, 1.0, n_b, m_b),
                 InteractionFactors(yy=0.0, yz=0.0, zy=k, zz=0.0),
-                SteelGrade(),
+                Steel(),
             )[1]
         )
         for _, n, m, n_b, m_b, k, _ in SEGMENTS
@@ -184,12 +184,12 @@ def test_supplying_the_factors_agrees_with_deriving_them():
     slenderness = MemberSlenderness(0.9, 0.4)
 
     factors = interaction_factors(
-        state, resistance, slenderness, SteelGrade(), section_class=2
+        state, resistance, slenderness, Steel(), section_class=2
     )
 
-    supplied = interaction_checks(state, resistance, factors, SteelGrade())
+    supplied = interaction_checks(state, resistance, factors, Steel())
     derived = utilization_member(
-        state, resistance, slenderness, SteelGrade(), section_class=2
+        state, resistance, slenderness, Steel(), section_class=2
     )
 
     assert max(supplied) == pytest.approx(derived)

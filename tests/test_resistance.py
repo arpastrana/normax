@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from normax.ec3.material import IMPERFECTION_FACTORS
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import buckling_auxiliary
@@ -147,20 +147,20 @@ def test_n_cr_matches_euler():
     expected = np.pi**2 * e_mod * second_moment / buckling_length**2
 
     assert force_critical(
-        second_moment, buckling_length, SteelGrade(e_mod=e_mod)
+        second_moment, buckling_length, Steel(e_mod=e_mod)
     ) == pytest.approx(expected)
 
 
 def test_n_cr_scales_inversely_with_length_squared():
-    assert force_critical(1e6, 8000.0, SteelGrade()) == pytest.approx(
-        0.25 * force_critical(1e6, 4000.0, SteelGrade())
+    assert force_critical(1e6, 8000.0, Steel()) == pytest.approx(
+        0.25 * force_critical(1e6, 4000.0, Steel())
     )
 
 
 def test_lambda_1_matches_the_93_9_epsilon_form():
     # lambda_1 = pi sqrt(E/f_y) = 93.9 eps for E = 210000.
     for f_y in (235.0, 275.0, 355.0, 420.0, 460.0):
-        assert slenderness_reference(SteelGrade(f_y=f_y)) == pytest.approx(
+        assert slenderness_reference(Steel(f_y=f_y)) == pytest.approx(
             93.9 * np.sqrt(235.0 / f_y), rel=1e-3
         )
 
@@ -173,12 +173,10 @@ def test_slenderness_forms_agree(buckling_length):
 
     from_force = slenderness_from_force(
         area,
-        SteelGrade(f_y=f_y),
-        force_critical(second_moment, buckling_length, SteelGrade()),
+        Steel(f_y=f_y),
+        force_critical(second_moment, buckling_length, Steel()),
     )
-    from_gyration = slenderness_from_gyration(
-        buckling_length, radius, SteelGrade(f_y=f_y)
-    )
+    from_gyration = slenderness_from_gyration(buckling_length, radius, Steel(f_y=f_y))
 
     assert from_force == pytest.approx(from_gyration)
 
@@ -186,10 +184,10 @@ def test_slenderness_forms_agree(buckling_length):
 def test_slenderness_scales_with_length():
     area, second_moment, f_y = 7367.0348, 50731473.4, 355.0
     short = slenderness_from_force(
-        area, SteelGrade(f_y=f_y), force_critical(second_moment, 4000.0, SteelGrade())
+        area, Steel(f_y=f_y), force_critical(second_moment, 4000.0, Steel())
     )
     long = slenderness_from_force(
-        area, SteelGrade(f_y=f_y), force_critical(second_moment, 8000.0, SteelGrade())
+        area, Steel(f_y=f_y), force_critical(second_moment, 8000.0, Steel())
     )
 
     assert long == pytest.approx(2.0 * short)
@@ -199,67 +197,65 @@ def test_slenderness_scales_with_length():
 
 
 def test_n_pl_rd_is_the_squash_load():
-    assert resistance_yielding(
-        5000.0, SteelGrade(f_y=265.0, gamma_m0=1.0)
-    ) == pytest.approx(5000.0 * 265.0)
+    assert resistance_yielding(5000.0, Steel(f_y=265.0, gamma_m0=1.0)) == pytest.approx(
+        5000.0 * 265.0
+    )
 
 
 def test_n_u_rd_carries_the_nine_tenths_factor():
-    assert resistance_fracture(
-        4406.0, SteelGrade(f_u=430.0, gamma_m2=1.1)
-    ) == pytest.approx(0.9 * 4406.0 * 430.0 / 1.1)
+    assert resistance_fracture(4406.0, Steel(f_u=430.0, gamma_m2=1.1)) == pytest.approx(
+        0.9 * 4406.0 * 430.0 / 1.1
+    )
 
 
 def test_n_c_rd_equals_n_pl_rd():
     # Eq. 6.6 and Eq. 6.10 are the same expression under different clauses.
     assert resistance_compression(
-        7367.0, SteelGrade(f_y=355.0, gamma_m0=1.0)
-    ) == pytest.approx(resistance_yielding(7367.0, SteelGrade(f_y=355.0, gamma_m0=1.0)))
+        7367.0, Steel(f_y=355.0, gamma_m0=1.0)
+    ) == pytest.approx(resistance_yielding(7367.0, Steel(f_y=355.0, gamma_m0=1.0)))
 
 
 def test_n_t_rd_takes_the_smaller_resistance():
-    gross = resistance_yielding(5000.0, SteelGrade(f_y=265.0, gamma_m0=1.0))
-    net = resistance_fracture(4406.0, SteelGrade(f_u=430.0, gamma_m2=1.1))
+    gross = resistance_yielding(5000.0, Steel(f_y=265.0, gamma_m0=1.0))
+    net = resistance_fracture(4406.0, Steel(f_u=430.0, gamma_m2=1.1))
 
     assert resistance_tension(
-        5000.0, 4406.0, SteelGrade(f_y=265.0, f_u=430.0, gamma_m0=1.0, gamma_m2=1.1)
+        5000.0, 4406.0, Steel(f_y=265.0, f_u=430.0, gamma_m0=1.0, gamma_m2=1.1)
     ) == pytest.approx(min(gross, net))
 
 
 def test_n_t_rd_is_governed_by_the_net_section_when_holes_are_large():
     # Shrink the net area until fracture governs.
-    gross = resistance_yielding(5000.0, SteelGrade(f_y=265.0, gamma_m0=1.0))
+    gross = resistance_yielding(5000.0, Steel(f_y=265.0, gamma_m0=1.0))
 
     assert (
         resistance_tension(
-            5000.0, 2000.0, SteelGrade(f_y=265.0, f_u=430.0, gamma_m0=1.0, gamma_m2=1.1)
+            5000.0, 2000.0, Steel(f_y=265.0, f_u=430.0, gamma_m0=1.0, gamma_m2=1.1)
         )
         < gross
     )
 
 
 def test_n_b_rd_reduces_the_cross_section_resistance():
-    resistance = resistance_compression(7367.0, SteelGrade(f_y=355.0, gamma_m0=1.0))
+    resistance = resistance_compression(7367.0, Steel(f_y=355.0, gamma_m0=1.0))
 
     assert resistance_buckling(
-        0.877915, 7367.0, SteelGrade(f_y=355.0, gamma_m1=1.0)
+        0.877915, 7367.0, Steel(f_y=355.0, gamma_m1=1.0)
     ) == pytest.approx(0.877915 * resistance)
 
 
 def test_n_b_rd_meets_n_c_rd_for_a_stocky_member():
     # chi = 1 and gamma_M1 = gamma_M0, so buckling stops governing.
     assert resistance_buckling(
-        1.0, 7367.0, SteelGrade(f_y=355.0, gamma_m1=1.0)
-    ) == pytest.approx(
-        resistance_compression(7367.0, SteelGrade(f_y=355.0, gamma_m0=1.0))
-    )
+        1.0, 7367.0, Steel(f_y=355.0, gamma_m1=1.0)
+    ) == pytest.approx(resistance_compression(7367.0, Steel(f_y=355.0, gamma_m0=1.0)))
 
 
 def test_partial_factors_divide():
     assert resistance_compression(
-        7367.0, SteelGrade(f_y=355.0, gamma_m0=1.1)
+        7367.0, Steel(f_y=355.0, gamma_m0=1.1)
     ) == pytest.approx(
-        resistance_compression(7367.0, SteelGrade(f_y=355.0, gamma_m0=1.0)) / 1.1
+        resistance_compression(7367.0, Steel(f_y=355.0, gamma_m0=1.0)) / 1.1
     )
 
 
@@ -286,32 +282,28 @@ def test_the_shear_resistance_follows_equation_6_18():
     expected = area_shear(AREA_CHS) * (355.0 / np.sqrt(3.0)) / 1.0
 
     assert resistance_shear(
-        area_shear(AREA_CHS), SteelGrade(f_y=355.0, gamma_m0=1.0)
+        area_shear(AREA_CHS), Steel(f_y=355.0, gamma_m0=1.0)
     ) == pytest.approx(float(expected))
 
 
 def test_the_shear_resistance_of_the_fixture_section():
     # CHS 244.5 x 10, S355. Recomputed rather than quoted: the guide works no
     # shear example on a tube.
-    resistance = resistance_shear(
-        area_shear(AREA_CHS), SteelGrade(f_y=355.0, gamma_m0=1.0)
-    )
+    resistance = resistance_shear(area_shear(AREA_CHS), Steel(f_y=355.0, gamma_m0=1.0))
 
     assert float(resistance) / 1e3 == pytest.approx(961.2, rel=1e-3)
 
 
 def test_the_shear_resistance_divides_by_the_partial_factor():
-    assert resistance_shear(
-        4690.0, SteelGrade(f_y=355.0, gamma_m0=1.1)
-    ) == pytest.approx(
-        float(resistance_shear(4690.0, SteelGrade(f_y=355.0, gamma_m0=1.0))) / 1.1
+    assert resistance_shear(4690.0, Steel(f_y=355.0, gamma_m0=1.1)) == pytest.approx(
+        float(resistance_shear(4690.0, Steel(f_y=355.0, gamma_m0=1.0))) / 1.1
     )
 
 
 def test_the_shear_yield_stress_is_the_tensile_one_over_root_three():
     # The only physics in 6.18: von Mises puts shear yield at f_y / sqrt(3).
     assert float(
-        resistance_shear(1.0, SteelGrade(f_y=355.0, gamma_m0=1.0))
+        resistance_shear(1.0, Steel(f_y=355.0, gamma_m0=1.0))
     ) == pytest.approx(355.0 / np.sqrt(3.0))
 
 
@@ -324,9 +316,7 @@ def test_the_shear_resistance_grows_with_the_area():
     areas = jnp.linspace(1e3, 2e4, 200)
 
     assert jnp.all(
-        jnp.diff(
-            resistance_shear(area_shear(areas), SteelGrade(f_y=355.0, gamma_m0=1.0))
-        )
+        jnp.diff(resistance_shear(area_shear(areas), Steel(f_y=355.0, gamma_m0=1.0)))
         > 0.0
     )
 
@@ -337,7 +327,7 @@ def test_the_shear_resistance_grows_with_the_area():
 def test_resistances_are_float64():
     assert reduction_buckling(0.63, 0.21).dtype == jnp.float64
     assert (
-        resistance_compression(7367.0, SteelGrade(f_y=355.0, gamma_m0=1.0)).dtype
+        resistance_compression(7367.0, Steel(f_y=355.0, gamma_m0=1.0)).dtype
         == jnp.float64
     )
 

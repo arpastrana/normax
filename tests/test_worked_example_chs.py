@@ -6,7 +6,7 @@ from normax.ec3.classification import class_limits
 from normax.ec3.classification import classify_section
 from normax.ec3.classification import material_factor
 from normax.ec3.material import IMPERFECTION_FACTORS
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import buckling_auxiliary
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import reduction_buckling
@@ -81,8 +81,8 @@ TOLERANCE_GUIDE = 1e-2
 def chain():
     gross = TubeCatalogue(RATIO).tube_at(DIAMETER).area
     inertia = TubeCatalogue(RATIO).tube_at(DIAMETER).second_moment
-    critical = force_critical(inertia, LENGTH_BUCKLING, SteelGrade(e_mod=MODULUS))
-    non_dimensional = slenderness_from_force(gross, SteelGrade(f_y=YIELD), critical)
+    critical = force_critical(inertia, LENGTH_BUCKLING, Steel(e_mod=MODULUS))
+    non_dimensional = slenderness_from_force(gross, Steel(f_y=YIELD), critical)
     reduction = reduction_buckling(non_dimensional, ALPHA)
 
     return {
@@ -93,15 +93,13 @@ def chain():
         "epsilon": material_factor(YIELD),
         "ratio": DIAMETER / TubeCatalogue(RATIO).tube_at(DIAMETER).thickness,
         "class_limit_1": class_limits(YIELD)[0],
-        "n_c_rd": resistance_compression(
-            gross, SteelGrade(f_y=YIELD, gamma_m0=GAMMA_M0)
-        ),
+        "n_c_rd": resistance_compression(gross, Steel(f_y=YIELD, gamma_m0=GAMMA_M0)),
         "n_cr": critical,
         "slenderness": non_dimensional,
         "phi": buckling_auxiliary(non_dimensional, ALPHA),
         "chi": reduction,
         "n_b_rd": resistance_buckling(
-            reduction, gross, SteelGrade(f_y=YIELD, gamma_m1=GAMMA_M1)
+            reduction, gross, Steel(f_y=YIELD, gamma_m1=GAMMA_M1)
         ),
     }
 

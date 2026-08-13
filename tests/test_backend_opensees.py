@@ -29,15 +29,21 @@ import pytest
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
 from normax.analysis.smax import prepare_model as prepare_smax
-from normax.composition import ProblemSetup
-from normax.composition import analysis_backend
-from normax.composition import local_chain
-from normax.composition import total_mass as mass_composed
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
+from normax.pipeline import DesignPipeline
+from normax.pipeline import calculate_mass
+from normax.stages import DesignParameters
+from normax.stages import load_cases as load_cases_of
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractFormFinder
+from normax.tesseract import TesseractSizer
+from normax.tesseract import analysis_backend
+from normax.tesseract import local_chain
 
 # The same 10 m arch rising 3 m under 180 kN the rest of the suite uses.
 SPAN = 10_000.0
@@ -64,7 +70,7 @@ TOLERANCE_GRADIENT = 1e-9
 
 @pytest.fixture(scope="module")
 def steel():
-    return SteelGrade()
+    return Steel()
 
 
 @pytest.fixture(scope="module")
@@ -77,21 +83,32 @@ def setup():
     """
     The arch, its connectivity, and the `q` that reaches the target rise.
     """
-    load = TOTAL_LOAD / (NUM_EDGES - 1)
-    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     fdm = equilibrium_graph(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    reached = jnp.max(equilibrium_state(trial, structure, fdm).xyz[:, 2])
+    state = equilibrium_state(
+        trial, structure.nodes[fdm.indices_fixed], fdm, funicular(structure)
+    )
+    reached = jnp.max(state.xyz[:, 2])
 
     return structure, fdm, trial * reached / RISE
+
+
+def funicular(structure):
+    """
+    The uniform load case the arch is form-found under.
+    """
+    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
 def geometry(setup):
     structure, fdm, q = setup
 
-    return structure, equilibrium_state(q, structure, fdm).xyz
+    return structure, equilibrium_state(
+        q, structure.nodes[fdm.indices_fixed], fdm, funicular(structure)
+    ).xyz
 
 
 @pytest.fixture(scope="module")
@@ -126,11 +143,13 @@ def prepared(geometry, steel, catalogue):
 def test_the_two_solvers_agree_on_the_axial_force(
     prepared, geometry, diameters, steel, catalogue
 ):
-    _, xyz = geometry
+    structure, xyz = geometry
     ops, smax = prepared
 
-    mine = backend_opensees.member_forces(ops, xyz, diameters, steel, catalogue)
-    theirs = forces_smax(smax, xyz, diameters, steel, catalogue)
+    mine = backend_opensees.member_forces(
+        ops, xyz, diameters, steel, catalogue, funicular(structure)
+    )
+    theirs = forces_smax(smax, xyz, diameters, steel, catalogue, funicular(structure))
 
     assert relative(mine.axial_force, theirs.axial_force) < TOLERANCE_PRIMAL
 
@@ -138,11 +157,13 @@ def test_the_two_solvers_agree_on_the_axial_force(
 def test_the_two_solvers_agree_on_both_end_moments(
     prepared, geometry, diameters, steel, catalogue
 ):
-    _, xyz = geometry
+    structure, xyz = geometry
     ops, smax = prepared
 
-    mine = backend_opensees.member_forces(ops, xyz, diameters, steel, catalogue)
-    theirs = forces_smax(smax, xyz, diameters, steel, catalogue)
+    mine = backend_opensees.member_forces(
+        ops, xyz, diameters, steel, catalogue, funicular(structure)
+    )
+    theirs = forces_smax(smax, xyz, diameters, steel, catalogue, funicular(structure))
 
     assert relative(mine.moment_major, theirs.moment_major) < TOLERANCE_PRIMAL
 
@@ -150,20 +171,24 @@ def test_the_two_solvers_agree_on_both_end_moments(
 def test_a_plane_frame_carries_no_minor_axis_moment(
     prepared, geometry, diameters, steel, catalogue
 ):
-    _, xyz = geometry
+    structure, xyz = geometry
     ops, _ = prepared
 
-    mine = backend_opensees.member_forces(ops, xyz, diameters, steel, catalogue)
+    mine = backend_opensees.member_forces(
+        ops, xyz, diameters, steel, catalogue, funicular(structure)
+    )
 
     assert np.all(np.asarray(mine.moment_minor) == 0.0)
 
 
 @pytest.fixture(scope="module")
 def blocks(prepared, geometry, diameters, steel, catalogue):
-    _, xyz = geometry
+    structure, xyz = geometry
     ops, _ = prepared
 
-    return backend_opensees.force_jacobian(ops, xyz, diameters, steel, catalogue)
+    return backend_opensees.force_jacobian(
+        ops, xyz, diameters, steel, catalogue, funicular(structure)
+    )
 
 
 @pytest.fixture(scope="module")
@@ -171,11 +196,13 @@ def traced(prepared, geometry, diameters, steel, catalogue):
     """
     The same derivatives, taken by tracing the other backend.
     """
-    _, xyz = geometry
+    structure, xyz = geometry
     _, smax = prepared
 
     def run(coords, sizes):
-        member = forces_smax(smax, coords, sizes, steel, catalogue)
+        member = forces_smax(
+            smax, coords, sizes, steel, catalogue, funicular(structure)
+        )
 
         return {
             "axial_force": member.axial_force,
@@ -234,7 +261,9 @@ def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
     model = prepare_smax(structure, steel, catalogue, normal=NORMAL)
 
     def run(coords):
-        member = forces_smax(model, coords, diameters, steel, catalogue)
+        member = forces_smax(
+            model, coords, diameters, steel, catalogue, funicular(structure)
+        )
 
         return {
             "axial_force": member.axial_force,
@@ -257,7 +286,9 @@ def test_the_one_block_the_plane_cannot_reach_is_the_minor_axis_moment(
     model = prepare_smax(structure, steel, catalogue, normal=NORMAL)
 
     def run(coords):
-        return forces_smax(model, coords, diameters, steel, catalogue).moment_minor
+        return forces_smax(
+            model, coords, diameters, steel, catalogue, funicular(structure)
+        ).moment_minor
 
     jacobian = np.asarray(jax.jacfwd(run)(xyz))
 
@@ -278,18 +309,18 @@ def test_a_frame_that_is_not_flat_is_refused(geometry, diameters, steel, catalog
     model = backend_opensees.prepare_model(structure, steel, catalogue, normal=NORMAL)
 
     with pytest.raises(ValueError, match="not planar"):
-        backend_opensees.member_forces(model, warped, diameters, steel, catalogue)
+        backend_opensees.member_forces(
+            model, warped, diameters, steel, catalogue, funicular(structure)
+        )
 
 
 def test_a_load_out_of_the_plane_is_refused(geometry, diameters, steel, catalogue):
     structure, xyz = geometry
-    pushed = structure._replace(
-        loads=jnp.asarray(structure.loads).at[1, NORMAL].set(1_000.0)
-    )
-    model = backend_opensees.prepare_model(pushed, steel, catalogue, normal=NORMAL)
+    pushed = jnp.asarray(funicular(structure)).at[1, NORMAL].set(1_000.0)
+    model = backend_opensees.prepare_model(structure, steel, catalogue, normal=NORMAL)
 
     with pytest.raises(ValueError, match="normal axis"):
-        backend_opensees.member_forces(model, xyz, diameters, steel, catalogue)
+        backend_opensees.member_forces(model, xyz, diameters, steel, catalogue, pushed)
 
 
 @pytest.fixture(scope="module")
@@ -301,14 +332,17 @@ def chain():
 def objective(setup, diameters, steel, catalogue, chain):
     structure, _, _ = setup
 
+    pipeline = DesignPipeline(
+        TesseractFormFinder(chain.formfinding),
+        TesseractAnalyzer(chain.analysis, steel, catalogue, NORMAL),
+        TesseractSizer(chain.ec3, steel, catalogue),
+    ).compile(structure)
+
+    applied = funicular(structure)
+    loads = load_cases_of(applied, [applied])
+
     def total(q):
-        return mass_composed(
-            q,
-            diameters,
-            ProblemSetup(structure, chain, steel, catalogue),
-            normal=NORMAL,
-            section_class=3,
-        )
+        return calculate_mass(pipeline(DesignParameters(q, diameters), loads))
 
     return total
 

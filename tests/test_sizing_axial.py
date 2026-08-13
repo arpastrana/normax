@@ -7,7 +7,7 @@ from normax.ec3.actions import MemberActions
 from normax.ec3.classification import classify_section
 from normax.ec3.classification import is_plastic
 from normax.ec3.material import IMPERFECTION_FACTORS
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import reduction_buckling
 from normax.ec3.resistance import resistance_buckling
@@ -25,7 +25,7 @@ from normax.ec3.sizing import utilization_design
 # the cross-section check to the squash check of 6.2.4. Both have closed forms,
 # which is what makes this the fixture that de-risks the machinery.
 
-STEEL = SteelGrade()
+STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 SECTION_CLASS = 3
 
@@ -201,13 +201,11 @@ def test_the_sized_member_reproduces_the_buckling_resistance(
     gross = CATALOGUE.tube_at(d).area
     lam = slenderness_from_force(
         gross,
-        SteelGrade(f_y=STEEL.f_y),
-        force_critical(
-            CATALOGUE.tube_at(d).second_moment, buckling_length, SteelGrade()
-        ),
+        Steel(f_y=STEEL.f_y),
+        force_critical(CATALOGUE.tube_at(d).second_moment, buckling_length, Steel()),
     )
     resistance = resistance_buckling(
-        reduction_buckling(lam, STEEL.alpha), gross, SteelGrade(f_y=STEEL.f_y)
+        reduction_buckling(lam, STEEL.alpha), gross, Steel(f_y=STEEL.f_y)
     )
 
     assert float(resistance) == pytest.approx(abs(axial_force), rel=1e-9)
@@ -278,7 +276,7 @@ def test_a_sized_tension_member_reaches_its_plastic_resistance(axial_force):
     d = sized(axial_force)
 
     assert float(
-        resistance_yielding(CATALOGUE.tube_at(d).area, SteelGrade(f_y=STEEL.f_y))
+        resistance_yielding(CATALOGUE.tube_at(d).area, Steel(f_y=STEEL.f_y))
     ) == pytest.approx(axial_force, rel=1e-9)
 
 

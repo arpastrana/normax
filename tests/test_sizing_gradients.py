@@ -11,7 +11,7 @@ from normax.ec3.adjoint import derivative_length
 from normax.ec3.adjoint import diameter_tension
 from normax.ec3.adjoint import reduction_buckling_derivative
 from normax.ec3.material import IMPERFECTION_FACTORS
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import reduction_buckling
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
@@ -25,7 +25,7 @@ from normax.ec3.sizing import mass_of_tubes
 # reverse transposition of it, the closed forms of adjoint.py, and central
 # differences.
 
-STEEL = SteelGrade()
+STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 SECTION_CLASS = 3
 
@@ -388,9 +388,7 @@ def test_a_member_with_no_actions_has_no_gradient():
 
 def test_the_map_is_differentiable_in_the_yield_strength():
     def at(f_y):
-        steel = SteelGrade(
-            f_y, STEEL.e_mod, STEEL.density, STEEL.gamma_m0, STEEL.gamma_m1
-        )
+        steel = Steel(f_y, STEEL.e_mod, STEEL.density, STEEL.gamma_m0, STEEL.gamma_m1)
 
         return diameter_required(
             MemberActions(FORCE, 4e7, 1.5e7, 0.9, 0.9),

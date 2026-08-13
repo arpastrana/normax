@@ -4,7 +4,6 @@ import pytest
 
 from normax.structures import arch_2d
 from normax.structures import cable_2d
-from normax.structures import crown_node
 from normax.structures import gridshell_3d
 from normax.structures import loads_half_span
 from normax.structures import loads_point
@@ -21,20 +20,17 @@ def test_arrays_are_jax(structures):
         assert isinstance(structure.nodes, jnp.ndarray)
         assert isinstance(structure.edges, jnp.ndarray)
         assert isinstance(structure.supports, jnp.ndarray)
-        assert isinstance(structure.loads, jnp.ndarray)
 
 
 def test_dtypes(structures):
     for structure in structures:
         assert structure.nodes.dtype == jnp.float64
-        assert structure.loads.dtype == jnp.float64
         assert jnp.issubdtype(structure.edges.dtype, jnp.integer)
         assert jnp.issubdtype(structure.supports.dtype, jnp.integer)
 
 
 def test_shapes_agree(structures):
     for structure in structures:
-        assert structure.nodes.shape == structure.loads.shape
         assert structure.nodes.ndim == 2
         assert structure.nodes.shape[1] == 3
         assert structure.edges.shape[1] == 2
@@ -65,7 +61,7 @@ def test_supports_are_valid(structures):
 
 def test_loads_hang_from_free_nodes_only(structures):
     for structure in structures:
-        loads = np.asarray(structure.loads)
+        loads = np.asarray(loads_uniform(structure, 1.0))
         supports = np.asarray(structure.supports)
         free = np.setdiff1d(np.arange(loads.shape[0]), supports)
 
@@ -199,13 +195,17 @@ def test_gridshell_rejects_degenerate_inputs(kwargs):
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def loaded():
-    return arch_2d(num_edges=10, span=10_000.0, rise=3_000.0, load=20_000.0)
+    return arch_2d(num_edges=10, span=10_000.0, rise=3_000.0)
 
 
-def test_a_uniform_load_case_is_what_the_structure_was_built_with(loaded):
-    assert np.allclose(
-        np.asarray(loads_uniform(loaded, 20_000.0)), np.asarray(loaded.loads)
-    )
+def test_a_uniform_load_case_hangs_the_same_force_from_every_free_node(loaded):
+    # A structure carries no load of its own, so a load case is built from it
+    # rather than read off it.
+    applied = np.asarray(loads_uniform(loaded, 20_000.0))
+    free = np.setdiff1d(np.arange(applied.shape[0]), np.asarray(loaded.supports))
+
+    assert np.allclose(applied[free, 2], -20_000.0)
+    assert np.all(applied[np.asarray(loaded.supports)] == 0.0)
 
 
 @pytest.mark.parametrize("load_case", ["uniform", "half", "point"])
@@ -293,7 +293,7 @@ def test_load_cases_add(loaded):
 
 
 def test_the_crown_is_the_highest_node(loaded):
-    index = crown_node(loaded)
+    index = loaded.crown_node()
 
     assert isinstance(index, int)
     assert float(loaded.nodes[index, 2]) == float(jnp.max(loaded.nodes[:, 2]))

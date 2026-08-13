@@ -6,11 +6,12 @@ import pytest
 
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
 
 # A 10 m arch of ten members under a 20 kN load at every free node, in the XZ
 # plane, at about the size the code check asks for. Units are mm and N.
@@ -54,7 +55,7 @@ def relative(actual, expected):
 
 @pytest.fixture(scope="module")
 def steel():
-    return SteelGrade()
+    return Steel()
 
 
 @pytest.fixture(scope="module")
@@ -64,14 +65,25 @@ def catalogue(steel):
 
 @pytest.fixture(scope="module")
 def structure():
-    return arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=LOAD)
+    return arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
+
+
+def funicular(structure):
+    """
+    The uniform load case the arch is form-found under and analyzed in.
+    """
+    return loads_uniform(structure, LOAD)
 
 
 @pytest.fixture(scope="module")
 def state(structure):
     q = jnp.full(NUM_EDGES, FORCE_DENSITY)
 
-    return equilibrium_state(q, structure, equilibrium_graph(structure))
+    graph = equilibrium_graph(structure)
+
+    return equilibrium_state(
+        q, structure.nodes[graph.indices_fixed], graph, funicular(structure)
+    )
 
 
 @pytest.fixture(scope="module")
@@ -92,8 +104,12 @@ def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
         structure._replace(nodes=state.xyz), steel, catalogue, normal=NORMAL
     )
 
-    a = member_forces(from_start, state.xyz, diameters, steel, catalogue)
-    b = member_forces(from_found, state.xyz, diameters, steel, catalogue)
+    a = member_forces(
+        from_start, state.xyz, diameters, steel, catalogue, funicular(structure)
+    )
+    b = member_forces(
+        from_found, state.xyz, diameters, steel, catalogue, funicular(structure)
+    )
 
     assert np.all(np.asarray(a.axial_force) == np.asarray(b.axial_force))
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
@@ -106,30 +122,39 @@ def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
     # smallest size is larger than anything the arch uses.
     absurd = prepare_model(
         structure._replace(nodes=state.xyz * 3.0),
-        SteelGrade(f_y=1.0, e_mod=1.0, density=1.0),
+        Steel(f_y=1.0, e_mod=1.0, density=1.0),
         TubeCatalogue(ratio=catalogue.ratio, diameter_min=999.0),
         normal=NORMAL,
     )
     honest = prepare_model(structure, steel, catalogue, normal=NORMAL)
 
-    a = member_forces(absurd, state.xyz, diameters, steel, catalogue)
-    b = member_forces(honest, state.xyz, diameters, steel, catalogue)
+    a = member_forces(
+        absurd, state.xyz, diameters, steel, catalogue, funicular(structure)
+    )
+    b = member_forces(
+        honest, state.xyz, diameters, steel, catalogue, funicular(structure)
+    )
 
     assert np.all(np.asarray(a.axial_force) == np.asarray(b.axial_force))
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
 
 
-def test_the_structures_own_loads_are_the_default_load_case(
+def test_a_prepared_model_carries_no_load_case_of_its_own(
     structure, state, steel, catalogue, diameters
 ):
+    # Preparing compiles the shape of the nodal channels and nothing else, so a
+    # load case is always the caller's and two of them reuse one program.
     model = prepare_model(structure, steel, catalogue, normal=NORMAL)
 
-    implied = member_forces(model, state.xyz, diameters, steel, catalogue)
-    named = member_forces(
-        model, state.xyz, diameters, steel, catalogue, loads=structure.loads
-    )
+    applied = funicular(structure)
+    once = member_forces(model, state.xyz, diameters, steel, catalogue, applied)
+    twice = member_forces(model, state.xyz, diameters, steel, catalogue, applied)
+    halved = member_forces(model, state.xyz, diameters, steel, catalogue, 0.5 * applied)
 
-    assert np.all(np.asarray(implied.axial_force) == np.asarray(named.axial_force))
+    assert np.all(np.asarray(once.axial_force) == np.asarray(twice.axial_force))
+    assert np.allclose(
+        np.asarray(halved.axial_force), 0.5 * np.asarray(once.axial_force)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -140,7 +165,10 @@ def test_the_geometry_is_a_live_leaf(structure, state, steel, catalogue, diamete
 
     def total(xyz):
         return jnp.sum(
-            member_forces(model, xyz, diameters, steel, catalogue).axial_force ** 2
+            member_forces(
+                model, xyz, diameters, steel, catalogue, funicular(structure)
+            ).axial_force
+            ** 2
         )
 
     gradient = jax.grad(total)(state.xyz)
@@ -154,7 +182,10 @@ def test_the_diameters_are_a_live_leaf(structure, state, steel, catalogue, diame
 
     def total(sizes):
         return jnp.sum(
-            member_forces(model, state.xyz, sizes, steel, catalogue).moment_major ** 2
+            member_forces(
+                model, state.xyz, sizes, steel, catalogue, funicular(structure)
+            ).moment_major
+            ** 2
         )
 
     gradient = jax.grad(total)(diameters)
@@ -169,10 +200,11 @@ def test_the_modulus_is_a_live_leaf(structure, state, steel, catalogue, diameter
     # displacement can, and its derivative is checked against the difference
     # quotient rather than against zero.
     model = prepare_model(structure, steel, catalogue, normal=NORMAL)
+    applied = funicular(structure)
 
     def compliance(e_mod):
         member = member_forces(
-            model, state.xyz, diameters, steel._replace(e_mod=e_mod), catalogue
+            model, state.xyz, diameters, steel._replace(e_mod=e_mod), catalogue, applied
         )
 
         return jnp.sum(member.moment_major**2) / e_mod
@@ -193,7 +225,9 @@ def test_the_analysis_traces_under_jit(structure, state, steel, catalogue, diame
     model = prepare_model(structure, steel, catalogue, normal=NORMAL)
 
     def run(xyz, sizes):
-        member = member_forces(model, xyz, sizes, steel, catalogue)
+        member = member_forces(
+            model, xyz, sizes, steel, catalogue, funicular(structure)
+        )
 
         return member.axial_force, member.moment_major
 
@@ -211,7 +245,10 @@ def test_the_gradient_of_the_analysis_traces_under_jit(
 
     def total(xyz):
         return jnp.sum(
-            member_forces(model, xyz, diameters, steel, catalogue).axial_force ** 2
+            member_forces(
+                model, xyz, diameters, steel, catalogue, funicular(structure)
+            ).axial_force
+            ** 2
         )
 
     eager = jax.grad(total)(state.xyz)
