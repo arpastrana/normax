@@ -253,6 +253,23 @@ def test_a_half_span_load_case_with_no_factor_leaves_one_half_bare(loaded):
     assert np.sum(applied[along <= middle]) < 0.0
 
 
+def test_a_mirrored_half_span_load_case_loads_the_other_half(loaded):
+    applied = np.asarray(loads_half_span(loaded, 20_000.0, mirrored=True)[:, 2])
+    along = np.asarray(loaded.nodes[:, 0])
+    middle = 0.5 * (along.min() + along.max())
+
+    assert np.all(applied[along < middle] == 0.0)
+    assert np.sum(applied[along >= middle]) < 0.0
+
+
+def test_a_mirrored_half_span_load_case_is_the_reflection_of_the_unmirrored_one(loaded):
+    near = np.asarray(loads_half_span(loaded, 20_000.0, factor=0.5)[:, 2])
+    far = np.asarray(loads_half_span(loaded, 20_000.0, factor=0.5, mirrored=True)[:, 2])
+
+    assert np.allclose(near, far[::-1])
+    assert np.isclose(near.sum(), far.sum())
+
+
 @pytest.mark.parametrize("axis", [-1, 3])
 def test_a_half_span_load_case_refuses_an_axis_that_is_not_a_dimension(loaded, axis):
     with pytest.raises(ValueError, match="axis"):

@@ -51,8 +51,8 @@ from typing import NamedTuple
 import numpy as np
 import openseespy.opensees as ops
 
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 
 E0 = 210e9
 A0 = 7.37e-3
@@ -435,22 +435,22 @@ def classify(ddm: Sequence[float], quotient: Sequence[float], floor: float):
     return verdict
 
 
-def capability_matrix(report: ReportWriter) -> None:
+def capability_matrix(report: Report) -> None:
     """
     Every (element, dimension, parameter) pair against central differences.
     """
     report.write_banner("DDM capability matrix -- sensNodeDisp vs central differences")
 
     matrix_columns = (
-        ColumnSpec("parameter"),
-        ColumnSpec("status"),
-        ColumnSpec("signal", align="<"),
-        ColumnSpec("worst", align="<"),
+        ReportColumn("parameter"),
+        ReportColumn("status"),
+        ReportColumn("signal", align="<"),
+        ReportColumn("worst", align="<"),
     )
     summary_columns = (
-        ColumnSpec("case", align="<"),
-        ColumnSpec("parameter"),
-        ColumnSpec("status"),
+        ReportColumn("case", align="<"),
+        ReportColumn("parameter"),
+        ReportColumn("status"),
     )
     summary = []
     for element in ELEMENTS:
@@ -500,7 +500,7 @@ def capability_matrix(report: ReportWriter) -> None:
     report.write_table(summary_columns, summary)
 
 
-def coord_3d_evidence(report: ReportWriter) -> None:
+def coord_3d_evidence(report: Report) -> None:
     """
     Which number to believe where 3D DDM and central differences disagree.
 
@@ -572,17 +572,17 @@ def coord_3d_evidence(report: ReportWriter) -> None:
             rows.append((f"coord{direction}", f"cd h={relative:.0e}", *quotient))
 
     columns = (
-        ColumnSpec("parameter"),
-        ColumnSpec("source", align="<"),
-        ColumnSpec("d/dx", "+.8e"),
-        ColumnSpec("d/dy", "+.8e"),
-        ColumnSpec("d/dz", "+.8e"),
+        ReportColumn("parameter"),
+        ReportColumn("source", align="<"),
+        ReportColumn("d/dx", "+.8e"),
+        ReportColumn("d/dy", "+.8e"),
+        ReportColumn("d/dz", "+.8e"),
     )
 
     report.write_table(columns, rows)
 
 
-def force_sensitivity(report: ReportWriter) -> None:
+def force_sensitivity(report: Report) -> None:
     """
     `∂N/∂xyz`, which is what T3 consumes, rather than `∂u/∂xyz`.
 
@@ -647,10 +647,10 @@ def force_sensitivity(report: ReportWriter) -> None:
                         rows.append((where, found, quotient, error))
 
         columns = (
-            ColumnSpec("where", align="<"),
-            ColumnSpec("ddm", "+.6e"),
-            ColumnSpec("central diff", "+.6e"),
-            ColumnSpec("relative", ".2e"),
+            ReportColumn("where", align="<"),
+            ReportColumn("ddm", "+.6e"),
+            ReportColumn("central diff", "+.6e"),
+            ReportColumn("relative", ".2e"),
         )
         verdict = "AVAILABLE" if worst < 1e-5 else "NOT RELIABLE"
         entries = (("worst", f"{worst:.3e}, dN/dxyz {verdict}"),)
@@ -660,7 +660,7 @@ def force_sensitivity(report: ReportWriter) -> None:
         report.write_entries(entries)
 
 
-def printb_semantics(report: ReportWriter) -> None:
+def printb_semantics(report: Report) -> None:
     """
     Is the pseudo-load vector reachable, in any sensitivity mode?
 
@@ -739,7 +739,7 @@ def printb_semantics(report: ReportWriter) -> None:
         report.write_entries(entries)
 
 
-def cost_scaling(report: ReportWriter) -> None:
+def cost_scaling(report: Report) -> None:
     """
     What the DDM sweep costs, against the finite-difference fallback.
 
@@ -750,12 +750,12 @@ def cost_scaling(report: ReportWriter) -> None:
     report.write_banner("cost scaling -- DDM sweep vs finite differences")
 
     columns = (
-        ColumnSpec("n_params"),
-        ColumnSpec("DDM total [ms]", ".2f"),
-        ColumnSpec("sens only [ms]", ".2f"),
-        ColumnSpec("per param [ms]", ".4f"),
-        ColumnSpec("FD equiv [ms]", ".2f"),
-        ColumnSpec("speedup", ".1f"),
+        ReportColumn("n_params"),
+        ReportColumn("DDM total [ms]", ".2f"),
+        ReportColumn("sens only [ms]", ".2f"),
+        ReportColumn("per param [ms]", ".4f"),
+        ReportColumn("FD equiv [ms]", ".2f"),
+        ReportColumn("speedup", ".1f"),
     )
 
     def arch(num_elements, num_parameters=0, solve=True):
@@ -850,7 +850,7 @@ def main(verbose: bool = True) -> None:
     """
     Run one pass, or fan every pass out into its own subprocess.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
 
     if len(sys.argv) > 1:
         PASSES[sys.argv[1]](report)

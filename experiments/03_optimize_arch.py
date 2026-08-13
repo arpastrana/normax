@@ -52,6 +52,15 @@ a floor on the shortest member and the two are reported side by side, which is
 the only way to see how much of the first one is design and how much is
 collapse.
 
+**The two asymmetric cases are a mirrored pair, and that is what makes the
+answer readable.** A single half-span case leaves one half of the arch light and
+biases the search towards it, so an asymmetric optimum says nothing about
+whether the asymmetry is structural or an artefact of the loading. Loading each
+half in turn makes the whole set symmetric about midspan, and a symmetric
+problem started from a symmetric shape should stay symmetric at every iterate.
+The departure from that is measured rather than assumed: `mirror_gap` reports
+how far the design differs from its own reflection.
+
 **Holding the plan instead would not do it.** That bounds every member by its own
 projection, but it leaves horizontal equilibrium unimposed, and on an evenly
 spaced plan that equilibrium admits only a uniform force density — so the
@@ -91,14 +100,12 @@ from normax.pipeline import design_envelope
 from normax.pipeline import frame_stability
 from normax.pipeline import governing_load_case
 from normax.pipeline import unsmoothed_design
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import arch_2d
-from normax.structures import crown_node
 from normax.structures import loads_half_span
-from normax.structures import loads_point
 from normax.structures import loads_uniform
 from normax.visualization import Descent
 from normax.visualization import Form
@@ -120,12 +127,15 @@ NORMAL = 1
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
-# Every case carries the same total, so the three differ in where the load sits
-# and in nothing else. A case with a smaller total would be lighter for a reason
+# Every case carries the same total, so they differ in where the load sits and
+# in nothing else. A case with a smaller total would be lighter for a reason
 # that has nothing to do with the shape.
 HALF_FACTOR = 0.5
-POINT_SHARE = 0.25
-CASE_NAMES = ("LC1 uniform", "LC2 half span", "LC3 crown point")
+CASE_NAMES = (
+    "LC1 uniform",
+    "LC2 half span",
+    "LC3 half span mirrored",
+)
 
 # Sharpnesses to report the cost of the smoothing at, and the schedule the
 # descent anneals over. Arrays rather than floats so that a sharpness is traced
@@ -149,7 +159,7 @@ DECADES = 10.0
 SCALES = np.linspace(0.4, 2.4, 21)
 
 # Relative steps the central difference is swept over, and the one it plateaus
-# at. Not P3's 1e-5: three load cases make the mass four times larger and the
+# at. Not P3's 1e-5: several load cases make the mass larger and the
 # arithmetic behind it three times longer, so cancellation dominates a decade
 # sooner and the trough moves. The experiment prints the sweep rather than
 # asserting the choice.
@@ -283,6 +293,8 @@ class FinalReport(NamedTuple):
         Weakest critical load factor over the load cases.
     lengths :
         Length of every member of the finished design.
+    mirror :
+        How far the diameters depart from their own reflection.
     """
 
     envelope: Envelope
@@ -291,6 +303,22 @@ class FinalReport(NamedTuple):
     stagger: float
     alpha_cr: float
     lengths: Float[np.ndarray, "edges"]
+    mirror: float
+
+
+def mirror_gap(values: Float[np.ndarray, "edges"]) -> float:
+    """
+    How far a per-member quantity departs from its own reflection.
+
+    The arch is a chain built left to right, so member `k` mirrors member
+    `-1 - k` and reversing the array reflects the design about midspan. Scaled
+    by the largest entry, so the number reads the same whatever the quantity is.
+    """
+    values = np.asarray(values)
+    scale = float(np.max(np.abs(values)))
+    departure = float(np.max(np.abs(values - values[::-1])))
+
+    return departure / scale if scale > 0.0 else 0.0
 
 
 def arch_problem() -> ArchProblem:
@@ -325,7 +353,7 @@ def arch_problem() -> ArchProblem:
 
 def build_load_cases(structure) -> Float[Array, "cases nodes 3"]:
     """
-    Three cases of equal total: funicular, half span, and a crown point load.
+    Three cases of equal total: funicular, half span, and its mirror.
     """
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
 
@@ -334,12 +362,10 @@ def build_load_cases(structure) -> Float[Array, "cases nodes 3"]:
     half = loads_half_span(structure, spread, factor=HALF_FACTOR)
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
-    crown = crown_node(structure)
-    spread_share = loads_uniform(structure, spread * (1.0 - POINT_SHARE))
-    at_crown = loads_point(structure, TOTAL_LOAD * POINT_SHARE, node=crown)
-    point = spread_share + at_crown
+    mirrored = loads_half_span(structure, spread, factor=HALF_FACTOR, mirrored=True)
+    mirrored = mirrored * (TOTAL_LOAD / abs(float(jnp.sum(mirrored[:, 2]))))
 
-    cases = [uniform, half, point]
+    cases = [uniform, half, mirrored]
 
     return jnp.stack(cases)
 
@@ -392,7 +418,7 @@ def design_under(envelope: Envelope, sized: Unsmoothed, load_case: int = 0) -> D
     return design
 
 
-def report_load_cases(report: ReportWriter, setup: ArchProblem) -> None:
+def report_load_cases(report: Report, setup: ArchProblem) -> None:
     """
     What each case demands of each member at the starting shape.
     """
@@ -400,12 +426,12 @@ def report_load_cases(report: ReportWriter, setup: ArchProblem) -> None:
     decided = np.asarray(governing_compiled(result))
 
     case_columns = [
-        ColumnSpec(f"d {name.split()[0]} [mm]", ".2f") for name in CASE_NAMES
+        ReportColumn(f"d {name.split()[0]} [mm]", ".2f") for name in CASE_NAMES
     ]
     columns = (
-        ColumnSpec("member"),
+        ReportColumn("member"),
         *case_columns,
-        ColumnSpec("governs", align="<"),
+        ReportColumn("governs", align="<"),
     )
     rows = []
     for member in range(NUM_EDGES):
@@ -420,21 +446,21 @@ def report_load_cases(report: ReportWriter, setup: ArchProblem) -> None:
         for index, name in enumerate(CASE_NAMES)
     ]
 
-    report.write_line("The three load cases, each carrying 180 kN")
+    report.write_line(f"The {len(CASE_NAMES)} load cases, each carrying 180 kN")
     report.write_table(columns, rows)
     report.write_entries(entries)
 
 
-def report_smoothing(report: ReportWriter, setup: ArchProblem) -> None:
+def report_smoothing(report: Report, setup: ArchProblem) -> None:
     """
     What the envelope gives away at each sharpness, against the true largest.
     """
     columns = (
-        ColumnSpec("beta", ".0f"),
-        ColumnSpec("mass [t]", ".9f"),
-        ColumnSpec("excess", ".4%"),
-        ColumnSpec("bound", ".4%"),
-        ColumnSpec("max utilization", ".15f"),
+        ReportColumn("beta", ".0f"),
+        ReportColumn("mass [t]", ".9f"),
+        ReportColumn("excess", ".4%"),
+        ReportColumn("bound", ".4%"),
+        ReportColumn("max utilization", ".15f"),
     )
     rows = []
     for beta in SHARPNESSES:
@@ -451,7 +477,7 @@ def report_smoothing(report: ReportWriter, setup: ArchProblem) -> None:
     report.write_table(columns, rows)
 
 
-def report_sweep(report: ReportWriter, setup: ArchProblem) -> SweepReport:
+def report_sweep(report: Report, setup: ArchProblem) -> SweepReport:
     """
     The mass along the uniform force densities, and the gradient against it.
     """
@@ -476,8 +502,8 @@ def report_sweep(report: ReportWriter, setup: ArchProblem) -> SweepReport:
 
     sampled = (0, len(SCALES) // 2, len(SCALES) - 1)
     step_columns = (
-        ColumnSpec("relative step", ".0e"),
-        ColumnSpec("worst scaled error", ".2e"),
+        ReportColumn("relative step", ".0e"),
+        ReportColumn("worst scaled error", ".2e"),
     )
     step_rows = []
     for relative in STEPS:
@@ -506,11 +532,11 @@ def report_sweep(report: ReportWriter, setup: ArchProblem) -> SweepReport:
         rows.append((scale, float(setup.q[0]) * scale, mass, slope, scaled))
 
     columns = (
-        ColumnSpec("scale", ".2f"),
-        ColumnSpec("q [N/mm]", ".3f"),
-        ColumnSpec("mass [t]", ".9f"),
-        ColumnSpec("d/dk", ".6e"),
-        ColumnSpec("scaled", ".2e"),
+        ReportColumn("scale", ".2f"),
+        ReportColumn("q [N/mm]", ".3f"),
+        ReportColumn("mass [t]", ".9f"),
+        ReportColumn("d/dk", ".6e"),
+        ReportColumn("scaled", ".2e"),
     )
 
     report.write_heading("The mass along the uniform force densities")
@@ -534,9 +560,7 @@ def report_sweep(report: ReportWriter, setup: ArchProblem) -> SweepReport:
     return sweep
 
 
-def report_descent(
-    report: ReportWriter, setup: ArchProblem, floor: float
-) -> DescentRun:
+def report_descent(report: Report, setup: ArchProblem, floor: float) -> DescentRun:
     """
     The same mass with one force density per member, annealed.
     """
@@ -563,9 +587,9 @@ def report_descent(
     )
 
     columns = (
-        ColumnSpec("step"),
-        ColumnSpec("beta", ".1f"),
-        ColumnSpec("objective [t]", ".9f"),
+        ReportColumn("step"),
+        ReportColumn("beta", ".1f"),
+        ReportColumn("objective [t]", ".9f"),
     )
     rows = [
         (step, float(beta), float(total))
@@ -582,7 +606,7 @@ def report_descent(
 
 
 def report_stagger(
-    report: ReportWriter,
+    report: Report,
     setup: ArchProblem,
     q: Float[Array, "edges"],
     result: Envelope,
@@ -605,9 +629,9 @@ def report_stagger(
 
     stagger = abs(float(result.mass) - float(relaxed.mass)) / float(relaxed.mass)
     columns = (
-        ColumnSpec("pass"),
-        ColumnSpec("move", ".3e"),
-        ColumnSpec("mass [t]", ".9f"),
+        ReportColumn("pass"),
+        ReportColumn("move", ".3e"),
+        ReportColumn("mass [t]", ".9f"),
     )
     entries = (("one pass costs", f"{stagger:.3%} of the mass"),)
 
@@ -619,7 +643,7 @@ def report_stagger(
 
 
 def report_final(
-    report: ReportWriter,
+    report: Report,
     setup: ArchProblem,
     run: DescentRun,
 ) -> FinalReport:
@@ -659,6 +683,8 @@ def report_final(
         ("shortest, smoothed", f"{smoothed:.1f} mm"),
         (f"members under {FLOOR:.0f} mm", f"{stubs} of {NUM_EDGES}"),
         ("force densities at bounds", f"{at_lower} lower, {at_upper} upper"),
+        ("mirror gap, diameters", f"{mirror_gap(np.asarray(sized.diameters)):.2e}"),
+        ("mirror gap, force densities", f"{mirror_gap(np.asarray(q)):.2e}"),
         *governing,
     )
 
@@ -678,22 +704,23 @@ def report_final(
         factors.append((name, float(checked.factors[0]), verdict))
 
     columns = (
-        ColumnSpec("load case", align="<"),
-        ColumnSpec("alpha_cr", ".4f"),
-        ColumnSpec("verdict", align="<"),
+        ReportColumn("load case", align="<"),
+        ReportColumn("alpha_cr", ".4f"),
+        ReportColumn("verdict", align="<"),
     )
 
     report.write_heading("Critical load factor by case")
     report.write_table(columns, factors)
 
     weakest = min(factor for _, factor, _ in factors)
-    final = FinalReport(result, sized, decided, stagger, weakest, lengths)
+    mirror = mirror_gap(np.asarray(sized.diameters))
+    final = FinalReport(result, sized, decided, stagger, weakest, lengths, mirror)
 
     return final
 
 
 def report_floor(
-    report: ReportWriter,
+    report: Report,
     loose: FinalReport,
     held: FinalReport,
     funicular_mass: float,
@@ -714,9 +741,9 @@ def report_floor(
         ("alpha_cr, weakest", loose.alpha_cr, held.alpha_cr),
     )
     columns = (
-        ColumnSpec("quantity", align="<"),
-        ColumnSpec("unconstrained", ".4f"),
-        ColumnSpec("floored", ".4f"),
+        ReportColumn("quantity", align="<"),
+        ReportColumn("unconstrained", ".4f"),
+        ReportColumn("floored", ".4f"),
     )
     kept = 1.0 - float(held.sized.mass) / funicular_mass
     entries = (
@@ -751,6 +778,7 @@ def write_figures(
     optimization = figure_optimization(swept, checked, descents)
     optimization.savefig(FIGURES / "03_optimization.png", dpi=200)
 
+    starting = build(setup, setup.q, BETA_STOP)
     single = build(setup, setup.q * SCALES[sweep.best], BETA_STOP)
     single_sized = unsmoothed_compiled(
         single, setup.problem, section_class=SECTION_CLASS
@@ -764,7 +792,9 @@ def write_figures(
         Form(title_loose, loose.envelope.xyz, loose.sized.diameters, loose.decided),
         Form(title_held, held.envelope.xyz, held.sized.diameters, held.decided),
     )
-    cases = figure_load_cases(setup.problem.structure.edges, forms, CASE_NAMES)
+    cases = figure_load_cases(
+        setup.problem.structure.edges, forms, CASE_NAMES, reference=starting.xyz
+    )
     cases.savefig(FIGURES / "03_load_cases.png", dpi=200)
 
 
@@ -772,7 +802,7 @@ def main(verbose: bool = True) -> None:
     """
     Sweep the funicular family, then descend on one variable per member.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
     setup = arch_problem()
 
     report_load_cases(report, setup)

@@ -148,17 +148,26 @@ def support_fixities(
 
     Notes
     -----
-    Supports restrain translation and leave rotation free, so a base carries no
-    moment. Form finding restrains translation and nothing else, and a fixed
-    base would inject end moments the form-finder never saw.
+    **Pinned and never fixed is a rule about structures that occupy all three
+    dimensions.** There a support restrains translation and leaves every rotation
+    free, so a base carries no moment: form finding restrains translation and
+    nothing else, and a fixed base would inject end moments the form-finder never
+    saw.
 
-    A planar structure analyzed by a three-dimensional solver is a mechanism:
-    rotating the whole of it about the line joining its supports strains no
-    member and moves no support, so the stiffness matrix is singular and the
-    solve returns nan rather than a plausible wrong answer. Restraining the one
-    translation normal to the plane removes that mode. The two rotations out of
-    the plane are left free, being unexcited by an in-plane load, and the
-    in-plane results are unchanged by restraining them.
+    **A planar structure deviates from that rule, and has to.** Analyzed by a
+    three-dimensional solver it is a mechanism — rotating the whole of it about
+    the line joining its supports strains no member and moves no support, so the
+    stiffness matrix is singular and the solve returns nan rather than a
+    plausible wrong answer. Restraining the one translation normal to the plane,
+    at every node, removes that mode.
+
+    **A straight planar structure needs more than that.** Rotating a beam about
+    its own axis moves no node at all, its members lying on the line joining the
+    supports, so the normal translation never engages and the mode survives as a
+    uniform twist. The two rotations out of the plane are restrained at the
+    supports to remove it, which is what a bearing does. What is never restrained
+    anywhere is the rotation the in-plane bending happens about, so a base still
+    carries no moment and the in-plane results are unchanged.
 
     A solver working in the plane itself has no such mode to remove, so it reads
     the support columns and ignores the normal one.
@@ -173,5 +182,7 @@ def support_fixities(
 
     if normal is not None:
         flags[:, normal] = True
+        rotations = [DOF_PER_NODE // 2 + axis for axis in (0, 1, 2) if axis != normal]
+        flags[np.ix_(np.asarray(structure.supports), rotations)] = True
 
     return flags

@@ -44,7 +44,7 @@ import jax.numpy as jnp
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
-from normax.reporting import ReportWriter
+from normax.reporting import Report
 
 A = jnp.array([1.0, 2.0, 3.0])
 B = jnp.array([4.0, 5.0, 6.0])
@@ -56,7 +56,7 @@ def main(verbose: bool = True) -> None:
     """
     Apply the upstream vector-addition Tesseract, then differentiate through it.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
 
     with Tesseract.from_image(IMAGE, user="root") as tesseract:
 

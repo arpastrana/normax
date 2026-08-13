@@ -76,8 +76,8 @@ from normax.pipeline import ProblemSetup
 from normax.pipeline import design_members as design_in_process
 from normax.pipeline import governing_states
 from normax.pipeline import total_mass as mass_in_process
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import Structure
@@ -282,7 +282,7 @@ def timed(call: Callable[[], Any]) -> TimedCall:
     return call
 
 
-def report_schemas(report: ReportWriter, chain: Chain) -> None:
+def report_schemas(report: Report, chain: Chain) -> None:
     """
     What every stage carries, and what it will differentiate.
     """
@@ -308,7 +308,7 @@ def report_schemas(report: ReportWriter, chain: Chain) -> None:
 
 
 def report_parity(
-    report: ReportWriter,
+    report: Report,
     setup: ArchSetup,
     chain: Chain,
     section_class: int,
@@ -365,11 +365,11 @@ def report_parity(
         rows.append((label, *first, scaled, limit))
 
     columns = (
-        ColumnSpec("field", align="<"),
-        ColumnSpec("in process", ".14e"),
-        ColumnSpec("composed", ".14e"),
-        ColumnSpec("scaled", ".2e"),
-        ColumnSpec("held to", ".0e"),
+        ReportColumn("field", align="<"),
+        ReportColumn("in process", ".14e"),
+        ReportColumn("composed", ".14e"),
+        ReportColumn("scaled", ".2e"),
+        ReportColumn("held to", ".0e"),
     )
     ratio = float(catalogue.ratio)
 
@@ -419,10 +419,10 @@ def report_parity(
         gradients.append((edge, in_process_value, composed_value, scaled))
 
     columns = (
-        ColumnSpec("edge"),
-        ColumnSpec("in process", ".14e"),
-        ColumnSpec("composed", ".14e"),
-        ColumnSpec("scaled", ".2e"),
+        ReportColumn("edge"),
+        ReportColumn("in process", ".14e"),
+        ReportColumn("composed", ".14e"),
+        ReportColumn("scaled", ".2e"),
     )
     seconds = (
         f"{exact.seconds:.4f} in process, {crossed.seconds:.4f} composed, both compiled"
@@ -441,7 +441,7 @@ def report_parity(
     return worst
 
 
-def report_modes(report: ReportWriter, setup: ArchSetup, chain: Chain) -> float:
+def report_modes(report: Report, setup: ArchSetup, chain: Chain) -> float:
     """
     Forward mode against reverse mode, through all three stages.
     """
@@ -537,7 +537,7 @@ def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) ->
 
 
 def report_served(
-    report: ReportWriter,
+    report: Report,
     setup: ArchSetup,
     chain: Chain,
     catalogue: TubeCatalogue,
@@ -610,7 +610,7 @@ def main(verbose: bool = True) -> None:
     """
     Run the pipeline across three schemas, and compare it against one process.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
     setup = arch_setup()
     chain = local_chain()
 

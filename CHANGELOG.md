@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### A straight beam, and the mechanism it found in the supports
+
+`experiments/11_straight_beam_benchmark.py` is the arch of experiment 03 with its
+z coordinate set to zero — same span, same twenty members, same 180 kN, same
+supports. **Two stages rather than three**: no form finding, no force density, so
+what is exercised is the T2 to T3 handoff alone. One load case, because a beam is
+already in pure bending and a second would move numbers without testing anything.
+
+- **It is the benchmark because both stages have a written-down answer.** The
+  moment diagram is the statics of a simply supported beam under equal point
+  loads, matched to 1.5e-12 scaled. The size is a cube root — with no axial force
+  the check is bending stress alone and every section modulus is a monomial in
+  the diameter — matched to 1.6e-15, with the unit-diameter modulus taken from
+  `normax.ec3.section` rather than restated. Axial force is **exactly zero**.
+- **The staggered coupling is exact here**, mass bit-identical across four passes
+  against about 1.2% on the arch. A determinate structure carries the same forces
+  whatever its sections are. The difference is indeterminacy, not the code.
+- **Its tolerances are mesh-dependent and pinned with headroom.** The residue is
+  the conditioning of the linear solve: 1.8e-13 at ten members, 1.5e-12 at
+  twenty, 1.0e-11 at forty, 1.2e-10 at eighty. A first version pinned 1e-12 on
+  the ten-member floor and failed as soon as the mesh doubled.
+- **`support_fixities` was wrong for a straight planar structure, and the beam is
+  what found it.** Restraining the normal translation removes the rotation about
+  the line joining the supports only when the members lie off that line. A beam
+  lies on it, so the mode survives as a uniform twist and the first run died on a
+  singular stiffness matrix; `diagnose_mechanisms` named it exactly, one zero
+  eigenvalue with `rx` at 1.0 on every node. The two out-of-plane rotations are
+  now restrained **at the supports**, which is what a bearing does. Pinned and
+  never fixed is a rule about structures that occupy all three dimensions; a
+  planar one deviates from it because otherwise it is a mechanism, and the
+  rotation the in-plane bending happens about is still free everywhere. Verified
+  inert for the arch: mass, `alpha_cr`, all four buckling factors, the
+  slenderness table and the refinement study are byte-identical.
+- **Figures**: `11_benchmark.png` and `11_profile.png`, the latter drawing the
+  beam in elevation at its required depth **to scale** rather than exaggerated,
+  216 mm at the supports to 376 mm at midspan. `figure_sections` degenerates for
+  a flat structure, both elevation panels collapsing to a line, so
+  `figure_beam_profile` was written beside it.
+
 ### Experiment 09 was eager, and it cost 47 of its 52 seconds
 
 Experiments 03 and 10 compile the calls they make in a loop; 09 never did, so
@@ -69,6 +108,41 @@ warm**, on the same persistent cache as experiment 09.
   0.062, and 0.118 s for a gradient against 0.221. The boundary costs about **90x
   on a design and 390x on a gradient**, and that is now a claim about serializing
   and reassembling rather than about who got compiled.
+
+### The crown point gives way to a mirrored half-span pair
+
+The arch answered to one asymmetric case, which loaded the left half and left the
+right half at `HALF_FACTOR`. That biases the search towards the half it leaves
+light, and an asymmetric optimum then says nothing about whether the asymmetry is
+structural or an artefact of the loading. The crown point case is replaced rather
+than joined: the set is still three cases, now `LC1 uniform`, `LC2 half span` and
+`LC3 half span mirrored`, symmetric about midspan.
+
+- **`loads_half_span` gained `mirrored`.** It loads the far half instead of the
+  near one. A node exactly at midspan is loaded either way, which is what makes
+  the two cases exact reflections on a symmetric node layout rather than merely
+  similar; `tests/test_structures.py` asserts `near == far[::-1]`.
+- **`mirror_gap` measures the bias rather than assuming it away.** It reports how
+  far a per-member quantity departs from its own reflection. **The floored design
+  comes out symmetric — 5.97e-05 on the diameters and 2.62e-05 on the force
+  densities** — and its governing split is 10 / 10 to LC2 and LC3, with LC1
+  governing nothing.
+- **The unconstrained design does not, and that is the plateau rather than the
+  loading.** It measures **1.43e-01 on the diameters and 8.84e-02 on the force
+  densities**, with a 16 / 4 split. A symmetric problem started from a symmetric
+  shape should stay symmetric at every iterate; this one does not, because its
+  descent ends wherever floating point stops it. One more reason the
+  unconstrained endpoint is not a quotable design.
+- **The masses.** Funicular 0.127126 t; best uniform 0.122287 t at 1.50x;
+  unconstrained 0.062669 t; floored 0.097971 t. **The floored design is 22.9%
+  lighter than the funicular arch**, and the unconstrained one 50.7% — of which
+  most is collapse: shortest member 41.1 mm against 310.6 mm, length ratio 101.5
+  against 7.0, and 16 of 20 members under the floor against none.
+- **Both remain far from stable.** Weakest critical load factor 1.1030 for the
+  unconstrained design and 1.9740 for the floored one, against the 10 of
+  §5.2.1 — inadequate under every case. `LC1` governs no member of either.
+- The finite-difference trough is unmoved at 1e-4, and the worst scaled gradient
+  error is 1.60e-08 against a 2e-07 tolerance.
 
 ### American English, including in the units API
 

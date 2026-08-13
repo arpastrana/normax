@@ -51,8 +51,8 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.formfinding import equilibrium_graph
 from normax.formfinding import equilibrium_state
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import Structure
@@ -219,7 +219,7 @@ def central_difference(
     return float((forward - backward) / (2.0 * step))
 
 
-def report_shape(report: ReportWriter, arch: FunicularArch, mechanisms: int) -> None:
+def report_shape(report: Report, arch: FunicularArch, mechanisms: int) -> None:
     """
     What form finding returned, and that the frame built on it is not a mechanism.
     """
@@ -238,7 +238,7 @@ def report_shape(report: ReportWriter, arch: FunicularArch, mechanisms: int) -> 
 
 
 def report_members(
-    report: ReportWriter,
+    report: Report,
     arch: FunicularArch,
     member: MemberForces,
 ) -> None:
@@ -246,11 +246,11 @@ def report_members(
     What each member was handed, and what the frame solver made of it.
     """
     columns = (
-        ColumnSpec("edge"),
-        ColumnSpec("q L [kN]", ".4f"),
-        ColumnSpec("smax N [kN]", ".4f"),
-        ColumnSpec("gap", ".2e"),
-        ColumnSpec("M/(N L)", ".2e"),
+        ReportColumn("edge"),
+        ReportColumn("q L [kN]", ".4f"),
+        ReportColumn("smax N [kN]", ".4f"),
+        ReportColumn("gap", ".2e"),
+        ReportColumn("M/(N L)", ".2e"),
     )
     rows = []
     for edge in range(NUM_EDGES):
@@ -265,7 +265,7 @@ def report_members(
     report.write_table(columns, rows)
 
 
-def report_scaling(report: ReportWriter) -> list[HandoffGap]:
+def report_scaling(report: Report) -> list[HandoffGap]:
     """
     That the gap is quadratic in the diameter, and free of modulus and scale.
 
@@ -273,10 +273,10 @@ def report_scaling(report: ReportWriter) -> list[HandoffGap]:
     """
     by_diameter = [handoff_gap(diameter, STEEL) for diameter in DIAMETERS]
     diameter_columns = (
-        ColumnSpec("d [mm]", ".1f"),
-        ColumnSpec("gap", ".2e"),
-        ColumnSpec("M/(N L)", ".2e"),
-        ColumnSpec("gap / (d/100)^2", ".2e"),
+        ReportColumn("d [mm]", ".1f"),
+        ReportColumn("gap", ".2e"),
+        ReportColumn("M/(N L)", ".2e"),
+        ReportColumn("gap / (d/100)^2", ".2e"),
     )
     diameter_rows = []
     for diameter, found in zip(DIAMETERS, by_diameter):
@@ -286,7 +286,7 @@ def report_scaling(report: ReportWriter) -> list[HandoffGap]:
     report.write_heading("The gap is quadratic in the diameter")
     report.write_table(diameter_columns, diameter_rows)
 
-    gap_columns = (ColumnSpec("E [N/mm2]", ".0f"), ColumnSpec("gap", ".12e"))
+    gap_columns = (ReportColumn("E [N/mm2]", ".0f"), ReportColumn("gap", ".12e"))
     modulus_rows = []
     for e_mod in MODULI:
         steel = STEEL._replace(e_mod=e_mod)
@@ -296,7 +296,10 @@ def report_scaling(report: ReportWriter) -> list[HandoffGap]:
     report.write_heading(heading)
     report.write_table(gap_columns, modulus_rows)
 
-    scale_columns = (ColumnSpec("loads and q times", ".1f"), ColumnSpec("gap", ".12e"))
+    scale_columns = (
+        ReportColumn("loads and q times", ".1f"),
+        ReportColumn("gap", ".12e"),
+    )
     scale_rows = []
     for scale in SCALES:
         found = handoff_gap(DIAMETER, STEEL, LOAD * scale, FORCE_DENSITY * scale)
@@ -309,15 +312,15 @@ def report_scaling(report: ReportWriter) -> list[HandoffGap]:
     return by_diameter
 
 
-def report_gradient(report: ReportWriter, rows: list[GradientRow]) -> float:
+def report_gradient(report: Report, rows: list[GradientRow]) -> float:
     """
     The gradient that crosses both stages, and the worst error in it.
     """
     columns = (
-        ColumnSpec("edge"),
-        ColumnSpec("autodiff", ".4f"),
-        ColumnSpec("central", ".4f"),
-        ColumnSpec("relative", ".2e"),
+        ReportColumn("edge"),
+        ReportColumn("autodiff", ".4f"),
+        ReportColumn("central", ".4f"),
+        ReportColumn("relative", ".2e"),
     )
     printed = [(row.edge, row.exact, row.numeric, row.relative) for row in rows]
 
@@ -331,7 +334,7 @@ def main(verbose: bool = True) -> None:
     """
     Hand one shape across the boundary, and measure what came back.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
 
     arch = funicular_arch(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)

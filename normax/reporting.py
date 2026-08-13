@@ -37,7 +37,7 @@ RULE_WIDTH = 78
 CellValue = float | int | str
 
 
-class ColumnSpec(NamedTuple):
+class ReportColumn(NamedTuple):
     """
     One column of a printed table.
 
@@ -85,7 +85,7 @@ class ToleranceCheck(NamedTuple):
         return self.worst < self.tolerance
 
 
-def format_cell(value: CellValue, column: ColumnSpec) -> str:
+def format_cell(value: CellValue, column: ReportColumn) -> str:
     """
     Render one cell, leaving text that arrives already rendered alone.
     """
@@ -96,7 +96,7 @@ def format_cell(value: CellValue, column: ColumnSpec) -> str:
 
 
 def table_lines(
-    columns: Sequence[ColumnSpec],
+    columns: Sequence[ReportColumn],
     rows: Sequence[Sequence[CellValue]],
 ) -> list[str]:
     """
@@ -133,7 +133,7 @@ def checks_passed(checks: Sequence[ToleranceCheck]) -> bool:
     return all(check.satisfied for check in checks)
 
 
-class ReportWriter:
+class Report:
     """
     Prints a report, or stays silent throughout when it is not verbose.
 
@@ -215,7 +215,7 @@ class ReportWriter:
 
     def write_table(
         self,
-        columns: Sequence[ColumnSpec],
+        columns: Sequence[ReportColumn],
         rows: Sequence[Sequence[CellValue]],
     ) -> None:
         """
@@ -232,9 +232,9 @@ class ReportWriter:
         Every measurement beside the bound it was asserted against.
         """
         columns = (
-            ColumnSpec("measurement", align="<"),
-            ColumnSpec("worst", ".2e"),
-            ColumnSpec("of", ".1e"),
+            ReportColumn("measurement", align="<"),
+            ReportColumn("worst", ".2e"),
+            ReportColumn("of", ".1e"),
         )
         rows = [(check.label, check.worst, check.tolerance) for check in checks]
         self.write_table(columns, rows)

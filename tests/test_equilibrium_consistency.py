@@ -168,11 +168,15 @@ def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
 
 
 def test_a_support_is_pinned_and_never_fixed(structure):
+    # Pinned is about the moment a base carries, which is the rotation the
+    # in-plane bending happens about. That one stays free. The two rotations out
+    # of the plane are held so that a straight structure is not a mechanism, and
+    # no in-plane load can excite them.
     flags = support_fixities(structure, NORMAL)
     supports = np.asarray(structure.supports)
 
     assert np.all(flags[supports, :3] == True)
-    assert np.all(flags[supports, 3:] == False)
+    assert np.all(flags[supports, 3 + NORMAL] == False)
 
 
 def test_a_free_node_is_restrained_only_out_of_the_plane(structure):
@@ -182,6 +186,18 @@ def test_a_free_node_is_restrained_only_out_of_the_plane(structure):
     for node in free:
         assert flags[node, NORMAL] == True
         assert np.count_nonzero(flags[node]) == 1
+
+
+def test_a_planar_support_holds_the_rotations_no_in_plane_load_excites(structure):
+    # Pinned and never fixed is a rule about structures that occupy all three
+    # dimensions. A planar one is a mechanism without a deviation from it, and a
+    # straight planar one is a mechanism even with the normal translation held,
+    # so its supports hold the two rotations out of the plane as well.
+    flags = support_fixities(structure, NORMAL)
+    supports = np.asarray(structure.supports)
+    out_of_plane = [3 + axis for axis in (0, 1, 2) if axis != NORMAL]
+
+    assert np.all(flags[np.ix_(supports, out_of_plane)] == True)
 
 
 def test_a_three_dimensional_structure_restrains_nothing_beyond_its_supports(structure):

@@ -237,6 +237,7 @@ def loads_half_span(
     *,
     axis: int = 0,
     factor: float = 0.0,
+    mirrored: bool = False,
 ) -> Float[Array, "nodes 3"]:
     """
     A downward point load on one half of the span and a fraction on the other.
@@ -251,6 +252,8 @@ def loads_half_span(
         Index of the global axis the span is measured along.
     factor :
         Fraction of that load carried by the other half.
+    mirrored :
+        Whether to load the far half instead of the near one.
 
     Returns
     -------
@@ -273,14 +276,21 @@ def loads_half_span(
     keeps it a property of the structure rather than of a particular set of
     force densities. A node exactly at midspan counts as belonging to the
     loaded half.
+
+    **The mirrored case is the exact reflection of the unmirrored one** on a
+    structure whose nodes are symmetric about midspan, because a node sitting
+    exactly at midspan is loaded either way. One asymmetric case on its own
+    biases a search towards the half it leaves light; the pair does not.
     """
     if axis not in (0, 1, 2):
         raise ValueError(f"axis must be 0, 1 or 2, got {axis}")
 
     along = structure.nodes[:, axis]
     middle = 0.5 * (jnp.min(along) + jnp.max(along))
+    loaded = along >= middle if mirrored else along <= middle
+    applied = jnp.where(loaded, load, load * factor)
 
-    return _nodal_loads(structure, jnp.where(along <= middle, load, load * factor))
+    return _nodal_loads(structure, applied)
 
 
 def loads_point(

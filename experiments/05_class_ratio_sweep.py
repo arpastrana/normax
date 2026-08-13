@@ -43,8 +43,8 @@ from normax.ec3.resistance import resistance_shear
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import mass_of_tubes
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 
 STEEL = SteelGrade()
 LENGTH = 6000.0
@@ -324,7 +324,7 @@ def reading_pair(branch: ClassBranch, moment: float) -> ReadingPair:
     return readings
 
 
-def report_branches(report: ReportWriter, branches: Sequence[ClassBranch]) -> None:
+def report_branches(report: Report, branches: Sequence[ClassBranch]) -> None:
     """
     The wall proportion each class limit stands for.
     """
@@ -341,20 +341,20 @@ def report_branches(report: ReportWriter, branches: Sequence[ClassBranch]) -> No
     report.write_entries(entries)
 
 
-def report_masses(report: ReportWriter, branches: Sequence[ClassBranch]) -> None:
+def report_masses(report: Report, branches: Sequence[ClassBranch]) -> None:
     """
     Which class limit is lighter, over the whole demand mix.
     """
     compared = [compare_masses(branches, moment) for moment in MOMENTS]
 
     columns = (
-        ColumnSpec("M_y [kNm]", ".0f"),
-        ColumnSpec("d Class 2 [mm]", ".2f"),
-        ColumnSpec("d Class 3 [mm]", ".2f"),
-        ColumnSpec("kg Class 2", ".2f"),
-        ColumnSpec("kg Class 3", ".2f"),
-        ColumnSpec("lighter", align="<"),
-        ColumnSpec("saving", ".2%"),
+        ReportColumn("M_y [kNm]", ".0f"),
+        ReportColumn("d Class 2 [mm]", ".2f"),
+        ReportColumn("d Class 3 [mm]", ".2f"),
+        ReportColumn("kg Class 2", ".2f"),
+        ReportColumn("kg Class 3", ".2f"),
+        ReportColumn("lighter", align="<"),
+        ReportColumn("saving", ".2%"),
     )
     rows = []
     for found in compared:
@@ -383,18 +383,18 @@ def report_masses(report: ReportWriter, branches: Sequence[ClassBranch]) -> None
         )
 
 
-def report_shear(report: ReportWriter, branch: ClassBranch) -> None:
+def report_shear(report: Report, branch: ClassBranch) -> None:
     """
     The shear the excluded clause would have seen, open item 0d.
     """
     checked = [shear_check(branch, moment) for moment in MOMENTS[1:]]
     columns = (
-        ColumnSpec("M_y [kNm]", ".0f"),
-        ColumnSpec("d [mm]", ".2f"),
-        ColumnSpec("V_pl,Rd [kN]", ".1f"),
-        ColumnSpec("V_Ed simple span [kN]", ".1f"),
-        ColumnSpec("ratio", ".3f"),
-        ColumnSpec("", align="<"),
+        ReportColumn("M_y [kNm]", ".0f"),
+        ReportColumn("d [mm]", ".2f"),
+        ReportColumn("V_pl,Rd [kN]", ".1f"),
+        ReportColumn("V_Ed simple span [kN]", ".1f"),
+        ReportColumn("ratio", ".3f"),
+        ReportColumn("", align="<"),
     )
     rows = []
     for found in checked:
@@ -423,7 +423,7 @@ def report_shear(report: ReportWriter, branch: ClassBranch) -> None:
     )
 
 
-def report_readings(report: ReportWriter, branch: ClassBranch) -> None:
+def report_readings(report: Report, branch: ClassBranch) -> None:
     """
     The two readings of Eq. 6.42, and what choosing between them costs.
     """
@@ -437,11 +437,11 @@ def report_readings(report: ReportWriter, branch: ClassBranch) -> None:
         """
     )
     columns = (
-        ColumnSpec("M_y = M_z [kNm]", ".0f"),
-        ColumnSpec("resultant [mm]", ".2f"),
-        ColumnSpec("linear sum [mm]", ".2f"),
-        ColumnSpec("diameter", ".2%"),
-        ColumnSpec("area", ".2%"),
+        ReportColumn("M_y = M_z [kNm]", ".0f"),
+        ReportColumn("resultant [mm]", ".2f"),
+        ReportColumn("linear sum [mm]", ".2f"),
+        ReportColumn("diameter", ".2%"),
+        ReportColumn("area", ".2%"),
     )
     readings = [reading_pair(branch, moment) for moment in MOMENTS[1:]]
     rows = [
@@ -468,7 +468,7 @@ def main(verbose: bool = True) -> None:
     """
     Sweep the demand mix and report which class limit is lighter.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
     branches = [ClassBranch.at_limit(section_class) for section_class in CLASSES]
 
     report_branches(report, branches)

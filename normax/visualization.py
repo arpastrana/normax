@@ -780,10 +780,58 @@ class Form(NamedTuple):
     governing: Int[Array, "members"]
 
 
+def draw_outline(
+    ax: Axes,
+    xyz: Float[Array, "nodes 3"],
+    edges: Int[Array, "members 2"],
+) -> LineCollection:
+    """
+    Draw a structure as a thin dashed line, for a result to be read against.
+
+    Parameters
+    ----------
+    ax :
+        The axis to draw on.
+    xyz :
+        Position of every node of the shape to outline.
+    edges :
+        The two node indices spanned by every member.
+
+    Returns
+    -------
+    outline :
+        The drawn collection, for a legend to be attached to.
+
+    Notes
+    -----
+    Drawn along the members rather than through the nodes in order, so a
+    structure that is not a single chain outlines correctly. It carries no
+    width: a reference shape is there to be compared against, and drawing it to
+    scale would invite it to be read as a second result.
+    """
+    nodes = np.asarray(xyz)
+    pairs = np.asarray(edges)
+    starts = nodes[pairs[:, 0]][:, [0, 2]]
+    ends = nodes[pairs[:, 1]][:, [0, 2]]
+    segments = np.stack([starts, ends], axis=1)
+
+    outline = LineCollection(
+        segments,
+        linewidths=0.8,
+        colors=GREY,
+        linestyles="--",
+        zorder=0,
+    )
+    ax.add_collection(outline)
+
+    return outline
+
+
 def figure_load_cases(
     edges: Int[Array, "members 2"],
     forms: Sequence[Form],
     names: tuple[str, ...],
+    reference: Float[Array, "nodes 3"] | None = None,
 ) -> Figure:
     """
     Which load case decides each member, as the form moves.
@@ -796,6 +844,10 @@ def figure_load_cases(
         The shapes to compare, in the order they are to be drawn.
     names :
         Name of every load case, in index order.
+    reference :
+        Shape to outline behind every form, or None to draw none. The shape the
+        search started from, so that how far each result moved is visible in the
+        drawing rather than only in the numbers.
 
     Returns
     -------
@@ -834,10 +886,16 @@ def figure_load_cases(
     for ax in axes[1, 1:]:
         ax.sharey(axes[1, 0])
 
-    both = np.concatenate([np.asarray(form.xyz) for form in forms])
+    shapes = [np.asarray(form.xyz) for form in forms]
+    if reference is not None:
+        shapes.append(np.asarray(reference))
+    both = np.concatenate(shapes)
     margin = 0.05 * float(np.ptp(both[:, 0]))
 
     for ax, form in zip(axes[0], forms):
+        if reference is not None:
+            outline = draw_outline(ax, reference, edges)
+            outline.set_label("starting shape")
         members = draw_members(
             ax,
             DrawnStructure(form.xyz, edges, form.diameters, widest),
@@ -846,6 +904,9 @@ def figure_load_cases(
         ax.set_xlim(float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
         ax.set_ylim(float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
         ax.set_title(form.title, fontsize=11)
+
+    if reference is not None:
+        axes[0][0].legend(loc="lower center", fontsize=8, frameon=False)
 
     bar = figure.colorbar(
         members,
@@ -995,5 +1056,235 @@ def figure_backends(
     axes[2].set_title("the whole composition\nassembled per crossing", fontsize=10)
     axes[2].grid(alpha=0.3)
     axes[2].legend(fontsize=8)
+
+    return figure
+
+
+class BeamStatics(NamedTuple):
+    """
+    Bending moment along a beam, from the solver and from statics.
+
+    Attributes
+    ----------
+    positions :
+        Position of every node along the span.
+    exact :
+        Bending moment statics puts at each of them.
+    computed :
+        Bending moment the frame analysis reports there.
+    """
+
+    positions: Float[np.ndarray, "nodes"]
+    exact: Float[np.ndarray, "nodes"]
+    computed: Float[np.ndarray, "nodes"]
+
+
+class BeamSizing(NamedTuple):
+    """
+    Diameter every member needs, from the check and in closed form.
+
+    Attributes
+    ----------
+    members :
+        Index of every member.
+    positions :
+        Midpoint of every member along the span.
+    required :
+        Diameter the sizing map returns.
+    closed_form :
+        Diameter the inverted bending check puts at the same actions.
+    """
+
+    members: Int[np.ndarray, "members"]
+    positions: Float[np.ndarray, "members"]
+    required: Float[np.ndarray, "members"]
+    closed_form: Float[np.ndarray, "members"]
+
+
+def figure_benchmark(statics: BeamStatics, sizing: BeamSizing) -> Figure:
+    """
+    Both stages of a straight beam against the arithmetic that predicts them.
+
+    Parameters
+    ----------
+    statics :
+        Bending moment along the beam, from the solver and from statics.
+    sizing :
+        Diameter every member needs, from the check and in closed form.
+
+    Returns
+    -------
+    figure :
+        Three panels: the moment diagram, the sizes, and both disagreements.
+
+    Notes
+    -----
+    The predicted series is drawn as a line and the computed one as markers on
+    top of it, so agreement reads as markers sitting on a curve rather than as
+    two curves a reader has to separate.
+
+    The third panel is scaled by the largest value of each series rather than by
+    each entry's own, a moment at a support being zero and its relative error
+    meaningless.
+    """
+    figure, axes = plt.subplots(1, 3, figsize=(15.0, 4.4), layout="constrained")
+
+    moment_exact = np.asarray(statics.exact) / 1e6
+    moment_computed = np.asarray(statics.computed) / 1e6
+
+    ax = axes[0]
+    ax.plot(statics.positions, moment_exact, "-", color=GREY, lw=2.0, label="statics")
+    ax.plot(
+        statics.positions,
+        moment_computed,
+        "o",
+        color="#440154",
+        markersize=5,
+        label="frame analysis",
+    )
+    ax.set_xlabel("position along the span [mm]")
+    ax.set_ylabel("bending moment [kNm]")
+    ax.set_title("The moment diagram", fontsize=11)
+    ax.legend(frameon=False, fontsize=9)
+    ax.grid(alpha=0.3)
+
+    ax = axes[1]
+    ax.plot(
+        sizing.members,
+        sizing.closed_form,
+        "-",
+        color=GREY,
+        lw=2.0,
+        label="closed form",
+    )
+    ax.plot(
+        sizing.members,
+        sizing.required,
+        "s",
+        color="#31688e",
+        markersize=5,
+        label="sizing map",
+    )
+    ax.set_xticks(np.asarray(sizing.members))
+    ax.set_xlabel("member")
+    ax.set_ylabel("diameter [mm]")
+    ax.set_title("The size EN 1993-1-1 requires", fontsize=11)
+    ax.legend(frameon=False, fontsize=9)
+    ax.grid(alpha=0.3)
+
+    ax = axes[2]
+    moment_scale = max(float(np.max(np.abs(statics.exact))), np.finfo(float).tiny)
+    size_scale = max(float(np.max(np.abs(sizing.closed_form))), np.finfo(float).tiny)
+    moment_gap = np.abs(np.asarray(statics.computed) - np.asarray(statics.exact))
+    size_gap = np.abs(np.asarray(sizing.required) - np.asarray(sizing.closed_form))
+    span = float(np.max(statics.positions))
+    floor = np.finfo(float).eps
+    ax.semilogy(
+        np.asarray(statics.positions) / span,
+        np.maximum(moment_gap / moment_scale, floor),
+        "o-",
+        color="#440154",
+        markersize=4,
+        label="moment against statics",
+    )
+    ax.semilogy(
+        np.asarray(sizing.positions) / span,
+        np.maximum(size_gap / size_scale, floor),
+        "s-",
+        color="#31688e",
+        markersize=4,
+        label="diameter against closed form",
+    )
+    ax.axhline(floor, color=GREY, ls="--", lw=1.0, label="machine epsilon")
+    ax.set_xlabel("fraction of the span")
+    ax.set_ylabel("scaled disagreement")
+    ax.set_title("What the two stages disagree by", fontsize=11)
+    ax.legend(frameon=False, fontsize=9)
+    ax.grid(alpha=0.3, which="both")
+
+    return figure
+
+
+def figure_beam_profile(
+    positions: Float[np.ndarray, "nodes"],
+    before: SizedMembers,
+    after: SizedMembers,
+) -> Figure:
+    """
+    A straight beam at the depth EN 1993-1-1 requires, drawn to scale.
+
+    Parameters
+    ----------
+    positions :
+        Position of every node along the span.
+    before :
+        Sizes every member was assumed to have, and their mass.
+    after :
+        Sizes EN 1993-1-1 requires of every member, and their mass.
+
+    Returns
+    -------
+    figure :
+        The beam in elevation, each member as deep as its diameter.
+
+    Notes
+    -----
+    Drawn to scale rather than exaggerated, unlike the arch drawings: a beam has
+    no shape of its own to be crowded out, so the depth is the only thing to
+    show and it is legible at a true 1:26. The assumed uniform depth is outlined
+    behind it, which is what makes the taper read as a result rather than as a
+    shape someone chose.
+    """
+    nodes = np.asarray(positions)
+    required = np.asarray(after.diameters)
+    assumed = np.asarray(before.diameters)
+
+    figure, ax = plt.subplots(1, 1, figsize=(11.0, 3.4), layout="constrained")
+    spread = max(float(np.ptp(required)), np.finfo(float).tiny)
+    colors = plt.get_cmap("viridis")((required - required.min()) / spread)
+
+    for member in range(required.shape[0]):
+        left = nodes[member]
+        width = nodes[member + 1] - left
+        depth = required[member]
+        ax.add_patch(
+            plt.Rectangle(
+                (left, -0.5 * depth),
+                width,
+                depth,
+                facecolor=colors[member],
+                edgecolor="white",
+                linewidth=0.5,
+            )
+        )
+
+    uniform = 0.5 * float(np.max(assumed))
+    ax.plot(
+        [nodes[0], nodes[-1], nodes[-1], nodes[0], nodes[0]],
+        [-uniform, -uniform, uniform, uniform, -uniform],
+        ls="--",
+        lw=1.0,
+        color=GREY,
+    )
+
+    heavier = after.mass / before.mass - 1.0
+    ax.set_xlim(nodes[0], nodes[-1])
+    ax.set_ylim(-0.75 * required.max(), 0.75 * required.max())
+    ax.set_aspect("equal")
+    ax.set_xlabel("position along the span [mm]")
+    ax.set_ylabel("depth [mm]")
+    ax.set_title(
+        f"Required by EN 1993-1-1 — {after.mass:.4f} t, {heavier:.1%} heavier",
+        fontsize=11,
+    )
+    ax.text(
+        0.01,
+        0.97,
+        f"dashed: assumed uniform, {before.mass:.4f} t",
+        transform=ax.transAxes,
+        va="top",
+        fontsize=9,
+        color="0.35",
+    )
 
     return figure

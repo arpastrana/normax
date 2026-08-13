@@ -46,8 +46,8 @@ from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.sizing import utilization_design
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 
@@ -201,11 +201,11 @@ CASES = (
 )
 
 PROBE_COLUMNS = (
-    ColumnSpec("case", align="<"),
-    ColumnSpec("argument", align="<"),
-    ColumnSpec("reverse", "+.12e"),
-    ColumnSpec("central diff", "+.12e"),
-    ColumnSpec("rel", ".2e"),
+    ReportColumn("case", align="<"),
+    ReportColumn("argument", align="<"),
+    ReportColumn("reverse", "+.12e"),
+    ReportColumn("central diff", "+.12e"),
+    ReportColumn("rel", ".2e"),
 )
 
 
@@ -256,7 +256,7 @@ def probe_case(case: MemberCase, branch: ClassBranch) -> list[ProbeResult]:
     return probed
 
 
-def report_probes(report: ReportWriter, branch: ClassBranch) -> float:
+def report_probes(report: Report, branch: ClassBranch) -> float:
     """
     Every action of every case on one class branch, and the worst disagreement.
     """
@@ -272,7 +272,7 @@ def report_probes(report: ReportWriter, branch: ClassBranch) -> float:
     return max(result.relative for result in probed)
 
 
-def report_modes(report: ReportWriter, branch: ClassBranch) -> None:
+def report_modes(report: Report, branch: ClassBranch) -> None:
     """
     That forward mode and reverse mode return the same number.
     """
@@ -289,13 +289,16 @@ def report_modes(report: ReportWriter, branch: ClassBranch) -> None:
         gap = abs(forward - reverse) / max(abs(reverse), 1e-300)
         rows.append((f"{case.axial_force / 1e3:.0f} kN", gap))
 
-    columns = (ColumnSpec("case", align="<"), ColumnSpec("forward-reverse gap", ".2e"))
+    columns = (
+        ReportColumn("case", align="<"),
+        ReportColumn("forward-reverse gap", ".2e"),
+    )
 
     report.write_heading("Forward and reverse are the same derivative")
     report.write_table(columns, rows)
 
 
-def report_axial_limit(report: ReportWriter) -> None:
+def report_axial_limit(report: Report) -> None:
     """
     That removing the moments reproduces the axial answer on either branch.
     """
@@ -317,17 +320,17 @@ def report_axial_limit(report: ReportWriter) -> None:
         rows.append((f"Class {section_class}", with_moment, axial_only, gap))
 
     columns = (
-        ColumnSpec("branch", align="<"),
-        ColumnSpec("interaction", ".12f"),
-        ColumnSpec("axial only", ".12f"),
-        ColumnSpec("gap", ".2e"),
+        ReportColumn("branch", align="<"),
+        ReportColumn("interaction", ".12f"),
+        ReportColumn("axial only", ".12f"),
+        ReportColumn("gap", ".2e"),
     )
 
     report.write_heading("Removing the moments reproduces the axial answer")
     report.write_table(columns, rows)
 
 
-def report_limit_states(report: ReportWriter, branch: ClassBranch) -> float:
+def report_limit_states(report: Report, branch: ClassBranch) -> float:
     """
     Utilization and governing limit state at the solved diameter.
     """
@@ -358,10 +361,10 @@ def report_limit_states(report: ReportWriter, branch: ClassBranch) -> float:
         )
 
     columns = (
-        ColumnSpec("case", align="<"),
-        ColumnSpec("d [mm]", ".3f"),
-        ColumnSpec("utilization", ".15f"),
-        ColumnSpec("governing", align="<"),
+        ReportColumn("case", align="<"),
+        ReportColumn("d [mm]", ".3f"),
+        ReportColumn("utilization", ".15f"),
+        ReportColumn("governing", align="<"),
     )
 
     report.write_heading("Utilization and governing limit state at the solved diameter")
@@ -370,7 +373,7 @@ def report_limit_states(report: ReportWriter, branch: ClassBranch) -> float:
     return worst
 
 
-def report_objective(report: ReportWriter, branch: ClassBranch) -> None:
+def report_objective(report: Report, branch: ClassBranch) -> None:
     """
     That the mass of several members is differentiable in their axial forces.
     """
@@ -407,7 +410,7 @@ def main(verbose: bool = True) -> None:
     """
     Gradcheck every action, on both class branches.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
     report.write_line("The sizing map under axial force and biaxial bending")
 
     branches = [ClassBranch.at_limit(section_class) for section_class in CLASSES]

@@ -71,8 +71,8 @@ from normax.formfinding import equilibrium_state
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.structures import Structure
 from normax.structures import arch_2d
 from normax.visualization import BackendAgreement
@@ -412,7 +412,7 @@ def traced_forces(prepared) -> Callable[..., dict[str, Float[Array, "..."]]]:
     return run
 
 
-def agreement(report: ReportWriter) -> float:
+def agreement(report: Report) -> float:
     """
     Member forces, Jacobian blocks, and the mass gradient end to end.
     """
@@ -432,9 +432,9 @@ def agreement(report: ReportWriter) -> float:
     theirs = forces_smax(prepared_smax, xyz, diameters, STEEL, CATALOGUE)
 
     force_columns = (
-        ColumnSpec("force", align="<"),
-        ColumnSpec("worst relative", ".3e"),
-        ColumnSpec("", align="<"),
+        ReportColumn("force", align="<"),
+        ReportColumn("worst relative", ".3e"),
+        ReportColumn("", align="<"),
     )
     force_rows = []
     for name in ("axial_force", "moment_major"):
@@ -465,9 +465,9 @@ def agreement(report: ReportWriter) -> float:
     )
 
     block_columns = (
-        ColumnSpec("block", align="<"),
-        ColumnSpec("shape", align="<"),
-        ColumnSpec("worst relative", ".3e"),
+        ReportColumn("block", align="<"),
+        ReportColumn("shape", align="<"),
+        ReportColumn("worst relative", ".3e"),
     )
     block_rows = [
         (name, str(np.asarray(ddm).shape), relative(ddm, traced))
@@ -505,7 +505,7 @@ def agreement(report: ReportWriter) -> float:
     return grad_gap
 
 
-def blind(report: ReportWriter) -> None:
+def blind(report: Report) -> None:
     """
     The one derivative the plane cannot carry, and why nothing asks for it.
     """
@@ -529,11 +529,11 @@ def blind(report: ReportWriter) -> None:
     jacobian = jax.jacfwd(run)(xyz)
 
     columns = (
-        ColumnSpec("output", align="<"),
-        ColumnSpec("d/dx", ".6e"),
-        ColumnSpec("d/dy", ".6e"),
-        ColumnSpec("d/dz", ".6e"),
-        ColumnSpec("", align="<"),
+        ReportColumn("output", align="<"),
+        ReportColumn("d/dx", ".6e"),
+        ReportColumn("d/dy", ".6e"),
+        ReportColumn("d/dz", ".6e"),
+        ReportColumn("", align="<"),
     )
     rows = []
     for name, block in jacobian.items():
@@ -618,7 +618,7 @@ def scaling_row(num_edges: int) -> ScalingRow:
     return row
 
 
-def scaling(report: ReportWriter) -> None:
+def scaling(report: Report) -> None:
     """
     What a value and a gradient cost each backend, against frame size.
 
@@ -642,11 +642,11 @@ def scaling(report: ReportWriter) -> None:
     rows = [scaling_row(num_edges) for num_edges in MESHES]
 
     composed_columns = (
-        ColumnSpec("members"),
-        ColumnSpec("params"),
-        ColumnSpec("backend"),
-        ColumnSpec("value [s]", ".3f"),
-        ColumnSpec("grad [s]", ".3f"),
+        ReportColumn("members"),
+        ReportColumn("params"),
+        ReportColumn("backend"),
+        ReportColumn("value [s]", ".3f"),
+        ReportColumn("grad [s]", ".3f"),
     )
     composed_rows = []
     for row in rows:
@@ -662,10 +662,10 @@ def scaling(report: ReportWriter) -> None:
     report.write_table(composed_columns, composed_rows)
 
     stage_columns = (
-        ColumnSpec("members"),
-        ColumnSpec("params"),
-        ColumnSpec("DDM [ms]", ".1f"),
-        ColumnSpec("traced [ms]", ".1f"),
+        ReportColumn("members"),
+        ReportColumn("params"),
+        ReportColumn("DDM [ms]", ".1f"),
+        ReportColumn("traced [ms]", ".1f"),
     )
     stage_rows = [
         (row.num_edges, row.parameters, row.stage.opensees * 1e3, row.stage.smax * 1e3)
@@ -677,11 +677,11 @@ def scaling(report: ReportWriter) -> None:
     report.write_table(stage_columns, stage_rows)
 
     winner_columns = (
-        ColumnSpec("members"),
-        ColumnSpec("worst relative", ".3e"),
-        ColumnSpec("ms per param", ".3f"),
-        ColumnSpec("stage traced/DDM", ".2f"),
-        ColumnSpec("composition traced/DDM", ".2f"),
+        ReportColumn("members"),
+        ReportColumn("worst relative", ".3e"),
+        ReportColumn("ms per param", ".3f"),
+        ReportColumn("stage traced/DDM", ".2f"),
+        ReportColumn("composition traced/DDM", ".2f"),
     )
     winner_rows = []
     for row in rows:
@@ -747,7 +747,7 @@ def descend_with(setup: ArchSetup, backend: str) -> DescentResult:
     return found
 
 
-def optimize(report: ReportWriter) -> None:
+def optimize(report: Report) -> None:
     """
     The same descent, driven by each backend in turn.
 
@@ -770,12 +770,12 @@ def optimize(report: ReportWriter) -> None:
 
     results = [descend_with(setup, name) for name in BACKENDS]
     columns = (
-        ColumnSpec("backend", align="<"),
-        ColumnSpec("mass [t]", ".9f"),
-        ColumnSpec("steps"),
-        ColumnSpec("seconds", ".1f"),
-        ColumnSpec("ms/step", ".0f"),
-        ColumnSpec("compiled in [s]", ".2f"),
+        ReportColumn("backend", align="<"),
+        ReportColumn("mass [t]", ".9f"),
+        ReportColumn("steps"),
+        ReportColumn("seconds", ".1f"),
+        ReportColumn("ms/step", ".0f"),
+        ReportColumn("compiled in [s]", ".2f"),
     )
     rows = []
     for found in results:
@@ -819,7 +819,7 @@ def main(verbose: bool = True) -> None:
         if name not in PASSES:
             raise SystemExit(f"unknown pass {name!r}; choose from {list(PASSES)}")
 
-    report = ReportWriter(verbose)
+    report = Report(verbose)
     for name in requested:
         PASSES[name](report)
         report.write_line()

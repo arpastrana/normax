@@ -43,8 +43,8 @@ from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import mass_of_tubes
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 
 STEEL = SteelGrade()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
@@ -189,7 +189,7 @@ def live_cases(member: int, smooth: Float[Array, "..."], hard: Float[Array, "...
     return counted
 
 
-def report_sizes(report: ReportWriter, per_case: Float[Array, "..."]) -> float:
+def report_sizes(report: Report, per_case: Float[Array, "..."]) -> float:
     """
     What each load case asks of each member, and the exact largest of them.
     """
@@ -198,12 +198,12 @@ def report_sizes(report: ReportWriter, per_case: Float[Array, "..."]) -> float:
     exact_mass = float(mass_of_tubes(tubes, LENGTHS, STEEL)) * 1e3
 
     per_case_columns = [
-        ColumnSpec(f"case {case + 1} [mm]", ".2f") for case in range(NUM_CASES)
+        ReportColumn(f"case {case + 1} [mm]", ".2f") for case in range(NUM_CASES)
     ]
     columns = (
-        ColumnSpec("member"),
+        ReportColumn("member"),
         *per_case_columns,
-        ColumnSpec("exact max [mm]", ".2f"),
+        ReportColumn("exact max [mm]", ".2f"),
     )
     rows = []
     for member in range(NUM_MEMBERS):
@@ -219,16 +219,16 @@ def report_sizes(report: ReportWriter, per_case: Float[Array, "..."]) -> float:
     return exact_mass
 
 
-def report_annealing(report: ReportWriter, exact_mass: float) -> None:
+def report_annealing(report: Report, exact_mass: float) -> None:
     """
     What the smoothing costs at each sharpness, and what bounds it.
     """
     columns = (
-        ColumnSpec("beta", ".0f"),
-        ColumnSpec("mass [kg]", ".2f"),
-        ColumnSpec("excess", ".3%"),
-        ColumnSpec("bound log(cases)/beta", ".3%"),
-        ColumnSpec("gradient finite"),
+        ReportColumn("beta", ".0f"),
+        ReportColumn("mass [kg]", ".2f"),
+        ReportColumn("excess", ".3%"),
+        ReportColumn("bound log(cases)/beta", ".3%"),
+        ReportColumn("gradient finite"),
     )
     annealed = [anneal_step(exact_mass, beta) for beta in SHARPNESSES]
     rows = [
@@ -246,7 +246,7 @@ def report_annealing(report: ReportWriter, exact_mass: float) -> None:
     )
 
 
-def report_live_cases(report: ReportWriter, per_case: Float[Array, "..."]) -> None:
+def report_live_cases(report: Report, per_case: Float[Array, "..."]) -> None:
     """
     That every case sees a gradient, which a hard maximum would not give.
     """
@@ -254,9 +254,9 @@ def report_live_cases(report: ReportWriter, per_case: Float[Array, "..."]) -> No
     hard = jax.grad(mass_hard)(FORCES)
 
     columns = (
-        ColumnSpec("member"),
-        ColumnSpec("smooth, cases with a gradient"),
-        ColumnSpec("hard maximum"),
+        ReportColumn("member"),
+        ReportColumn("smooth, cases with a gradient"),
+        ReportColumn("hard maximum"),
     )
     counted = [live_cases(member, smooth, hard) for member in range(NUM_MEMBERS)]
     rows = [(found.member, found.smooth, found.hard) for found in counted]
@@ -283,7 +283,7 @@ def main(verbose: bool = True) -> None:
     """
     Anneal the sharpness and report what the smoothing costs.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
     per_case = diameters_per_case(FORCES)
 
     exact_mass = report_sizes(report, per_case)

@@ -44,8 +44,8 @@ from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import utilization_design
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 
@@ -145,18 +145,18 @@ TENSION = (
 )
 
 COLUMNS = (
-    ColumnSpec("case", align="<"),
-    ColumnSpec("forward", "+.12e"),
-    ColumnSpec("reverse", "+.12e"),
-    ColumnSpec("closed form", "+.12e"),
-    ColumnSpec("central diff", "+.12e"),
-    ColumnSpec("worst", ".2e"),
-    ColumnSpec("verdict", align="<"),
+    ReportColumn("case", align="<"),
+    ReportColumn("forward", "+.12e"),
+    ReportColumn("reverse", "+.12e"),
+    ReportColumn("closed form", "+.12e"),
+    ReportColumn("central diff", "+.12e"),
+    ReportColumn("worst", ".2e"),
+    ReportColumn("verdict", align="<"),
 )
 
 UTILIZATION_COLUMNS = (
-    ColumnSpec("case", align="<"),
-    ColumnSpec("utilization", ".16f"),
+    ReportColumn("case", align="<"),
+    ReportColumn("utilization", ".16f"),
 )
 
 FORCE_TITLE = "Compression, sensitivity of the diameter to the axial force"
@@ -291,7 +291,7 @@ def derivative_row(label: str, found: DerivativeSet) -> tuple[str | float, ...]:
 
 
 def report_derivatives(
-    report: ReportWriter,
+    report: Report,
     title: str,
     measured: Sequence[tuple[str, DerivativeSet]],
 ) -> float:
@@ -306,7 +306,7 @@ def report_derivatives(
     return max(found.worst for _, found in measured)
 
 
-def report_utilization(report: ReportWriter, cases: Sequence[StrutCase]) -> float:
+def report_utilization(report: Report, cases: Sequence[StrutCase]) -> float:
     """
     The invariant the derivative rests on, and the worst departure from it.
     """
@@ -323,7 +323,7 @@ def main(verbose: bool = True) -> None:
     """
     Tabulate the four derivatives over a range of struts.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
 
     entries = (
         ("d/t", f"{float(CATALOGUE.ratio):.2f}"),

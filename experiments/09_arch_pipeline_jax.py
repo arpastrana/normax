@@ -84,8 +84,8 @@ from normax.pipeline import design_members
 from normax.pipeline import frame_stability
 from normax.pipeline import governing_states
 from normax.pipeline import total_mass
-from normax.reporting import ColumnSpec
-from normax.reporting import ReportWriter
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import Structure
@@ -167,26 +167,15 @@ LIMIT_NAMES = {
 # traced once and run from its compiled program afterwards. Left eager they cost
 # an XLA compilation per primitive per shape, which is most of what this
 # experiment used to spend its time on.
-design_compiled = eqx.filter_jit(design_members)
-state_compiled = eqx.filter_jit(equilibrium_state)
-stability_compiled = eqx.filter_jit(frame_stability)
-modes_compiled = eqx.filter_jit(buckling_modes)
+design_members_compiled = eqx.filter_jit(design_members)
+equilibrium_state_compiled = eqx.filter_jit(equilibrium_state)
+frame_stability_compiled = eqx.filter_jit(frame_stability)
+buckling_modes_compiled = eqx.filter_jit(buckling_modes)
 
 
 class ArchSetup(NamedTuple):
     """
-    Everything one mesh of the arch needs before a force density is chosen.
-
-    Attributes
-    ----------
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
-    graph :
-        The form-finding connectivity, from `normax.formfinding`.
-    model :
-        The prepared analysis model, from `normax.analysis.smax`.
-    q :
-        Force densities that reach the target rise on this mesh.
+    Mesh, form-finding graph, analysis model, and rise-reaching force densities.
     """
 
     structure: Structure
@@ -204,62 +193,14 @@ class ArchSetup(NamedTuple):
     @property
     def seed(self) -> Float[Array, "edges"]:
         """
-        The diameter the frame is analyzed with before the check has spoken.
+        Seed diameter used for the first analysis before sizing.
         """
         return jnp.full(self.num_edges, SEED)
-
-    def problem_for(self, catalogue: TubeCatalogue) -> ProblemSetup:
-        """
-        The prepared problem, on one section family.
-        """
-        problem = ProblemSetup(self.structure, self.graph, self.model, STEEL, catalogue)
-
-        return problem
-
-
-class ClassDesign(NamedTuple):
-    """
-    The design one class branch arrives at, and what it was solved against.
-
-    Attributes
-    ----------
-    section_class :
-        Class the resistances were evaluated on.
-    catalogue :
-        Tube family whose ratio holds the section at that class limit.
-    problem :
-        The prepared problem the design came from.
-    design :
-        Geometry, actions, sizes and mass of the finished design.
-    """
-
-    section_class: int
-    catalogue: TubeCatalogue
-    problem: ProblemSetup
-    design: Design
-
-    @property
-    def departure(self) -> float:
-        """
-        Worst departure of a member's utilization from unity.
-        """
-        return float(jnp.max(jnp.abs(self.design.utilization - 1.0)))
 
 
 class GradientRow(NamedTuple):
     """
-    One force density's derivative, beside a central difference of the same.
-
-    Attributes
-    ----------
-    edge :
-        Index of the edge the force density belongs to.
-    exact :
-        Derivative from tracing all three stages together.
-    numeric :
-        Central difference of the same composed objective.
-    difference :
-        Their difference, measured against the size of the whole gradient.
+    One edge's autodiff derivative beside its central difference.
     """
 
     edge: int
@@ -270,41 +211,23 @@ class GradientRow(NamedTuple):
 
 class StaggerRun(NamedTuple):
     """
-    What repeating the analysis and the check does to the sizes.
-
-    Attributes
-    ----------
-    moves :
-        Largest relative change in diameter produced by each pass.
-    masses :
-        Mass after each pass.
+    Per-pass diameter moves and masses from staggered analyse-size.
     """
 
     moves: Float[np.ndarray, "passes"]
     masses: Float[np.ndarray, "passes"]
 
     @property
-    def cost(self) -> float:
+    def one_pass_cost(self) -> float:
         """
-        Fraction of the mass the one-shot pass of the objective gives away.
+        Relative mass given away by stopping after the first pass.
         """
         return abs(self.masses[0] - self.masses[-1]) / self.masses[-1]
 
 
 class RefinementRow(NamedTuple):
     """
-    The mass one mesh arrives at, on either basis for the buckling length.
-
-    Attributes
-    ----------
-    count :
-        Number of members in the mesh.
-    arc :
-        Developed length of the arch on that mesh.
-    mass_member :
-        Mass with each member buckling over its own length.
-    mass_fixed :
-        Mass with a buckling length held independent of the mesh.
+    Mass on one mesh for member-length and fixed buckling lengths.
     """
 
     count: int
@@ -315,16 +238,7 @@ class RefinementRow(NamedTuple):
 
 class RefinementStudy(NamedTuple):
     """
-    How the mass settles as the mesh is refined.
-
-    Attributes
-    ----------
-    rows :
-        One entry per mesh, in the order they were refined.
-    limit :
-        Mass the mesh-independent sequence extrapolates to.
-    ratios :
-        Ratio of successive changes, which is two for a first-order sequence.
+    Masses across meshes, Richardson limit, and change ratios.
     """
 
     rows: tuple[RefinementRow, ...]
@@ -334,37 +248,28 @@ class RefinementStudy(NamedTuple):
     @property
     def worst_order(self) -> float:
         """
-        Worst relative departure of those ratios from first order.
+        Worst relative departure of change ratios from first order.
         """
         return float(np.max(np.abs(self.ratios - 2.0)) / 2.0)
 
     @property
-    def by_member(self) -> Float[np.ndarray, "meshes"]:
+    def masses_member(self) -> Float[np.ndarray, "meshes"]:
         """
-        Mass on each mesh with the member-length buckling length.
+        Mass on each mesh with member-length buckling.
         """
         return np.asarray([row.mass_member for row in self.rows])
 
     @property
-    def by_fixed(self) -> Float[np.ndarray, "meshes"]:
+    def masses_fixed(self) -> Float[np.ndarray, "meshes"]:
         """
-        Mass on each mesh with the buckling length held fixed.
+        Mass on each mesh with a mesh-independent buckling length.
         """
         return np.asarray([row.mass_fixed for row in self.rows])
 
 
 class ArchResults(NamedTuple):
     """
-    Everything measured about one design that a figure or a summary reads.
-
-    Attributes
-    ----------
-    refinement :
-        How the mass settles as the mesh is refined.
-    stagger :
-        What repeating the analysis and the check does to the sizes.
-    stability :
-        The frame's own critical load factors and slendernesses.
+    Refinement, stagger, and stability results for one design.
     """
 
     refinement: RefinementStudy
@@ -374,7 +279,7 @@ class ArchResults(NamedTuple):
 
 def arch_setup(num_edges: int) -> ArchSetup:
     """
-    The arch, its form-finding connectivity, and the `q` that reaches the rise.
+    Build the arch mesh, topologies, and rise-reaching force densities.
     """
     load = TOTAL_LOAD / (num_edges - 1)
     structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
@@ -382,12 +287,26 @@ def arch_setup(num_edges: int) -> ArchSetup:
     model = prepare_model(structure, STEEL, CATALOGUE_SEED, normal=NORMAL)
 
     trial = jnp.full(num_edges, -1.0)
-    state = state_compiled(trial, structure, graph)
+    state = equilibrium_state_compiled(trial, structure, graph)
     reached = jnp.max(state.xyz[:, 2])
     q = trial * reached / RISE
     setup = ArchSetup(structure, graph, model, q)
 
     return setup
+
+
+def problem_from_setup(setup: ArchSetup, catalogue: TubeCatalogue) -> ProblemSetup:
+    """
+    Bind steel and a catalogue into a ProblemSetup for this mesh.
+    """
+    return ProblemSetup(setup.structure, setup.graph, setup.model, STEEL, catalogue)
+
+
+def worst_utilization(design: Design) -> float:
+    """
+    Largest absolute departure of utilization from unity.
+    """
+    return float(jnp.max(jnp.abs(design.utilization - 1.0)))
 
 
 def central_difference(
@@ -397,7 +316,7 @@ def central_difference(
     step: float,
 ) -> float:
     """
-    Central difference of a scalar function in one entry of its argument.
+    Central difference of a scalar in one entry of its argument.
     """
     forward = function(x.at[index].add(step))
     backward = function(x.at[index].add(-step))
@@ -405,44 +324,67 @@ def central_difference(
     return float((forward - backward) / (2.0 * step))
 
 
-def disagreement(exact: float, numeric: float, scale: float) -> float:
+def scaled_gradient_error(exact: float, numeric: float, scale: float) -> float:
     """
-    Gradient error, measured against the size of the whole gradient.
-
-    Two of this arch's ten sensitivities are twenty times smaller than the rest,
-    where they change sign. Dividing by the component would report an absolute
-    difference of 1e-13 as an error of 1e-7 and say nothing about the derivative,
-    so the largest component sets the scale instead.
+    Absolute gradient error scaled by the largest component.
     """
     return abs(exact - numeric) / scale
 
 
-def design_for(setup: ArchSetup, section_class: int) -> ClassDesign:
+def gradient_rows(
+    objective: Callable[[Float[Array, "edges"]], Float[Array, ""]],
+    setup: ArchSetup,
+    gradient: Float[Array, "edges"],
+    scale: float,
+) -> list[GradientRow]:
     """
-    The fully-stressed design on one class branch.
+    Autodiff versus central difference of mass, one row per edge.
+    """
+    rows = []
+    for edge in range(setup.num_edges):
+        step = abs(float(setup.q[edge])) * STEP
+        numeric = central_difference(objective, setup.q, edge, step)
+        exact = float(gradient[edge])
+        difference = scaled_gradient_error(exact, numeric, scale)
+        rows.append(GradientRow(edge, exact, numeric, difference))
+
+    return rows
+
+
+def design_at_class(
+    setup: ArchSetup, section_class: int
+) -> tuple[Design, ProblemSetup]:
+    """
+    Fully-stressed design of the arch on one section class.
     """
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-    problem = setup.problem_for(catalogue)
-    design = design_compiled(setup.q, setup.seed, problem, section_class=section_class)
-    branch = ClassDesign(section_class, catalogue, problem, design)
+    problem = problem_from_setup(setup, catalogue)
+    design = design_members_compiled(
+        setup.q, setup.seed, problem, section_class=section_class
+    )
 
-    return branch
+    return design, problem
 
 
-def stagger_run(setup: ArchSetup, branch: ClassDesign, passes: int) -> StaggerRun:
+def run_stagger(
+    setup: ArchSetup,
+    problem: ProblemSetup,
+    section_class: int,
+    passes: int,
+) -> StaggerRun:
     """
-    Repeat the staggered analysis and check, reporting how far each pass moves.
+    Run analyse-and-size passes, recording diameter moves and mass.
     """
     diameters = setup.seed
     moves = []
     masses = []
 
     for _ in range(passes):
-        result = design_compiled(
+        result = design_members_compiled(
             setup.q,
             diameters,
-            branch.problem,
-            section_class=branch.section_class,
+            problem,
+            section_class=section_class,
         )
         shift = jnp.abs(result.diameters - diameters) / result.diameters
         moves.append(float(jnp.max(shift)))
@@ -456,17 +398,17 @@ def stagger_run(setup: ArchSetup, branch: ClassDesign, passes: int) -> StaggerRu
 
 def refinement_study(catalogue: TubeCatalogue, section_class: int) -> RefinementStudy:
     """
-    The mass on every mesh, and the order the sequence converges at.
+    Mass on each mesh and the first-order convergence of that sequence.
     """
     rows = []
     for count in MESHES:
         refined = arch_setup(count)
-        problem = refined.problem_for(catalogue)
-        free = design_compiled(
+        problem = problem_from_setup(refined, catalogue)
+        free = design_members_compiled(
             refined.q, refined.seed, problem, section_class=section_class
         )
         fixed_length = jnp.full(count, BUCKLING_LENGTH)
-        held = design_compiled(
+        held = design_members_compiled(
             refined.q,
             refined.seed,
             problem,
@@ -477,22 +419,22 @@ def refinement_study(catalogue: TubeCatalogue, section_class: int) -> Refinement
         row = RefinementRow(count, arc, float(free.mass), float(held.mass))
         rows.append(row)
 
-    by_fixed = np.asarray([row.mass_fixed for row in rows])
+    masses_fixed = np.asarray([row.mass_fixed for row in rows])
 
     # Richardson, for a sequence converging first order in the member count.
-    limit = 2.0 * by_fixed[-1] - by_fixed[-2]
-    changes = np.abs(np.diff(by_fixed)) / np.abs(by_fixed[1:])
+    limit = 2.0 * masses_fixed[-1] - masses_fixed[-2]
+    changes = np.abs(np.diff(masses_fixed)) / np.abs(masses_fixed[1:])
     ratios = changes[:-1] / changes[1:]
     study = RefinementStudy(tuple(rows), float(limit), ratios)
 
     return study
 
 
-def report_arch(report: ReportWriter, setup: ArchSetup) -> None:
+def report_arch(report: Report, setup: ArchSetup) -> None:
     """
-    The shape every number below belongs to.
+    Write the arch span, rise, force density, and total load.
     """
-    state = state_compiled(setup.q, setup.structure, setup.graph)
+    state = equilibrium_state_compiled(setup.q, setup.structure, setup.graph)
     rise = float(jnp.max(state.xyz[:, 2]))
     entries = (
         ("span", f"{SPAN / 1e3:.1f} m over {setup.num_edges} members"),
@@ -505,20 +447,21 @@ def report_arch(report: ReportWriter, setup: ArchSetup) -> None:
     report.write_entries(entries)
 
 
-def report_design(report: ReportWriter, branch: ClassDesign) -> None:
+def report_design(
+    report: Report, design: Design, problem: ProblemSetup, section_class: int
+) -> None:
     """
-    Every member of one class branch, and what the standard decided about it.
+    Write each member's actions, size, utilization, and governing limit.
     """
-    design = branch.design
-    codes = governing_states(design, branch.problem, section_class=branch.section_class)
+    codes = governing_states(design, problem, section_class=section_class)
     limits = {LIMIT_NAMES[float(code)] for code in codes}
 
     columns = (
-        ColumnSpec("member"),
-        ColumnSpec("N [kN]", ".4f"),
-        ColumnSpec("M [kNm]", ".5f"),
-        ColumnSpec("d [mm]", ".4f"),
-        ColumnSpec("utilization", ".16f"),
+        ReportColumn("member"),
+        ReportColumn("N [kN]", ".4f"),
+        ReportColumn("M [kNm]", ".5f"),
+        ReportColumn("d [mm]", ".4f"),
+        ReportColumn("utilization", ".16f"),
     )
     rows = []
     for member in range(design.diameters.shape[0]):
@@ -530,24 +473,24 @@ def report_design(report: ReportWriter, branch: ClassDesign) -> None:
 
     entries = (
         ("mass", f"{float(design.mass):.9f} t"),
-        ("worst |u - 1|", f"{branch.departure:.2e}"),
+        ("worst |u - 1|", f"{worst_utilization(design):.2e}"),
         ("governing", ", ".join(sorted(limits))),
     )
-    ratio = float(branch.catalogue.ratio)
+    ratio = float(problem.catalogue.ratio)
 
-    report.write_heading(f"Class {branch.section_class}, d/t = {ratio:.3f}")
+    report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
     report.write_table(columns, rows)
     report.write_entries(entries)
 
 
-def report_steps(
-    report: ReportWriter,
+def compare_gradient_numerical(
+    report: Report,
     objective: Callable[[Float[Array, "edges"]], Float[Array, ""]],
     setup: ArchSetup,
     gradient: Float[Array, "edges"],
 ) -> None:
     """
-    That the central difference plateaus before it is trusted.
+    Write central-difference error versus relative step on three edges.
     """
     scale = float(jnp.max(jnp.abs(gradient)))
     edges = (0, setup.num_edges // 2, setup.num_edges - 1)
@@ -557,27 +500,29 @@ def report_steps(
         for edge in edges:
             step = abs(float(setup.q[edge])) * relative
             numeric = central_difference(objective, setup.q, edge, step)
-            worst = max(worst, disagreement(float(gradient[edge]), numeric, scale))
+            worst = max(
+                worst, scaled_gradient_error(float(gradient[edge]), numeric, scale)
+            )
         rows.append((relative, worst))
 
     columns = (
-        ColumnSpec("relative step", ".0e"),
-        ColumnSpec("worst scaled error", ".3e"),
+        ReportColumn("relative step", ".0e"),
+        ReportColumn("worst scaled error", ".3e"),
     )
 
     report.write_heading("The central difference plateaus before it is trusted")
     report.write_table(columns, rows)
 
 
-def report_gradient(report: ReportWriter, rows: Sequence[GradientRow]) -> float:
+def compare_gradient_autodiff(report: Report, rows: Sequence[GradientRow]) -> float:
     """
-    The gradient of the mass, and the worst scaled error in it.
+    Write autodiff versus central difference per edge; return worst error.
     """
     columns = (
-        ColumnSpec("edge"),
-        ColumnSpec("autodiff", ".14e"),
-        ColumnSpec("central", ".14e"),
-        ColumnSpec("scaled", ".2e"),
+        ReportColumn("edge"),
+        ReportColumn("autodiff", ".14e"),
+        ReportColumn("central", ".14e"),
+        ReportColumn("scaled", ".2e"),
     )
     printed = [(row.edge, row.exact, row.numeric, row.difference) for row in rows]
 
@@ -587,44 +532,44 @@ def report_gradient(report: ReportWriter, rows: Sequence[GradientRow]) -> float:
     return max(row.difference for row in rows)
 
 
-def report_stagger(report: ReportWriter, run: StaggerRun) -> None:
+def compare_stagger_closure(report: Report, run: StaggerRun) -> None:
     """
-    That repeating the analysis and the check closes geometrically.
+    Write stagger-pass moves, masses, and the one-pass mass cost.
     """
     columns = (
-        ColumnSpec("pass"),
-        ColumnSpec("relative move", ".3e"),
-        ColumnSpec("mass [t]", ".9f"),
-        ColumnSpec("ratio", ".4f"),
+        ReportColumn("pass"),
+        ReportColumn("relative move", ".3e"),
+        ReportColumn("mass [t]", ".9f"),
+        ReportColumn("ratio", ".4f"),
     )
     rows = []
     for step, (move, mass) in enumerate(zip(run.moves, run.masses)):
         ratio = "" if step == 0 else float(run.moves[step] / run.moves[step - 1])
         rows.append((step, float(move), float(mass), ratio))
 
-    entries = (("one pass costs", f"{run.cost:.3%} of the mass"),)
+    entries = (("one pass costs", f"{run.one_pass_cost:.3%} of the mass"),)
 
     report.write_heading("The staggered coupling closes geometrically")
     report.write_table(columns, rows)
     report.write_entries(entries)
 
 
-def report_refinement(report: ReportWriter, study: RefinementStudy) -> None:
+def compare_mesh_refinement(report: Report, study: RefinementStudy) -> None:
     """
-    That the mass converges, first order in the number of members.
+    Write mesh-refinement masses, limit, and first-order change ratios.
     """
     columns = (
-        ColumnSpec("members"),
-        ColumnSpec("arc [mm]", ".4f"),
-        ColumnSpec("mass, Lcr=member", ".9f"),
-        ColumnSpec("mass, Lcr fixed", ".9f"),
+        ReportColumn("members"),
+        ReportColumn("arc [mm]", ".4f"),
+        ReportColumn("mass, Lcr=member", ".9f"),
+        ReportColumn("mass, Lcr fixed", ".9f"),
     )
     rows = [(row.count, row.arc, row.mass_member, row.mass_fixed) for row in study.rows]
     ratios = np.array2string(study.ratios, precision=3)
     entries = (
         ("extrapolated limit", f"{study.limit:.9f} t"),
         ("change ratios", ratios),
-        ("worst departure from first order", f"{study.worst_order:.3f}"),
+        ("worst oversizing from first order", f"{study.worst_order:.3f}"),
     )
 
     report.write_heading("The mass converges as the mesh refines")
@@ -632,9 +577,9 @@ def report_refinement(report: ReportWriter, study: RefinementStudy) -> None:
     report.write_entries(entries)
 
 
-def report_stability(report: ReportWriter, branch: ClassDesign, checked: Stability):
+def check_frame_stability(report: Report, design: Design, checked: Stability) -> None:
     """
-    The global stability check, and both routes to the same slenderness.
+    Write the frame stability verdict and both slenderness routes.
     """
     verdict = "SATISFIED" if bool(checked.adequate) else "NOT SATISFIED"
     entries = (
@@ -648,14 +593,14 @@ def report_stability(report: ReportWriter, branch: ClassDesign, checked: Stabili
     report.write_entries(entries)
 
     columns = (
-        ColumnSpec("member"),
-        ColumnSpec("6.50 from L_cr", ".4f"),
-        ColumnSpec("6.3.4 from a_cr", ".4f"),
-        ColumnSpec("ratio", ".2f"),
-        ColumnSpec("L_cr,global [mm]", ".1f"),
+        ReportColumn("member"),
+        ReportColumn("6.50 from L_cr", ".4f"),
+        ReportColumn("6.3.4 from a_cr", ".4f"),
+        ReportColumn("ratio", ".2f"),
+        ReportColumn("L_cr,global [mm]", ".1f"),
     )
     rows = []
-    for member in range(branch.design.diameters.shape[0]):
+    for member in range(design.diameters.shape[0]):
         from_length = float(checked.slenderness_member[member])
         from_factor = float(checked.slenderness_global[member])
         equivalent = float(checked.buckling_length_equivalent[member])
@@ -667,32 +612,34 @@ def report_stability(report: ReportWriter, branch: ClassDesign, checked: Stabili
     report.write_table(columns, rows)
 
 
-def report_assumption(
-    report: ReportWriter,
+def compare_buckling_length_basis(
+    report: Report,
     setup: ArchSetup,
-    branch: ClassDesign,
+    design: Design,
+    problem: ProblemSetup,
+    section_class: int,
     checked: Stability,
 ) -> None:
     """
-    What sizing against the frame's own mode would have cost instead.
+    Compare mass under member-length L_cr versus the frame's own mode.
     """
-    arc = float(jnp.sum(branch.design.lengths))
+    arc = float(jnp.sum(design.lengths))
     global_length = jnp.full(setup.num_edges, GLOBAL_MODE_FACTOR * arc)
-    unbraced = design_compiled(
+    unbraced = design_members_compiled(
         setup.q,
         setup.seed,
-        branch.problem,
-        section_class=branch.section_class,
+        problem,
+        section_class=section_class,
         buckling_length=global_length,
     )
-    penalty = float(unbraced.mass) / float(branch.design.mass)
+    penalty = float(unbraced.mass) / float(design.mass)
 
     factors = np.array2string(np.asarray(checked.factors), precision=4)
     against_global = f"sized against L_cr = {GLOBAL_MODE_FACTOR:.3f} arc"
     entries = (
         ("critical load factors", factors),
         ("arc length", f"{arc:.1f} mm"),
-        ("sized against L_cr = L", f"{float(branch.design.mass):.6f} t"),
+        ("sized against L_cr = L", f"{float(design.mass):.6f} t"),
         (against_global, f"{float(unbraced.mass):.6f} t, x{penalty:.2f}"),
     )
 
@@ -707,20 +654,20 @@ def report_assumption(
     )
 
 
-def write_figures(
-    report: ReportWriter,
+def generate_figures(
+    report: Report,
     setup: ArchSetup,
-    branch: ClassDesign,
+    design: Design,
+    problem: ProblemSetup,
     results: ArchResults,
 ) -> None:
     """
-    Every figure this experiment is the source of.
+    Write the sections, convergence, and buckling-mode figures.
     """
-    design = branch.design
     study = results.refinement
     FIGURES.mkdir(exist_ok=True)
 
-    seed_tubes = branch.catalogue.tube_at(setup.seed)
+    seed_tubes = problem.catalogue.tube_at(setup.seed)
     assumed = float(mass_of_tubes(seed_tubes, design.lengths, STEEL))
     seeded = SizedMembers(setup.seed, assumed)
     sized = SizedMembers(design.diameters, float(design.mass))
@@ -728,18 +675,20 @@ def write_figures(
     sections.savefig(FIGURES / "09_sections.png", dpi=160, bbox_inches="tight")
 
     counts = np.asarray(MESHES)
-    refinement = MeshRefinement(counts, study.by_member, study.by_fixed, study.limit)
+    refinement = MeshRefinement(
+        counts, study.masses_member, study.masses_fixed, study.limit
+    )
     passes = np.arange(len(results.stagger.moves))
     staggered = StaggeredPasses(passes, results.stagger.moves)
     convergence = figure_convergence(refinement, staggered)
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
 
-    modes = modes_compiled(
+    modes = buckling_modes_compiled(
         setup.model,
         design.xyz,
         design.diameters,
         STEEL,
-        branch.catalogue,
+        problem.catalogue,
         num_modes=NUM_MODES,
     )
     factors = np.asarray(results.stability.factors)
@@ -750,71 +699,87 @@ def write_figures(
 
 def main(verbose: bool = True) -> None:
     """
-    Run the whole pipeline on one arch, and check what it returns.
+    Run the arch pipeline checks and write the report and figures.
     """
-    report = ReportWriter(verbose)
+    report = Report(verbose)
+    # The arch, its form-finding graph, its frame model, and the q reaching the rise.
     setup = arch_setup(NUM_EDGES)
 
     report_arch(report, setup)
 
-    branches = [design_for(setup, section_class) for section_class in CLASSES]
-    for branch in branches:
-        report_design(report, branch)
-    worst_utilization = max(branch.departure for branch in branches)
+    # The same q and seed diameters sized twice, once per class branch.
+    designs = {}
+    problems = {}
+    for section_class in CLASSES:
+        design, problem = design_at_class(setup, section_class)
+        report_design(report, design, problem, section_class)
+        designs[section_class] = design
+        problems[section_class] = problem
 
-    elastic = branches[-1]
+    # What both branches owe: every member sized to satisfy the standard exactly.
+    departure = max(worst_utilization(design) for design in designs.values())
 
+    # Class 3 carries everything below, being the ratio the tubes are held at.
+    section_class = 3
+    design = designs[section_class]
+    problem = problems[section_class]
+
+    # All three stages as one scalar function: force densities in, tonnes out.
     def objective(q):
-        return total_mass(
-            q, setup.seed, elastic.problem, section_class=elastic.section_class
-        )
+        return total_mass(q, setup.seed, problem, section_class=section_class)
 
-    value_of = eqx.filter_jit(objective)
-    gradient_of = eqx.filter_jit(jax.grad(objective))
+    # Traced once each, then called fifty-one times by the two sweeps below.
+    objective_value = eqx.filter_jit(objective)
+    objective_gradient = eqx.filter_jit(jax.grad(objective))
 
-    gradient = gradient_of(setup.q)
+    # One reverse pass back through the check, the analysis and the form finding.
+    gradient = objective_gradient(setup.q)
+    # The largest component, since two of these sensitivities change sign.
     scale = float(jnp.max(jnp.abs(gradient)))
 
-    report_steps(report, value_of, setup, gradient)
+    # Three edges over five step sizes, to find where the difference plateaus.
+    compare_gradient_numerical(report, objective_value, setup, gradient)
 
-    rows = []
-    for edge in range(setup.num_edges):
-        step = abs(float(setup.q[edge])) * STEP
-        numeric = central_difference(value_of, setup.q, edge, step)
-        exact = float(gradient[edge])
-        difference = disagreement(exact, numeric, scale)
-        rows.append(GradientRow(edge, exact, numeric, difference))
+    # Every edge at that step, each derivative beside a difference of two masses.
+    rows = gradient_rows(objective_value, setup, gradient, scale)
+    worst_gradient = compare_gradient_autodiff(report, rows)
 
-    worst_gradient = report_gradient(report, rows)
-
-    refinement = refinement_study(elastic.catalogue, elastic.section_class)
-    stagger = stagger_run(setup, elastic, PASSES)
-    stability = stability_compiled(elastic.design, elastic.problem, num_modes=NUM_MODES)
+    # The same design on six meshes, doubling, so the mass can be seen to settle.
+    refinement = refinement_study(problem.catalogue, section_class)
+    # The sizes fed back as the stiffness they were found with, until they hold.
+    stagger = run_stagger(setup, problem, section_class, PASSES)
+    # What the finished frame does as a whole, which L_cr = L assumed rather than proved
+    stability = frame_stability_compiled(design, problem, num_modes=NUM_MODES)
+    # One container, so a report and a figure read the same measurements.
     results = ArchResults(refinement, stagger, stability)
 
-    report_stagger(report, results.stagger)
-    report_refinement(report, results.refinement)
-    report_stability(report, elastic, results.stability)
-    report_assumption(report, setup, elastic, results.stability)
-
-    write_figures(report, setup, elastic, results)
-
-    checks = (
-        ToleranceCheck(
-            "departure from unity", worst_utilization, TOLERANCE_UTILIZATION
-        ),
-        ToleranceCheck("gradient error", worst_gradient, TOLERANCE_GRADIENT),
-        ToleranceCheck(
-            "departure from first order",
-            results.refinement.worst_order,
-            TOLERANCE_ORDER,
-        ),
+    compare_stagger_closure(report, results.stagger)
+    compare_mesh_refinement(report, results.refinement)
+    check_frame_stability(report, design, results.stability)
+    compare_buckling_length_basis(
+        report, setup, design, problem, section_class, results.stability
     )
+
+    # The figures, which take the design and the measurements and nothing else.
+    generate_figures(report, setup, design, problem, results)
+
+    # Two claims harvested above and one from the refinement, each against its bound.
+    check_util = ToleranceCheck("Overstressed!", departure, TOLERANCE_UTILIZATION)
+    check_grad = ToleranceCheck("Gradient error", worst_gradient, TOLERANCE_GRADIENT)
+    check_order = ToleranceCheck(
+        "Oversizing from first order",
+        results.refinement.worst_order,
+        TOLERANCE_ORDER,
+    )
+    checks = (check_util, check_grad, check_order)
+
     report.write_heading("Summary")
     report.write_checks(checks)
-    report.write_verdict(
-        checks_passed(checks) and bool(jnp.all(jnp.isfinite(gradient)))
-    )
+
+    # A nan fails every bound already; this says so rather than relying on it.
+    is_grad_finite = jnp.all(jnp.isfinite(gradient))
+    is_checks_passed = checks_passed(checks)
+    report.write_verdict(is_checks_passed and is_grad_finite)
 
 
 if __name__ == "__main__":
