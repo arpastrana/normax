@@ -40,7 +40,7 @@ from normax.ec3.actions import MemberActions
 from normax.ec3.adjoint import derivative_force
 from normax.ec3.adjoint import derivative_force_tension
 from normax.ec3.adjoint import derivative_length
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import utilization_design
@@ -51,7 +51,7 @@ from normax.reporting import checks_passed
 
 TITLE = "Four independent derivatives of one strut, tabulated against each other."
 
-STEEL = SteelGrade()
+STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 SECTION_CLASS = 3
 

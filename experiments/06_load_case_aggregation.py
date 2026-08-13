@@ -38,7 +38,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
@@ -46,7 +46,7 @@ from normax.ec3.sizing import mass_of_tubes
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 
-STEEL = SteelGrade()
+STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 SECTION_CLASS = 3
 

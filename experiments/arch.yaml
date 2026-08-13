@@ -1,0 +1,27 @@
+# The arch of experiment 03, and the settings a design of it is searched for
+# under. Units are millimeters and newtons throughout, so a mass comes out in
+# tonnes and a force density in newtons per millimeter.
+
+structure:
+  span: 10000.0
+  rise: 3000.0
+  num_edges: 10
+form_finding:
+  force_density: -80.0
+analysis:
+  diameter: 100.0
+  envelope_sharpness: 50.0
+load_cases:
+  - name: uniform
+    magnitude: 180000.0
+  - name: half_span
+    magnitude: 90000.0
+  - name: half_span_mirrored
+    magnitude: 90000.0
+sizing:
+  section_class: 3
+optimization:
+  iterations: 25
+  bounds:
+    min: -100.0
+    max: -1.0e-3

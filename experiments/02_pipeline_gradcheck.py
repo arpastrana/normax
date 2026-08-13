@@ -35,7 +35,7 @@ from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.classification import is_plastic
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_CROSS_SECTION
 from normax.ec3.sizing import LIMIT_MAJOR
@@ -51,7 +51,7 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 
-STEEL = SteelGrade()
+STEEL = Steel()
 TARGET = 1e-6
 TOLERANCE_UNITY = 1e-9
 

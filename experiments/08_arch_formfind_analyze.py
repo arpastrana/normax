@@ -43,20 +43,21 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import diagnose_mechanisms
 
-from normax.analysis import MemberForces
 from normax.analysis.smax import frame_model
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.stages import MemberForces
 from normax.structures import Structure
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
 from normax.visualization import GapScaling
 from normax.visualization import GradientCheck
 from normax.visualization import HandoffForces
@@ -90,7 +91,7 @@ TOLERANCE_GRADIENT = 1e-7
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = SteelGrade()
+STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
 
@@ -103,17 +104,20 @@ class FunicularArch(NamedTuple):
     structure :
         The structure supplying the connectivity, the supports and the loads.
     graph :
-        The form-finding connectivity, from `normax.formfinding`.
+        The form-finding connectivity, from `normax.form_finding`.
     state :
         The equilibrium state at the chosen force densities.
     axial_force :
         Member force the force density method implies, as `q` times a length.
+    loads :
+        The load case the arch was form-found under and is analyzed in.
     """
 
     structure: Structure
     graph: EquilibriumStructure
     state: EquilibriumState
     axial_force: Float[Array, "edges"]
+    loads: Float[Array, "nodes 3"]
 
     @property
     def lengths(self) -> Float[Array, "edges"]:
@@ -170,19 +174,20 @@ def funicular_arch(load: float, force_density: float) -> FunicularArch:
     """
     Form-find the arch, and report the state the analysis has to reproduce.
     """
-    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0, load=load)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
+    applied = loads_uniform(structure, load)
     graph = equilibrium_graph(structure)
     q = jnp.full(NUM_EDGES, force_density)
-    state = equilibrium_state(q, structure, graph)
+    state = equilibrium_state(q, structure.nodes[graph.indices_fixed], graph, applied)
     axial_force = q * state.lengths[:, 0]
-    arch = FunicularArch(structure, graph, state, axial_force)
+    arch = FunicularArch(structure, graph, state, axial_force, applied)
 
     return arch
 
 
 def handoff_gap(
     diameter: float,
-    steel: SteelGrade,
+    steel: Steel,
     load: float = LOAD,
     force_density: float = FORCE_DENSITY,
 ) -> HandoffGap:
@@ -192,7 +197,9 @@ def handoff_gap(
     arch = funicular_arch(load, force_density)
     prepared = prepare_model(arch.structure, steel, CATALOGUE, normal=NORMAL)
     diameters = jnp.full(NUM_EDGES, diameter)
-    member = member_forces(prepared, arch.state.xyz, diameters, steel, CATALOGUE)
+    member = member_forces(
+        prepared, arch.state.xyz, diameters, steel, CATALOGUE, arch.loads
+    )
 
     departure = jnp.abs(member.axial_force - arch.axial_force)
     axial = jnp.max(departure / jnp.abs(arch.axial_force))
@@ -339,7 +346,9 @@ def main(verbose: bool = True) -> None:
     arch = funicular_arch(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
     prepared = prepare_model(arch.structure, STEEL, CATALOGUE, normal=NORMAL)
-    member = member_forces(prepared, arch.state.xyz, diameters, STEEL, CATALOGUE)
+    member = member_forces(
+        prepared, arch.state.xyz, diameters, STEEL, CATALOGUE, arch.loads
+    )
 
     model = frame_model(
         arch.structure, arch.state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL
@@ -351,8 +360,15 @@ def main(verbose: bool = True) -> None:
     by_diameter = report_scaling(report)
 
     def objective(q):
-        state = equilibrium_state(q, arch.structure, arch.graph)
-        analyzed = member_forces(prepared, state.xyz, diameters, STEEL, CATALOGUE)
+        state = equilibrium_state(
+            q,
+            arch.structure.nodes[arch.graph.indices_fixed],
+            arch.graph,
+            arch.loads,
+        )
+        analyzed = member_forces(
+            prepared, state.xyz, diameters, STEEL, CATALOGUE, arch.loads
+        )
 
         return jnp.sum(analyzed.axial_force**2)
 

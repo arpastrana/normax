@@ -10,6 +10,7 @@ classifiers = []
 dependencies = [
     "jax>=0.11.0",
     "jaxtyping>=0.3.11",
+    "pyyaml>=6.0.3",
     "scipy>=1.18.0",
     "tesseract-core[runtime]>=1.11.0",
     "tesseract-jax>=0.4.1",

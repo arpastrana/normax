@@ -60,21 +60,28 @@ from jaxtyping import Float
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
 from normax.analysis.smax import prepare_model as prepare_smax
-from normax.composition import ProblemSetup as ComposedSetup
-from normax.composition import analysis_backend
-from normax.composition import local_chain
-from normax.composition import total_mass as mass_composed
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
+from normax.pipeline import DesignPipeline
+from normax.pipeline import calculate_mass
 from normax.reporting import Report
 from normax.reporting import ReportColumn
+from normax.stages import DesignParameters
+from normax.stages import LoadCases
+from normax.stages import load_cases
 from normax.structures import Structure
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractFormFinder
+from normax.tesseract import TesseractSizer
+from normax.tesseract import analysis_backend
+from normax.tesseract import local_chain
 from normax.visualization import BackendAgreement
 from normax.visualization import BackendTimings
 from normax.visualization import figure_backends
@@ -111,7 +118,7 @@ ITERATIONS = 60
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = SteelGrade()
+STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
 BACKENDS = ("smax", "opensees")
@@ -126,7 +133,7 @@ class ArchSetup(NamedTuple):
     structure :
         The structure supplying the connectivity, the supports and the loads.
     graph :
-        The form-finding connectivity, from `normax.formfinding`.
+        The form-finding connectivity, from `normax.form_finding`.
     q :
         Force densities that reach the target rise.
     """
@@ -154,9 +161,30 @@ class ArchSetup(NamedTuple):
         """
         The form-found geometry the analysis stage is handed.
         """
-        state = equilibrium_state(self.q, self.structure, self.graph)
+        state = equilibrium_state(
+            self.q,
+            self.structure.nodes[self.graph.indices_fixed],
+            self.graph,
+            self.funicular,
+        )
 
         return state.xyz
+
+    @property
+    def loads(self) -> LoadCases:
+        """
+        The one load case the arch is shaped by and checked against.
+        """
+        applied = self.funicular
+
+        return load_cases(applied, [applied])
+
+    @property
+    def funicular(self) -> Float[Array, "nodes 3"]:
+        """
+        The uniform load case the arch is form-found under.
+        """
+        return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
 
     @property
     def bounds(self) -> tuple[float, float]:
@@ -259,12 +287,14 @@ def arch_setup(num_edges: int) -> ArchSetup:
     """
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
-    load = TOTAL_LOAD / (num_edges - 1)
-    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
+    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
+    applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
-    state = equilibrium_state(trial, structure, graph)
+    state = equilibrium_state(
+        trial, structure.nodes[graph.indices_fixed], graph, applied
+    )
     reached = jnp.max(state.xyz[:, 2])
     setup = ArchSetup(structure, graph, trial * reached / RISE)
 
@@ -286,15 +316,17 @@ def mass_objective(setup: ArchSetup, chain) -> Callable[[Float[Array, "edges"]],
     """
     Force densities to a mass, through whichever backend is selected.
     """
+    structure = setup.structure
+    pipeline = DesignPipeline(
+        TesseractFormFinder(chain.formfinding),
+        TesseractAnalyzer(chain.analysis, STEEL, CATALOGUE, NORMAL),
+        TesseractSizer(chain.ec3, STEEL, CATALOGUE),
+    ).compile(structure)
+
+    loads = setup.loads
 
     def total(q):
-        return mass_composed(
-            q,
-            setup.seed,
-            ComposedSetup(setup.structure, chain, STEEL, CATALOGUE),
-            normal=NORMAL,
-            section_class=3,
-        )
+        return calculate_mass(pipeline(DesignParameters(q, setup.seed), loads))
 
     return total
 
@@ -378,10 +410,10 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
 
     def ddm():
         return backend_opensees.force_jacobian(
-            prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+            prepared_ddm, xyz, diameters, STEEL, CATALOGUE, setup.funicular
         )
 
-    run = traced_forces(prepared_smax)
+    run = traced_forces(prepared_smax, setup.funicular)
     coordinates = eqx.filter_jit(jax.jacfwd(run, argnums=0))
     sections = eqx.filter_jit(jax.jacfwd(run, argnums=1))
 
@@ -395,13 +427,13 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     return seconds
 
 
-def traced_forces(prepared) -> Callable[..., dict[str, Float[Array, "..."]]]:
+def traced_forces(prepared, applied) -> Callable[..., dict[str, Float[Array, "..."]]]:
     """
     The two member forces the composition consumes, as a differentiable map.
     """
 
     def run(coords, sizes):
-        member = forces_smax(prepared, coords, sizes, STEEL, CATALOGUE)
+        member = forces_smax(prepared, coords, sizes, STEEL, CATALOGUE, applied)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
@@ -427,9 +459,11 @@ def agreement(report: Report) -> float:
     prepared_smax = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
 
     mine = backend_opensees.member_forces(
-        prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+        prepared_ddm, xyz, diameters, STEEL, CATALOGUE, setup.funicular
     )
-    theirs = forces_smax(prepared_smax, xyz, diameters, STEEL, CATALOGUE)
+    theirs = forces_smax(
+        prepared_smax, xyz, diameters, STEEL, CATALOGUE, setup.funicular
+    )
 
     force_columns = (
         ReportColumn("force", align="<"),
@@ -447,9 +481,9 @@ def agreement(report: Report) -> float:
     report.write_table(force_columns, force_rows)
 
     blocks = backend_opensees.force_jacobian(
-        prepared_ddm, xyz, diameters, STEEL, CATALOGUE
+        prepared_ddm, xyz, diameters, STEEL, CATALOGUE, setup.funicular
     )
-    run = traced_forces(prepared_smax)
+    run = traced_forces(prepared_smax, setup.funicular)
     by_coordinate = jax.jacfwd(run, argnums=0)(xyz, diameters)
     by_diameter = jax.jacfwd(run, argnums=1)(xyz, diameters)
 
@@ -517,7 +551,9 @@ def blind(report: Report) -> None:
     prepared = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
 
     def run(coords):
-        member = forces_smax(prepared, coords, diameters, STEEL, CATALOGUE)
+        member = forces_smax(
+            prepared, coords, diameters, STEEL, CATALOGUE, setup.funicular
+        )
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
@@ -573,7 +609,12 @@ def blind(report: Report) -> None:
     )
 
     def positions(q):
-        state = equilibrium_state(q, setup.structure, setup.graph)
+        state = equilibrium_state(
+            q,
+            setup.structure.nodes[setup.graph.indices_fixed],
+            setup.graph,
+            setup.funicular,
+        )
 
         return state.xyz
 

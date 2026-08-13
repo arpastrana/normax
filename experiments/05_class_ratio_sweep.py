@@ -36,7 +36,7 @@ from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.classification import is_plastic
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import SHEAR_THRESHOLD
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import resistance_shear
@@ -46,7 +46,7 @@ from normax.ec3.sizing import mass_of_tubes
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 
-STEEL = SteelGrade()
+STEEL = Steel()
 LENGTH = 6000.0
 
 # A demand mix swept from pure compression to pure bending, holding the axial
@@ -294,7 +294,7 @@ def shear_check(branch: ClassBranch, moment: float) -> ShearCheck:
     """
     diameter = diameter_for(branch, moment)
     area = area_shear(branch.catalogue.tube_at(diameter).area)
-    steel = SteelGrade(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0)
+    steel = Steel(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0)
     resistance = resistance_shear(area, steel)
     demand = SHEAR_FACTOR * moment / LENGTH
     checked = ShearCheck(moment, float(diameter), float(resistance), demand)

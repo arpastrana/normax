@@ -65,7 +65,7 @@ how far the design differs from its own reflection.
 projection, but it leaves horizontal equilibrium unimposed, and on an evenly
 spaced plan that equilibrium admits only a uniform force density — so the
 funicular part of a held plan is the one-variable sweep above. See
-`normax.formfinding.positions_vertical` and the roadmap's note on thrust network
+`normax.form_finding.positions_vertical` and the roadmap's note on thrust network
 analysis, which is the construction that fixes a plan and keeps equilibrium.
 
 Run with `uv run --group pipeline python experiments/03_optimize_arch.py`.
@@ -81,29 +81,30 @@ import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis.smax import prepare_model
-from normax.ec3.actions import MemberActions
-from normax.ec3.material import SteelGrade
+from normax.analysis.smax import SmaxAnalyzer
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.optimization import Trajectory
 from normax.optimization import annealing_schedule
 from normax.optimization import optimize_annealed
 from normax.optimization import penalized_mass
 from normax.optimization import shortest_member
-from normax.pipeline import Design
-from normax.pipeline import Envelope
-from normax.pipeline import ProblemSetup
-from normax.pipeline import Unsmoothed
-from normax.pipeline import design_envelope
+from normax.pipeline import DesignPipeline
+from normax.pipeline import MemberSections
+from normax.pipeline import calculate_mass
 from normax.pipeline import frame_stability
 from normax.pipeline import governing_load_case
-from normax.pipeline import unsmoothed_design
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.sizing import Ec3Sizer
+from normax.stages import DesignParameters
+from normax.stages import LoadCases
+from normax.stages import load_cases as load_cases_of
 from normax.structures import arch_2d
 from normax.structures import loads_half_span
 from normax.structures import loads_uniform
@@ -184,13 +185,12 @@ FLOOR_WEIGHT = 50.0
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = SteelGrade()
+STEEL = Steel()
 SECTION_CLASS = 3
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, SECTION_CLASS)
 
 # The reads the reports make, compiled. Left eager each one costs an XLA
 # compilation per primitive, which is most of what reporting a design costs.
-unsmoothed_compiled = eqx.filter_jit(unsmoothed_design)
 governing_compiled = eqx.filter_jit(governing_load_case)
 stability_compiled = eqx.filter_jit(frame_stability)
 shortest_compiled = eqx.filter_jit(shortest_member)
@@ -202,17 +202,24 @@ class ArchProblem(NamedTuple):
 
     Attributes
     ----------
-    problem :
-        The prepared problem the three stages read, built once on the host.
-    load_cases :
-        Nodal loads of every load case, stacked along the leading axis.
+    pipeline :
+        The three blocks, compiled against the arch on the host.
+    loads :
+        The case the shape answers to, and the cases it is checked against.
     q :
         Force densities that reach the target rise under the funicular case.
     """
 
-    problem: ProblemSetup
-    load_cases: Float[Array, "cases nodes 3"]
+    pipeline: DesignPipeline
+    loads: LoadCases
     q: Float[Array, "edges"]
+
+    @property
+    def analyzer(self) -> SmaxAnalyzer:
+        """
+        The analysis block, which the stability check reads its assembly from.
+        """
+        return self.pipeline.analyzer
 
     @property
     def bounds(self) -> tuple[float, float]:
@@ -297,8 +304,8 @@ class FinalReport(NamedTuple):
         How far the diameters depart from their own reflection.
     """
 
-    envelope: Envelope
-    sized: Unsmoothed
+    envelope: MemberSections
+    sized: MemberSections
     decided: Float[np.ndarray, "edges"]
     stagger: float
     alpha_cr: float
@@ -331,27 +338,30 @@ def arch_problem() -> ArchProblem:
     compiled at all: preparing it reads support flags in Python, which a tracer
     cannot follow.
     """
-    structure = arch_2d(
-        num_edges=NUM_EDGES,
-        span=SPAN,
-        rise=RISE,
-        load=TOTAL_LOAD / (NUM_EDGES - 1),
-    )
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     graph_fdm = equilibrium_graph(structure)
-    model = prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL)
+    loads = build_load_cases(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(trial, structure, graph_fdm)
+    state = equilibrium_state(
+        trial,
+        structure.nodes[graph_fdm.indices_fixed],
+        graph_fdm,
+        loads.formfinding,
+    )
     reached = jnp.max(state.xyz[:, 2])
 
-    problem = ProblemSetup(structure, graph_fdm, model, STEEL, CATALOGUE)
-    load_cases = build_load_cases(structure)
-    setup = ArchProblem(problem, load_cases, trial * reached / RISE)
+    blocks = DesignPipeline(
+        FdmFormFinder(),
+        SmaxAnalyzer(STEEL, CATALOGUE, NORMAL),
+        Ec3Sizer(STEEL, CATALOGUE),
+    )
+    setup = ArchProblem(blocks.compile(structure), loads, trial * reached / RISE)
 
     return setup
 
 
-def build_load_cases(structure) -> Float[Array, "cases nodes 3"]:
+def build_load_cases(structure) -> LoadCases:
     """
     Three cases of equal total: funicular, half span, and its mirror.
     """
@@ -367,11 +377,11 @@ def build_load_cases(structure) -> Float[Array, "cases nodes 3"]:
 
     cases = [uniform, half, mirrored]
 
-    return jnp.stack(cases)
+    return load_cases_of(uniform, cases)
 
 
 @eqx.filter_jit
-def build(setup: ArchProblem, q, beta, diameters=None) -> Envelope:
+def build(setup: ArchProblem, q, beta, diameters=None) -> MemberSections:
     """
     The enveloped design at one set of force densities.
 
@@ -381,41 +391,9 @@ def build(setup: ArchProblem, q, beta, diameters=None) -> Envelope:
     that annealing it does not compile again.
     """
     seed = jnp.full(NUM_EDGES, SEED) if diameters is None else diameters
-    envelope = design_envelope(
-        q,
-        seed,
-        setup.problem,
-        setup.load_cases,
-        beta=beta,
-        section_class=SECTION_CLASS,
-    )
+    envelope = setup.pipeline(DesignParameters(q, seed), setup.loads, beta)
 
     return envelope
-
-
-def design_under(envelope: Envelope, sized: Unsmoothed, load_case: int = 0) -> Design:
-    """
-    A finished design: unsmoothed sizes, actions of one load case.
-    """
-    actions = MemberActions(
-        envelope.axial_force[load_case],
-        envelope.moment_major[load_case],
-        envelope.moment_minor[load_case],
-        envelope.moment_factor_major[load_case],
-        envelope.moment_factor_minor[load_case],
-    )
-
-    design = Design(
-        envelope.xyz,
-        envelope.lengths,
-        actions,
-        envelope.buckling_length,
-        sized.diameters,
-        sized.utilization[load_case],
-        sized.mass,
-    )
-
-    return design
 
 
 def report_load_cases(report: Report, setup: ArchProblem) -> None:
@@ -465,10 +443,10 @@ def report_smoothing(report: Report, setup: ArchProblem) -> None:
     rows = []
     for beta in SHARPNESSES:
         result = build(setup, setup.q, beta)
-        exact = unsmoothed_compiled(result, setup.problem, section_class=SECTION_CLASS)
-        smoothed = float(result.mass)
-        excess = smoothed / float(exact.mass) - 1.0
-        cases = setup.load_cases.shape[0]
+        exact = build(setup, setup.q, None)
+        smoothed = float(calculate_mass(result))
+        excess = smoothed / float(calculate_mass(exact)) - 1.0
+        cases = setup.loads.analysis.shape[0]
         bound = float(cases ** (2.0 / float(beta))) - 1.0
         utilization = float(jnp.max(exact.utilization))
         rows.append((float(beta), smoothed, excess, bound, utilization))
@@ -485,7 +463,7 @@ def report_sweep(report: Report, setup: ArchProblem) -> SweepReport:
     def objective(scaled):
         envelope = build(setup, scaled, BETA_STOP)
 
-        return envelope.mass
+        return calculate_mass(envelope)
 
     slopes = [
         float(jnp.sum(jax.grad(objective)(setup.q * scale) * setup.q))
@@ -570,10 +548,10 @@ def report_descent(report: Report, setup: ArchProblem, floor: float) -> DescentR
     def objective(x, beta):
         result = build(setup, x, beta)
         if not floor:
-            return result.mass
+            return calculate_mass(result)
 
         penalized = penalized_mass(
-            result.mass,
+            calculate_mass(result),
             result.lengths,
             floor,
             beta=FLOOR_BETA,
@@ -609,7 +587,7 @@ def report_stagger(
     report: Report,
     setup: ArchProblem,
     q: Float[Array, "edges"],
-    result: Envelope,
+    result: MemberSections,
 ) -> float:
     """
     What the objective's single analysis pass costs, by repeating it.
@@ -624,10 +602,11 @@ def report_stagger(
     for step in range(PASSES):
         relaxed = build(setup, q, BETA_STOP, diameters)
         shift = jnp.abs(relaxed.diameters - diameters) / relaxed.diameters
-        rows.append((step, float(jnp.max(shift)), float(relaxed.mass)))
+        rows.append((step, float(jnp.max(shift)), float(calculate_mass(relaxed))))
         diameters = relaxed.diameters
 
-    stagger = abs(float(result.mass) - float(relaxed.mass)) / float(relaxed.mass)
+    settled = float(calculate_mass(relaxed))
+    stagger = abs(float(calculate_mass(result)) - settled) / settled
     columns = (
         ReportColumn("pass"),
         ReportColumn("move", ".3e"),
@@ -652,7 +631,7 @@ def report_final(
     """
     q = run.walked.q[-1]
     result = build(setup, q, BETA_STOP)
-    sized = unsmoothed_compiled(result, setup.problem, section_class=SECTION_CLASS)
+    sized = build(setup, q, None)
     decided = np.asarray(governing_compiled(result))
     lengths = np.asarray(result.lengths)
 
@@ -670,8 +649,8 @@ def report_final(
         for index, name in enumerate(CASE_NAMES)
     ]
     entries = (
-        ("mass, enveloped", f"{float(result.mass):.9f} t"),
-        ("mass, unsmoothed", f"{float(sized.mass):.9f} t"),
+        ("mass, enveloped", f"{float(calculate_mass(result)):.9f} t"),
+        ("mass, unsmoothed", f"{float(calculate_mass(sized)):.9f} t"),
         ("worst utilization", f"{float(jnp.max(sized.utilization)):.15f}"),
         ("diameters", f"{thinnest:.2f} .. {thickest:.2f} mm"),
         ("rise", f"{float(jnp.max(result.xyz[:, 2])):.1f} mm"),
@@ -696,10 +675,11 @@ def report_final(
     # A critical load factor belongs to a load case, and the case the shape was
     # found under is not the one that sized it, so quoting only that one would
     # flatter the design.
-    frame = design_under(result, sized)
     factors = []
-    for name, loads in zip(CASE_NAMES, setup.load_cases):
-        checked = stability_compiled(frame, setup.problem, num_modes=1, loads=loads)
+    for index, (name, loads) in enumerate(zip(CASE_NAMES, setup.loads.analysis)):
+        checked = stability_compiled(
+            sized, setup.analyzer, loads, load_case=index, num_modes=1
+        )
         verdict = "adequate" if bool(checked.adequate) else "inadequate"
         factors.append((name, float(checked.factors[0]), verdict))
 
@@ -733,7 +713,11 @@ def report_floor(
     loose_stubs = float(np.sum(loose.lengths < FLOOR))
     held_stubs = float(np.sum(held.lengths < FLOOR))
     rows = (
-        ("mass [t]", float(loose.sized.mass), float(held.sized.mass)),
+        (
+            "mass [t]",
+            float(calculate_mass(loose.sized)),
+            float(calculate_mass(held.sized)),
+        ),
         ("shortest member [mm]", loose.lengths.min(), held.lengths.min()),
         ("longest member [mm]", loose.lengths.max(), held.lengths.max()),
         ("length ratio", loose_ratio, held_ratio),
@@ -745,7 +729,7 @@ def report_floor(
         ReportColumn("unconstrained", ".4f"),
         ReportColumn("floored", ".4f"),
     )
-    kept = 1.0 - float(held.sized.mass) / funicular_mass
+    kept = 1.0 - float(calculate_mass(held.sized)) / funicular_mass
     entries = (
         ("the floored design", f"is {kept:.1%} lighter than the funicular arch"),
     )
@@ -779,22 +763,22 @@ def write_figures(
     optimization.savefig(FIGURES / "03_optimization.png", dpi=200)
 
     starting = build(setup, setup.q, BETA_STOP)
-    single = build(setup, setup.q * SCALES[sweep.best], BETA_STOP)
-    single_sized = unsmoothed_compiled(
-        single, setup.problem, section_class=SECTION_CLASS
-    )
+    single_q = setup.q * SCALES[sweep.best]
+    single = build(setup, single_q, BETA_STOP)
+    single_sized = build(setup, single_q, None)
     single_decided = np.asarray(governing_compiled(single))
     title_single = f"Best single $q$, {sweep.masses[sweep.best]:.4f} t"
-    title_loose = f"Per member, no floor, {float(loose.sized.mass):.4f} t"
-    title_held = f"Per member, {FLOOR:.0f} mm floor, {float(held.sized.mass):.4f} t"
+    mass_loose = float(calculate_mass(loose.sized))
+    mass_held = float(calculate_mass(held.sized))
+    title_loose = f"Per member, no floor, {mass_loose:.4f} t"
+    title_held = f"Per member, {FLOOR:.0f} mm floor, {mass_held:.4f} t"
     forms = (
         Form(title_single, single.xyz, single_sized.diameters, single_decided),
         Form(title_loose, loose.envelope.xyz, loose.sized.diameters, loose.decided),
         Form(title_held, held.envelope.xyz, held.sized.diameters, held.decided),
     )
-    cases = figure_load_cases(
-        setup.problem.structure.edges, forms, CASE_NAMES, reference=starting.xyz
-    )
+    edges = setup.pipeline.formfinder.structure.edges
+    cases = figure_load_cases(edges, forms, CASE_NAMES, reference=starting.xyz)
     cases.savefig(FIGURES / "03_load_cases.png", dpi=200)
 
 
@@ -818,8 +802,8 @@ def main(verbose: bool = True) -> None:
     # The funicular design, which is where the descent starts and the only
     # reference either reduction means anything against.
     funicular = int(np.argmin(np.abs(SCALES - 1.0)))
-    reduction = 1.0 - float(loose.sized.mass) / sweep.masses[funicular]
-    against_best = 1.0 - float(loose.sized.mass) / sweep.masses[sweep.best]
+    reduction = 1.0 - float(calculate_mass(loose.sized)) / sweep.masses[funicular]
+    against_best = 1.0 - float(calculate_mass(loose.sized)) / sweep.masses[sweep.best]
 
     runs = (loose_run, held_run)
     finals = (loose, held)
@@ -859,7 +843,7 @@ def main(verbose: bool = True) -> None:
 
     checks = (ToleranceCheck("scaled gradient error", sweep.worst, TOLERANCE_GRADIENT),)
     adequate = worst_utilization < 1.0 + 1e-9
-    beats_uniform = float(loose.sized.mass) < sweep.masses[sweep.best]
+    beats_uniform = float(calculate_mass(loose.sized)) < sweep.masses[sweep.best]
     passed = checks_passed(checks) and sweep.interior and adequate and beats_uniform
 
     report.write_verdict(passed)

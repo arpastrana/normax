@@ -71,13 +71,13 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
+from smax import CompiledStructure
 
-from normax.analysis.smax import Model
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
 from normax.ec3.actions import MemberActions
 from normax.ec3.classification import is_plastic
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
@@ -142,7 +142,7 @@ COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
-STEEL = SteelGrade()
+STEEL = Steel()
 SECTION_CLASS = 3
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, SECTION_CLASS)
 
@@ -177,7 +177,7 @@ class BeamProblem(NamedTuple):
     """
 
     structure: Structure
-    model: Model
+    model: CompiledStructure
     loads: Float[Array, "nodes 3"]
 
     @property
@@ -311,7 +311,7 @@ def beam_problem() -> BeamProblem:
     flags in Python, which a tracer cannot follow.
     """
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
-    arch = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=ARCH_RISE, load=spread)
+    arch = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=ARCH_RISE)
     structure = arch._replace(nodes=arch.nodes.at[:, 2].set(0.0))
     model = prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL)
     setup = BeamProblem(structure, model, loads_uniform(structure, spread))
@@ -338,7 +338,7 @@ def build(
         diameters,
         STEEL,
         catalogue,
-        loads=setup.loads,
+        setup.loads,
     )
     moment_major, factor_major = end_moments(
         member.moment_major[:, 0], member.moment_major[:, 1]
@@ -418,7 +418,7 @@ def beam_statics(setup: BeamProblem, catalogue: TubeCatalogue) -> BeamStatics:
         setup.seed,
         STEEL,
         catalogue,
-        loads=setup.loads,
+        setup.loads,
     )
     ends = np.asarray(member.moment_major)
 

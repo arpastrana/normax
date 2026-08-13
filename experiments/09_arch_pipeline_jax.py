@@ -68,28 +68,31 @@ from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis.smax import Model
+from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import buckling_modes
-from normax.analysis.smax import prepare_model
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
-from normax.pipeline import Design
-from normax.pipeline import ProblemSetup
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
+from normax.pipeline import DesignPipeline
+from normax.pipeline import MemberSections
 from normax.pipeline import Stability
-from normax.pipeline import design_members
+from normax.pipeline import calculate_mass
 from normax.pipeline import frame_stability
-from normax.pipeline import governing_states
-from normax.pipeline import total_mass
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.sizing import Ec3Sizer
+from normax.stages import DesignParameters
+from normax.stages import LoadCases
+from normax.stages import load_cases
 from normax.structures import Structure
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
 from normax.visualization import MeshRefinement
 from normax.visualization import SizedMembers
 from normax.visualization import StaggeredPasses
@@ -147,7 +150,7 @@ COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
-STEEL = SteelGrade()
+STEEL = Steel()
 
 # Preparing the analysis model needs a section family to stand up a frame, and
 # every property of it is replaced per call, so one seed serves both classes.
@@ -167,7 +170,6 @@ LIMIT_NAMES = {
 # traced once and run from its compiled program afterwards. Left eager they cost
 # an XLA compilation per primitive per shape, which is most of what this
 # experiment used to spend its time on.
-design_members_compiled = eqx.filter_jit(design_members)
 equilibrium_state_compiled = eqx.filter_jit(equilibrium_state)
 frame_stability_compiled = eqx.filter_jit(frame_stability)
 buckling_modes_compiled = eqx.filter_jit(buckling_modes)
@@ -180,7 +182,7 @@ class ArchSetup(NamedTuple):
 
     structure: Structure
     graph: EquilibriumStructure
-    model: Model
+    analyzer: SmaxAnalyzer
     q: Float[Array, "edges"]
 
     @property
@@ -196,6 +198,29 @@ class ArchSetup(NamedTuple):
         Seed diameter used for the first analysis before sizing.
         """
         return jnp.full(self.num_edges, SEED)
+
+    @property
+    def funicular(self) -> Float[Array, "nodes 3"]:
+        """
+        The uniform load case the arch is form-found under.
+        """
+        return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
+
+    @property
+    def loads(self) -> LoadCases:
+        """
+        The one load case the arch is shaped by and checked against.
+        """
+        applied = self.funicular
+
+        return load_cases(applied, [applied])
+
+    @property
+    def params(self) -> DesignParameters:
+        """
+        The force densities and the seed diameters, as a pipeline takes them.
+        """
+        return DesignParameters(self.q, self.seed)
 
 
 class GradientRow(NamedTuple):
@@ -281,28 +306,34 @@ def arch_setup(num_edges: int) -> ArchSetup:
     """
     Build the arch mesh, topologies, and rise-reaching force densities.
     """
-    load = TOTAL_LOAD / (num_edges - 1)
-    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE, load=load)
+    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
-    model = prepare_model(structure, STEEL, CATALOGUE_SEED, normal=NORMAL)
+    analyzer = SmaxAnalyzer(STEEL, CATALOGUE_SEED, NORMAL).compile(structure)
+    applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
-    state = equilibrium_state_compiled(trial, structure, graph)
+    state = equilibrium_state_compiled(trial, structure, graph, applied)
     reached = jnp.max(state.xyz[:, 2])
     q = trial * reached / RISE
-    setup = ArchSetup(structure, graph, model, q)
+    setup = ArchSetup(structure, graph, analyzer, q)
 
     return setup
 
 
-def problem_from_setup(setup: ArchSetup, catalogue: TubeCatalogue) -> ProblemSetup:
+def pipeline_from_setup(setup: ArchSetup, catalogue: TubeCatalogue) -> DesignPipeline:
     """
-    Bind steel and a catalogue into a ProblemSetup for this mesh.
+    Bind steel and a catalogue into the three blocks for this mesh.
     """
-    return ProblemSetup(setup.structure, setup.graph, setup.model, STEEL, catalogue)
+    blocks = DesignPipeline(
+        FdmFormFinder(),
+        SmaxAnalyzer(STEEL, catalogue, NORMAL),
+        Ec3Sizer(STEEL, catalogue),
+    )
+
+    return blocks.compile(setup.structure)
 
 
-def worst_utilization(design: Design) -> float:
+def worst_utilization(design: MemberSections) -> float:
     """
     Largest absolute departure of utilization from unity.
     """
@@ -353,23 +384,20 @@ def gradient_rows(
 
 def design_at_class(
     setup: ArchSetup, section_class: int
-) -> tuple[Design, ProblemSetup]:
+) -> tuple[MemberSections, DesignPipeline]:
     """
     Fully-stressed design of the arch on one section class.
     """
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-    problem = problem_from_setup(setup, catalogue)
-    design = design_members_compiled(
-        setup.q, setup.seed, problem, section_class=section_class
-    )
+    pipeline = pipeline_from_setup(setup, catalogue)
+    design = eqx.filter_jit(pipeline)(setup.params, setup.loads)
 
-    return design, problem
+    return design, pipeline
 
 
 def run_stagger(
     setup: ArchSetup,
-    problem: ProblemSetup,
-    section_class: int,
+    pipeline: DesignPipeline,
     passes: int,
 ) -> StaggerRun:
     """
@@ -380,15 +408,12 @@ def run_stagger(
     masses = []
 
     for _ in range(passes):
-        result = design_members_compiled(
-            setup.q,
-            diameters,
-            problem,
-            section_class=section_class,
+        result = eqx.filter_jit(pipeline)(
+            DesignParameters(setup.q, diameters), setup.loads
         )
         shift = jnp.abs(result.diameters - diameters) / result.diameters
         moves.append(float(jnp.max(shift)))
-        masses.append(float(result.mass))
+        masses.append(float(calculate_mass(result)))
         diameters = result.diameters
 
     run = StaggerRun(np.asarray(moves), np.asarray(masses))
@@ -403,20 +428,14 @@ def refinement_study(catalogue: TubeCatalogue, section_class: int) -> Refinement
     rows = []
     for count in MESHES:
         refined = arch_setup(count)
-        problem = problem_from_setup(refined, catalogue)
-        free = design_members_compiled(
-            refined.q, refined.seed, problem, section_class=section_class
-        )
+        pipeline = eqx.filter_jit(pipeline_from_setup(refined, catalogue))
+        free = pipeline(refined.params, refined.loads)
         fixed_length = jnp.full(count, BUCKLING_LENGTH)
-        held = design_members_compiled(
-            refined.q,
-            refined.seed,
-            problem,
-            section_class=section_class,
-            buckling_length=fixed_length,
-        )
+        held = pipeline(refined.params, refined.loads, buckling_length=fixed_length)
         arc = float(jnp.sum(free.lengths))
-        row = RefinementRow(count, arc, float(free.mass), float(held.mass))
+        row = RefinementRow(
+            count, arc, float(calculate_mass(free)), float(calculate_mass(held))
+        )
         rows.append(row)
 
     masses_fixed = np.asarray([row.mass_fixed for row in rows])
@@ -434,7 +453,9 @@ def report_arch(report: Report, setup: ArchSetup) -> None:
     """
     Write the arch span, rise, force density, and total load.
     """
-    state = equilibrium_state_compiled(setup.q, setup.structure, setup.graph)
+    state = equilibrium_state_compiled(
+        setup.q, setup.structure, setup.graph, setup.funicular
+    )
     rise = float(jnp.max(state.xyz[:, 2]))
     entries = (
         ("span", f"{SPAN / 1e3:.1f} m over {setup.num_edges} members"),
@@ -448,12 +469,14 @@ def report_arch(report: Report, setup: ArchSetup) -> None:
 
 
 def report_design(
-    report: Report, design: Design, problem: ProblemSetup, section_class: int
+    report: Report, design: MemberSections, pipeline: DesignPipeline
 ) -> None:
     """
     Write each member's actions, size, utilization, and governing limit.
     """
-    codes = governing_states(design, problem, section_class=section_class)
+    codes = pipeline.sizer.governing(
+        design.diameters, design.actions, design.buckling_length
+    )[0]
     limits = {LIMIT_NAMES[float(code)] for code in codes}
 
     columns = (
@@ -465,19 +488,20 @@ def report_design(
     )
     rows = []
     for member in range(design.diameters.shape[0]):
-        force = float(design.actions.axial_force[member]) / 1e3
-        moment = float(design.actions.moment_major[member]) / 1e6
+        force = float(design.actions.axial_force[0, member]) / 1e3
+        moment = float(design.actions.moment_major[0, member]) / 1e6
         diameter = float(design.diameters[member])
-        utilization = float(design.utilization[member])
+        utilization = float(design.utilization[0, member])
         rows.append((member, force, moment, diameter, utilization))
 
     entries = (
-        ("mass", f"{float(design.mass):.9f} t"),
+        ("mass", f"{float(calculate_mass(design)):.9f} t"),
         ("worst |u - 1|", f"{worst_utilization(design):.2e}"),
         ("governing", ", ".join(sorted(limits))),
     )
-    ratio = float(problem.catalogue.ratio)
+    ratio = float(pipeline.sizer.catalogue.ratio)
 
+    section_class = pipeline.sizer.section_class
     report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
     report.write_table(columns, rows)
     report.write_entries(entries)
@@ -577,7 +601,9 @@ def compare_mesh_refinement(report: Report, study: RefinementStudy) -> None:
     report.write_entries(entries)
 
 
-def check_frame_stability(report: Report, design: Design, checked: Stability) -> None:
+def check_frame_stability(
+    report: Report, design: MemberSections, checked: Stability
+) -> None:
     """
     Write the frame stability verdict and both slenderness routes.
     """
@@ -615,9 +641,8 @@ def check_frame_stability(report: Report, design: Design, checked: Stability) ->
 def compare_buckling_length_basis(
     report: Report,
     setup: ArchSetup,
-    design: Design,
-    problem: ProblemSetup,
-    section_class: int,
+    design: MemberSections,
+    pipeline: DesignPipeline,
     checked: Stability,
 ) -> None:
     """
@@ -625,22 +650,18 @@ def compare_buckling_length_basis(
     """
     arc = float(jnp.sum(design.lengths))
     global_length = jnp.full(setup.num_edges, GLOBAL_MODE_FACTOR * arc)
-    unbraced = design_members_compiled(
-        setup.q,
-        setup.seed,
-        problem,
-        section_class=section_class,
-        buckling_length=global_length,
+    unbraced = eqx.filter_jit(pipeline)(
+        setup.params, setup.loads, buckling_length=global_length
     )
-    penalty = float(unbraced.mass) / float(design.mass)
+    penalty = float(calculate_mass(unbraced)) / float(calculate_mass(design))
 
     factors = np.array2string(np.asarray(checked.factors), precision=4)
     against_global = f"sized against L_cr = {GLOBAL_MODE_FACTOR:.3f} arc"
     entries = (
         ("critical load factors", factors),
         ("arc length", f"{arc:.1f} mm"),
-        ("sized against L_cr = L", f"{float(design.mass):.6f} t"),
-        (against_global, f"{float(unbraced.mass):.6f} t, x{penalty:.2f}"),
+        ("sized against L_cr = L", f"{float(calculate_mass(design)):.6f} t"),
+        (against_global, f"{float(calculate_mass(unbraced)):.6f} t, x{penalty:.2f}"),
     )
 
     report.write_heading("What the member-length assumption is worth")
@@ -657,8 +678,8 @@ def compare_buckling_length_basis(
 def generate_figures(
     report: Report,
     setup: ArchSetup,
-    design: Design,
-    problem: ProblemSetup,
+    design: MemberSections,
+    pipeline: DesignPipeline,
     results: ArchResults,
 ) -> None:
     """
@@ -667,10 +688,10 @@ def generate_figures(
     study = results.refinement
     FIGURES.mkdir(exist_ok=True)
 
-    seed_tubes = problem.catalogue.tube_at(setup.seed)
+    seed_tubes = pipeline.sizer.catalogue.tube_at(setup.seed)
     assumed = float(mass_of_tubes(seed_tubes, design.lengths, STEEL))
     seeded = SizedMembers(setup.seed, assumed)
-    sized = SizedMembers(design.diameters, float(design.mass))
+    sized = SizedMembers(design.diameters, float(calculate_mass(design)))
     sections = figure_sections(design.xyz, setup.structure.edges, seeded, sized)
     sections.savefig(FIGURES / "09_sections.png", dpi=160, bbox_inches="tight")
 
@@ -684,11 +705,12 @@ def generate_figures(
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
 
     modes = buckling_modes_compiled(
-        setup.model,
+        setup.analyzer.model,
         design.xyz,
         design.diameters,
         STEEL,
-        problem.catalogue,
+        pipeline.sizer.catalogue,
+        setup.funicular,
         num_modes=NUM_MODES,
     )
     factors = np.asarray(results.stability.factors)
@@ -709,12 +731,12 @@ def main(verbose: bool = True) -> None:
 
     # The same q and seed diameters sized twice, once per class branch.
     designs = {}
-    problems = {}
+    pipelines = {}
     for section_class in CLASSES:
-        design, problem = design_at_class(setup, section_class)
-        report_design(report, design, problem, section_class)
+        design, pipeline = design_at_class(setup, section_class)
+        report_design(report, design, pipeline)
         designs[section_class] = design
-        problems[section_class] = problem
+        pipelines[section_class] = pipeline
 
     # What both branches owe: every member sized to satisfy the standard exactly.
     departure = max(worst_utilization(design) for design in designs.values())
@@ -722,11 +744,11 @@ def main(verbose: bool = True) -> None:
     # Class 3 carries everything below, being the ratio the tubes are held at.
     section_class = 3
     design = designs[section_class]
-    problem = problems[section_class]
+    pipeline = pipelines[section_class]
 
     # All three stages as one scalar function: force densities in, tonnes out.
     def objective(q):
-        return total_mass(q, setup.seed, problem, section_class=section_class)
+        return calculate_mass(pipeline(DesignParameters(q, setup.seed), setup.loads))
 
     # Traced once each, then called fifty-one times by the two sweeps below.
     objective_value = eqx.filter_jit(objective)
@@ -745,23 +767,23 @@ def main(verbose: bool = True) -> None:
     worst_gradient = compare_gradient_autodiff(report, rows)
 
     # The same design on six meshes, doubling, so the mass can be seen to settle.
-    refinement = refinement_study(problem.catalogue, section_class)
+    refinement = refinement_study(pipeline.sizer.catalogue, section_class)
     # The sizes fed back as the stiffness they were found with, until they hold.
-    stagger = run_stagger(setup, problem, section_class, PASSES)
+    stagger = run_stagger(setup, pipeline, PASSES)
     # What the finished frame does as a whole, which L_cr = L assumed rather than proved
-    stability = frame_stability_compiled(design, problem, num_modes=NUM_MODES)
+    stability = frame_stability_compiled(
+        design, setup.analyzer, setup.funicular, num_modes=NUM_MODES
+    )
     # One container, so a report and a figure read the same measurements.
     results = ArchResults(refinement, stagger, stability)
 
     compare_stagger_closure(report, results.stagger)
     compare_mesh_refinement(report, results.refinement)
     check_frame_stability(report, design, results.stability)
-    compare_buckling_length_basis(
-        report, setup, design, problem, section_class, results.stability
-    )
+    compare_buckling_length_basis(report, setup, design, pipeline, results.stability)
 
     # The figures, which take the design and the measurements and nothing else.
-    generate_figures(report, setup, design, problem, results)
+    generate_figures(report, setup, design, pipeline, results)
 
     # Two claims harvested above and one from the refinement, each against its bound.
     check_util = ToleranceCheck("Overstressed!", departure, TOLERANCE_UTILIZATION)

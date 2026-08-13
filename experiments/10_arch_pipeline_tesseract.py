@@ -62,26 +62,30 @@ from jaxtyping import Float
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
-from normax.analysis.smax import prepare_model
-from normax.composition import Chain
-from normax.composition import ProblemSetup as ComposedSetup
-from normax.composition import design_members as design_composed
-from normax.composition import local_chain
-from normax.composition import total_mass as mass_composed
-from normax.ec3.material import SteelGrade
+from normax.analysis.smax import SmaxAnalyzer
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
-from normax.pipeline import ProblemSetup
-from normax.pipeline import design_members as design_in_process
-from normax.pipeline import governing_states
-from normax.pipeline import total_mass as mass_in_process
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
+from normax.pipeline import DesignPipeline
+from normax.pipeline import calculate_mass
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.sizing import Ec3Sizer
+from normax.stages import DesignParameters
+from normax.stages import LoadCases
+from normax.stages import load_cases
 from normax.structures import Structure
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
+from normax.tesseract import Chain
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractFormFinder
+from normax.tesseract import TesseractSizer
+from normax.tesseract import local_chain
 
 # Compiled programs outlive the process, so a second run pays for arithmetic and
 # for crossings alone. Every compilation here is well under the one second the
@@ -90,13 +94,6 @@ COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
-
-# The oracle is compiled, as experiment 09, the parity test and the README all
-# run it. The Tesseract stages compile internally, so an eager oracle would put
-# two different fusion schedules either side of the comparison and charge the
-# difference to the boundary.
-design_compiled = eqx.filter_jit(design_in_process)
-mass_compiled = eqx.filter_jit(mass_in_process)
 
 # The arch of experiment 09, unchanged, so the two are comparable.
 SPAN = 10_000.0
@@ -142,7 +139,7 @@ TOLERANCE_SERVED = 1e-11
 IMAGES = ("normax-formfinding", "normax-ec3-check")
 VERSION = "0.1.0"
 
-STEEL = SteelGrade()
+STEEL = Steel()
 
 LIMIT_NAMES = {
     0.0: "catalogue minimum",
@@ -162,7 +159,7 @@ class ArchSetup(NamedTuple):
     structure :
         The structure supplying the connectivity, the supports and the loads.
     graph :
-        The form-finding connectivity, from `normax.formfinding`.
+        The form-finding connectivity, from `normax.form_finding`.
     q :
         Force densities that reach the target rise.
     """
@@ -177,6 +174,66 @@ class ArchSetup(NamedTuple):
         The diameter the frame is analyzed with before the check has spoken.
         """
         return jnp.full(NUM_EDGES, SEED)
+
+    @property
+    def params(self) -> DesignParameters:
+        """
+        The force densities and the seed diameters, as the pipeline takes them.
+        """
+        return DesignParameters(self.q, self.seed)
+
+    @property
+    def num_edges(self) -> int:
+        """
+        Number of members in this mesh.
+        """
+        return int(self.q.shape[0])
+
+    @property
+    def loads(self) -> LoadCases:
+        """
+        The one load case the arch is shaped by and checked against.
+        """
+        applied = self.funicular
+
+        return load_cases(applied, [applied])
+
+    @property
+    def funicular(self) -> Float[Array, "nodes 3"]:
+        """
+        The uniform load case the arch is form-found under.
+        """
+        return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
+
+
+def in_process_pipeline(setup: ArchSetup, catalogue: TubeCatalogue) -> DesignPipeline:
+    """
+    The three blocks that compute here, compiled against the arch.
+    """
+    blocks = DesignPipeline(
+        FdmFormFinder(),
+        SmaxAnalyzer(STEEL, catalogue, NORMAL),
+        Ec3Sizer(STEEL, catalogue),
+    )
+
+    return blocks.compile(setup.structure)
+
+
+def composed_pipeline(
+    setup: ArchSetup,
+    chain: Chain,
+    catalogue: TubeCatalogue,
+) -> DesignPipeline:
+    """
+    The same three blocks, each reached across a Tesseract boundary.
+    """
+    blocks = DesignPipeline(
+        TesseractFormFinder(chain.formfinding),
+        TesseractAnalyzer(chain.analysis, STEEL, catalogue, NORMAL),
+        TesseractSizer(chain.ec3, STEEL, catalogue),
+    )
+
+    return blocks.compile(setup.structure)
 
 
 class TimedCall(NamedTuple):
@@ -229,12 +286,14 @@ def arch_setup() -> ArchSetup:
     """
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
-    load = TOTAL_LOAD / (NUM_EDGES - 1)
-    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE, load=load)
+    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
+    applied = loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(trial, structure, graph)
+    state = equilibrium_state(
+        trial, structure.nodes[graph.indices_fixed], graph, applied
+    )
     reached = jnp.max(state.xyz[:, 2])
     setup = ArchSetup(structure, graph, trial * reached / RISE)
 
@@ -317,32 +376,18 @@ def report_parity(
     The design and the gradient, taken in process and taken across the boundary.
     """
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-    model = prepare_model(setup.structure, STEEL, catalogue, normal=NORMAL)
-    problem = ProblemSetup(setup.structure, setup.graph, model, STEEL, catalogue)
-    composed_problem = ComposedSetup(setup.structure, chain, STEEL, catalogue)
+    in_process = in_process_pipeline(setup, catalogue)
+    composed_blocks = composed_pipeline(setup, chain, catalogue)
 
-    oracle = timed(
-        lambda: design_compiled(
-            setup.q, setup.seed, problem, section_class=section_class
-        )
-    )
+    # The oracle is compiled, as experiment 09, the parity test and the README
+    # all run it. The Tesseract stages compile internally, so an eager oracle
+    # would put two different fusion schedules either side of the comparison and
+    # charge the difference to the boundary.
+    design_of = eqx.filter_jit(in_process)
+    composed_of = eqx.filter_jit(composed_blocks)
 
-    # The composed side compiles as a closure rather than as an alias like the
-    # oracle: its problem holds the structure, every crossing serializes that to
-    # numpy for the payload, and an argument of a compiled function arrives as a
-    # tracer that `np.asarray` refuses. Only the force densities vary per call.
-    def composed_design(q):
-        return design_composed(
-            q,
-            setup.seed,
-            composed_problem,
-            normal=NORMAL,
-            section_class=section_class,
-        )
-
-    design_of = eqx.filter_jit(composed_design)
-
-    composed = timed(lambda: design_of(setup.q))
+    oracle = timed(lambda: design_of(setup.params, setup.loads))
+    composed = timed(lambda: composed_of(setup.params, setup.loads))
 
     rows = []
     worst_value = 0.0
@@ -376,8 +421,10 @@ def report_parity(
     report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
     report.write_table(columns, rows)
 
-    codes = governing_states(oracle.result, problem, section_class=section_class)
-    limits = {LIMIT_NAMES[float(code)] for code in codes}
+    codes = in_process.sizer.governing(
+        oracle.result.diameters, oracle.result.actions, oracle.result.buckling_length
+    )
+    limits = {LIMIT_NAMES[float(code)] for code in codes[0]}
     departure = float(jnp.max(jnp.abs(composed.result.utilization - 1.0)))
     seconds = (
         f"{oracle.seconds:.4f} in process, {composed.seconds:.4f} composed,"
@@ -385,26 +432,22 @@ def report_parity(
     )
     entries = (
         ("governing", ", ".join(sorted(limits))),
-        ("mass", f"{float(composed.result.mass):.12f} t"),
+        ("mass", f"{float(calculate_mass(composed.result)):.12f} t"),
         ("worst |u-1|", f"{departure:.2e}"),
         ("seconds", seconds),
     )
 
     report.write_entries(entries)
 
-    def in_process(q):
-        return mass_compiled(q, setup.seed, problem, section_class=section_class)
+    def exact_mass(q):
+        return calculate_mass(in_process(DesignParameters(q, setup.seed), setup.loads))
 
     def composed_mass(q):
-        return mass_composed(
-            q,
-            setup.seed,
-            composed_problem,
-            normal=NORMAL,
-            section_class=section_class,
+        return calculate_mass(
+            composed_blocks(DesignParameters(q, setup.seed), setup.loads)
         )
 
-    exact_of = eqx.filter_jit(jax.grad(in_process))
+    exact_of = eqx.filter_jit(jax.grad(exact_mass))
     crossed_of = eqx.filter_jit(jax.grad(composed_mass))
 
     exact = timed(lambda: exact_of(setup.q))
@@ -447,15 +490,11 @@ def report_modes(report: Report, setup: ArchSetup, chain: Chain) -> float:
     """
     catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
 
-    composed_problem = ComposedSetup(setup.structure, chain, STEEL, catalogue)
+    composed_blocks = composed_pipeline(setup, chain, catalogue)
 
     def objective(q):
-        return mass_composed(
-            q,
-            setup.seed,
-            composed_problem,
-            normal=NORMAL,
-            section_class=3,
+        return calculate_mass(
+            composed_blocks(DesignParameters(q, setup.seed), setup.loads)
         )
 
     def forward_derivative(q, tangent):
@@ -494,7 +533,7 @@ def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) ->
         "diameter": setup.seed,
         "edges": edges,
         "supports": np.asarray(setup.structure.supports, dtype=np.int64),
-        "loads": np.asarray(setup.structure.loads, dtype=np.float64),
+        "loads": np.asarray(setup.funicular, dtype=np.float64),
         "f_y": STEEL.f_y,
         "e_mod": STEEL.e_mod,
         "density": STEEL.density,
@@ -558,16 +597,10 @@ def report_served(
         return None
 
     def objective(stages):
-        composed_problem = ComposedSetup(setup.structure, stages, STEEL, catalogue)
+        blocks = composed_pipeline(setup, stages, catalogue)
 
         def total(q):
-            return mass_composed(
-                q,
-                setup.seed,
-                composed_problem,
-                normal=NORMAL,
-                section_class=3,
-            )
+            return calculate_mass(blocks(DesignParameters(q, setup.seed), setup.loads))
 
         return total
 
