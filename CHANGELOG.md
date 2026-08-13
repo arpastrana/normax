@@ -2,6 +2,135 @@
 
 ## Unreleased
 
+### A block is built from a structure, and holds only what it reads
+
+The two-call `compile(structure)` dance is gone. A block's constructor takes the
+structure and settles whatever that software can settle from it, so building one
+is the host-side step and `__call__` is the traced one. `DesignPipeline` is three
+blocks and nothing else — it takes no structure, and it asks the form finder for
+a member length rather than measuring one.
+
+- **No block keeps a structure it does not read.** `FdmFormFinder` keeps
+  `xyz_fixed`, a `(supports, 3)` array, because the graph already holds the
+  topology and the supported coordinates are the only thing it cannot; that
+  forced `equilibrium_state` to declare what it actually depends on, and its
+  second parameter is now `xyz_fixed` rather than a whole `Structure`.
+  `SmaxAnalyzer` dropped a `structure` field nothing read. `Ec3Sizer` keeps one
+  deliberately, a code check having no topology to settle and saying so.
+- **`member_lengths` is on the form finder protocol**, beside the sizer's
+  `mass_per_length` and for the same reason. A mass is `ρ Σ A L`: the section
+  family supplies the `A` and only the block owning one can, the connectivity
+  supplies the `L` and only a block owning one can. Two blocks answering the two
+  halves of one product, and a pipeline holding neither.
+- **`FormFoundShape` is one field, `xyz`.** The forces went first — they are
+  bitwise `q * lengths`, a product of two things the caller already holds — and
+  the lengths followed. The T1 Tesseract schema lost both outputs with them; a
+  schema that carried either would be paying a round trip for arithmetic.
+- **Every member buckles over its own length, and nothing can say otherwise.**
+  `DesignPipeline.__call__` takes no buckling length and `MemberSections` reports
+  no separate one, since with the assumption fixed it was a second copy of
+  `lengths`. The clause layer is untouched and still takes `L_cr`, Eq. 6.50 being
+  written in it. Recorded in `docs/clauses.md` as deferred rather than settled:
+  it presumes every node is braced by structure outside the model, and where that
+  fails the design is unsafe rather than cautious.
+- **`DesignParameters` carries the envelope sharpness**, so an annealing schedule
+  parameterizes one compiled program instead of compiling one per round.
+
+### One load case, one container, one axis
+
+`normax/loads.py` owns loads and everything that knows what a load case axis
+means. `smax` now accepts a dense nodal array wherever it accepts a `LoadCase`,
+so a load case is a `(nodes, 3)` array from the generator to the solve.
+
+- **The load acrobatics in the smax backend are deleted**: the `PointLoad` list
+  built from zeros, the `_load_case` that scattered three translations into a
+  compiled channel, and the `Model` container whose only other field was the
+  assembly. `prepare_model` returns a `CompiledStructure` directly. No
+  `PointLoad` or `LoadCase` is constructed anywhere in the repo.
+- **`LoadCaseForces` and `MemberForces` were one container at two ranks**, born
+  of a name collision. `MemberForces` prevails with a variadic axis
+  (`"*load_cases members"`): a solver answers one case without it, a block
+  answers all of them with it.
+- **`stack_load_cases`, `select_load_case` and `count_load_cases`** replace four
+  hand-rolled copies of the same indexing — `stacked_actions`,
+  `load_case_actions`, two inline stacking blocks in the analyzers, and four
+  `X.axial_force.shape[0]` counts. All three are `jax.tree` one-liners, generic
+  over the container because none of them reads a field name.
+- **A load case magnitude is a total, not a nodal force.** `create_loads_by_name`
+  calls its generator at unit load for the shape alone and rescales, which is
+  what makes a case on half the span comparable with one on all of it.
+
+### Smaller things that were two things
+
+- **`SteelGrade` is `Steel`.** The `Material`/`Steel` pair could not work:
+  a `NamedTuple` subclass inherits no fields, so `Steel()` raised and
+  `Steel("S355", 100.0).f_y` silently returned the default.
+- **`value_and_gradient` compiles with `jax.jit`**, not `eqx.filter_jit`. Every
+  caller passes arrays only. The docstring's warning about Python floats
+  compiling a program each was a `filter_jit` fact and is now false — verified,
+  three Python floats through one jitted function trace once.
+- **`prepare_model` was handing `smax` a `normax.Structure`** where it wanted the
+  frame it had just built on the line above, and discarding the frame. Fixed to
+  `compile_structure(frame)`.
+
+### What the arch driver actually shows
+
+`experiments/101_api.py` composes the three blocks from `experiments/arch.yaml`
+and takes one gradient across all of them. The gradient is real — it agrees with
+central differences to 2e-9 — and the Tesseract swap changes the mass by 6.7e-13.
+
+**The descent is not a design.** It converges in ten iterates with eight of ten
+force densities pinned to the bound and two members stretched to 3.9 m: the
+member collapse `penalized_mass` exists to prevent, which this driver runs
+without. A 1e-16 gradient difference moves the endpoint between degenerate
+basins, so the mass it reports is the collapse and not an optimum.
+
+### One pipeline, three swappable blocks
+
+The API is three objects and a composition, and the duplication that came of not
+having them is gone. `normax/stages.py` states what a block is, and
+`DesignPipeline` holds one of each and composes them.
+
+- **`normax/composition.py` is deleted.** It ran the same three stages across a
+  Tesseract boundary and duplicated `ProblemSetup`, `design_members`,
+  `total_mass` and `design_envelope` to do it — about 450 lines that existed only
+  because the chain could not be expressed as blocks. `normax/tesseract.py`
+  replaces it with three blocks and nothing else, and
+  `tests/test_tesseract_parity.py` now runs **one** `DesignPipeline` over two
+  sets of blocks rather than comparing two implementations of one pipeline.
+- **`Design` and `Envelope` collapse into `MemberSections`.** Load cases reach a
+  block stacked, so a single case is one entry and the second container was never
+  a different thing. `unsmoothed_design` goes with them: the design at the true
+  largest is the same call with no sharpness.
+- **The block API reproduced the free functions bitwise** before they were
+  deleted — geometry, actions, required sizes, enveloped diameters, utilization
+  and mass, on one load case and on three. Only the gradient differed, by 4e-12
+  relative, and the two *old* spellings differ from each other by the same amount
+  under `jit`, so that is XLA association and not the composition.
+- **A structure no longer carries a load.** `Structure` is topology, geometry and
+  supports; `normax.stages.LoadCases` carries the case a shape answers to and the
+  cases it is checked against, and `loads` is a required argument everywhere it
+  was a `None` default. A structure asked to survive several cases has no
+  business owning one of them.
+- **The cross-section class is derived, never given.** `Ec3Sizer` reads it off
+  its own catalogue when it is built, on the host, where the yield strength is
+  concrete and the Class 4 refusal can fire. It can no longer contradict the wall
+  it is checked with.
+- **A mass no longer crosses the ec3 Tesseract boundary**, and neither does the
+  length it would be multiplied by. Mass is `ρ Σ A L`, geometry rather than a
+  resistance, and EN 1993-1-1 has no opinion on it. What the standard decides is
+  the size; `calculate_mass` multiplies it by a length outside. The cotangent
+  reaches the stage through the diameter instead, so the gradient is unchanged.
+- **A single load case is passed through rather than enveloped.** An envelope
+  over one case is the identity in exact arithmetic and a logarithm followed by
+  an exponential in floating point, so taking it cost the last bits of a size for
+  nothing. That is what makes the single-case parity bitwise.
+- **`filter_jit` on a Tesseract-backed pipeline closes a file descriptor** once
+  the OpenSees backend has run in the same pytest session, and every later test
+  then errors out of capture rather than failing an assertion. The parity test
+  leaves the composed side eager for that reason; `experiments/10` compiles it
+  and is unaffected, running in its own process.
+
 ### A straight beam, and the mechanism it found in the supports
 
 `experiments/11_straight_beam_benchmark.py` is the arch of experiment 03 with its
@@ -1799,7 +1928,7 @@ Three, all recorded in the roadmap before the work started and all real:
 `m_ed` was a single peak moment and is now both end moments at `(members, 2)`,
 which is what makes the first row of Table B.3 exact; the backend was named
 `sax` and is `smax`; and `_solve_fdm` raised `NotImplementedError` where
-`normax.formfinding` already existed. A fourth was found in the writing:
+`normax.form_finding` already existed. A fourth was found in the writing:
 `chi_buckling` and the section formulas were reimplemented inside the T3 stub,
 which would have been a second copy of the clauses to keep in step with
 `docs/clauses.md`. Every stage now imports `normax` and transcribes nothing.
@@ -2027,7 +2156,7 @@ evens out, LC2 taking 8 members against 4.
 
 ### Holding the plan instead is degenerate, and the reason is algebraic
 
-`normax.formfinding.positions_vertical` solves for heights with the plan held, so
+`normax.form_finding.positions_vertical` solves for heights with the plan held, so
 no member can shorten past its own projection — a hard bound rather than a
 penalty. It does not work, and the arithmetic says so before any experiment does.
 
@@ -2423,7 +2552,7 @@ loop was ever cheap eagerly.
 
 Every backend is now reached in two calls: `prepare(structure, steel, tube, *,
 normal) -> Model` on the host, then `forces(model, xyz, diameters, steel, tube,
-*, loads)`. This mirrors `normax.formfinding`, where `graph` is built once and
+*, loads)`. This mirrors `normax.form_finding`, where `graph` is built once and
 `equilibrium` consumes it — and the asymmetry it removes is that T1's derived
 topology was already hoisted while T2's was not.
 

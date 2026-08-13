@@ -106,6 +106,30 @@ precisely so the modes stay in it. So §6.3.4 is where the standard writes this
 algebra, not authority for the number we report from it. The identity below is
 what carries our use; the clause is a citation for the form, not for the case.
 
+### What `normax` passes as `L_cr` — a modelling choice, not a clause
+
+**Every member is assumed to buckle over its own length.** `DesignPipeline`
+measures the form-found geometry and hands that length to the check, and there
+is no way to pass anything else: the pipeline takes no buckling length and
+`MemberSections` reports no separate one.
+
+That is a **strong assumption rather than a conservative one**. It presumes
+every node of the model is held in position by structure outside it. Where that
+does not hold the frame buckles in a mode spanning several members, the true
+`L_cr` exceeds the member length, and the design is unsafe rather than cautious.
+
+The clause layer is unaffected and stays general: `force_critical`,
+`slenderness_from_force` and every function in `normax.ec3.sizing` take `L_cr`
+as an argument, because Eq. 6.50 is written in `L_cr` and not in a member
+length. What is fixed is one composition's choice of what to pass.
+
+**How to see the size of the assumption.** `frame_stability` reports
+`buckling_length_equivalent`, the `L_cr` the frame's own critical load factor
+corresponds to, beside `slenderness_member` from the assumed length. Their ratio
+is one wherever the assumption holds. Measured on the arch, a global buckling
+length costs several times the mass of a member-length one, so this is not a
+small choice — it is deferred, not settled.
+
 ### The two routes to `λ̄` are the same equation — exact, no source needed
 
 Eq. 6.50 takes the slenderness from a **member** buckling length; §6.3.4(3) takes

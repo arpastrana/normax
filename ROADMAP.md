@@ -825,6 +825,32 @@ the writeup to quote.
 
 ---
 
+## P5c — The API is three swappable blocks — **DONE**
+
+The thesis at the top of this file is swappability, and until now it was a claim
+the code made only inside the analysis stage. It is now the shape of the whole
+package.
+
+`normax/stages.py` states what a block is — `compile(structure)` on the host,
+`__call__` on design parameters and load cases — and `DesignPipeline` composes
+three of them. `normax/composition.py` is deleted: the Tesseract chain is three
+blocks under the same contract, not a second pipeline, and
+`tests/test_tesseract_parity.py` runs **one** composition over both sets of
+blocks. About 450 duplicated lines went with it, along with `Design`/`Envelope`,
+`ProblemSetup`, `design_members`, `design_envelope`, `total_mass`,
+`unsmoothed_design` and `governing_states`.
+
+Two contracts changed with it. **A structure no longer carries a load** — a
+structure asked to survive several cases has no business owning one — and **a
+mass no longer crosses the ec3 Tesseract boundary**, since `ρ Σ A L` is geometry
+and the standard has no opinion on it. Evidence, and the parity measured before
+the free functions were deleted, are in `CHANGELOG.md` under `## Unreleased`.
+
+**Anything below that names a deleted symbol is history, not instruction.**
+`experiments/101_api.py` is the API in one file.
+
+---
+
 ## P6 — Visuals (Aug 24–28, overlaps P5)
 
 **Scope:**
@@ -943,7 +969,7 @@ mass is an area times a length, and its buckling length is its own length, so a
 vanishing member is both free and unbucklable.
 
 **The obvious fix does not work, and the reason is algebraic.** Holding the plan
-and solving only for heights (`normax.formfinding.positions_vertical`) bounds
+and solving only for heights (`normax.form_finding.positions_vertical`) bounds
 every member below by its own projection. But horizontal equilibrium of the axial
 forces is then not imposed, and on an evenly spaced plan it reads
 `q_after = q_before` — **only a uniform force density leaves such a shape
@@ -989,7 +1015,7 @@ the measurement has.
 connectivity and the fixed plan, take a rank-revealing factorization once on the
 host to classify edges, and expose `q_independent → q_all` as a traced linear map
 so the whole thing differentiates and drops in where
-`normax.formfinding.node_positions` sits now. The classification is topology and
+`normax.form_finding.node_positions` sits now. The classification is topology and
 belongs outside the trace, exactly as the form-finding graph does today. It also
 depends on the plan, so it is fixed for a given plan and has to be redone if the
 plan changes.
@@ -1000,6 +1026,43 @@ per-edge search honest, and it is a penalty rather than a guarantee.
 ---
 
 ## Decisions to revisit once the pipeline differentiates end to end
+
+**The unit conversions at the solver boundaries may be unnecessary — raised
+2026-08-13, not decided.**
+
+`normax` carries newtons and millimeters throughout, because that is what
+EN 1993-1-1 is written in, and `normax/units.py` converts to coherent SI at the
+`smax` and OpenSees boundaries. **The evidence says neither solver needs it.**
+
+- `jax-fdm` has no material constant of any kind. Force densities, coordinates
+  and loads, consistent in and consistent out.
+- `smax` has no hardcoded dimensional constant either — nothing matching `9.81`,
+  `9.80665`, `GRAVITY`, `gravity` or `self_weight` anywhere in the package — and
+  `density` is carried into the compiled parameters at `smax/compilation.py:41`
+  and **used nowhere else**: no self-weight, no mass matrix. It is inert.
+- So the solver needs `E`, `A`, `I`, `J` and lengths to belong to **one**
+  consistent system, and nothing more. Coherent SI is a convention here, not a
+  requirement. The same holds for OpenSees.
+
+**What dropping the conversions would buy**: one layer gone from
+`normax/analysis/smax.py` and `normax/analysis/opensees.py`, and `normax/units.py`
+reduced to almost nothing, EN 1993-1-1 already being the millimeter system.
+
+**What it would cost, and this is the reason it is parked**: the conditioning of
+every solve changes, so results move in their last two or three bits. Nothing
+physical changes, but the tolerances in `tests/test_tesseract_parity.py`
+(1e-14), `tests/test_backend_opensees.py` and experiments 04, 09, 10 and 11 are
+**measured** numbers, and several would have to be re-measured rather than merely
+re-run. A change that buys clarity and not correctness should not be made while a
+deadline is close.
+
+**The other direction was considered and rejected**: making meters the ambient
+system and converting into millimeters at the EC3 boundary. It puts a conversion
+in the busiest part of the code, and a tube diameter reads worse in meters —
+`seed_diameter: 0.1` against `100.0` — so a human-edited config would end up
+mixed-unit, which is harder to misread safely than a uniform one.
+
+---
 
 **Two formulations of the optimization — decided 2026-08-09.**
 

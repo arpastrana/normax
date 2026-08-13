@@ -35,37 +35,36 @@ uv sync --extra spike
 import jax
 import jax.numpy as jnp
 
-from normax.analysis.smax import prepare_model
+from normax.analysis.smax import SmaxAnalyzer
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
-from normax.formfinding import equilibrium_graph
-from normax.pipeline import ProblemSetup
-from normax.pipeline import total_mass
+from normax.form_finding import FdmFormFinder
+from normax.pipeline import DesignPipeline
+from normax.pipeline import calculate_mass
+from normax.sizing import Ec3Sizer
+from normax.stages import DesignParameters
+from normax.stages import load_cases
 from normax.structures import arch_2d
+from normax.structures import loads_uniform
 
 steel = SteelGrade()
 catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
 
-structure = arch_2d(num_edges=20, span=10_000.0, rise=3_000.0, load=9_474.0)
+structure = arch_2d(num_edges=20, span=10_000.0, rise=3_000.0)
+uniform = loads_uniform(structure, 9_474.0)
+loads = load_cases(uniform, [uniform])
 
-problem = ProblemSetup(
-    structure,
-    equilibrium_graph(structure),
-    prepare_model(structure, steel, catalogue, normal=1),
-    steel,
-    catalogue,
-)
+pipeline = DesignPipeline(
+    FdmFormFinder(),
+    SmaxAnalyzer(steel, catalogue, normal=1),
+    Ec3Sizer(steel, catalogue),
+).compile(structure)
 
 seed = jnp.full(20, 100.0)
 
 
 def total(q):
-    return total_mass(
-        q,
-        seed,
-        problem,
-        section_class=catalogue.section_class(steel.f_y),
-    )
+    return calculate_mass(pipeline(DesignParameters(q, seed), loads))
 
 
 q = jnp.full(20, -60.0)
@@ -73,10 +72,19 @@ print(total(q))  # tonnes of steel EN 1993-1-1 requires
 print(jax.grad(total)(q))  # its gradient in the force densities
 ```
 
-`ProblemSetup` is built once on the host and reused; only the force densities and
-the analyzed diameters enter the traced call. See `experiments/` for the arch
-optimization, the two analysis backends measured against each other, and the same
-pipeline composed across three Tesseracts.
+**The pipeline is three swappable blocks.** Each one is configured, compiled
+against a structure on the host, and then called: `compile` is where every piece
+of software gets to see the structure in its own terms — a form finder wants
+connectivity matrices, a frame solver wants an assembly and degree of freedom
+maps, a code check wants nothing at all. What is left is a function of design
+parameters and load cases, and that is what an optimizer differentiates.
+
+Swapping a block is a constructor argument. `normax.tesseract` holds the same
+three reached across a Tesseract boundary, and `DesignPipeline` cannot tell the
+difference — `tests/test_tesseract_parity.py` runs one pipeline over both sets
+and measures it. See `experiments/` for the arch optimization, the two analysis
+backends against each other, and `experiments/101_api.py` for the whole API in
+one file.
 
 ## Development
 
