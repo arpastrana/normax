@@ -54,10 +54,10 @@ import openseespy.opensees as ops
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis import MemberForces
 from normax.analysis import support_fixities
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
+from normax.stages import MemberForces
 from normax.structures import Structure
 from normax.units import MILLIMETER
 from normax.units import to_meters
@@ -216,7 +216,7 @@ def frame_plane(
 
 def prepare_model(
     structure: Structure,
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
     *,
     normal: int | None,
@@ -266,10 +266,10 @@ def _build_model(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
     *,
-    loads: Float[Array, "nodes 3"] | None,
+    loads: Float[Array, "nodes 3"],
     parameters: bool,
 ) -> int:
     """
@@ -288,7 +288,7 @@ def _build_model(
     catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
-        Force applied at every node. If None, the structure's own loads.
+        Force applied at every node.
     parameters :
         Whether to register the nodal coordinates and section properties.
 
@@ -322,8 +322,7 @@ def _build_model(
 
     frame_plane(structure, xyz, spanned.normal)
 
-    applied = structure.loads if loads is None else loads
-    out_of_plane = np.asarray(applied)[:, spanned.normal]
+    out_of_plane = np.asarray(loads)[:, spanned.normal]
     if np.any(out_of_plane != 0.0):
         raise ValueError(
             f"loads have components along the normal axis {spanned.normal}"
@@ -331,7 +330,7 @@ def _build_model(
 
     coordinates = np.asarray(to_meters(xyz))[:, list(spanned.axes)]
     edges = np.asarray(structure.edges)
-    applied = np.asarray(applied)[:, list(spanned.axes)]
+    applied = np.asarray(loads)[:, list(spanned.axes)]
     flags = support_fixities(structure, spanned.normal)
 
     outer = to_meters(diameters)
@@ -474,10 +473,9 @@ def member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
-    *,
-    loads: Float[Array, "nodes 3"] | None = None,
+    loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
     Internal forces of a plane frame under a load case.
@@ -495,7 +493,7 @@ def member_forces(
     catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
-        Force applied at every node. If None, the structure's own loads.
+        Force applied at every node.
 
     Returns
     -------
@@ -513,7 +511,7 @@ def member_forces(
     """
     _build_model(model, xyz, diameters, steel, catalogue, loads=loads, parameters=False)
 
-    axial, moments = _read_forces(np.asarray(model.structure.edges).shape[0])
+    axial, moments = _read_forces(model.structure.num_edges)
 
     return MemberForces(
         axial_force=jnp.asarray(axial),
@@ -598,10 +596,9 @@ def force_jacobian(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
-    *,
-    loads: Float[Array, "nodes 3"] | None = None,
+    loads: Float[Array, "nodes 3"],
 ) -> Jacobian:
     """
     Every derivative of the member forces, from one solve and a sweep.
@@ -619,7 +616,7 @@ def force_jacobian(
     catalogue :
         The section family, whose ratio fixes the wall thickness.
     loads :
-        Force applied at every node. If None, the structure's own loads.
+        Force applied at every node.
 
     Returns
     -------
@@ -644,7 +641,7 @@ def force_jacobian(
     )
 
     num_nodes = np.asarray(xyz).shape[0]
-    num_members = np.asarray(model.structure.edges).shape[0]
+    num_members = model.structure.num_edges
 
     axial = np.zeros((num_members, count))
     moments = np.zeros((num_members, 2, count))

@@ -50,7 +50,7 @@ from normax.ec3.interaction import MemberSlenderness
 from normax.ec3.interaction import governing_equation
 from normax.ec3.interaction import moment_factor_linear
 from normax.ec3.interaction import utilization_member
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import moment_combined
 from normax.ec3.resistance import reduction_buckling
@@ -100,7 +100,7 @@ def utilization_design(
     tube: Tube,
     actions: MemberActions,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
     resultant: bool = True,
@@ -188,7 +188,7 @@ class SectionProperties(NamedTuple):
 def _section_properties(
     tube: Tube,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
 ) -> SectionProperties:
@@ -224,7 +224,7 @@ def _check_demands(
     tube: Tube,
     actions: MemberActions,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
     resultant: bool = True,
@@ -269,7 +269,7 @@ def _check_demands(
 
 def diameter_bracket(
     actions: MemberActions,
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
     *,
     section_class: int,
@@ -333,7 +333,7 @@ def _solve_diameter(
     resultant: bool,
     actions: MemberActions,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -422,7 +422,7 @@ def _solved_diameter(
     resultant: bool,
     actions: MemberActions,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -442,8 +442,8 @@ def _solved_diameter(
 def _diameter_jvp(
     section_class: int,
     resultant: bool,
-    primals: tuple[MemberActions, Float[Array, "members"], SteelGrade, TubeCatalogue],
-    tangents: tuple[MemberActions, Float[Array, "members"], SteelGrade, TubeCatalogue],
+    primals: tuple[MemberActions, Float[Array, "members"], Steel, TubeCatalogue],
+    tangents: tuple[MemberActions, Float[Array, "members"], Steel, TubeCatalogue],
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
     Differentiate the map by the implicit function theorem.
@@ -497,7 +497,7 @@ def _diameter_jvp(
     def at_root(
         actions: MemberActions,
         buckling_length: Float[Array, "members"],
-        steel: SteelGrade,
+        steel: Steel,
         catalogue: TubeCatalogue,
     ) -> Float[Array, "members"]:
         return utilization_design(
@@ -521,7 +521,7 @@ def _diameter_jvp(
 def diameter_required(
     actions: MemberActions,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
     *,
     section_class: int,
@@ -572,7 +572,7 @@ def diameter_required(
 def mass_of_tubes(
     tubes: Tube,
     lengths: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, ""]:
     """
     Total mass of a set of members.
@@ -602,7 +602,7 @@ def governing_limit_state(
     tube: Tube,
     actions: MemberActions,
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
     *,
     section_class: int,

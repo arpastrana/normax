@@ -20,10 +20,12 @@ different way — a traced linear solve, a traced assembly and solve, and an
 implicit tangent taken at the root of a residual — and the composition hides
 that from the caller: `mass` is a scalar with a gradient in `q`.
 
-This module is the in-process version, and it is the oracle the Tesseract
-composition is measured against rather than scaffolding for it. Keeping a
-baseline that reproduces the same mass and the same gradient is what turns
-"the Tesseracts run" into "the boundary is transparent".
+Nothing here knows how any of the three computes, or in what language, or on
+which side of a network boundary. `normax.stages` states what a block is,
+`normax.form_finding`, `normax.analysis.smax` and `normax.sizing` hold three that
+compute in this process, and `normax.tesseract` holds three that do not.
+Composing the second set is the same call as composing the first, and
+`tests/test_tesseract_parity.py` is where that is measured rather than claimed.
 
 **The coupling between the analysis and the check is staggered.** A frame cannot
 be analyzed without sections, and the sections are what the check returns, so
@@ -37,687 +39,30 @@ how fast repeating the pass closes it.
 
 from typing import NamedTuple
 
+import equinox as eqx
 import jax.numpy as jnp
-from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
 from jaxtyping import Int
 
-from normax.analysis.smax import Model
+from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import buckling_modes
-from normax.analysis.smax import member_forces
 from normax.ec3.actions import MemberActions
-from normax.ec3.material import SteelGrade
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
-from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_envelope as envelope_ec3
-from normax.ec3.sizing import diameter_required as diameter_ec3
-from normax.ec3.sizing import end_moments
-from normax.ec3.sizing import governing_limit_state as governing_ec3
-from normax.ec3.sizing import mass_of_tubes as mass_ec3
-from normax.ec3.sizing import utilization_design as utilization_ec3
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.ec3.stability import amplifier_resistance
 from normax.ec3.stability import buckling_length_global
 from normax.ec3.stability import is_adequate
 from normax.ec3.stability import slenderness_global
 from normax.ec3.stability import utilization_frame as utilization_stability
-from normax.formfinding import equilibrium_state
-from normax.structures import Structure
-
-
-class ProblemSetup(NamedTuple):
-    """
-    Everything the three stages need before a force density is chosen.
-
-    Attributes
-    ----------
-    structure :
-        The structure supplying the connectivity, the supports and the loads.
-    graph :
-        The form-finding connectivity, from `normax.formfinding`.
-    model :
-        The compiled analysis model, from `normax.analysis.smax.prepare_model`.
-    steel :
-        Material properties and partial factors.
-    catalogue :
-        The section family every member is drawn from.
-
-    Notes
-    -----
-    Built once on the host and reused for every call, so that only the design
-    variables enter the traced function. The first three are three views of one
-    structure and are built from it; the last two are what the standard reads.
-
-    **The material and the family travel here as well as inside the model.** The
-    model compiles them as placeholders and the analysis stage overwrites every
-    one, which is what leaves a derivative with respect to a material property
-    defined rather than silently zero.
-
-    The cross-section class is deliberately absent. It selects a clause rather
-    than scaling a number, so it stays a static keyword and never becomes a leaf
-    of a container that a tracer reaches.
-    """
-
-    structure: Structure
-    graph: EquilibriumStructure
-    model: Model
-    steel: SteelGrade
-    catalogue: TubeCatalogue
-
-
-def member_actions(
-    problem: ProblemSetup,
-    xyz: Float[Array, "nodes 3"],
-    diameters: Float[Array, "members"],
-    *,
-    loads: Float[Array, "nodes 3"] | None = None,
-) -> MemberActions:
-    """
-    Analyze a geometry and read the result as the check states its terms.
-
-    Parameters
-    ----------
-    problem :
-        The structure, the compiled model, the steel and the section family.
-    xyz :
-        Position of every node, from form finding.
-    diameters :
-        Outer diameter of every member, setting the stiffness.
-    loads :
-        Load case to analyze under. If None, the structure's own loads.
-
-    Returns
-    -------
-    actions :
-        Axial force, both design moments and both moment factors.
-    """
-    member = member_forces(
-        problem.model,
-        xyz,
-        diameters,
-        problem.steel,
-        problem.catalogue,
-        loads=loads,
-    )
-
-    moment_major, moment_factor_major = end_moments(
-        member.moment_major[:, 0], member.moment_major[:, 1]
-    )
-    moment_minor, moment_factor_minor = end_moments(
-        member.moment_minor[:, 0], member.moment_minor[:, 1]
-    )
-
-    return MemberActions(
-        member.axial_force,
-        moment_major,
-        moment_minor,
-        moment_factor_major,
-        moment_factor_minor,
-    )
-
-
-class Design(NamedTuple):
-    """
-    Everything the three stages produce for one set of force densities.
-
-    Attributes
-    ----------
-    xyz :
-        Position of every node at equilibrium.
-    lengths :
-        Length of every member.
-    actions :
-        Axial force, both design moments and both moment factors of every
-        member.
-    buckling_length :
-        Buckling length used for every member.
-    diameters :
-        Outer diameter EN 1993-1-1 requires of every member.
-    utilization :
-        Demand over resistance at those diameters. One wherever a clause decided
-        the size, and below one wherever the catalogue minimum did.
-    mass :
-        Total mass of the members.
-
-    Notes
-    -----
-    Every field is a differentiable leaf. The diagnostic saying which limit
-    state decided each size is deliberately absent, since a concrete cotangent
-    on it would be an error; ask `governing` for it separately.
-
-    The actions are carried whole rather than flattened to the major axis, so
-    that a design can be re-checked against exactly what sized it.
-    """
-
-    xyz: Float[Array, "nodes 3"]
-    lengths: Float[Array, "members"]
-    actions: MemberActions
-    buckling_length: Float[Array, "members"]
-    diameters: Float[Array, "members"]
-    utilization: Float[Array, "members"]
-    mass: Float[Array, ""]
-
-
-def design_members(
-    q: Float[Array, "members"],
-    diameters: Float[Array, "members"],
-    problem: ProblemSetup,
-    *,
-    section_class: int,
-    resultant: bool = True,
-    buckling_length: Float[Array, "members"] | None = None,
-    loads: Float[Array, "nodes 3"] | None = None,
-) -> Design:
-    """
-    Form-find, analyze and size, in that order.
-
-    Parameters
-    ----------
-    q :
-        Force density of every member. Negative in compression.
-    diameters :
-        Diameters the frame is analyzed with, being the previous outer iterate
-        of the check. They set the stiffness, not the resistance.
-    problem :
-        The structure, the compiled model, the steel and the section family.
-    section_class :
-        Cross-section class, 1, 2 or 3. Static, never a traced value.
-    resultant :
-        Whether the two moments combine as a resultant in the cross-section
-        check, or as a linear sum.
-    buckling_length :
-        Buckling length of every member. If None, each member buckles over its
-        own length.
-    loads :
-        Load case the frame is analyzed under. If None, the structure's own
-        loads, which are also the ones it is form-found under.
-
-    Returns
-    -------
-    design :
-        The geometry, the member actions, the required sizes and the mass.
-
-    Notes
-    -----
-    Differentiable in the force densities, in the analyzed diameters, and in
-    every material property. The cross-section class selects a clause rather
-    than scaling a number, so it stays a static Python value throughout.
-
-    **Form finding always uses the structure's own loads, and only the analysis
-    takes a load case.** The shape answers to one load case by construction,
-    that being what makes it funicular, and choosing the shape again for every
-    one would mean a different structure per load case rather than one structure
-    checked against several.
-
-    **The default buckling length is the member's own length, and that is a
-    strong assumption rather than a conservative one.** It presumes every node is
-    held in position by structure outside the model, so that a member can only
-    buckle between its ends. Where that holds — a gridshell, whose hoop members
-    brace its radial ones — it is the right reading. Where it does not, the
-    structure buckles in a mode spanning many members and the assumption is
-    unsafe, not cautious: measured on the arch, the critical load factor of the
-    fully-stressed design is far below one, and sizing against the mode the
-    structure actually has costs several times the mass. `normax.analysis.buckling`
-    reports that factor so the assumption is visible next to the design.
-
-    The buckling length is therefore an argument and never derived from the mesh.
-    A member length shortens as the mesh refines, which changes the physics
-    rather than the discretization: slenderness falls, the reduction factor
-    approaches one, and the mass converges to the squash limit instead of to a
-    mesh-independent design.
-    """
-    state = equilibrium_state(q, problem.structure, problem.graph)
-    lengths = state.lengths[:, 0]
-
-    acting = member_actions(problem, state.xyz, diameters, loads=loads)
-
-    buckling_modes = lengths if buckling_length is None else buckling_length
-
-    required = diameter_ec3(
-        acting,
-        buckling_modes,
-        problem.steel,
-        problem.catalogue,
-        section_class=section_class,
-        resultant=resultant,
-    )
-
-    used = utilization_ec3(
-        problem.catalogue.tube_at(required),
-        acting,
-        buckling_modes,
-        problem.steel,
-        section_class=section_class,
-        resultant=resultant,
-    )
-
-    return Design(
-        xyz=state.xyz,
-        lengths=lengths,
-        actions=acting,
-        buckling_length=buckling_modes,
-        diameters=required,
-        utilization=used,
-        mass=mass_ec3(problem.catalogue.tube_at(required), lengths, problem.steel),
-    )
-
-
-def total_mass(
-    q: Float[Array, "members"],
-    diameters: Float[Array, "members"],
-    problem: ProblemSetup,
-    *,
-    section_class: int,
-    resultant: bool = True,
-    buckling_length: Float[Array, "members"] | None = None,
-    loads: Float[Array, "nodes 3"] | None = None,
-) -> Float[Array, ""]:
-    """
-    Total mass of the members EN 1993-1-1 requires at a set of force densities.
-
-    Parameters
-    ----------
-    q :
-        Force density of every member. Negative in compression.
-    diameters :
-        Diameters the frame is analyzed with, being the previous outer iterate.
-    problem :
-        The structure, the compiled model, the steel and the section family.
-    section_class :
-        Cross-section class, 1, 2 or 3. Static, never a traced value.
-    resultant :
-        Whether the two moments combine as a resultant in the cross-section
-        check, or as a linear sum.
-    buckling_length :
-        Buckling length of every member. If None, each member buckles over its
-        own length.
-    loads :
-        Load case the frame is analyzed under. If None, the structure's own
-        loads.
-
-    Returns
-    -------
-    mass :
-        Total mass.
-
-    Notes
-    -----
-    The objective the whole pipeline exists to serve, and the scalar `jax.grad`
-    is taken of. One reverse pass crosses all three stages, so its cost does not
-    grow with the number of force densities.
-
-    One load case only. A structure has to carry all of them, so the objective
-    an optimizer sees is `envelope` rather than this.
-    """
-    return design_members(
-        q,
-        diameters,
-        problem,
-        section_class=section_class,
-        resultant=resultant,
-        buckling_length=buckling_length,
-        loads=loads,
-    ).mass
-
-
-class Envelope(NamedTuple):
-    """
-    One structure sized to carry every load case it is checked against.
-
-    Attributes
-    ----------
-    xyz :
-        Position of every node at equilibrium.
-    lengths :
-        Length of every member.
-    buckling_length :
-        Buckling length used for every member.
-    axial_force :
-        Axial force of every member under every load case, tension positive.
-    moment_major :
-        Larger major-axis end moment of every member under every load case.
-    moment_minor :
-        Larger minor-axis end moment of every member under every load case.
-    moment_factor_major :
-        Major-axis moment factor of every member under every load case.
-    moment_factor_minor :
-        Minor-axis moment factor of every member under every load case.
-    required :
-        Diameter every load case demands of every member on its own.
-    diameters :
-        Diameter carrying every load case, being the smooth envelope of the
-        above.
-    utilization :
-        Demand over resistance of every member under every load case, at those
-        diameters. At most one everywhere, and one for the load case that
-        governs.
-    mass :
-        Total mass of the members.
-
-    Notes
-    -----
-    The geometry is shared, because a structure is form-found once and then
-    asked to survive several things. Only the actions and the sizes carry a
-    load case axis.
-
-    Every field is a differentiable leaf. Which load case governs each member is
-    a diagnostic and is absent for the same reason `Design` omits the limit
-    state; ask `governing_load_case` for it.
-
-    The actions are carried in full, rather than only the ones a report would
-    print, so the design can be checked again at a different set of sizes
-    without analyzing anything a second time. `unsmoothed` is what does that.
-    """
-
-    xyz: Float[Array, "nodes 3"]
-    lengths: Float[Array, "members"]
-    buckling_length: Float[Array, "members"]
-    axial_force: Float[Array, "load_cases members"]
-    moment_major: Float[Array, "load_cases members"]
-    moment_minor: Float[Array, "load_cases members"]
-    moment_factor_major: Float[Array, "load_cases members"]
-    moment_factor_minor: Float[Array, "load_cases members"]
-    required: Float[Array, "load_cases members"]
-    diameters: Float[Array, "members"]
-    utilization: Float[Array, "load_cases members"]
-    mass: Float[Array, ""]
-
-
-def design_envelope(
-    q: Float[Array, "members"],
-    diameters: Float[Array, "members"],
-    problem: ProblemSetup,
-    loads: Float[Array, "load_cases nodes 3"],
-    *,
-    beta: float | Float[Array, ""],
-    section_class: int,
-    resultant: bool = True,
-    buckling_length: Float[Array, "members"] | None = None,
-) -> Envelope:
-    """
-    Form-find once, analyze every load case, and size for the worst of them.
-
-    Parameters
-    ----------
-    q :
-        Force density of every member. Negative in compression.
-    diameters :
-        Diameters the frame is analyzed with, being the previous outer iterate
-        of the check. They set the stiffness, not the resistance.
-    problem :
-        The structure, the compiled model, the steel and the section family.
-    loads :
-        Force applied at every node in every load case.
-    beta :
-        Sharpness of the envelope. The design approaches the smallest adequate
-        one from above as it grows.
-    section_class :
-        Cross-section class, 1, 2 or 3. Static, never a traced value.
-    resultant :
-        Whether the two moments combine as a resultant in the cross-section
-        check, or as a linear sum.
-    buckling_length :
-        Buckling length of every member. If None, each member buckles over its
-        own length.
-
-    Returns
-    -------
-    envelope :
-        The geometry, the actions under every load case, the sizes and the mass.
-
-    Notes
-    -----
-    **The objective an optimizer sees.** A member has one size and has to
-    satisfy every load case, so its size is the largest any of them demands. That
-    largest is not differentiable, and a gradient taken through it sees one load
-    case per step and stalls; the smooth envelope of `normax.ec3.sizing` replaces
-    it, taken in the logarithm of the diameter so the sharpness is dimensionless.
-
-    The envelope never understates the true largest, so **the design is adequate
-    at every sharpness** and annealing drives it onto the smallest adequate one
-    from above. What it gives away is bounded by the number of load cases raised
-    to the reciprocal of the sharpness, in diameter.
-
-    Form finding runs once, under the structure's own loads. The shape answers
-    to that load case alone, which is what makes it funicular; the others are
-    departures from it, and the bending they raise is the reason the analysis
-    stage is in the pipeline at all.
-
-    Load cases are looped over rather than mapped, the analysis stage not being
-    traceable through `vmap`, so the cost is linear in their number.
-    """
-    state = equilibrium_state(q, problem.structure, problem.graph)
-    lengths = state.lengths[:, 0]
-    buckling_modes = lengths if buckling_length is None else buckling_length
-
-    acting = [
-        member_actions(problem, state.xyz, diameters, loads=load_case)
-        for load_case in loads
-    ]
-
-    required = jnp.stack(
-        [
-            diameter_ec3(
-                load_case,
-                buckling_modes,
-                problem.steel,
-                problem.catalogue,
-                section_class=section_class,
-                resultant=resultant,
-            )
-            for load_case in acting
-        ]
-    )
-
-    covering = envelope_ec3(required, beta)
-
-    used = jnp.stack(
-        [
-            utilization_ec3(
-                problem.catalogue.tube_at(covering),
-                load_case,
-                buckling_modes,
-                problem.steel,
-                section_class=section_class,
-                resultant=resultant,
-            )
-            for load_case in acting
-        ]
-    )
-
-    # Stacked field by field rather than as a MemberActions, whose fields carry
-    # one member axis and not the load case axis these gain.
-    (
-        axial_force,
-        moment_major,
-        moment_minor,
-        moment_factor_major,
-        moment_factor_minor,
-    ) = (jnp.stack(field) for field in zip(*acting))
-
-    return Envelope(
-        xyz=state.xyz,
-        lengths=lengths,
-        buckling_length=buckling_modes,
-        axial_force=axial_force,
-        moment_major=moment_major,
-        moment_minor=moment_minor,
-        moment_factor_major=moment_factor_major,
-        moment_factor_minor=moment_factor_minor,
-        required=required,
-        diameters=covering,
-        utilization=used,
-        mass=mass_ec3(problem.catalogue.tube_at(covering), lengths, problem.steel),
-    )
-
-
-class Unsmoothed(NamedTuple):
-    """
-    The design the envelope is an upper bound on, taken at the true largest.
-
-    Attributes
-    ----------
-    diameters :
-        Largest diameter any load case demands of each member.
-    utilization :
-        Demand over resistance of every member under every load case, at those
-        diameters. Exactly one for the load case that governs each member.
-    mass :
-        Total mass of the members.
-
-    Notes
-    -----
-    What the design would be with no smoothing at all, and so the number to
-    report rather than the annealed one. It is not differentiable in any useful
-    way, the largest of a set having a gradient that sees one load case at a
-    time, which is the whole reason the envelope exists.
-    """
-
-    diameters: Float[Array, "members"]
-    utilization: Float[Array, "load_cases members"]
-    mass: Float[Array, ""]
-
-
-def unsmoothed_design(
-    result: Envelope,
-    problem: ProblemSetup,
-    *,
-    section_class: int,
-    resultant: bool = True,
-) -> Unsmoothed:
-    """
-    Re-check an enveloped design at the smallest sizes satisfying every load case.
-
-    Parameters
-    ----------
-    result :
-        An enveloped design, from `envelope`.
-    problem :
-        The structure, the compiled model, the steel and the section family.
-    section_class :
-        Cross-section class, 1, 2 or 3. Static, never a traced value.
-    resultant :
-        Whether the two moments combine as a resultant in the cross-section
-        check, or as a linear sum.
-
-    Returns
-    -------
-    unsmoothed :
-        The sizes, the utilization under every load case, and the mass.
-
-    Notes
-    -----
-    **What the smoothing cost, measured rather than bounded.** The envelope
-    never understates what a load case demands, so this is always the lighter
-    design and the difference is what annealing is driving to zero.
-
-    Nothing is analyzed again. The actions belong to the geometry and the
-    diameters the frame was analyzed with, neither of which changes here, so
-    only the check is repeated.
-    """
-    sizes = jnp.max(result.required, axis=0)
-
-    used = jnp.stack(
-        [
-            utilization_ec3(
-                problem.catalogue.tube_at(sizes),
-                MemberActions(
-                    result.axial_force[load_case],
-                    result.moment_major[load_case],
-                    result.moment_minor[load_case],
-                    result.moment_factor_major[load_case],
-                    result.moment_factor_minor[load_case],
-                ),
-                result.buckling_length,
-                problem.steel,
-                section_class=section_class,
-                resultant=resultant,
-            )
-            for load_case in range(result.required.shape[0])
-        ]
-    )
-
-    return Unsmoothed(
-        diameters=sizes,
-        utilization=used,
-        mass=mass_ec3(problem.catalogue.tube_at(sizes), result.lengths, problem.steel),
-    )
-
-
-def governing_load_case(result: Envelope) -> Int[Array, "members"]:
-    """
-    Which load case decided each member's size.
-
-    Parameters
-    ----------
-    result :
-        An enveloped design, from `envelope`.
-
-    Returns
-    -------
-    governing_load_case :
-        Index of the load case working each member hardest.
-
-    Notes
-    -----
-    **Non-differentiable**, and kept out of `Envelope` for that reason.
-
-    The picture only a differentiable code check can produce: as the form
-    changes, the pattern of which load case governs where reorganises, and it
-    does so because the shape decides how much bending each one raises rather
-    than because any member was reassigned.
-    """
-    return jnp.argmax(result.utilization, axis=0)
-
-
-def governing_states(
-    result: Design,
-    problem: ProblemSetup,
-    *,
-    section_class: int,
-    resultant: bool = True,
-) -> Float[Array, "members"]:
-    """
-    Which limit state decided each member's size.
-
-    Parameters
-    ----------
-    result :
-        A design, from `design`.
-    problem :
-        The structure, the compiled model, the steel and the section family.
-    section_class :
-        Cross-section class, 1, 2 or 3. Static, never a traced value.
-    resultant :
-        Whether the two moments combine as a resultant in the cross-section
-        check, or as a linear sum.
-
-    Returns
-    -------
-    governing :
-        One of the limit-state codes of `normax.ec3.sizing`.
-
-    Notes
-    -----
-    **Non-differentiable**, and kept out of `Design` for that reason. Read it
-    beside a design, never through one.
-
-    The design is re-checked against the actions it was sized for, which is what
-    makes the answer the one that decided the size rather than a second opinion
-    on a subset of them.
-    """
-    return governing_ec3(
-        problem.catalogue.tube_at(result.diameters),
-        result.actions,
-        result.buckling_length,
-        problem.steel,
-        problem.catalogue,
-        section_class=section_class,
-        resultant=resultant,
-    )
+from normax.loads import LoadCases
+from normax.stages import AbstractFormFinder
+from normax.stages import AbstractFrameAnalyzer
+from normax.stages import AbstractMemberSizer
+from normax.stages import DesignParameters
 
 
 class Stability(NamedTuple):
@@ -760,28 +105,28 @@ class Stability(NamedTuple):
 
 
 def frame_stability(
-    result: Design,
-    problem: ProblemSetup,
+    design: "MemberSections",
+    analyzer: SmaxAnalyzer,
+    loads: Float[Array, "nodes 3"],
     *,
+    load_case: int = 0,
     num_modes: int = 1,
-    threshold: float = ALPHA_CR_ELASTIC,
-    loads: Float[Array, "nodes 3"] | None = None,
 ) -> Stability:
     """
     Check a finished design against the stability of the frame it sits in.
 
     Parameters
     ----------
-    result :
-        A design, from `design`.
-    problem :
-        The structure, the compiled model, the steel and the section family.
+    design :
+        A design, from a pipeline.
+    analyzer :
+        The analysis block, supplying the assembly and the material.
+    loads :
+        Load case the frame buckles under.
+    load_case :
+        Index of the design's load case the axial forces are read from. Static.
     num_modes :
         Number of critical load factors to return. Static.
-    threshold :
-        Factor the frame must reach for first-order analysis to be adequate.
-    loads :
-        Load case the frame buckles under. If None, the structure's own loads.
 
     Returns
     -------
@@ -809,31 +154,306 @@ def frame_stability(
     say about a member the load never reaches.
     """
     modes = buckling_modes(
-        problem.model,
-        result.xyz,
-        result.diameters,
-        problem.steel,
-        problem.catalogue,
+        analyzer.model,
+        design.xyz,
+        design.diameters,
+        analyzer.steel,
+        analyzer.catalogue,
+        loads,
         num_modes=num_modes,
-        loads=loads,
     )
     alpha_cr = modes.factors[0]
 
-    steel = problem.steel
-    gross = problem.catalogue.tube_at(result.diameters).area
-    inertia = problem.catalogue.tube_at(result.diameters).second_moment
+    steel = analyzer.steel
+    tubes = analyzer.catalogue.tube_at(design.diameters)
+    gross = tubes.area
+    inertia = tubes.second_moment
+    axial_force = design.actions.axial_force[load_case]
 
     return Stability(
         factors=modes.factors,
-        utilization=utilization_stability(alpha_cr, threshold),
-        adequate=is_adequate(alpha_cr, threshold),
+        utilization=utilization_stability(alpha_cr, ALPHA_CR_ELASTIC),
+        adequate=is_adequate(alpha_cr, ALPHA_CR_ELASTIC),
         slenderness_member=slenderness_from_force(
-            gross, steel, force_critical(inertia, result.buckling_length, steel)
+            gross, steel, force_critical(inertia, design.lengths, steel)
         ),
         slenderness_global=slenderness_global(
-            amplifier_resistance(gross, steel, result.actions.axial_force), alpha_cr
+            amplifier_resistance(gross, steel, axial_force), alpha_cr
         ),
         buckling_length_equivalent=buckling_length_global(
-            alpha_cr, result.actions.axial_force, inertia, steel
+            alpha_cr, axial_force, inertia, steel
         ),
     )
+
+
+def governing_load_case(design: "MemberSections") -> Int[Array, "members"]:
+    """
+    Which load case decided each member's size.
+
+    Parameters
+    ----------
+    design :
+        A design, from a pipeline.
+
+    Returns
+    -------
+    governing_load_case :
+        Index of the load case working each member hardest.
+
+    Notes
+    -----
+    **Non-differentiable**, and kept out of `MemberSections` for that reason.
+
+    The picture only a differentiable code check can produce: as the form
+    changes, the pattern of which load case governs where reorganizes, and it
+    does so because the shape decides how much bending each one raises rather
+    than because any member was reassigned.
+    """
+    return jnp.argmax(design.utilization, axis=0)
+
+
+class MemberSections(NamedTuple):
+    """
+    One structure, sized to carry every load case it is checked against.
+
+    Attributes
+    ----------
+    xyz :
+        Position of every node at equilibrium.
+    lengths :
+        Length of every member, and the length it was assumed to buckle over.
+    actions :
+        The design actions every member carries under every load case, every
+        field of the container holding a leading load case axis.
+    required :
+        Diameter every load case demands of every member on its own.
+    diameters :
+        Diameter every member is given, covering all of them.
+    mass_per_length :
+        Mass per unit length of every member at that diameter.
+    utilization :
+        Demand over resistance of every member under every load case. At most
+        one everywhere, and one for the load case that governs.
+
+    Notes
+    -----
+    The geometry is shared, because a structure is form-found once and then
+    asked to survive several things. Only the actions and the sizes carry a load
+    case axis.
+
+    Every field is a differentiable leaf. Which load case governs each member,
+    and which limit state decided each size, are diagnostics and are absent for
+    that reason: a concrete cotangent on either would raise rather than pass
+    quietly. Ask `governing_load_case` and `governing_states` for them.
+
+    The actions are carried whole rather than flattened to the major axis, so a
+    design can be re-checked against exactly what sized it without analyzing
+    anything a second time.
+
+    The mass is absent too, and for a different reason: it is `ρ Σ A L`,
+    geometry rather than a resistance, so it is computed from this by
+    `calculate_mass` rather than stored on it.
+
+    **One length, not two.** Every member is assumed to buckle over its own
+    length, so a separate buckling length would be a second copy of this field.
+    See `DesignPipeline.__call__` for what that assumption costs.
+    """
+
+    xyz: Float[Array, "nodes 3"]
+    lengths: Float[Array, "members"]
+    actions: MemberActions
+    required: Float[Array, "load_cases members"]
+    diameters: Float[Array, "members"]
+    mass_per_length: Float[Array, "members"]
+    utilization: Float[Array, "load_cases members"]
+
+
+def calculate_mass(design: MemberSections) -> Float[Array, ""]:
+    """
+    Total mass of a design.
+
+    Parameters
+    ----------
+    design :
+        A design, from a pipeline.
+
+    Returns
+    -------
+    mass :
+        Total mass of the members.
+
+    Notes
+    -----
+    **The objective the whole pipeline exists to serve, and the scalar
+    `jax.grad` is taken of.** One reverse pass crosses all three blocks, so its
+    cost does not grow with the number of force densities.
+
+    Geometry rather than a clause, which is why it sits here rather than inside
+    the block that sized the members. What that block supplies is the mass a
+    member of a given size carries per unit length, which only a section family
+    can answer; multiplying by a length and adding up is arithmetic no standard
+    has an opinion on.
+    """
+    return jnp.sum(design.mass_per_length * design.lengths)
+
+
+class DesignPipeline(eqx.Module):
+    """
+    Form finding, analysis and a code check, composed into one function.
+
+    Attributes
+    ----------
+    formfinder :
+        The block that chooses the shape.
+    analyzer :
+        The block that says what the members carry.
+    sizer :
+        The block that says how big they have to be.
+
+    Notes
+    -----
+    Each block differentiates in its own way — a traced linear solve, a traced
+    assembly and solve, and an implicit tangent taken at the root of a residual —
+    and the composition hides that from the caller: a design comes back with a
+    gradient in the force densities. Nothing here asks how any block computes,
+    or in what language, or on which side of a network boundary, which is what
+    makes one of them replaceable without touching the other two.
+
+    **Every backend sees the structure in its own terms, and it does so when it
+    is built rather than here.** A pipeline is three blocks already bound to one
+    structure, so calling one is a pure function of things an optimizer varies
+    and nothing that reads a support flag in Python survives into the trace.
+
+    **No topology reaches here, and a member length is asked for rather than
+    measured.** A pipeline is three blocks and nothing else, so it holds no
+    connectivity and could not measure a member if it wanted to; the form finder
+    is asked instead, being the block that produced the geometry and the one
+    holding a view of the edges. The answer is used twice: as the length a
+    member buckles over, and as the `L` of `ρ Σ A L`.
+
+    **The coupling between the analysis and the check is staggered.** A frame
+    cannot be analyzed without sections, and the sections are what the check
+    returns, so the diameters the frame is built from are an input and the
+    diameters the check requires are an output. One pass is taken, not a fixed
+    point.
+
+    **Two things sit here rather than inside a block, and neither is a clause.**
+    The envelope over load cases is smoothing that no standard has an opinion
+    on, and the mass is geometry. What a standard actually decides — the size
+    each load case demands — comes from the sizer, once per load case.
+    """
+
+    formfinder: AbstractFormFinder
+    analyzer: AbstractFrameAnalyzer
+    sizer: AbstractMemberSizer
+
+    def __call__(
+        self,
+        params: DesignParameters,
+        loads: LoadCases,
+    ) -> MemberSections:
+        """
+        Form-find once, analyze every load case, and size for the worst of them.
+
+        Parameters
+        ----------
+        params :
+            Force densities, the diameters the frame is analyzed with, and the
+            sharpness the load cases are reconciled at.
+        loads :
+            The load case the shape answers to, and the ones it is checked
+            against.
+
+        Returns
+        -------
+        design :
+            The geometry, the actions under every load case, and the sizes.
+
+        Notes
+        -----
+        **Form finding runs once and the other two run for every load case.**
+        The shape answers to one load case by construction, that being what
+        makes it funicular; choosing the shape again for each of them would mean
+        a different structure per load case rather than one structure checked
+        against several.
+
+        **A sharpness is what an optimizer wants and the largest is what a
+        report wants.** A member has one size and has to satisfy every load
+        case, so its size is the largest any of them demands; that largest is
+        not differentiable, and a gradient taken through it sees one load case
+        per step and stalls. The smooth envelope never understates it, so the
+        design is adequate at every sharpness and annealing drives it onto the
+        smallest adequate one from above.
+
+        A single load case is passed through untouched rather than enveloped,
+        an envelope over one case being the identity and the round trip through
+        a logarithm costing its last bits for nothing.
+
+        **Every member is assumed to buckle over its own length, and nothing
+        here can say otherwise.** That is a strong assumption rather than a
+        conservative one: it presumes every node is held in position by
+        structure outside the model, and where that does not hold the frame
+        buckles in a mode spanning many members and the assumption is unsafe.
+        `frame_stability` is what measures the gap, by recovering the buckling
+        length a critical load factor is equivalent to.
+
+        The clauses below take a buckling length as an argument and always
+        will — EN 1993-1-1 Eq. 6.50 is written in `L_cr`, not in a member
+        length. What is fixed is this composition's choice of what to pass, and
+        that choice is temporary; see `docs/clauses.md`.
+        """
+        shape = self.formfinder(params.q, loads.formfinding)
+        lengths = self.formfinder.member_lengths(shape.xyz)
+
+        forces = self.analyzer(shape, params.diameters, loads.analysis)
+        sizes = self.sizer(forces, lengths)
+
+        covering = _covering_diameter(sizes.required, params.sharpness)
+        used = self.sizer.utilization(covering, sizes.actions, lengths)
+
+        design = MemberSections(
+            xyz=shape.xyz,
+            lengths=lengths,
+            actions=sizes.actions,
+            required=sizes.required,
+            diameters=covering,
+            mass_per_length=self.sizer.mass_per_length(covering),
+            utilization=used,
+        )
+
+        return design
+
+
+def _covering_diameter(
+    required: Float[Array, "load_cases members"],
+    sharpness: float | Float[Array, ""] | None,
+) -> Float[Array, "members"]:
+    """
+    One size per member, covering every load case that demanded one.
+
+    Parameters
+    ----------
+    required :
+        Diameter every load case demands of every member on its own.
+    sharpness :
+        Sharpness of the envelope. If None, the true largest.
+
+    Returns
+    -------
+    diameters :
+        Diameter every member is given.
+
+    Notes
+    -----
+    A single load case is returned as it stands, whatever the sharpness. The
+    envelope over one case is the identity in exact arithmetic and a logarithm
+    followed by an exponential in floating point, so taking it would cost the
+    last bits of a size for nothing.
+    """
+    if required.shape[0] == 1:
+        return required[0]
+
+    if sharpness is None:
+        return jnp.max(required, axis=0)
+
+    return envelope_ec3(required, sharpness)

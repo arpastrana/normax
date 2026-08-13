@@ -33,7 +33,7 @@ from normax.analysis.opensees import Jacobian
 from normax.analysis.opensees import force_jacobian
 from normax.analysis.opensees import member_forces
 from normax.analysis.opensees import prepare_model
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 
@@ -52,7 +52,7 @@ BLOCKS = {
 OUTPUT_RANK = {"axial_force": 1, "end_moments_major": 2, "end_moments_minor": 2}
 
 
-def _build_model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, TubeCatalogue]:
+def _build_model(inputs: dict[str, Any]) -> tuple[Structure, Steel, TubeCatalogue]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -77,10 +77,9 @@ def _build_model(inputs: dict[str, Any]) -> tuple[Structure, SteelGrade, TubeCat
         nodes=jnp.asarray(inputs["xyz"]),
         edges=jnp.asarray(inputs["edges"]),
         supports=jnp.asarray(inputs["supports"]),
-        loads=jnp.asarray(inputs["loads"]),
     )
 
-    steel = SteelGrade(
+    steel = Steel(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],
@@ -122,6 +121,7 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         jnp.asarray(inputs["diameter"]),
         steel,
         catalogue,
+        jnp.asarray(inputs["loads"]),
     )
 
     return {
@@ -160,6 +160,7 @@ def _jacobian_blocks(inputs: dict[str, Any]) -> Jacobian:
         jnp.asarray(inputs["diameter"]),
         steel,
         catalogue,
+        jnp.asarray(inputs["loads"]),
     )
 
 

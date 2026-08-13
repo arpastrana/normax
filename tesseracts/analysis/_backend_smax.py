@@ -37,23 +37,24 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
+from smax import CompiledStructure
 
-from normax.analysis import MemberForces
-from normax.analysis.smax import Model
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
+from normax.stages import MemberForces
 from normax.structures import Structure
 
 
 @eqx.filter_jit
 def _member_forces(
-    model: Model,
+    model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
+    loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
     The analysis, compiled, from a model the caller prepared.
@@ -70,6 +71,8 @@ def _member_forces(
         Material properties.
     catalogue :
         The section family, whose ratio fixes the wall thickness.
+    loads :
+        Force applied at every node.
 
     Returns
     -------
@@ -93,11 +96,10 @@ def _member_forces(
     inside `jax.vjp` or `jax.jvp`, and a compiled call nested in a trace stays
     compiled rather than being unrolled into it.
 
-    Every array a derivative might be taken through arrives as an argument,
-    including the loads, which reach here inside the model as ordinary leaves
-    rather than as constants folded into the program.
+    Every array a derivative might be taken through arrives as an argument, the
+    loads included, rather than as a constant folded into the program.
     """
-    return member_forces(model, xyz, diameters, steel, catalogue)
+    return member_forces(model, xyz, diameters, steel, catalogue, loads)
 
 
 def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -140,10 +142,9 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         nodes=xyz,
         edges=jnp.asarray(inputs["edges"]),
         supports=jnp.asarray(inputs["supports"]),
-        loads=jnp.asarray(inputs["loads"]),
     )
 
-    steel = SteelGrade(
+    steel = Steel(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],
@@ -153,7 +154,12 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     model = prepare_model(structure, steel, catalogue, normal=inputs["normal"])
 
     member = _member_forces(
-        model, xyz, jnp.asarray(inputs["diameter"]), steel, catalogue
+        model,
+        xyz,
+        jnp.asarray(inputs["diameter"]),
+        steel,
+        catalogue,
+        jnp.asarray(inputs["loads"]),
     )
 
     return {

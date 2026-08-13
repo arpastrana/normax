@@ -24,11 +24,16 @@ solve by tracing it and no implicit rule is needed. This is the only stage of
 the pipeline whose derivatives come from a tracing system, and it is the
 baseline the other two are unlike.
 
-**The handoff downstream is geometry alone** — no prestress and no initial
-member forces. The product of a force density and a length is reported here as
-a diagnostic, and the agreement between it and what a frame solver finds under
-the same load is a prediction that gets tested rather than an input that gets
-imposed.
+**The handoff downstream is a geometry and nothing else** — no prestress, no
+initial member forces, and no quantity derived from the coordinates. A frame
+solver is handed this and finds its own internal forces, and the agreement
+between those and the product of a force density and a length is a prediction
+that gets tested rather than an input that gets imposed.
+
+An edge length and an edge force are both recoverable from what does cross: a
+length is a distance between two nodes, and a force is that length times a force
+density. Sending either would carry arithmetic across the boundary and invite
+two stages to do it differently.
 """
 
 from typing import Any
@@ -41,8 +46,8 @@ from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 from tesseract_core.runtime import Int64
 
-from normax.formfinding import equilibrium_graph
-from normax.formfinding import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.structures import Structure
 
 jax.config.update("jax_enable_x64", True)
@@ -78,22 +83,11 @@ class InputSchema(BaseModel):
 
 class OutputSchema(BaseModel):
     """
-    The shape that carries the loads, and what its edges are carrying.
+    The shape that carries the loads.
     """
 
     xyz: Differentiable[Array[(None, 3), Float64]]
     """Position of every node at equilibrium, in millimeters."""
-
-    lengths: Differentiable[Array[(None,), Float64]]
-    """Length of every edge, in millimeters."""
-
-    forces: Differentiable[Array[(None,), Float64]]
-    """Axial force of every edge, in newtons. Tension positive.
-
-    The product of a force density and a length. Not consumed downstream: the
-    frame solver is handed geometry alone and finds its own internal forces, and
-    the two agreeing is the claim `tests/test_equilibrium_consistency.py` makes.
-    """
 
 
 def _forward_pass(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -108,7 +102,7 @@ def _forward_pass(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     Returns
     -------
     outputs :
-        The geometry, the edge lengths and the edge forces.
+        The equilibrium geometry.
 
     Notes
     -----
@@ -116,22 +110,22 @@ def _forward_pass(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     host-side integer work and never traced. A schema carries arrays and not
     objects, and that is the price of the boundary being real.
     """
+    nodes = jnp.asarray(inputs["nodes"])
     structure = Structure(
-        nodes=jnp.asarray(inputs["nodes"]),
+        nodes=nodes,
         edges=jnp.asarray(inputs["edges"]),
         supports=jnp.asarray(inputs["supports"]),
-        loads=jnp.asarray(inputs["loads"]),
     )
+    graph = equilibrium_graph(structure)
 
     state = equilibrium_state(
-        jnp.asarray(inputs["q"]), structure, equilibrium_graph(structure)
+        jnp.asarray(inputs["q"]),
+        nodes[graph.indices_fixed],
+        graph,
+        jnp.asarray(inputs["loads"]),
     )
 
-    return {
-        "xyz": state.xyz,
-        "lengths": state.lengths[:, 0],
-        "forces": state.forces[:, 0],
-    }
+    return {"xyz": state.xyz}
 
 
 def apply(inputs: InputSchema) -> OutputSchema:
@@ -146,7 +140,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     Returns
     -------
     outputs :
-        The equilibrium geometry and the edge forces.
+        The equilibrium geometry.
     """
     return _forward_pass(inputs.model_dump())
 
@@ -171,13 +165,8 @@ def abstract_eval(abstract_inputs):
     so every endpoint below is unreachable without this one.
     """
     nodes = abstract_inputs.nodes.shape[0]
-    edges = abstract_inputs.edges.shape[0]
 
-    return {
-        "xyz": {"shape": (nodes, 3), "dtype": "float64"},
-        "lengths": {"shape": (edges,), "dtype": "float64"},
-        "forces": {"shape": (edges,), "dtype": "float64"},
-    }
+    return {"xyz": {"shape": (nodes, 3), "dtype": "float64"}}
 
 
 def _restrict_for_derivative(

@@ -34,7 +34,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.resistance import SLENDERNESS_OFFSET
 from normax.ec3.resistance import buckling_auxiliary
 from normax.ec3.resistance import reduction_buckling
@@ -84,7 +84,7 @@ def reduction_buckling_derivative(
 
 
 def slenderness_unit(
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, ""]:
     """
@@ -120,7 +120,7 @@ def utilization_slope(
     diameter: Float[Array, "members"],
     axial_force: Float[Array, "members"],
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -164,7 +164,7 @@ def _buckling_check(
     diameter: Float[Array, "members"],
     axial_force: Float[Array, "members"],
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -187,7 +187,7 @@ def derivative_force(
     diameter: Float[Array, "members"],
     axial_force: Float[Array, "members"],
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -231,7 +231,7 @@ def derivative_length(
     diameter: Float[Array, "members"],
     axial_force: Float[Array, "members"],
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -281,7 +281,7 @@ def derivative_length(
 
 def diameter_tension(
     axial_force: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """
@@ -314,7 +314,7 @@ def diameter_tension(
 
 def derivative_force_tension(
     axial_force: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> Float[Array, "members"]:
     """

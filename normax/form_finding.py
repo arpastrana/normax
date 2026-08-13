@@ -34,7 +34,10 @@ from jax_fdm.equilibrium import LoadState
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.stages import AbstractFormFinder
+from normax.stages import FormFoundShape
 from normax.structures import Structure
+from normax.structures import member_lengths
 
 
 def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
@@ -57,7 +60,7 @@ def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
     the per-node flags `jax-fdm` partitions on, so a node absent from them is
     free in all three coordinates.
     """
-    num_nodes = structure.nodes.shape[0]
+    num_nodes = structure.num_nodes
 
     nodes = np.arange(num_nodes, dtype=DTYPE_INT_NP)
     edges = np.asarray(structure.edges, dtype=DTYPE_INT_NP)
@@ -70,8 +73,9 @@ def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
 
 def equilibrium_state(
     q: Float[Array, "edges"],
-    structure: Structure,
+    xyz_fixed: Float[Array, "supports 3"],
     graph: EquilibriumStructure,
+    loads: Float[Array, "nodes 3"],
 ) -> EquilibriumState:
     """
     The geometry that carries the loads at a given set of force densities.
@@ -80,10 +84,13 @@ def equilibrium_state(
     ----------
     q :
         Force density of every edge. Negative in compression.
-    structure :
-        The structure supplying the support positions and the nodal loads.
+    xyz_fixed :
+        Position of every supported node, in the order `graph.indices_fixed`
+        gives them.
     graph :
-        The connectivity, from `graph`.
+        The connectivity, from `equilibrium_graph`.
+    loads :
+        Force applied at every node.
 
     Returns
     -------
@@ -98,20 +105,26 @@ def equilibrium_state(
     at every free node to solver precision, which is the claim the analysis
     stage is measured against.
 
-    The supported nodes hold the positions they were given, so the starting
-    geometry matters only there. Everywhere else it is discarded.
+    **The supported positions are all this reads of a starting geometry**, which
+    is why they arrive as an array rather than as the structure holding them:
+    every free node's position is solved for, and the topology it is solved on
+    is already in the graph. Their order is the graph's rather than the
+    structure's, the two being free to differ.
+
+    The load case is an argument and never a property of the structure, so the
+    case a shape answers to is named by the caller.
     """
-    xyz_fixed = structure.nodes[graph.indices_fixed]
-    loads = LoadState(nodes=structure.loads, edges=0.0, faces=0.0)
-    params = EquilibriumParametersState(q=q, xyz_fixed=xyz_fixed, loads=loads)
+    load_state = LoadState(nodes=loads, edges=0.0, faces=0.0)
+    params = EquilibriumParametersState(q=q, xyz_fixed=xyz_fixed, loads=load_state)
 
     return EquilibriumModel(tmax=1)(params, graph)
 
 
 def node_positions(
     q: Float[Array, "edges"],
-    structure: Structure,
+    xyz_fixed: Float[Array, "supports 3"],
     graph: EquilibriumStructure,
+    loads: Float[Array, "nodes 3"],
 ) -> Float[Array, "nodes 3"]:
     """
     The geometry that carries the loads, as coordinates alone.
@@ -120,10 +133,12 @@ def node_positions(
     ----------
     q :
         Force density of every edge. Negative in compression.
-    structure :
-        The structure supplying the support positions and the nodal loads.
+    xyz_fixed :
+        Position of every supported node.
     graph :
-        The connectivity, from `graph`.
+        The connectivity, from `equilibrium_graph`.
+    loads :
+        Force applied at every node.
 
     Returns
     -------
@@ -137,13 +152,14 @@ def node_positions(
     The plan is a result rather than an input, and it moves when the force
     densities stop being uniform.
     """
-    return equilibrium_state(q, structure, graph).xyz
+    return equilibrium_state(q, xyz_fixed, graph, loads).xyz
 
 
 def positions_vertical(
     q: Float[Array, "edges"],
-    structure: Structure,
+    xyz: Float[Array, "nodes 3"],
     graph: EquilibriumStructure,
+    loads: Float[Array, "nodes 3"],
 ) -> Float[Array, "nodes 3"]:
     """
     The geometry that carries the vertical loads with the plan held fixed.
@@ -152,10 +168,13 @@ def positions_vertical(
     ----------
     q :
         Force density of every edge. Negative in compression.
-    structure :
-        The structure supplying the plan, the support positions and the loads.
+    xyz :
+        Starting position of every node, supplying the plan that is held and
+        the supported heights.
     graph :
-        The connectivity, from `graph`.
+        The connectivity, from `equilibrium_graph`.
+    loads :
+        Force applied at every node.
 
     Returns
     -------
@@ -184,7 +203,7 @@ def positions_vertical(
     parameter — the scale of a uniform force density. Use it to hold a plan while
     sweeping that one parameter, not to give an optimizer twenty.
     """
-    xyz = jnp.asarray(structure.nodes)
+    xyz = jnp.asarray(xyz)
 
     free = graph.indices_free
     fixed = graph.indices_fixed
@@ -192,9 +211,105 @@ def positions_vertical(
     stiffness = graph.connectivity_free.T @ (q[:, None] * graph.connectivity_free)
     coupling = graph.connectivity_free.T @ (q[:, None] * graph.connectivity_fixed)
 
-    loads = jnp.asarray(structure.loads)[free, 2]
+    applied = jnp.asarray(loads)[free, 2]
     held = coupling @ xyz[fixed, 2]
 
-    heights = jnp.linalg.solve(stiffness, loads - held)
+    heights = jnp.linalg.solve(stiffness, applied - held)
 
     return xyz.at[free, 2].set(heights)
+
+
+class FdmFormFinder(AbstractFormFinder):
+    """
+    The force density method, as a block of the design pipeline.
+
+    Attributes
+    ----------
+    xyz_fixed :
+        Position of every supported node, which the shape is hung from.
+    graph :
+        The connectivity the method solves on.
+
+    Notes
+    -----
+    Building the block builds the connectivity matrices and the free-fixed
+    partition, which is everything the method can settle before a force density
+    is chosen. Both are read on the host, so a block rebuilt inside a trace is
+    what stops the stage being jitted.
+
+    **The structure itself is not kept, only the two things the method reads of
+    it.** The graph holds the topology already, so a block that also held the
+    structure would carry it twice; what the graph cannot hold is a coordinate,
+    and of those only the supported ones survive a solve. The supports do not
+    move, so the slice is taken once here rather than per call.
+
+    The block differentiates by tracing its own solve and carries no rule of its
+    own, the equilibrium being linear in the coordinates once the force
+    densities are fixed.
+    """
+
+    xyz_fixed: Float[Array, "supports 3"]
+    graph: EquilibriumStructure
+
+    def __init__(self, structure: Structure) -> None:
+        """
+        Build a form finder on a structure's connectivity.
+
+        Parameters
+        ----------
+        structure :
+            The structure supplying the topology and the supported nodes.
+        """
+        graph = equilibrium_graph(structure)
+
+        self.xyz_fixed = structure.nodes[graph.indices_fixed]
+        self.graph = graph
+
+    def __call__(
+        self,
+        q: Float[Array, "members"],
+        loads: Float[Array, "nodes 3"],
+    ) -> FormFoundShape:
+        """
+        Find the shape that carries a load case at given force densities.
+
+        Parameters
+        ----------
+        q :
+            Force density of every member. Negative in compression.
+        loads :
+            Force applied at every node.
+
+        Returns
+        -------
+        shape :
+            The geometry at equilibrium.
+        """
+        state = equilibrium_state(q, self.xyz_fixed, self.graph, loads)
+        shape = FormFoundShape(state.xyz)
+
+        return shape
+
+    def member_lengths(
+        self,
+        xyz: Float[Array, "nodes 3"],
+    ) -> Float[Array, "members"]:
+        """
+        Measure every member of a geometry this block could have produced.
+
+        Parameters
+        ----------
+        xyz :
+            Position of every node.
+
+        Returns
+        -------
+        lengths :
+            Distance between the two nodes of every member.
+
+        Notes
+        -----
+        The graph's edges rather than a second copy of them, so a block cannot
+        measure an ordering the solve did not use.
+        """
+        return member_lengths(xyz, self.graph.edges)

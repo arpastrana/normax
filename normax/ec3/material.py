@@ -53,7 +53,7 @@ IMPERFECTION_FACTORS = {
 }
 
 
-class SteelGrade(NamedTuple):
+class Steel(NamedTuple):
     """
     The steel as supplied, and the partial factors applied to it.
 

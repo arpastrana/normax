@@ -26,7 +26,7 @@ from jaxtyping import Int
 
 class Structure(NamedTuple):
     """
-    The topology, the starting geometry and the loads of a bar structure.
+    The topology and the starting geometry of a bar structure.
 
     Attributes
     ----------
@@ -36,64 +36,61 @@ class Structure(NamedTuple):
         The two node indices spanned by every edge.
     supports :
         Indices of the nodes whose position is fixed.
-    loads :
-        Force applied at every node. Zero at the supports.
 
     Notes
     -----
-    A pytree, so it crosses a jit boundary as four array leaves rather than as
-    one opaque object that would have to be hashed. The geometry and the loads
-    are then traced and differentiable, and the two index arrays are traced but
-    never indexed with, every consumer that needs them concrete — the backends
-    preparing a solver — reading them on the host.
+    A pytree, so it crosses a jit boundary as three array leaves rather than as
+    one opaque object that would have to be hashed. The geometry is then traced
+    and differentiable, and the two index arrays are traced but never indexed
+    with, every consumer that needs them concrete — the backends preparing a
+    solver — reading them on the host.
+
+    **What the structure does not carry is a load.** A structure is asked to
+    survive several load cases and is shaped by one of them, so no single case
+    belongs to it; `normax.loads.LoadCases` holds them, and the generators in
+    `normax.loads` build them from a structure without attaching them to it.
     """
 
     nodes: Float[Array, "nodes 3"]
     edges: Int[Array, "edges 2"]
     supports: Int[Array, "supports"]
-    loads: Float[Array, "nodes 3"]
+
+    @property
+    def num_edges(self) -> int:
+        """
+        Number of edges, which is the number of members once sized.
+        """
+        return int(self.edges.shape[0])
+
+    @property
+    def num_nodes(self) -> int:
+        """
+        Number of nodes, the supported ones included.
+        """
+        return int(self.nodes.shape[0])
+
+    def crown_node(self) -> int:
+        """
+        Index of the highest node of the starting geometry.
+
+        Returns
+        -------
+        crown :
+            Index of the node highest above the ground plane.
+
+        Notes
+        -----
+        Read from the starting geometry, so it is a static Python integer and
+        may index a load case or select a member without being traced. A crown
+        of the form-found shape would be a traced value and could do neither.
+        """
+        return int(jnp.argmax(self.nodes[:, 2]))
 
 
-def cable_2d(
-    num_edges: int = 10,
-    span: float = 10.0,
-    sag: float = 0.0,
-    load: float = 1.0,
-) -> Structure:
-    """
-    A 2D cable hanging between two pinned supports, in the XZ plane.
-
-    Parameters
-    ----------
-    num_edges :
-        Number of segments the cable is discretized into.
-    span :
-        Horizontal distance between the two supports.
-    sag :
-        Depth of the parabola the starting geometry sags along.
-    load :
-        Magnitude of the downward point load applied at every free node.
-
-    Returns
-    -------
-    structure :
-        The cable.
-
-    Notes
-    -----
-    A cable carries tension, so the force densities on its edges are positive.
-    """
-    nodes, edges, supports = _parabola_chain(num_edges, span, -sag)
-    loads = _loads_vertical(nodes.shape[0], supports, load)
-
-    return _structure_on_device(nodes, edges, supports, loads)
-
-
-def arch_2d(
+def build_arch_2d(
     num_edges: int = 10,
     span: float = 10.0,
     rise: float = 0.0,
-    load: float = 1.0,
 ) -> Structure:
     """
     A 2D funicular arch spanning between two pinned supports, in the XZ plane.
@@ -106,32 +103,35 @@ def arch_2d(
         Horizontal distance between the two supports.
     rise :
         Height of the parabola the starting geometry rises along.
-    load :
-        Magnitude of the downward point load applied at every free node.
 
     Returns
     -------
     structure :
         The arch.
-
-    Notes
-    -----
-    An arch carries compression, so the force densities on its edges are
-    negative. The topology it shares with a cable of the same span is the
-    mirror of that sign, not a different structure.
     """
-    nodes, edges, supports = _parabola_chain(num_edges, span, rise)
-    loads = _loads_vertical(nodes.shape[0], supports, load)
+    if num_edges < 1:
+        raise ValueError(f"num_edges must be at least 1, got {num_edges}")
+    if span <= 0.0:
+        raise ValueError(f"span must be positive, got {span}")
 
-    return _structure_on_device(nodes, edges, supports, loads)
+    ss = np.linspace(0.0, 1.0, num_edges + 1)
+    xs = span * ss
+    ys = np.zeros_like(ss)
+    zs = 4.0 * rise * ss * (1.0 - ss)
+    nodes = np.stack([xs, ys, zs], axis=1)
+
+    starts = np.arange(num_edges)
+    edges = np.stack([starts, starts + 1], axis=1)
+    supports = np.array([0, num_edges])
+
+    return build_structure(nodes, edges, supports)
 
 
-def gridshell_3d(
+def build_gridshell_3d(
     num_rings: int = 4,
     num_spokes: int = 12,
     radius: float = 5.0,
     rise: float = 2.0,
-    load: float = 1.0,
 ) -> Structure:
     """
     A gridshell on a spherical cap, supported along its circular boundary.
@@ -149,8 +149,6 @@ def gridshell_3d(
         Radius of the circular plan of the cap.
     rise :
         Height of the apex above the plane of the boundary.
-    load :
-        Magnitude of the downward point load applied at every free node.
 
     Returns
     -------
@@ -197,265 +195,52 @@ def gridshell_3d(
     edges = np.concatenate([edges_radial, edges_hoop], axis=0)
 
     supports = indices[-1]
-    loads = _loads_vertical(nodes.shape[0], supports, load)
 
-    return _structure_on_device(nodes, edges, supports, loads)
+    return build_structure(nodes, edges, supports)
 
 
-def loads_uniform(
-    structure: Structure,
-    load: float,
-) -> Float[Array, "nodes 3"]:
+def member_lengths(
+    xyz: Float[Array, "nodes 3"],
+    edges: Int[Array, "edges 2"],
+) -> Float[Array, "edges"]:
     """
-    A downward point load of the same size on every free node.
+    Length of every member at a given geometry.
 
     Parameters
     ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Notes
-    -----
-    The load case a funicular structure is form-found under, so the geometry carries
-    it in pure tension or compression and the members see no bending. Every
-    other load case is a departure from it, and the bending that appears is what a
-    frame analysis exists to report.
-    """
-    return _nodal_loads(structure, jnp.ones(structure.nodes.shape[0]) * load)
-
-
-def loads_half_span(
-    structure: Structure,
-    load: float,
-    *,
-    axis: int = 0,
-    factor: float = 0.0,
-    mirrored: bool = False,
-) -> Float[Array, "nodes 3"]:
-    """
-    A downward point load on one half of the span and a fraction on the other.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load on the loaded half.
-    axis :
-        Index of the global axis the span is measured along.
-    factor :
-        Fraction of that load carried by the other half.
-    mirrored :
-        Whether to load the far half instead of the near one.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Raises
-    ------
-    ValueError
-        If the axis is not 0, 1 or 2.
-
-    Notes
-    -----
-    The load case that decides an arch. A funicular shape carries its design load
-    axially and nothing else, so any redistribution of that load has to be
-    carried in bending, and the members most affected are the ones the symmetric
-    load case left slenderest.
-
-    The split reads the starting geometry rather than the form-found one, which
-    keeps it a property of the structure rather than of a particular set of
-    force densities. A node exactly at midspan counts as belonging to the
-    loaded half.
-
-    **The mirrored case is the exact reflection of the unmirrored one** on a
-    structure whose nodes are symmetric about midspan, because a node sitting
-    exactly at midspan is loaded either way. One asymmetric case on its own
-    biases a search towards the half it leaves light; the pair does not.
-    """
-    if axis not in (0, 1, 2):
-        raise ValueError(f"axis must be 0, 1 or 2, got {axis}")
-
-    along = structure.nodes[:, axis]
-    middle = 0.5 * (jnp.min(along) + jnp.max(along))
-    loaded = along >= middle if mirrored else along <= middle
-    applied = jnp.where(loaded, load, load * factor)
-
-    return _nodal_loads(structure, applied)
-
-
-def loads_point(
-    structure: Structure,
-    load: float,
-    *,
-    node: int,
-) -> Float[Array, "nodes 3"]:
-    """
-    A single downward point load at one node.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load.
-    node :
-        Index of the node carrying it.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Notes
-    -----
-    Adds to any other load case, being an array like the rest, so a concentrated
-    load on top of a distributed one is a sum and needs no separate generator.
-    A load placed on a support is discarded, since the support carries it
-    straight to ground.
-    """
-    magnitudes = jnp.zeros(structure.nodes.shape[0]).at[node].set(load)
-
-    return _nodal_loads(structure, magnitudes)
-
-
-def crown_node(structure: Structure) -> int:
-    """
-    Index of the highest node of a structure.
-
-    Parameters
-    ----------
-    structure :
-        The structure to search.
-
-    Returns
-    -------
-    crown :
-        Index of the node highest above the ground plane.
-
-    Notes
-    -----
-    Read from the starting geometry, so it is a static Python integer and may
-    index a load case or select a member without being traced.
-    """
-    return int(jnp.argmax(structure.nodes[:, 2]))
-
-
-def _nodal_loads(
-    structure: Structure,
-    magnitudes: Float[Array, "nodes"],
-) -> Float[Array, "nodes 3"]:
-    """
-    Downward forces of given magnitudes, zeroed at the supports.
-
-    Parameters
-    ----------
-    structure :
-        The structure supplying the node count and the supported nodes.
-    magnitudes :
-        Size of the downward force at every node.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-    """
-    vertical = jnp.zeros((structure.nodes.shape[0], 3)).at[:, 2].set(-magnitudes)
-
-    return vertical.at[structure.supports, :].set(0.0)
-
-
-def _parabola_chain(
-    num_edges: int,
-    span: float,
-    offset: float,
-) -> tuple[
-    Float[np.ndarray, "nodes 3"],
-    Int[np.ndarray, "edges 2"],
-    Int[np.ndarray, "supports"],
-]:
-    """
-    A chain of edges along a parabola in the XZ plane, pinned at both ends.
-
-    Parameters
-    ----------
-    num_edges :
-        Number of segments the chain is discretized into.
-    span :
-        Horizontal distance between the two supports.
-    offset :
-        Height of the parabola at midspan. Negative offsets sag.
-
-    Returns
-    -------
-    nodes :
+    xyz :
         Position of every node.
     edges :
         The two node indices spanned by every edge.
-    supports :
-        Indices of the two end nodes.
-    """
-    if num_edges < 1:
-        raise ValueError(f"num_edges must be at least 1, got {num_edges}")
-    if span <= 0.0:
-        raise ValueError(f"span must be positive, got {span}")
-
-    ss = np.linspace(0.0, 1.0, num_edges + 1)
-    xs = span * ss
-    ys = np.zeros_like(ss)
-    zs = 4.0 * offset * ss * (1.0 - ss)
-    nodes = np.stack([xs, ys, zs], axis=1)
-
-    starts = np.arange(num_edges)
-    edges = np.stack([starts, starts + 1], axis=1)
-    supports = np.array([0, num_edges])
-
-    return nodes, edges, supports
-
-
-def _loads_vertical(
-    num_nodes: int,
-    supports: Int[np.ndarray, "supports"],
-    load: float,
-) -> Float[np.ndarray, "nodes 3"]:
-    """
-    A downward point load on every node that is not a support.
-
-    Parameters
-    ----------
-    num_nodes :
-        Number of nodes in the structure.
-    supports :
-        Indices of the nodes whose position is fixed.
-    load :
-        Magnitude of the downward point load.
 
     Returns
     -------
-    loads :
-        Force applied at every node.
+    lengths :
+        Distance between the two nodes of every edge.
+
+    Notes
+    -----
+    **Geometry, and no stage's product.** A member length is the distance
+    between two nodes; a stage reporting one would be reporting arithmetic the
+    way a code check reporting a mass would be. What it needs beyond the
+    coordinates is the connectivity, so the block holding a view of that answers
+    the question and this is the arithmetic it answers it with.
+
+    A free function rather than a method, because the blocks that call it hold a
+    connectivity without holding the structure it came from.
+
+    Differentiable in the coordinates, which is what carries the shape's
+    influence on both the mass and the slenderness.
     """
-    loads = np.zeros((num_nodes, 3))
-    loads[:, 2] = -load
-    loads[supports, :] = 0.0
+    spans = xyz[edges[:, 1]] - xyz[edges[:, 0]]
 
-    return loads
+    return jnp.linalg.norm(spans, axis=1)
 
 
-def _structure_on_device(
+def build_structure(
     nodes: Float[np.ndarray, "nodes 3"],
     edges: Int[np.ndarray, "edges 2"],
     supports: Int[np.ndarray, "supports"],
-    loads: Float[np.ndarray, "nodes 3"],
 ) -> Structure:
     """
     Move host-side arrays onto the device, once, at the container boundary.
@@ -468,17 +253,14 @@ def _structure_on_device(
         The two node indices spanned by every edge.
     supports :
         Indices of the nodes whose position is fixed.
-    loads :
-        Force applied at every node.
 
     Returns
     -------
     structure :
         The structure.
     """
-    return Structure(
-        nodes=jnp.asarray(nodes),
-        edges=jnp.asarray(edges),
-        supports=jnp.asarray(supports),
-        loads=jnp.asarray(loads),
-    )
+    nodes = jnp.asarray(nodes)
+    edges = jnp.asarray(edges)
+    supports = jnp.asarray(supports)
+
+    return Structure(nodes, edges, supports)

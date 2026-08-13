@@ -51,7 +51,7 @@ from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
 
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 
 # EN 1993-1-1 §5.2.1(3): the critical load factor above which second-order
 # effects need not be accounted for. UK NA clause NA.2.9 moves only the plastic.
@@ -96,7 +96,7 @@ def slenderness_global(
 
 def amplifier_resistance(
     area: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     axial_force: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
@@ -170,7 +170,7 @@ def buckling_length_global(
     alpha_cr: Float[Array, "members"],
     axial_force: Float[Array, "members"],
     second_moment: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Buckling length a critical load factor is equivalent to.

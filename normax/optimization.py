@@ -36,7 +36,6 @@ from collections.abc import Callable
 from collections.abc import Sequence
 from typing import NamedTuple
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -236,11 +235,14 @@ def value_and_gradient(
     traced sharpness parameterizes a single program instead of selecting between
     one program per round.
 
-    **What varies must reach the objective as an array.** A Python float is a
-    static argument under `eqx.filter_jit` and compiles a program of its own,
-    which gives back the cost this exists to avoid.
+    **Every argument must be a JAX type**, an array or a pytree of them. What
+    the objective computes with and no optimizer varies — the blocks, their
+    assemblies, the load cases — belongs in its closure, where it is a constant
+    rather than a traced leaf. Handing one of those in as an argument instead
+    traces the index arrays a solver was compiled around, and the first place
+    that surfaces is a concretization error inside the assembly.
     """
-    return eqx.filter_jit(jax.value_and_grad(objective))
+    return jax.jit(jax.value_and_grad(objective))
 
 
 def minimize_bounded(
@@ -419,8 +421,8 @@ def optimize_annealed(
     Building it at this level is what keeps that cost outside the descent it pays
     for, and visible to anything timing one.
 
-    The schedule is converted to an array first, so that a sequence of floats is
-    traced rather than compiled into a program per round.
+    The schedule is converted to an array first, so that every round reaches the
+    objective at the same dtype and a sequence and an array behave alike here.
     """
     iterates = []
     masses = []

@@ -42,7 +42,7 @@ from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.classification import is_plastic
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 
 # EN 1993-1-1 Table B.3, the lower bound on the linear row.
 C_M_MINIMUM = 0.4
@@ -259,7 +259,7 @@ def axial_ratio(
     axial_force: Float[Array, "members"],
     chi: Float[Array, "members"],
     n_rk: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Axial force over the buckling resistance, as the interaction factors use it.
@@ -470,7 +470,7 @@ def utilization_member(
     state: CompressionBendingState,
     resistance: MemberResistance,
     slenderness: MemberSlenderness,
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
 ) -> Float[Array, "members"]:
@@ -518,7 +518,7 @@ def interaction_factors(
     state: CompressionBendingState,
     resistance: MemberResistance,
     slenderness: MemberSlenderness,
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
 ) -> InteractionFactors:
@@ -578,7 +578,7 @@ def interaction_checks(
     state: CompressionBendingState,
     resistance: MemberResistance,
     factors: InteractionFactors,
-    steel: SteelGrade,
+    steel: Steel,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
     Both interaction equations, from interaction factors given directly.
@@ -627,7 +627,7 @@ def _derived_checks(
     state: CompressionBendingState,
     resistance: MemberResistance,
     slenderness: MemberSlenderness,
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
@@ -655,7 +655,7 @@ def governing_equation(
     state: CompressionBendingState,
     resistance: MemberResistance,
     slenderness: MemberSlenderness,
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
 ) -> Float[Array, "members"]:

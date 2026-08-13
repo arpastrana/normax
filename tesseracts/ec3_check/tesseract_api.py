@@ -14,7 +14,7 @@
 """
 T3 — EN 1993-1-1 member design, as a differentiable map.
 
-Member actions in, the diameter the standard requires out, and a mass. This is
+Member actions in, the diameter the standard requires out. This is
 the component the project exists to argue about: a design standard is a
 normative text, not a solver. It states resistances and leaves a human to search
 for a section that carries the actions, and the reference implementations of it
@@ -32,6 +32,12 @@ selects a clause rather than scaling a number. Fixing the diameter-to-thickness
 ratio at a class limit makes the classification exact by construction, so no
 branch on a traced value is ever needed.
 
+**A mass does not cross this boundary, and that is deliberate.** It is
+`ρ Σ A L`, geometry rather than a resistance, and EN 1993-1-1 has no opinion on
+it; what the standard decides is the size, and a caller who wants a mass
+multiplies that size by a length it already has. A gradient loses nothing by it,
+the cotangent reaching this stage through the diameter instead.
+
 Scope, and what is deliberately absent, is in `CLAUDE.md` §3. Clean-room from
 EN 1993-1-1 by way of `docs/clauses.md`.
 """
@@ -46,12 +52,11 @@ from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
 from normax.ec3.actions import MemberActions
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state as governing_limit
-from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.sizing import utilization_design as utilization_of_tubes
 
 jax.config.update("jax_enable_x64", True)
@@ -70,9 +75,6 @@ class InputSchema(BaseModel):
 
     end_moments_minor: Differentiable[Array[(None, 2), Float64]]
     """Minor-axis moment at each end of every member, in newton-millimeters."""
-
-    lengths: Differentiable[Array[(None,), Float64]]
-    """Length of every member, in millimeters. Sets the mass, not the check."""
 
     buckling_length: Differentiable[Array[(None,), Float64]]
     """Buckling length of every member, in millimeters.
@@ -119,14 +121,11 @@ class InputSchema(BaseModel):
 
 class OutputSchema(BaseModel):
     """
-    The sizes EN 1993-1-1 requires, what they weigh, and how hard they work.
+    The sizes EN 1993-1-1 requires, and how hard they work.
     """
 
     diameter: Differentiable[Array[(None,), Float64]]
     """Outer diameter of every member, in millimeters."""
-
-    mass: Differentiable[Float64]
-    """Total mass of the members, in tonnes. The objective of the pipeline."""
 
     utilization: Differentiable[Array[(None,), Float64]]
     """Demand over resistance of every member.
@@ -162,7 +161,7 @@ class OutputSchema(BaseModel):
     """
 
 
-def _material_and_family(inputs: dict[str, Any]) -> tuple[SteelGrade, TubeCatalogue]:
+def _material_and_family(inputs: dict[str, Any]) -> tuple[Steel, TubeCatalogue]:
     """
     The material and the section family, from the flat fields of the schema.
 
@@ -176,7 +175,7 @@ def _material_and_family(inputs: dict[str, Any]) -> tuple[SteelGrade, TubeCatalo
     material :
         The steel and the tube family.
     """
-    steel = SteelGrade(
+    steel = Steel(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],
@@ -198,7 +197,7 @@ def _forward_pass(
     diagnostics: bool,
 ) -> dict[str, jnp.ndarray]:
     """
-    Size every member, and weigh the result.
+    Size every member.
 
     Parameters
     ----------
@@ -236,7 +235,6 @@ def _forward_pass(
 
     axial_force = jnp.asarray(inputs["axial_force"])
     buckling_length = jnp.asarray(inputs["buckling_length"])
-    lengths = jnp.asarray(inputs["lengths"])
 
     actions = MemberActions(
         axial_force,
@@ -266,7 +264,6 @@ def _forward_pass(
 
     outputs = {
         "diameter": required,
-        "mass": mass_of_tubes(sized, lengths, steel),
         "utilization": used,
         "moment_major": moment_major,
         "moment_minor": moment_minor,
@@ -300,7 +297,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     Returns
     -------
     outputs :
-        The required sizes, the mass, the utilization and the diagnostics.
+        The required sizes, the utilization and the diagnostics.
     """
     return _forward_pass(inputs.model_dump(), diagnostics=True)
 
@@ -328,7 +325,6 @@ def abstract_eval(abstract_inputs):
 
     return {
         "diameter": {"shape": (members,), "dtype": "float64"},
-        "mass": {"shape": (), "dtype": "float64"},
         "utilization": {"shape": (members,), "dtype": "float64"},
         "moment_major": {"shape": (members,), "dtype": "float64"},
         "moment_minor": {"shape": (members,), "dtype": "float64"},

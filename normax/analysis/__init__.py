@@ -32,19 +32,25 @@ imports either, so the contracts below are readable without a solver installed
 and neither backend inherits the other's dependencies.
 
 **Every backend is reached in two calls, and the split is where the topology
-lives.** `prepare` reads a structure and returns a model: whatever that solver
-can work out from the connectivity, the supports and the load positions alone,
-built on the host and outside any traced call. `forces` then takes that model
-with a geometry and a set of sizes and returns what the members carry. The model
-is opaque and belongs to the backend, so a solver that can precompute an
-assembly holds one and a solver that must rebuild its domain per call holds only
-what it needs to do that. This mirrors `normax.formfinding`, where `graph` is
-built once and `equilibrium` consumes it.
+lives.** `prepare_model` reads a structure and returns a model: whatever that
+solver can work out from the connectivity and the supports alone, built on the
+host and outside any traced call. `member_forces` then takes that model with a
+geometry and a set of sizes and returns what the members carry. The model is
+opaque and belongs to the backend, so a solver that can precompute an assembly
+holds one and a solver that must rebuild its domain per call holds only what it
+needs to do that.
 
 The split is what keeps a topology out of the objective. A model is a pure
 function of things no optimizer varies, so recomputing it per iterate is waste,
 and for a traced backend it is worse than waste: compilation reads support flags
 in Python, so a rebuild inside the trace is what stops the stage being jitted.
+
+**What a backend returns is `normax.stages.MemberForces`, one load case of it.**
+A solver answers one case at a time and a block answers all of them, and the two
+are the same container at two ranks rather than two containers; `stack_load_cases`
+is what puts them together. A load case reaches a backend as the dense nodal
+array of `normax.loads`, which is the one thing two backends cannot disagree
+about.
 
 All lengths, forces and stresses cross the boundary through `normax.units`.
 """
@@ -61,36 +67,6 @@ from normax.structures import Structure
 # Three translations and three rotations: what a node of a frame in space has,
 # and the width of a fixity row whichever solver reads it.
 DOF_PER_NODE = 6
-
-
-class MemberForces(NamedTuple):
-    """
-    The internal forces a frame analysis reports for every member.
-
-    Attributes
-    ----------
-    axial_force :
-        Axial force, tension positive.
-    moment_major :
-        Bending moment about the major axis, at each end of the member.
-    moment_minor :
-        Bending moment about the minor axis, at each end of the member.
-
-    Notes
-    -----
-    Moments are given at the two ends rather than sampled along the span,
-    because loads are applied at nodes alone and the moment therefore varies
-    linearly in between. That is what makes the first row of EN 1993-1-1 Table
-    B.3 exact here, and `normax.ec3.sizing.end_moments` consumes the two ends
-    directly.
-
-    The axial force is one number per member for the same reason: with no load
-    along the span it does not vary, and the analysis is linear.
-    """
-
-    axial_force: Float[Array, "members"]
-    moment_major: Float[Array, "members ends"]
-    moment_minor: Float[Array, "members ends"]
 
 
 class Buckling(NamedTuple):
@@ -175,7 +151,7 @@ def support_fixities(
     if normal is not None and normal not in (0, 1, 2):
         raise ValueError(f"normal must be 0, 1 or 2, or None, got {normal}")
 
-    num_nodes = structure.nodes.shape[0]
+    num_nodes = structure.num_nodes
 
     flags = np.zeros((num_nodes, DOF_PER_NODE), dtype=bool)
     flags[np.asarray(structure.supports), :3] = True

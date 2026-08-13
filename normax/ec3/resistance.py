@@ -38,7 +38,7 @@ from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
 from normax.ec3.classification import is_plastic
-from normax.ec3.material import SteelGrade
+from normax.ec3.material import Steel
 
 # The class 6.2.9.2 is written for. Class 4 takes effective properties instead
 # and is refused before it reaches this module.
@@ -58,7 +58,7 @@ SHEAR_THRESHOLD = 0.5
 
 def resistance_yielding(
     area: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design plastic resistance of the gross cross-section in tension.
@@ -86,7 +86,7 @@ def resistance_yielding(
 
 def resistance_fracture(
     area_net: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design ultimate resistance of the net cross-section in tension.
@@ -116,7 +116,7 @@ def resistance_fracture(
 def resistance_tension(
     area: Float[Array, "members"],
     area_net: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design tension resistance.
@@ -148,7 +148,7 @@ def resistance_tension(
 
 def resistance_compression(
     area: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design resistance of the cross-section to uniform compression.
@@ -178,7 +178,7 @@ def resistance_compression(
 
 def resistance_bending_plastic(
     w_pl: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design plastic resistance of the cross-section to bending.
@@ -206,7 +206,7 @@ def resistance_bending_plastic(
 
 def resistance_bending_elastic(
     w_el: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design elastic resistance of the cross-section to bending.
@@ -258,7 +258,7 @@ def area_shear(area: Float[Array, "members"]) -> Float[Array, "members"]:
 
 def resistance_shear(
     area_shear: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design plastic shear resistance.
@@ -412,7 +412,7 @@ def utilization_plastic(
     actions: MemberActions,
     area: Float[Array, "members"],
     w_pl: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Cross-section utilization under bending and axial force, Classes 1 and 2.
@@ -473,7 +473,7 @@ def utilization_elastic(
     actions: MemberActions,
     area: Float[Array, "members"],
     w_el: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     *,
     resultant: bool = True,
 ) -> Float[Array, "members"]:
@@ -541,7 +541,7 @@ def utilization_cross_section(
     actions: MemberActions,
     area: Float[Array, "members"],
     modulus: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     *,
     section_class: int,
     resultant: bool = True,
@@ -594,7 +594,7 @@ def utilization_cross_section(
 def force_critical(
     second_moment: Float[Array, "members"],
     buckling_length: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Elastic critical force for flexural buckling.
@@ -624,7 +624,7 @@ def force_critical(
 
 
 def slenderness_reference(
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, ""]:
     """
     Reference slenderness.
@@ -649,7 +649,7 @@ def slenderness_reference(
 
 def slenderness_from_force(
     area: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
     n_critical: Float[Array, "members"],
 ) -> Float[Array, "members"]:
     """
@@ -682,7 +682,7 @@ def slenderness_from_force(
 def slenderness_from_gyration(
     buckling_length: Float[Array, "members"],
     radius_gyration: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Non-dimensional slenderness, from the geometric slenderness.
@@ -781,7 +781,7 @@ def reduction_buckling(
 def resistance_buckling(
     reduction: Float[Array, "members"],
     area: Float[Array, "members"],
-    steel: SteelGrade,
+    steel: Steel,
 ) -> Float[Array, "members"]:
     """
     Design buckling resistance of a compression member.
