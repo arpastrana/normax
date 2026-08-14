@@ -29,7 +29,7 @@ supply: the coordinates and the diameters.
 
 The critical load factor of the whole frame is deliberately **not** here. It is
 soft validation, it sizes nothing, and putting it in the schema would oblige
-every backend to produce one. `normax.pipeline.stability` reads it beside a
+every backend to produce one. `normax.stability` reads it beside a
 finished design instead.
 
 Set `NORMAX_ANALYSIS_BACKEND` to choose a backend: `smax` traces a JAX frame

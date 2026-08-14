@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Form finding with the force density method, the first stage of the pipeline.
+The force density method, the form finder this package ships with.
 
 Maps force densities to the geometry that carries the applied loads in pure
 tension or compression. The equilibrium is linear in the coordinates once the
 force densities are fixed, so `jax-fdm` differentiates it by tracing the solve.
 
-The two functions split along the line that separates a shape from a number.
-Connectivity is topology, known before any force density is chosen, and is built
-once on the host. Only the force densities enter the traced call.
+The split is along the line that separates a shape from a number. Connectivity
+is topology, known before any force density is chosen, and is built once on the
+host by `equilibrium_graph`. Only the force densities enter the traced call.
 """
 
 import jax.numpy as jnp
@@ -34,8 +34,8 @@ from jax_fdm.equilibrium import LoadState
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.design import AbstractFormFinder
-from normax.design import FormFoundShape
+from normax.form_finding import AbstractFormFinder
+from normax.form_finding import FormFoundShape
 from normax.structures import Structure
 
 
@@ -117,41 +117,6 @@ def equilibrium_state(
     params = EquilibriumParametersState(q=q, xyz_fixed=xyz_fixed, loads=load_state)
 
     return EquilibriumModel(tmax=1)(params, graph)
-
-
-def node_positions(
-    q: Float[Array, "edges"],
-    xyz_fixed: Float[Array, "supports 3"],
-    graph: EquilibriumStructure,
-    loads: Float[Array, "nodes 3"],
-) -> Float[Array, "nodes 3"]:
-    """
-    The geometry that carries the loads, as coordinates alone.
-
-    Parameters
-    ----------
-    q :
-        Force density of every edge. Negative in compression.
-    xyz_fixed :
-        Position of every supported node.
-    graph :
-        The connectivity, from `equilibrium_graph`.
-    loads :
-        Force applied at every node.
-
-    Returns
-    -------
-    xyz :
-        Position of every node at equilibrium.
-
-    Notes
-    -----
-    Equilibrium in all three coordinates, so the shape is funicular: every edge
-    carries its force along its own axis and the nodal loads balance exactly.
-    The plan is a result rather than an input, and it moves when the force
-    densities stop being uniform.
-    """
-    return equilibrium_state(q, xyz_fixed, graph, loads).xyz
 
 
 def positions_vertical(

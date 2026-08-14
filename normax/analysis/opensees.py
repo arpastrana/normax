@@ -54,8 +54,8 @@ import openseespy.opensees as ops
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.analysis import MemberForces
 from normax.analysis import support_fixities
-from normax.design import MemberForces
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure

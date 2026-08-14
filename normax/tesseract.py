@@ -18,7 +18,7 @@ The same three blocks, reached across a Tesseract boundary.
 block that computes in this process. This module holds one of each that does not:
 the arguments are serialized against a schema, a container answers, and what
 comes back is the same container the in-process block returns. Nothing in
-`normax.pipeline` can tell which it was handed, and that is the whole claim.
+`normax.design` can tell which it was handed, and that is the whole claim.
 
 **The in-process blocks are the oracle, not the scaffolding.** Reproducing their
 design and their gradient through the boundary is what turns "the Tesseracts run"
@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -54,20 +55,22 @@ from jaxtyping import Int
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
-from normax.design import AbstractFormFinder
-from normax.design import AbstractFrameAnalyzer
-from normax.design import AbstractMemberSizer
-from normax.design import FormFoundShape
-from normax.design import MemberForces
-from normax.design import MemberSizes
+from normax.analysis import AbstractFrameAnalyzer
+from normax.analysis import MemberForces
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import Steel
 from normax.ec3.section import MemberSection
+from normax.ec3.section import Tube
 from normax.ec3.section import TubeCatalogue
+from normax.ec3.sizing import utilization_design
+from normax.form_finding import AbstractFormFinder
+from normax.form_finding import FormFoundShape
 from normax.loads import count_load_cases
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
+from normax.sizing import AbstractMemberSizer
 from normax.sizing import Ec3Sizer
+from normax.sizing import MemberSizes
 from normax.structures import Structure
 from normax.structures import member_lengths
 
@@ -343,7 +346,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
 
     def __call__(
         self,
-        shape: FormFoundShape,
+        xyz: Float[Array, "nodes 3"],
         diameters: Float[Array, "members"],
         loads: Float[Array, "load_cases nodes 3"],
     ) -> MemberForces:
@@ -352,8 +355,8 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
 
         Parameters
         ----------
-        shape :
-            The geometry to analyze, from a form finder.
+        xyz :
+            Position of every node, from a form finder.
         diameters :
             Outer diameter of every member, setting the stiffness.
         loads :
@@ -368,7 +371,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
             apply_tesseract(
                 self.client,
                 {
-                    "xyz": shape.xyz,
+                    "xyz": xyz,
                     "diameter": diameters,
                     "edges": self.edges,
                     "supports": self.supports,
@@ -549,8 +552,21 @@ class TesseractSizer(AbstractMemberSizer):
         ]
         demanded = jnp.stack([sized["diameter"] for sized in crossed])
         sections = MemberSection(local.catalogue.tube_at(demanded), local.steel)
+        actions = stack_load_cases(per_case)
 
-        return MemberSizes(sections, stack_load_cases(per_case))
+        def used_case(tubes: Tube, acting: MemberActions):
+            return utilization_design(
+                tubes,
+                acting,
+                buckling_length,
+                local.steel,
+                section_class=local.section_class,
+                resultant=local.resultant,
+            )
+
+        used = jax.vmap(used_case)(sections.tubes, actions)
+
+        return MemberSizes(sections, actions, used)
 
     def governing(
         self,

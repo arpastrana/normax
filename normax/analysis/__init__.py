@@ -55,8 +55,10 @@ about.
 All lengths, forces and stresses cross the boundary through `normax.units`.
 """
 
+import abc
 from typing import NamedTuple
 
+import equinox as eqx
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Bool
@@ -67,6 +69,95 @@ from normax.structures import Structure
 # Three translations and three rotations: what a node of a frame in space has,
 # and the width of a fixity row whichever solver reads it.
 DOF_PER_NODE = 6
+
+
+class MemberForces(NamedTuple):
+    """
+    The internal forces a frame analysis reports.
+
+    Attributes
+    ----------
+    axial_force :
+        Axial force of every member, tension positive.
+    moment_major :
+        Bending moment about the major axis, at each end of every member.
+    moment_minor :
+        Bending moment about the minor axis, at each end of every member.
+
+    Notes
+    -----
+    **The load case axis is variadic, and that is what lets one container serve
+    a solver and a block.** A solver answers one load case at a time and returns
+    these fields without it; a block answers every case and returns the same
+    fields with it, stacked by `stack_load_cases`. The two differ in rank and in
+    nothing else, so a second container for the unstacked form would be this one
+    with a line removed.
+
+    Moments are given at the two ends rather than sampled along the span,
+    because loads are applied at nodes alone and the moment therefore varies
+    linearly in between. That is what makes the first row of EN 1993-1-1 Table
+    B.3 exact here, and the reduction to a design moment belongs to the check
+    rather than to the analysis.
+
+    The axial force is one number per member and load case for the same reason:
+    with no load along the span it does not vary, and the analysis is linear.
+    """
+
+    axial_force: Float[Array, "*load_cases members"]
+    moment_major: Float[Array, "*load_cases members ends"]
+    moment_minor: Float[Array, "*load_cases members ends"]
+
+
+class AbstractFrameAnalyzer(eqx.Module):
+    """
+    An elastic analysis of a frame whose members bend as well as stretch.
+
+    Notes
+    -----
+    A form finder hands over a geometry and nothing else: no prestress and no
+    initial member forces. The frame is analyzed from an unstressed reference
+    state, so it must deform before any internal force appears, and the axial
+    forces that come back are the analysis's own product rather than a
+    restatement of the force densities that shaped it.
+
+    Members are beams and not bars, so the analysis also reports the bending a
+    form finder could not see. That is the reason this block exists: the check
+    downstream consumes moments, and a pin-jointed form finder has none to give.
+
+    Built from the structure it is to analyze, and from the material and section
+    family it is configured with. Everything a solver can assemble before a
+    geometry is chosen is assembled there.
+
+    **It takes coordinates rather than a form-found shape.** A frame analysis
+    needs a geometry and has no use for anything else a form finder settled, so
+    asking for the container would make this contract unreadable without the
+    form finder's own dependencies for no gain.
+    """
+
+    @abc.abstractmethod
+    def __call__(
+        self,
+        xyz: Float[Array, "nodes 3"],
+        diameters: Float[Array, "members"],
+        loads: Float[Array, "load_cases nodes 3"],
+    ) -> MemberForces:
+        """
+        Analyze one geometry under every load case it is checked against.
+
+        Parameters
+        ----------
+        xyz :
+            Position of every node, from a form finder.
+        diameters :
+            Outer diameter of every member, setting the stiffness.
+        loads :
+            Force applied at every node in every load case.
+
+        Returns
+        -------
+        forces :
+            Axial force and both end moments, per load case and member.
+        """
 
 
 class Buckling(NamedTuple):

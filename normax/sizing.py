@@ -24,28 +24,149 @@ The separation is what keeps `normax.ec3` free of any opinion about pipelines,
 so a second standard added beside it inherits none of ours.
 """
 
+import abc
+from typing import NamedTuple
+
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.design import AbstractMemberSizer
-from normax.design import Design
-from normax.design import MemberForces
-from normax.design import MemberSizes
+from normax.analysis import MemberForces
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import Steel
 from normax.ec3.section import MemberSection
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import utilization_design
-from normax.loads import count_load_cases
-from normax.loads import select_load_case
 from normax.structures import Structure
+
+
+class MemberSizes(NamedTuple):
+    """
+    What a code check decided, what it read to decide it, and what it is worth.
+
+    Attributes
+    ----------
+    sections :
+        The section every load case demands of every member on its own.
+    actions :
+        The design actions the check read, every field carrying a leading load
+        case axis.
+    utilization :
+        Demand over resistance of every member under its own load case, **at the
+        section that case demanded** rather than at any reconciled one.
+
+    Notes
+    -----
+    **What it read is not what the analysis reported.** Reducing two end moments
+    to a design moment and an equivalent uniform moment factor is EN 1993-1-1
+    Table B.3, a clause, and the factor it produces cannot be recovered from the
+    design moment alone. So the actions are output as well as input, and for a
+    block that applies that clause across a boundary they are the only record of
+    what the far side read.
+
+    **The utilization goes with the actions rather than with the sections, and
+    reading it as a verdict on a finished design is the mistake to avoid.** It is
+    a diagonal rather than a matrix:
+    entry *(i, m)* is member *m* under case *i* at the section **case i**
+    demanded, so it is exactly one — that is what a fully-stressed size means —
+    except where the catalogue minimum bound and a member is oversized for want
+    of a smaller tube. It is the invariant of the sizing map, stored rather than
+    re-derived.
+
+    **It survives `normax.design.design_envelope` unchanged, and still refers to
+    the per-case sizes.** Reconciling the cases collapses the sections and needs
+    no standard; re-reading the reconciled section would, and is a separate
+    question for a report to ask. Which case governs each member does *not*
+    need it — that is an `argmax` over the sections demanded, since capacity is
+    strictly increasing in the diameter.
+
+    **Every load case is sized for separately, and nothing is combined here.** A
+    member has one size and has to satisfy all of them, but reconciling that is
+    smoothing rather than a clause and belongs above a block that implements a
+    standard. `normax.design.design_envelope` is where it happens.
+    """
+
+    sections: MemberSection
+    actions: MemberActions
+    utilization: Float[Array, "load_cases members"]
+
+
+class AbstractMemberSizer(eqx.Module):
+    """
+    A design standard, read as a map from what a member carries to how big it is.
+
+    Notes
+    -----
+    A standard is a normative text rather than a solver. It has no derivatives,
+    and it is ordinarily implemented as scalar branchy code returning verdicts;
+    what makes it a block here is that it answers the inverted question — not
+    "does this section pass" but "what section passes exactly" — which has a
+    derivative wherever the resistance is monotone in the size.
+
+    The two methods are the two questions a standard can be asked, and both are
+    clause work. What a set of actions demands is the first; how hard a size
+    that the block did not choose is working is the second, and a design is
+    re-read through it after several load cases have been reconciled.
+
+    Built from a structure like the other two, and that is the one place where
+    the shared contract costs something rather than buying something: a code
+    check reads one member at a time and knows nothing of connectivity, so it
+    has nothing to settle. Saying so is the point rather than an omission.
+    """
+
+    @abc.abstractmethod
+    def __call__(
+        self,
+        forces: MemberForces,
+        buckling_length: Float[Array, "members"],
+    ) -> MemberSizes:
+        """
+        Size every member for every load case, each on its own.
+
+        Parameters
+        ----------
+        forces :
+            What every member carries under every load case.
+        buckling_length :
+            Length every member is assumed to buckle over.
+
+        Returns
+        -------
+        sizes :
+            The section each load case demands, the actions read to get it, and
+            how hard that section is worked — one wherever the size was free to
+            move, below one where the catalogue minimum bound.
+        """
+
+    @abc.abstractmethod
+    def utilization(
+        self,
+        diameters: Float[Array, "members"],
+        actions: MemberActions,
+        buckling_length: Float[Array, "members"],
+    ) -> Float[Array, "load_cases members"]:
+        """
+        Re-read a finished design against the standard that sized it.
+
+        Parameters
+        ----------
+        diameters :
+            Outer diameter every member was given.
+        actions :
+            The design actions to check against, every field carrying a leading
+            load case axis.
+        buckling_length :
+            Length every member is assumed to buckle over.
+
+        Returns
+        -------
+        utilization :
+            Demand over resistance of every member under every load case.
+        """
 
 
 def design_actions(forces: MemberForces) -> MemberActions:
@@ -95,64 +216,6 @@ def design_actions(forces: MemberForces) -> MemberActions:
     )
 
     return acting
-
-
-def size_envelope(
-    design: Design,
-    sharpness: float | Float[Array, ""] | None = None,
-) -> Design:
-    """
-    Reconcile the load cases into one section per member.
-
-    Parameters
-    ----------
-    design :
-        A design whose sections carry a load case axis.
-    sharpness :
-        Sharpness of the envelope. If None, the true largest section any load
-        case demands.
-
-    Returns
-    -------
-    design :
-        The same design with one section per member and the axis collapsed.
-
-    Notes
-    -----
-    **Smoothing rather than a clause, which is why it is a function here and not
-    a method of the check.** A member has one size and has to satisfy every load
-    case, so its size is the largest any of them demands; that largest is not
-    differentiable, and a gradient taken through it sees one load case per step
-    and stalls. The smooth envelope never understates it, so the design stays
-    adequate at every sharpness and annealing drives it onto the smallest
-    adequate one from above.
-
-    **The tube is enveloped leafwise and the wall follows exactly.** The
-    envelope is scale-equivariant — taken in the logarithm, a constant factor
-    passes straight through it — so enveloping a diameter and a thickness that
-    is that diameter over a fixed ratio preserves the ratio, and no catalogue is
-    needed to re-derive a wall.
-
-    A single load case is returned as it stands, whatever the sharpness. The
-    envelope over one case is the identity in exact arithmetic and a logarithm
-    followed by an exponential in floating point, so taking it would cost the
-    last bits of a size for nothing.
-    """
-    demanded = design.sizes.sections.tubes
-
-    if count_load_cases(demanded) == 1:
-        covering = select_load_case(demanded, 0)
-    elif sharpness is None:
-        covering = jax.tree.map(lambda field: jnp.max(field, axis=0), demanded)
-    else:
-        covering = jax.tree.map(
-            lambda field: diameter_envelope(field, sharpness), demanded
-        )
-
-    sections = MemberSection(covering, design.sizes.sections.material)
-    sizes = MemberSizes(sections, design.sizes.actions)
-
-    return Design(design.shape, design.forces, sizes)
 
 
 class Ec3Sizer(AbstractMemberSizer):
@@ -259,6 +322,12 @@ class Ec3Sizer(AbstractMemberSizer):
         it is unique, and the block carries an implicit tangent at that root
         rather than differentiating the solve that found it.
 
+        **The utilization comes back with the size rather than being asked for
+        afterwards.** It is the same clause read at the size just chosen, so it
+        costs a fraction of the root find that produced it, and a caller holding
+        sizes never has to know how to re-derive it. That it is one is the
+        invariant the map exists to hold.
+
         Every load case runs through one `vmap` rather than a Python loop, the
         check being elementwise over members and the root find batching cleanly.
         """
@@ -273,13 +342,21 @@ class Ec3Sizer(AbstractMemberSizer):
                 section_class=self.section_class,
                 resultant=self.resultant,
             )
+            used = utilization_design(
+                self.catalogue.tube_at(demanded),
+                acting,
+                buckling_length,
+                self.steel,
+                section_class=self.section_class,
+                resultant=self.resultant,
+            )
 
-            return acting, demanded
+            return acting, demanded, used
 
-        actions, demanded = jax.vmap(size_case)(forces)
+        actions, demanded, used = jax.vmap(size_case)(forces)
         sections = MemberSection(self.catalogue.tube_at(demanded), self.steel)
 
-        return MemberSizes(sections, actions)
+        return MemberSizes(sections, actions, used)
 
     def governing(
         self,

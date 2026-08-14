@@ -43,15 +43,26 @@ same array `normax.loads` produces and the same one the OpenSees backend takes,
 which is what makes a load case the one thing the two backends cannot disagree
 about.
 
+**The frame stability check lives here too, and only here.** It is the one
+question that needs an eigensolve rather than a linear solve, so only a backend
+that can trace one can answer it; the OpenSees one cannot. It is soft
+validation — nothing it produces feeds a design or a mass, nothing crosses a
+Tesseract boundary, and nothing is differentiated, an eigenvalue derivative
+being undefined where two modes cross and a symmetric structure having
+degenerate pairs. `normax/ec3/stability.py` implements the clauses it reads.
+
 The stage's own vocabulary — what a member force is, which degrees of freedom a
 support restrains — lives in `normax.analysis` and is shared with every backend.
 All lengths, forces and stresses cross the boundary through `normax.units`.
 """
 
+from typing import NamedTuple
+
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
+from jaxtyping import Bool
 from jaxtyping import Float
 from smax import BeamElement
 from smax import CompiledStructure
@@ -65,13 +76,21 @@ from smax import element_forces
 from smax import solve
 from smax import solve_buckling
 
+from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import Buckling
+from normax.analysis import MemberForces
 from normax.analysis import support_fixities
-from normax.design import AbstractFrameAnalyzer
-from normax.design import FormFoundShape
-from normax.design import MemberForces
+from normax.design import Design
 from normax.ec3.material import Steel
+from normax.ec3.resistance import force_critical
+from normax.ec3.resistance import slenderness_from_force
 from normax.ec3.section import TubeCatalogue
+from normax.ec3.stability import ALPHA_CR_ELASTIC
+from normax.ec3.stability import amplifier_resistance
+from normax.ec3.stability import buckling_length_global
+from normax.ec3.stability import is_adequate
+from normax.ec3.stability import slenderness_global
+from normax.ec3.stability import utilization_frame as utilization_stability
 from normax.loads import stack_load_cases
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_meter
@@ -493,7 +512,7 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
 
     def __call__(
         self,
-        shape: FormFoundShape,
+        xyz: Float[Array, "nodes 3"],
         diameters: Float[Array, "members"],
         loads: Float[Array, "load_cases nodes 3"],
     ) -> MemberForces:
@@ -502,8 +521,8 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
 
         Parameters
         ----------
-        shape :
-            The geometry to analyze, from a form finder.
+        xyz :
+            Position of every node, from a form finder.
         diameters :
             Outer diameter of every member, setting the stiffness.
         loads :
@@ -517,7 +536,7 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         analyzed = [
             member_forces(
                 self.model,
-                shape.xyz,
+                xyz,
                 diameters,
                 self.steel,
                 self.catalogue,
@@ -527,3 +546,122 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         ]
 
         return stack_load_cases(analyzed)
+
+
+class Stability(NamedTuple):
+    """
+    The global stability check of a finished design, and both routes to it.
+
+    Attributes
+    ----------
+    factors :
+        Critical load factors of the frame, smallest first.
+    utilization :
+        Demand over resistance of EN 1993-1-1 §5.2.1, at most one where
+        first-order analysis is adequate.
+    adequate :
+        Whether the frame satisfies that clause.
+    slenderness_member :
+        Slenderness each member has from its assumed buckling length, Eq. 6.50.
+    slenderness_global :
+        Slenderness each member has from the frame's critical load factor,
+        §6.3.4(3).
+    buckling_length_equivalent :
+        Buckling length the critical load factor is equivalent to.
+
+    Notes
+    -----
+    The two slendernesses are the same equation given different questions. Their
+    ratio is the size of the assumption a member buckling length makes, and it is
+    one wherever that assumption is right.
+
+    The clauses behind `utilization` and `adequate` are EN 1993-1-1 §5.2.1(3),
+    verified in `docs/clauses.md`.
+    """
+
+    factors: Float[Array, "modes"]
+    utilization: Float[Array, ""]
+    adequate: Bool[Array, ""]
+    slenderness_member: Float[Array, "members"]
+    slenderness_global: Float[Array, "members"]
+    buckling_length_equivalent: Float[Array, "members"]
+
+
+def frame_stability(
+    design: Design,
+    analyzer: "SmaxAnalyzer",
+    loads: Float[Array, "nodes 3"],
+    *,
+    load_case: int = 0,
+    num_modes: int = 1,
+) -> Stability:
+    """
+    Check a finished design against the stability of the frame it sits in.
+
+    Parameters
+    ----------
+    design :
+        A design, from a pipeline.
+    analyzer :
+        The analysis block, supplying the assembly and the material.
+    loads :
+        Load case the frame buckles under.
+    load_case :
+        Index of the design's load case the axial forces are read from. Static.
+    num_modes :
+        Number of critical load factors to return. Static.
+
+    Returns
+    -------
+    stability :
+        The critical load factors, the verdict, and both routes to slenderness.
+
+    Notes
+    -----
+    Global stability is not covered by what this package designs; this only
+    says how far the buckling length that produced a design can be trusted.
+
+    It could not enter the sizing map in any case. That roots a member check,
+    which is local and monotone in one diameter, while this is a property of the
+    whole frame: a design failing here is not made to pass by growing one member,
+    and the remedy is bracing or a different buckling length.
+
+    **Never differentiated.** The eigenproblem would trace, but an eigenvalue
+    derivative is undefined where two modes cross — and they do, since a
+    symmetric structure has degenerate pairs.
+
+    Members carrying no axial force report nan for both slendernesses and for the
+    equivalent buckling length, a factor scaling the whole load having nothing to
+    say about a member the load never reaches.
+    """
+    modes = buckling_modes(
+        analyzer.model,
+        design.shape.xyz,
+        design.sizes.sections.diameters,
+        analyzer.steel,
+        analyzer.catalogue,
+        loads,
+        num_modes=num_modes,
+    )
+    alpha_cr = modes.factors[0]
+
+    steel = analyzer.steel
+    tubes = analyzer.catalogue.tube_at(design.sizes.sections.diameters)
+    gross = tubes.area
+    inertia = tubes.second_moment
+    axial_force = design.sizes.actions.axial_force[load_case]
+
+    return Stability(
+        factors=modes.factors,
+        utilization=utilization_stability(alpha_cr, ALPHA_CR_ELASTIC),
+        adequate=is_adequate(alpha_cr, ALPHA_CR_ELASTIC),
+        slenderness_member=slenderness_from_force(
+            gross, steel, force_critical(inertia, design.shape.lengths, steel)
+        ),
+        slenderness_global=slenderness_global(
+            amplifier_resistance(gross, steel, axial_force), alpha_cr
+        ),
+        buckling_length_equivalent=buckling_length_global(
+            alpha_cr, axial_force, inertia, steel
+        ),
+    )

@@ -39,9 +39,9 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import CompiledStructure
 
+from normax.analysis import MemberForces
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
-from normax.design import MemberForces
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure

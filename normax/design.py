@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The vocabulary every block of the design pipeline shares.
+What a design is, what each block contributes to one, and how the three compose.
 
 A design is found by three blocks in a row: a form finder chooses the shape, a
 frame analysis says what the members carry, and a code check says how big they
 have to be. Each is written by different people, in a different language, and
-differentiates in a different way. This module says what the three agree on, and
-nothing whatsoever about how any of them computes.
+differentiates in a different way. This module says what the three agree on and
+nothing whatsoever about how any of them computes, then composes them.
 
 **A block is built from a structure and then called, and the split is where the
 topology lives.** Its constructor reads a structure and settles whatever that
@@ -44,17 +44,35 @@ loops internally and pays what it would have paid anyway.
 Nothing here says a block must be traceable. A block may trace, may carry a
 hand-written rule through `custom_vjp`, or may serialize its arguments and cross
 a network — the contract is a signature and a derivative, not an implementation.
+
+**What is asked of a design is not part of one.** A mass is `ρ Σ A L`, and which
+load case governs each member is an `argmax` — arithmetic over the fields below
+rather than anything a stage produced, which is why both are functions here and
+neither is a field. Reconciling the load cases lives further out still, in
+`design_envelope`, and whether the frame is stable at all is
+`normax.stability`.
 """
 
-import abc
 from typing import NamedTuple
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
+from jaxtyping import Int
 
-from normax.ec3.actions import MemberActions
+from normax.analysis import AbstractFrameAnalyzer
+from normax.analysis import MemberForces
 from normax.ec3.section import MemberSection
+from normax.ec3.sizing import diameter_envelope
+from normax.form_finding import AbstractFormFinder
+from normax.form_finding import FormFoundShape
+from normax.loads import LoadCases
+from normax.loads import count_load_cases
+from normax.loads import select_load_case
+from normax.sizing import AbstractMemberSizer
+from normax.sizing import MemberSizes
 
 
 class DesignParameters(NamedTuple):
@@ -78,112 +96,12 @@ class DesignParameters(NamedTuple):
 
     **A sharpness is not here, and that is deliberate.** Reconciling load cases
     is smoothing rather than a stage, so it happens above the pipeline in
-    `normax.sizing.size_envelope` and its sharpness is an argument of the loss
+    `design_envelope` and its sharpness is an argument of the loss
     rather than a parameter of the design.
     """
 
     q: Float[Array, "members"]
     diameters: Float[Array, "members"]
-
-
-class FormFoundShape(NamedTuple):
-    """
-    The geometry a form finder settles on, and what its members measure there.
-
-    Attributes
-    ----------
-    xyz :
-        Position of every node at equilibrium.
-    lengths :
-        Length of every member.
-
-    Notes
-    -----
-    **The handoff downstream is a geometry** — no prestress and no initial
-    member forces. A frame analysis is given this, starts from an unstressed
-    reference state, and finds its own axial forces; that those agree with the
-    form finder's is a prediction that gets tested rather than an input that
-    gets imposed. The form finder's own forces are absent for that reason, and
-    they cost nothing to recover: an edge carries the product of its force
-    density and its length.
-
-    **The lengths are here because measuring needs the connectivity**, which a
-    form finder holds and nothing downstream does. They are read as the length a
-    member buckles over and as the `L` of `ρ Σ A L`, and a length is geometry
-    rather than any stage's opinion, so a block reporting one is reporting what
-    it measured rather than what it decided.
-    """
-
-    xyz: Float[Array, "nodes 3"]
-    lengths: Float[Array, "members"]
-
-
-class MemberForces(NamedTuple):
-    """
-    The internal forces a frame analysis reports.
-
-    Attributes
-    ----------
-    axial_force :
-        Axial force of every member, tension positive.
-    moment_major :
-        Bending moment about the major axis, at each end of every member.
-    moment_minor :
-        Bending moment about the minor axis, at each end of every member.
-
-    Notes
-    -----
-    **The load case axis is variadic, and that is what lets one container serve
-    a solver and a block.** A solver answers one load case at a time and returns
-    these fields without it; a block answers every case and returns the same
-    fields with it, stacked by `stack_load_cases`. The two differ in rank and in
-    nothing else, so a second container for the unstacked form would be this one
-    with a line removed.
-
-    Moments are given at the two ends rather than sampled along the span,
-    because loads are applied at nodes alone and the moment therefore varies
-    linearly in between. That is what makes the first row of EN 1993-1-1 Table
-    B.3 exact here, and the reduction to a design moment belongs to the check
-    rather than to the analysis.
-
-    The axial force is one number per member and load case for the same reason:
-    with no load along the span it does not vary, and the analysis is linear.
-    """
-
-    axial_force: Float[Array, "*load_cases members"]
-    moment_major: Float[Array, "*load_cases members ends"]
-    moment_minor: Float[Array, "*load_cases members ends"]
-
-
-class MemberSizes(NamedTuple):
-    """
-    What a code check decided, and what it read to decide it.
-
-    Attributes
-    ----------
-    sections :
-        The section every load case demands of every member on its own.
-    actions :
-        The design actions the check read, every field carrying a leading load
-        case axis.
-
-    Notes
-    -----
-    **A check answers two questions and this is the pair.** What it read is not
-    what the analysis reported: reducing two end moments to a design moment and
-    an equivalent uniform moment factor is EN 1993-1-1 Table B.3, a clause, and
-    the factor it produces cannot be recovered from the design moment alone. So
-    the actions are output as well as input, and for a block that applies that
-    clause across a boundary they are the only record of what the far side read.
-
-    **Every load case is sized for separately, and nothing is combined here.** A
-    member has one size and has to satisfy all of them, but reconciling that is
-    smoothing rather than a clause and belongs above a block that implements a
-    standard. `normax.sizing.size_envelope` is where it happens.
-    """
-
-    sections: MemberSection
-    actions: MemberActions
 
 
 class Design(NamedTuple):
@@ -203,13 +121,13 @@ class Design(NamedTuple):
     -----
     One field per stage, in the order they ran, and nothing that no stage
     produced. A mass is not here because it is `ρ Σ A L` — arithmetic over two
-    of these fields, which `normax.pipeline.compute_mass` does — and neither is
+    of these fields, which `compute_mass` does — and neither is
     a utilization, which is the standard asked a second question at a size it
     did not choose.
 
     **The load case axis lives in `forces` and `sizes` and not in `shape`.** A
     structure is form-found once and checked against several cases, so the
-    geometry is shared and the sections are not — until `size_envelope`
+    geometry is shared and the sections are not — until `design_envelope`
     reconciles them, which returns this same container with one section per
     member.
     """
@@ -219,157 +137,236 @@ class Design(NamedTuple):
     sizes: MemberSizes
 
 
-class AbstractFormFinder(eqx.Module):
+class StructuralDesignPipeline(eqx.Module):
     """
-    A parametrization of the shapes a structure may take in equilibrium.
+    Form finding, analysis and a code check, composed into one function.
+
+    Attributes
+    ----------
+    formfinder :
+        The block that chooses the shape.
+    analyzer :
+        The block that says what the members carry.
+    sizer :
+        The block that says how big they have to be.
 
     Notes
     -----
-    Maps force densities and a load case to a geometry that carries that case
-    without bending. Concrete form finders differ in which quantities they treat
-    as independent, not in the mechanics they encode, which is why they share
-    one shape and one call signature.
+    Each block differentiates in its own way — a traced linear solve, a traced
+    assembly and solve, and an implicit tangent taken at the root of a residual —
+    and the composition hides that from the caller: a design comes back with a
+    gradient in the force densities. Nothing here asks how any block computes,
+    or in what language, or on which side of a network boundary, which is what
+    makes one of them replaceable without touching the other two.
 
-    Built from the structure it is to shape, and from nothing else that varies.
+    **Every backend sees the structure in its own terms, and it does so when it
+    is built rather than here.** A pipeline is three blocks already bound to one
+    structure, so calling one is a pure function of things an optimizer varies
+    and nothing that reads a support flag in Python survives into the trace.
+
+    **No topology reaches here, and nothing is decided here.** A pipeline is
+    three blocks and nothing else. It holds no connectivity, so a member length
+    comes off the shape a form finder measured; it reconciles no load case, that
+    being smoothing rather than a stage; and it computes no mass. What comes
+    back is one field per stage and nothing that no stage produced.
+
+    **The coupling between the analysis and the check is staggered.** A frame
+    cannot be analyzed without sections, and the sections are what the check
+    returns, so the diameters the frame is built from are an input and the
+    diameters the check requires are an output. One pass is taken, not a fixed
+    point.
     """
 
-    @abc.abstractmethod
+    formfinder: AbstractFormFinder
+    analyzer: AbstractFrameAnalyzer
+    sizer: AbstractMemberSizer
+
     def __call__(
         self,
-        q: Float[Array, "members"],
-        loads: Float[Array, "nodes 3"],
-    ) -> FormFoundShape:
+        params: DesignParameters,
+        loads: LoadCases,
+    ) -> Design:
         """
-        Find the shape that carries a load case at given force densities.
+        Form-find once, analyze every load case, and size for each of them.
 
         Parameters
         ----------
-        q :
-            Force density of every member. Negative in compression.
+        params :
+            Force densities, and the diameters the frame is analyzed with.
         loads :
-            Force applied at every node.
+            The load case the shape answers to, and the ones it is checked
+            against.
 
         Returns
         -------
-        shape :
-            The geometry at equilibrium, and its member lengths.
+        design :
+            The shape, what the members carry, and what the check demands of
+            them under every load case on its own.
+
+        Notes
+        -----
+        **Form finding runs once and the other two run for every load case.**
+        The shape answers to one load case by construction, that being what
+        makes it funicular; choosing the shape again for each of them would mean
+        a different structure per load case rather than one structure checked
+        against several.
+
+        **Nothing is reconciled here.** Each load case gets the section it
+        demands on its own, and a member has one size in the end;
+        `design_envelope` is what collapses the two, and it is
+        smoothing rather than a clause.
+
+        **Every member is assumed to buckle over its own length, and nothing
+        here can say otherwise.** That is a strong assumption rather than a
+        conservative one: it presumes every node is held in position by
+        structure outside the model, and where that does not hold the frame
+        buckles in a mode spanning many members and the assumption is unsafe.
+        `frame_stability` measures the gap, by recovering the buckling length a
+        critical load factor is equivalent to.
+
+        The clauses below take a buckling length as an argument and always
+        will — EN 1993-1-1 Eq. 6.50 is written in `L_cr`, not in a member
+        length. What is fixed is this composition's choice of what to pass, and
+        that choice is temporary; see `docs/clauses.md`.
         """
+        shape = self.formfinder(params.q, loads.formfinding)
+        forces = self.analyzer(shape.xyz, params.diameters, loads.analysis)
+        sizes = self.sizer(forces, shape.lengths)
+
+        return Design(shape, forces, sizes)
 
 
-class AbstractFrameAnalyzer(eqx.Module):
+def governing_load_case(
+    diameters: Float[Array, "load_cases members"],
+) -> Int[Array, "members"]:
     """
-    An elastic analysis of a frame whose members bend as well as stretch.
+    Which load case decided each member's size.
+
+    Parameters
+    ----------
+    diameters :
+        Outer diameter every load case demands of every member on its own,
+        before they are reconciled.
+
+    Returns
+    -------
+    governing_load_case :
+        Index of the load case working each member hardest.
 
     Notes
     -----
-    A form finder hands over a geometry and nothing else: no prestress and no
-    initial member forces. The frame is analyzed from an unstressed reference
-    state, so it must deform before any internal force appears, and the axial
-    forces that come back are the analysis's own product rather than a
-    restatement of the force densities that shaped it.
+    **Read from the sizes demanded rather than from a utilization**, which costs
+    an `argmax` instead of re-reading the standard. The two agree because
+    capacity is strictly increasing in the diameter: at the reconciled section
+    the case that demanded the largest one is exactly satisfied and every other
+    case is at a section larger than it asked for, so its utilization is
+    strictly below one. Exact at the true largest, and measured to agree at the
+    sharpnesses this package anneals over.
 
-    Members are beams and not bars, so the analysis also reports the bending a
-    form finder could not see. That is the reason this block exists: the check
-    downstream consumes moments, and a pin-jointed form finder has none to give.
+    **Non-differentiable**, and absent from any design for that reason.
 
-    Built from the structure it is to analyze, and from the material and section
-    family it is configured with. Everything a solver can assemble before a
-    geometry is chosen is assembled there.
+    The picture only a differentiable code check can produce: as the form
+    changes, the pattern of which load case governs where reorganizes, and it
+    does so because the shape decides how much bending each one raises rather
+    than because any member was reassigned.
     """
-
-    @abc.abstractmethod
-    def __call__(
-        self,
-        shape: FormFoundShape,
-        diameters: Float[Array, "members"],
-        loads: Float[Array, "load_cases nodes 3"],
-    ) -> MemberForces:
-        """
-        Analyze one geometry under every load case it is checked against.
-
-        Parameters
-        ----------
-        shape :
-            The geometry to analyze, from a form finder.
-        diameters :
-            Outer diameter of every member, setting the stiffness.
-        loads :
-            Force applied at every node in every load case.
-
-        Returns
-        -------
-        forces :
-            Axial force and both end moments, per load case and member.
-        """
+    return jnp.argmax(diameters, axis=0)
 
 
-class AbstractMemberSizer(eqx.Module):
+def compute_mass(design: Design) -> Float[Array, ""]:
     """
-    A design standard, read as a map from what a member carries to how big it is.
+    Total mass of a design.
+
+    Parameters
+    ----------
+    design :
+        A design whose sections have been reconciled to one per member.
+
+    Returns
+    -------
+    mass :
+        Total mass of the members.
 
     Notes
     -----
-    A standard is a normative text rather than a solver. It has no derivatives,
-    and it is ordinarily implemented as scalar branchy code returning verdicts;
-    what makes it a block here is that it answers the inverted question — not
-    "does this section pass" but "what section passes exactly" — which has a
-    derivative wherever the resistance is monotone in the size.
+    **The objective the whole pipeline exists to serve, and the scalar
+    `jax.grad` is taken of.** One reverse pass crosses all three blocks, so its
+    cost does not grow with the number of force densities.
 
-    The two methods are the two questions a standard can be asked, and both are
-    clause work. What a set of actions demands is the first; how hard a size
-    that the block did not choose is working is the second, and a design is
-    re-read through it after several load cases have been reconciled.
+    `ρ Σ A L`, and every term of it is already on the design: the length from
+    the shape a form finder settled, the area and the density from the section a
+    check chose and the material it is cut from. Nothing here is a clause, which
+    is why no block computes it and why this needs no block to.
 
-    Built from a structure like the other two, and that is the one place where
-    the shared contract costs something rather than buying something: a code
-    check reads one member at a time and knows nothing of connectivity, so it
-    has nothing to settle. Saying so is the point rather than an omission.
+    Called on a design whose load case axis has been collapsed. On one that
+    still carries it, this is the mass each load case would need on its own.
     """
+    sections = design.sizes.sections
+    per_length = sections.material.density * sections.area
 
-    @abc.abstractmethod
-    def __call__(
-        self,
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> MemberSizes:
-        """
-        Size every member for every load case, each on its own.
+    return jnp.sum(per_length * design.shape.lengths)
 
-        Parameters
-        ----------
-        forces :
-            What every member carries under every load case.
-        buckling_length :
-            Length every member is assumed to buckle over.
 
-        Returns
-        -------
-        sizes :
-            The design actions read, and the diameter each load case demands.
-        """
+def design_envelope(
+    design: Design,
+    sharpness: float | Float[Array, ""] | None = None,
+) -> Design:
+    """
+    Reconcile the load cases into one section per member.
 
-    @abc.abstractmethod
-    def utilization(
-        self,
-        diameters: Float[Array, "members"],
-        actions: MemberActions,
-        buckling_length: Float[Array, "members"],
-    ) -> Float[Array, "load_cases members"]:
-        """
-        Re-read a finished design against the standard that sized it.
+    Parameters
+    ----------
+    design :
+        A design whose sections carry a load case axis.
+    sharpness :
+        Sharpness of the envelope. If None, the true largest section any load
+        case demands.
 
-        Parameters
-        ----------
-        diameters :
-            Outer diameter every member was given.
-        actions :
-            The design actions to check against, every field carrying a leading
-            load case axis.
-        buckling_length :
-            Length every member is assumed to buckle over.
+    Returns
+    -------
+    design :
+        The same design with one section per member and the axis collapsed.
 
-        Returns
-        -------
-        utilization :
-            Demand over resistance of every member under every load case.
-        """
+    Notes
+    -----
+    **Smoothing rather than a clause, which is why it is a function here and not
+    a method of the check.** A member has one size and has to satisfy every load
+    case, so its size is the largest any of them demands; that largest is not
+    differentiable, and a gradient taken through it sees one load case per step
+    and stalls. The smooth envelope never understates it, so the design stays
+    adequate at every sharpness and annealing drives it onto the smallest
+    adequate one from above.
+
+    **The tube is enveloped leafwise and the wall follows exactly.** The
+    envelope is scale-equivariant — taken in the logarithm, a constant factor
+    passes straight through it — so enveloping a diameter and a thickness that
+    is that diameter over a fixed ratio preserves the ratio, and no catalogue is
+    needed to re-derive a wall.
+
+    **Nothing here reads a standard, and nothing needs to.** `utilization`
+    passes through untouched because it belongs to the per-case sections and
+    still describes them; what the reconciled section is worth is a different
+    question, and `AbstractMemberSizer.utilization` is what answers it for a
+    report. Which case governs each member needs neither — see
+    `governing_load_case`.
+
+    A single load case is returned as it stands, whatever the sharpness. The
+    envelope over one case is the identity in exact arithmetic and a logarithm
+    followed by an exponential in floating point, so taking it would cost the
+    last bits of a size for nothing.
+    """
+    demanded = design.sizes.sections.tubes
+
+    if count_load_cases(demanded) == 1:
+        covering = select_load_case(demanded, 0)
+    elif sharpness is None:
+        covering = jax.tree.map(lambda field: jnp.max(field, axis=0), demanded)
+    else:
+        covering = jax.tree.map(
+            lambda field: diameter_envelope(field, sharpness), demanded
+        )
+
+    sections = MemberSection(covering, design.sizes.sections.material)
+    sizes = MemberSizes(sections, design.sizes.actions, design.sizes.utilization)
+
+    return Design(design.shape, design.forces, sizes)
