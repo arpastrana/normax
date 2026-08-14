@@ -851,6 +851,241 @@ the free functions were deleted, are in `CHANGELOG.md` under `## Unreleased`.
 
 ---
 
+## P5d — The catalogue carries its grade and its class (Aug 14) — **DONE**
+
+**A tube family is not geometry.** Its defining number is
+`ratio_at_class_limit(f_y, section_class)` — a function of the grade and of the
+class — so the grade and the class *are* the family's identity, and today they
+live in three places with nothing binding them: a `Steel` handed in beside the
+catalogue in 27 signatures, a `section_class` keyword threaded through 7 modules,
+and a ratio that silently remembers both.
+
+After this phase the catalogue is a **parametrized cross-section generator** and a
+tube is what it generates, carrying everything it was generated with:
+
+```python
+catalogue = TubeCatalogue(ratio, section_class, material)
+tube = catalogue(diameter)          # Tube(diameter, thickness, material, section_class)
+```
+
+| today | after |
+|---|---|
+| `steel, catalogue` in 27 signatures | `catalogue` |
+| `catalogue.tube_at(d)` | `catalogue(d)` |
+| `catalogue.section_class(f_y)`, recomputed in `Ec3Sizer.__init__` | `catalogue.section_class`, a field |
+| `section_class=` keyword beside a tube or a catalogue | read off it |
+| `MemberSection(catalogue.tube_at(d), steel)`, paired by hand twice | the tube already has the grade |
+
+### Both are `eqx.Module`s, and the class is a static field
+
+**The plan said named tuples and the measurement said otherwise.** A class that is
+a pytree leaf is traced whenever its container crosses a trace, and the spike that
+cleared it only exercised the paths where that does not happen. The path that
+matters was missed: `_solved_diameter` is a `custom_jvp`, and **JAX traces a
+`custom_jvp`'s primal arguments under `jit` even when the container reaches it as
+a closed-over constant.** Probed directly on the real container:
+
+| path | class arrives as |
+|---|---|
+| eager | `TypedInt` — concrete, branchable |
+| `jax.grad` of a closure | `TypedInt` |
+| **`jax.jit` of a closure** | **`DynamicJaxprTracer` — the branch raises** |
+
+The third row is not a corner: `experiments/101_api.py` jits its objective, so it
+is the production path. Before this phase the class was `nondiff_argnums=(0, 1)`,
+which is exactly what kept it out of the trace; moving it inside the catalogue as
+a leaf gives that up.
+
+`eqx.field(static=True)` puts it in the tree structure instead, where no trace
+reaches it, and that fixes three things at once rather than one:
+
+| | leaf | static field |
+|---|---|---|
+| `custom_jvp` primal under `jit` | traced, raises | Python `int` |
+| plain `jax.jit` argument | `TracerBoolConversionError` | Python `int` |
+| output of a plain `jax.jit` | rank-zero array; `x in (1, 2)` silently false | Python `int` |
+
+The third row is the one worth dwelling on. A class that survives a round trip as
+`Array(3)` compares false against every class, so a Class 1 family would quietly
+be read elastically. `is_plastic` now converts with `int()` before comparing —
+right where the value is concrete, loud where it is a tracer — but the container
+is what stops the case arising.
+
+**What it costs is small and it is all in the containers.** `_replace` becomes a
+constructor call at the two places that relabel a family, `jax.tree.leaves(tube)`
+is the geometry and the grade rather than everything, and a walk over a design by
+`_fields` alone stops one level short — `tests/test_tesseract_parity.py` reads
+dataclass fields too now. The ratio, the wall and the grade stay leaves, so every
+derivative the phase was meant to keep is intact.
+
+### `at_class_limit` survives, as a classmethod
+
+A module could derive a field in `__init__`, equinox unflattening by field
+assignment rather than by the constructor. It still does not, and the reason is
+that the ratio has two origins rather than one: it is derived at a class limit in
+every production call site and named outright in the sweep, the gradient tests and
+the geometry fixtures that model a published section. One constructor cannot read
+as both. So the ratio stays the leading field and the derivation stays a
+classmethod, now taking the grade rather than a bare `f_y`:
+
+```python
+TubeCatalogue.at_class_limit(Steel(), 3)      # the common case, ratio derived
+TubeCatalogue(70.0, 2, Steel())               # a named ratio, class asserted
+```
+
+That is the whole NamedTuple tax. The class is in the constructor as intended;
+what remains is a second way in for the case where the ratio is the answer rather
+than the input.
+
+### The ratio stays a field
+
+§3 wants it freeable, `tests/test_sizing_gradients.py` differentiates the map in
+it, and `experiments/05_class_ratio_sweep.py` sweeps it across two class
+boundaries. A class named beside an explicit ratio is **verified when the ratio is
+concrete and trusted when it is not** — `isinstance(value, jax.core.Tracer)`,
+which is warning-free here. Every production call site builds a catalogue on the
+host, where the check runs; under a tracer there is nothing concrete to compare.
+
+### A tube carrying its grade costs the leafwise envelope
+
+`design_envelope` reduces the load case axis with
+`jax.tree.map(lambda field: jnp.max(field, axis=0), tubes)`, and builds an
+argument on it: "the tube is enveloped leafwise and the wall follows exactly."
+That is legal only because a tube is exactly two leaves, both carrying the axis. A
+tube that also carries eight material leaves and a class breaks it —
+`ValueError: axis 0 is out of bounds for array of dimension 0` — and
+`select_load_case` breaks with it.
+
+The fix is to envelope the geometry by name and carry the rest through:
+
+```python
+diameters = diameter_envelope(demanded.diameter, sharpness)
+thicknesses = diameter_envelope(demanded.thickness, sharpness)
+covering = Tube(diameters, thicknesses, demanded.material, demanded.section_class)
+```
+
+Three lines instead of one, and the claim it replaces is *more* honest: the
+geometry is enveloped, the grade and the class ride through untouched. Handing the
+envelope a catalogue to re-derive the wall instead is not an option — it reads no
+standard and takes no sizer by decision, and a tube family is a shape.
+
+### `MemberSection` collapses into `Tube`
+
+`MemberSection(tubes, material)` exists to pair a section with its grade, which is
+what the generated tube now is. Keeping both would put the material in a design
+twice, which is the disagreement this phase removes. So `MemberSizes.sections`
+becomes a `Tube`, and `compute_mass` reads `sections.material.density *
+sections.area` off it unchanged.
+
+**What that costs is recorded below**: the after-deadline note wants
+`MemberSection` to become the sizer-agnostic currency in
+`normax/sizing/__init__.py`, and a CHS tube cannot play that part. When a second
+sizer arrives, the seam is a shape-agnostic property bundle produced by a
+catalogue — `properties_at(size)` returning area, second moment, radius of
+gyration and both moduli — not a tuple that pairs one shape with a grade. That
+container is worth writing when there is a second shape to write it for.
+
+### Where the merge stops
+
+`resistance.py`, `interaction.py` and `stability.py` keep `steel` and
+`section_class`. Their 30 functions take `(area | second_moment | modulus,
+steel)`: there the grade is an operand of a clause rather than a companion of a
+family, and `N_pl,Rd = A f_y / γ_M0` is shape-agnostic. Handing them a CHS
+container would narrow every clause docstring to a shape the clause does not
+name.
+
+**The rule: a function that takes a catalogue or a tube drops `steel` and
+`section_class`; a function that takes a bare property keeps them.** The tube
+carrying its own grade moves that line one layer deeper than the catalogue alone
+would — `utilization_design`, `_section_modulus`, `_check_demands`,
+`mass_of_tubes` and `governing_limit_state` all take a tube, so all of them lose
+both arguments, while `resistance_compression(area, steel)` keeps both.
+
+### What the sweep actually came to
+
+79 calls lost a grade or a class argument, 89 `tube_at` calls became calls on the
+catalogue, 58 reads of `sections.diameters` became `sections.diameter`, and 66
+`at_class_limit` sites now name a grade. Three things were not in the plan:
+
+- **The two analysis backends have no class to name.** Their wire schema carries a
+  ratio and a grade and no class, and an analysis reads geometry alone. They
+  classify the ratio with `classify_section`, which reports Class 4 rather than
+  refusing it — so a family the clauses could not check is still analyzable, and
+  the refusal happens where a clause would read the label instead.
+- **The geometry fixtures needed the same escape.** `tests/test_section.py` sweeps
+  a ratio of 90, which is a shell at S355, and the Blueprints oracle walks real
+  EN 10210 profiles across several classes. Both label the family by
+  classification rather than by assertion, and the repeated
+  `TubeCatalogue(RATIO)(d)` in four files collapsed into one named family each.
+- **`experiments/05_class_ratio_sweep.py` lost a container.** `ClassBranch` paired
+  a class with the family whose ratio sits at its limit, which is what a catalogue
+  now is, so it is deleted and `behavior_of(catalogue)` is the one thing it knew
+  that a family does not.
+
+### Steps
+
+0. **A green baseline.** Seven test files fail to collect on `main` —
+   `DesignPipeline`, `calculate_mass`, `arch_2d`, `load_cases` — leftovers of the
+   stage-contract rename. Nothing measures a 27-signature sweep without them.
+1. **`normax/ec3/section.py`.** `Tube(diameter, thickness, material,
+   section_class)`, `TubeCatalogue(ratio, section_class, material,
+   diameter_min=DIAMETER_MINIMUM)`, `__call__` in place of `tube_at`,
+   `at_class_limit` taking a grade. `MemberSection` deleted.
+2. **`normax/design.py`.** `MemberSizes.sections` is a `Tube`; the envelope
+   builds its covering tube by name rather than leafwise.
+3. **`normax/ec3/sizing.py` and `normax/ec3/adjoint.py`**, 14 signatures. Drop
+   `steel`, read `catalogue.material` or `tube.material`; drop the
+   `section_class` keyword everywhere a tube or a catalogue is already there;
+   `nondiff_argnums=(0, 1)` becomes `(0,)`, leaving `resultant` as the only
+   static argument. `check_grads` unchanged.
+4. **`normax/analysis/{smax,opensees}.py`** (10), `normax/sizing.py` and
+   `normax/tesseract.py` (3 constructors). `SmaxAnalyzer(structure, catalogue,
+   normal)` and `Ec3Sizer(structure, catalogue, resultant)`, four arguments each
+   counting `self`. Keep `.steel` and `.section_class` as one-line properties so
+   the payload dictionaries and the block internals stay put.
+5. **The boundary.** `tesseracts/ec3_check/tesseract_api.py` reconstructs
+   `Steel(...)` and then `TubeCatalogue(...)` from flat scalars; the wire schema
+   does not change, since `f_y`, `ratio` and `section_class` already cross
+   separately. Parity must stay where it is.
+6. **Call sites**: 56 constructions across `tests/` and `experiments/`, including
+   `ClassBranch.at_limit` in the ratio sweep and the one line in
+   `experiments/101_api.py`. The geometry-only sites in `tests/test_section.py`,
+   `test_sizing_monotonicity.py` and `test_worked_example_chs.py` name a grade and
+   a class now — they model a real table entry, which has both.
+
+**`experiments/101_api.py` is the only experiment in scope.** `03`, `04`, `09`,
+`10` and `11` are already broken on `main` against the stage contracts — they name
+`DesignPipeline`, `calculate_mass`, `load_cases`, `arch_2d` and `MemberSections` —
+and pytest never touches them, so they neither gate this migration nor gain from
+being carried through it twice. They come back before the writeup, since `04` is
+the backend-agreement plot and `03` is the optimization curve. `05` is already
+clean and rides along with the sweep.
+
+### One test changes meaning, and it is a real question
+
+`test_the_map_is_differentiable_in_the_yield_strength` builds a fresh `Steel(f_y)`
+and passes a **fixed** catalogue, so `∂d/∂f_y` is taken at a frozen wall. A
+catalogue built from that steel moves its ratio with the grade, and `∂ratio/∂f_y`
+joins the derivative: a stronger grade raises the capacity and thins the wall at
+once, so the negative sign the test asserts stops being obvious. Keep the old
+meaning by naming the ratio explicitly, and add the grade-tracking derivative as a
+second test rather than replacing the first. Each is checked against central
+differences of its own closure, so both stay honest whatever the sign turns out to
+be.
+
+**The migration's own test** was that no number moves, and none did. The arch in
+`experiments/101_api.py` reports **0.138056811 t at 16.654 % saved and a
+utilization of 1.000000000000**, and the Tesseract parity reads **6.67e-16 on the
+mass and 7.32e-14 on its gradient**. 1882 tests pass.
+
+Both halves of the question were kept, as planned. `∂d/∂f_y` at a frozen wall is
+still negative and still agrees with central differences; the grade-tracking
+derivative through `at_class_limit` is a second test that asserts finiteness and
+the difference quotient but **not a sign**, since a stronger grade raises the
+capacity and thins the wall at once.
+
+---
+
 ## P6 — Visuals (Aug 24–28, overlaps P5)
 
 **Scope:**
@@ -1059,10 +1294,13 @@ clauses and whether they can be read at all.
 
 **Two containers move up rather than out, and one is already misplaced.**
 
-- **`MemberSection` is defined in `normax/ec3/section.py` and used by nothing
-  inside `normax.ec3`.** It belongs to the pipeline rather than the standard: it
-  is what `MemberSizes.sections` holds, and any second sizer has to produce one.
-  Move it to `normax/sizing/__init__.py` whether or not the extraction happens.
+- **`MemberSection` is gone, and what replaces it cannot move.** P5d collapsed it
+  into `Tube`, since pairing a section with its grade is what a generated tube
+  already is. A CHS tube belongs to EN 1993-1-1's shape vocabulary and cannot be
+  the sizer-agnostic currency `MemberSizes.sections` needs. So the seam a second
+  sizer wants is not a container to relocate but one to write: a shape-agnostic
+  property bundle a catalogue produces — area, second moment, radius of gyration
+  and both moduli — worth writing when there is a second shape to write it for.
 - `MemberActions` is genuinely EN 1993-1-1's input, but `MemberSizes.actions` is
   typed on it, so a pipeline using SkyCiv alone would still import the EC3
   library for a container.

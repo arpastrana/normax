@@ -36,35 +36,38 @@ import jax
 import jax.numpy as jnp
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.ec3.material import SteelGrade
-from normax.ec3.section import TubeCatalogue
-from normax.form_finding import FdmFormFinder
-from normax.design import DesignPipeline
-from normax.design import calculate_mass
-from normax.sizing import Ec3Sizer
 from normax.design import DesignParameters
-from normax.design import load_cases
-from normax.structures import arch_2d
-from normax.structures import loads_uniform
+from normax.design import StructuralDesignPipeline
+from normax.design import compute_mass
+from normax.design import design_envelope
+from normax.ec3.material import Steel
+from normax.ec3.section import TubeCatalogue
+from normax.form_finding.fdm import FdmFormFinder
+from normax.loads import assemble_load_cases
+from normax.loads import loads_uniform
+from normax.sizing import Ec3Sizer
+from normax.structures import build_arch_2d
 
-steel = SteelGrade()
-catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
+steel = Steel()
+catalogue = TubeCatalogue.at_class_limit(steel, 3)
 
-structure = arch_2d(num_edges=20, span=10_000.0, rise=3_000.0)
+structure = build_arch_2d(num_edges=20, span=10_000.0, rise=3_000.0)
 uniform = loads_uniform(structure, 9_474.0)
-loads = load_cases(uniform, [uniform])
+loads = assemble_load_cases([uniform])
 
-pipeline = DesignPipeline(
-    FdmFormFinder(),
-    SmaxAnalyzer(steel, catalogue, normal=1),
-    Ec3Sizer(steel, catalogue),
-).compile(structure)
+pipeline = StructuralDesignPipeline(
+    FdmFormFinder(structure),
+    SmaxAnalyzer(structure, catalogue, normal=1),
+    Ec3Sizer(structure, catalogue),
+)
 
 seed = jnp.full(20, 100.0)
 
 
 def total(q):
-    return calculate_mass(pipeline(DesignParameters(q, seed), loads))
+    design = pipeline(DesignParameters(q, seed), loads)
+
+    return compute_mass(design_envelope(design))
 
 
 q = jnp.full(20, -60.0)
@@ -72,19 +75,25 @@ print(total(q))  # tonnes of steel EN 1993-1-1 requires
 print(jax.grad(total)(q))  # its gradient in the force densities
 ```
 
-**The pipeline is three swappable blocks.** Each one is configured, compiled
-against a structure on the host, and then called: `compile` is where every piece
-of software gets to see the structure in its own terms — a form finder wants
-connectivity matrices, a frame solver wants an assembly and degree of freedom
-maps, a code check wants nothing at all. What is left is a function of design
-parameters and load cases, and that is what an optimizer differentiates.
+**The pipeline is three swappable blocks.** Each one is built from a structure on
+the host and then called, and the split is where every piece of software gets to
+see the structure in its own terms — a form finder wants connectivity matrices, a
+frame solver wants an assembly and degree of freedom maps, a code check wants
+nothing at all. What is left is a function of design parameters and load cases,
+and that is what an optimizer differentiates.
 
-Swapping a block is a constructor argument. `normax.tesseract` holds the same
-three reached across a Tesseract boundary, and `DesignPipeline` cannot tell the
-difference — `tests/test_tesseract_parity.py` runs one pipeline over both sets
-and measures it. See `experiments/` for the arch optimization, the two analysis
-backends against each other, and `experiments/101_api.py` for the whole API in
-one file.
+**A section family is one argument, and it carries its own grade.** A catalogue's
+ratio is a class limit read at a yield strength, so the grade and the class are the
+family's identity rather than companions handed in beside it; calling the catalogue
+at a diameter generates the tube, which carries both onward. Nothing downstream can
+pair a wall with the class of a different one.
+
+Swapping a block is a constructor argument. `normax.tesseract` holds the same three
+reached across a Tesseract boundary, and `StructuralDesignPipeline` cannot tell the
+difference — `tests/test_tesseract_parity.py` runs one pipeline over both sets and
+measures it. See `experiments/` for the arch optimization, the two analysis
+backends against each other, and `experiments/101_api.py` for the whole API in one
+file.
 
 ## Development
 

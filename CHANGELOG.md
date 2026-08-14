@@ -2,6 +2,108 @@
 
 ## Unreleased
 
+### A section family carries its grade and its class
+
+`TubeCatalogue(ratio, section_class, material)` is a parametrized cross-section
+generator, and `catalogue(diameter)` generates the tube:
+`Tube(diameter, thickness, material, section_class)`. A grade is no longer handed
+in beside a family, and a class is no longer threaded past one.
+
+- **The family's defining number already knew both.** A catalogue's ratio is
+  `ratio_at_class_limit(f_y, section_class)` — a function of the grade and of the
+  class — so carrying them separately let a grade travel beside a ratio derived
+  from a different one. 79 calls dropped an argument; `Ec3Sizer(structure,
+  catalogue)` and `SmaxAnalyzer(structure, catalogue, normal)` take four
+  arguments each counting `self`.
+- **Where the merge stops is a rule, not a judgment.** A function that takes a
+  catalogue or a tube drops `steel` and `section_class`; a function that takes a
+  bare section property keeps them. So `utilization_design(tube, actions,
+  buckling_length)` loses both while `resistance_compression(area, steel)` keeps
+  both — `N_pl,Rd = A f_y / γ_M0` is shape-agnostic, and narrowing it to a CHS
+  container would narrow 30 clause docstrings to a shape no clause names.
+- **`MemberSection(tubes, material)` is deleted.** It existed to pair a section
+  with its grade, which is what a generated tube now is; keeping both would put
+  the material in a design twice. `MemberSizes.sections` is a `Tube`, and
+  `compute_mass` reads `sections.material.density * sections.area` off it
+  unchanged.
+- **Both containers are `eqx.Module`s with a static class, and the named-tuple
+  attempt failed for a measured reason.** A class carried as a pytree leaf is
+  traced whenever its container crosses a trace, and `_solved_diameter` is a
+  `custom_jvp` — **JAX traces a `custom_jvp`'s primal arguments under `jit` even
+  when the container reaches it as a closed-over constant**, which is the path
+  `experiments/101_api.py` takes. Probed on the real container: eager and under
+  `jax.grad` the class arrives as a concrete `TypedInt`, under `jax.jit` as a
+  `DynamicJaxprTracer`, and the branch it selects raises. Before this change the
+  class was `nondiff_argnums=(0, 1)`, which is precisely what had kept it out of
+  the trace. `eqx.field(static=True)` puts it in the tree structure, where no
+  trace reaches it, and the ratio, the wall and the grade stay leaves — so every
+  derivative the phase was meant to keep is intact.
+- **A class that survived `jax.jit` as an array was silently wrong, and that is
+  fixed twice.** `Array(3) in (1, 2, 3)` compares elementwise and is false for
+  every class, so a Class 1 family read through a jitted output would have taken
+  the elastic modulus with no complaint. Static fields stop the case arising, and
+  `_validate_class` now converts with `int()` first — correct where the value is
+  concrete, a loud concretization error where it is a tracer, which is the only
+  place a clause selector must not be.
+- **`at_class_limit` stays a classmethod and takes a grade.** A module could
+  derive the ratio in `__init__`, but the ratio has two origins: derived at a
+  class limit in every production call site, named outright in the class sweep,
+  the gradient tests and the geometry fixtures that model a published section. One
+  constructor cannot read as both.
+- **`verified_class()` is where a label is checked, and a block is what calls
+  it.** A class named beside an explicit ratio can contradict it, and letting the
+  plastic clauses onto a Class 3 wall is unsafe, so `Ec3Sizer.__init__` reads its
+  class through this rather than off the field. Verified where the ratio and the
+  grade are concrete and trusted where they are not — under a tracer there is
+  nothing to compare, and every family a block is built from is built on the host.
+- **The envelope names the two geometric fields instead of mapping over the
+  tube.** `jax.tree.map(jnp.max, tubes)` was legal only while a tube was exactly
+  two leaves that both carried the load case axis. `design_envelope` now
+  envelopes the diameter and the wall and carries the grade and the class
+  through — three lines for a claim that is more honest than the one it replaces.
+- **The wire format does not change.** `f_y`, `ratio` and `section_class` already
+  crossed the ec3 schema as separate scalars and are reassembled on the far side.
+  The two analysis backends have no class on the wire and need none, an analysis
+  reading geometry alone; they classify the ratio with `classify_section`, which
+  reports Class 4 rather than refusing it, so a family the clauses cannot check is
+  still analyzable and the refusal waits for a clause to read the label.
+- **No number moved.** The arch of `experiments/101_api.py` reports 0.138056811 t
+  at 16.654 % saved and a utilization of 1.000000000000; Tesseract parity reads
+  6.67e-16 on the mass and 7.32e-14 on its gradient. 1882 tests pass.
+- **One test's meaning was a real question, and both halves are kept.**
+  `∂d/∂f_y` used to be taken at a frozen wall, since the catalogue was fixed while
+  the grade moved. That test now names its ratio explicitly and still asserts a
+  negative sign; a second test takes the derivative through a family built at a
+  class limit, where `∂ratio/∂f_y` joins and a stronger grade raises the capacity
+  and thins the wall at once — so it asserts finiteness and the difference
+  quotient and **not a sign**.
+- `experiments/05_class_ratio_sweep.py` loses `ClassBranch`, which paired a class
+  with the family whose ratio sits at its limit. That pairing is what a catalogue
+  is; `behavior_of(catalogue)` is the one thing the container knew that a family
+  does not.
+
+### The search hands back the design it answered with
+
+`minimize_bounded` and `optimize_annealed` return `SearchResult(value, aux,
+trajectory)` instead of a bare `Trajectory`. An objective built with
+`has_aux=True` returns `(value, pytree)`, and the search carries out the pytree
+belonging to the point it answered with.
+
+- **What it removes is a second compilation, not a forward pass.** Rebuilding the
+  answer's design outside the search — `pipeline(params_opt, loads)` in
+  `experiments/101_api.py` — traces and compiles a program the search had already
+  run hundreds of times, and eagerly at that. The objective already computed the
+  design; returning it costs the traffic and nothing else.
+- **The optimizer still knows nothing about designs.** To this module the aux is
+  a pytree that rode along, so the bowl objectives in `tests/test_optimization.py`
+  are unchanged and `aux` is None whenever the objective returns a value alone.
+- **Only the newest aux is held.** A pytree per evaluation is a design per
+  evaluation, and the answer is not known until the search is over. The answer is
+  usually the point evaluated last; when it is not, one call recovers it — tested
+  as at most one evaluation more than the same search carrying nothing.
+- Call sites take `.trajectory`: `experiments/03_optimize_arch.py`,
+  `experiments/04_backend_agreement.py`, and the driver tests.
+
 ### Every stage owns its own contract
 
 `normax/design.py` is down to six things — `DesignParameters`, `Design`,
