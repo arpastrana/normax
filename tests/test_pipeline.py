@@ -7,23 +7,22 @@ import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import buckling_modes
+from normax.analysis.smax import frame_stability
 from normax.analysis.smax import prepare_model
 from normax.design import DesignParameters
+from normax.design import DesignPipeline
 from normax.design import LoadCases
+from normax.design import calculate_mass
+from normax.design import governing_load_case
 from normax.design import load_cases as load_cases_of
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
-from normax.form_finding import node_positions
-from normax.form_finding import positions_vertical
-from normax.pipeline import DesignPipeline
-from normax.pipeline import calculate_mass
-from normax.pipeline import frame_stability
-from normax.pipeline import governing_load_case
+from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding.fdm import positions_vertical
 from normax.sizing import Ec3Sizer
 from normax.structures import arch_2d
 from normax.structures import loads_half_span
@@ -1069,9 +1068,9 @@ def test_a_uniform_force_density_leaves_the_plan_alone(setup):
     # density, so holding the plan changes nothing and the two agree exactly.
     structure, fdm, q = setup
 
-    free = node_positions(
+    free = equilibrium_state(
         q, structure.nodes[fdm.indices_fixed], fdm, funicular(structure)
-    )
+    ).xyz
     held = positions_vertical(q, structure.nodes, fdm, funicular(structure))
 
     assert np.allclose(np.asarray(free), np.asarray(held), atol=1e-9)
@@ -1083,9 +1082,9 @@ def test_holding_the_plan_never_changes_the_heights(setup):
     structure, fdm, q = setup
     varied = q * jnp.linspace(0.5, 1.8, NUM_EDGES)
 
-    free = node_positions(
+    free = equilibrium_state(
         varied, structure.nodes[fdm.indices_fixed], fdm, funicular(structure)
-    )
+    ).xyz
     held = positions_vertical(varied, structure.nodes, fdm, funicular(structure))
 
     assert np.allclose(np.asarray(free[:, 2]), np.asarray(held[:, 2]), atol=1e-9)
@@ -1139,9 +1138,9 @@ def test_the_full_equilibrium_stays_funicular_whatever_the_force_densities(setup
 
     residual = nodal_residual(
         structure,
-        node_positions(
+        equilibrium_state(
             varied, structure.nodes[fdm.indices_fixed], fdm, funicular(structure)
-        ),
+        ).xyz,
         varied,
     )
 

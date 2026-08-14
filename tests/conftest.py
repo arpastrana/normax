@@ -7,7 +7,7 @@ from pathlib import Path
 PIPELINE_PACKAGES = ("jax_fdm", "smax")
 
 # A test importing either package, directly or through normax.form_finding,
-# normax.analysis or normax.pipeline, belongs here. Omitting one turns CI red at
+# normax.analysis or normax.design, belongs here. Omitting one turns CI red at
 # collection rather than passing quietly, so this list fails loudly when stale.
 PIPELINE_TESTS = (
     "test_analysis_prepared.py",

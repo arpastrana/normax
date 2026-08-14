@@ -30,13 +30,13 @@ from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
 from normax.analysis.smax import prepare_model as prepare_smax
 from normax.design import DesignParameters
+from normax.design import DesignPipeline
+from normax.design import calculate_mass
 from normax.design import load_cases as load_cases_of
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
-from normax.pipeline import DesignPipeline
-from normax.pipeline import calculate_mass
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
 from normax.structures import arch_2d
 from normax.structures import loads_uniform
 from normax.tesseract import TesseractAnalyzer

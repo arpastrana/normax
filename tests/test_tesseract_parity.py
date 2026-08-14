@@ -9,12 +9,12 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
+from normax.design import DesignPipeline
+from normax.design import calculate_mass
 from normax.design import load_cases as load_cases_of
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.form_finding import FdmFormFinder
-from normax.pipeline import DesignPipeline
-from normax.pipeline import calculate_mass
+from normax.form_finding.fdm import FdmFormFinder
 from normax.sizing import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import arch_2d

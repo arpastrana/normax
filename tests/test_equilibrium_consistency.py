@@ -15,8 +15,8 @@ from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
 from normax.structures import arch_2d
 from normax.structures import loads_uniform
 
