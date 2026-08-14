@@ -26,25 +26,35 @@ in beside a family, and a class is no longer threaded past one.
   the material in a design twice. `MemberSizes.sections` is a `Tube`, and
   `compute_mass` reads `sections.material.density * sections.area` off it
   unchanged.
-- **Both containers are `eqx.Module`s with a static class, and the named-tuple
-  attempt failed for a measured reason.** A class carried as a pytree leaf is
-  traced whenever its container crosses a trace, and `_solved_diameter` is a
-  `custom_jvp` — **JAX traces a `custom_jvp`'s primal arguments under `jit` even
-  when the container reaches it as a closed-over constant**, which is the path
-  `experiments/101_api.py` takes. Probed on the real container: eager and under
-  `jax.grad` the class arrives as a concrete `TypedInt`, under `jax.jit` as a
-  `DynamicJaxprTracer`, and the branch it selects raises. Before this change the
-  class was `nondiff_argnums=(0, 1)`, which is precisely what had kept it out of
-  the trace. `eqx.field(static=True)` puts it in the tree structure, where no
-  trace reaches it, and the ratio, the wall and the grade stay leaves — so every
-  derivative the phase was meant to keep is intact.
-- **A class that survived `jax.jit` as an array was silently wrong, and that is
-  fixed twice.** `Array(3) in (1, 2, 3)` compares elementwise and is false for
-  every class, so a Class 1 family read through a jitted output would have taken
-  the elastic modulus with no complaint. Static fields stop the case arising, and
-  `_validate_class` now converts with `int()` first — correct where the value is
-  concrete, a loud concretization error where it is a tracer, which is the only
-  place a clause selector must not be.
+- **Both containers stay `NamedTuple`s, and the class is a `SectionClass` — an
+  `int` subclass registered as a static pytree node.** It compares, branches,
+  formats and does arithmetic as an integer does, so no clause knows it exists;
+  what it changes is that it flattens to no leaves and travels in the tree
+  structure, so `jit`, `grad` and `vmap` hand it back as the same Python integer.
+  The constructors coerce, and `_make` is overridden so `_replace` inherits the
+  coercion instead of routing around it — a class that reached a container as a
+  bare integer would be a leaf again.
+- **What forced that, measured rather than assumed: JAX traces a `custom_jvp`'s
+  primal arguments under `jit` even when the container reaches it as a closed-over
+  constant.** `_solved_diameter` is that `custom_jvp` and `experiments/101_api.py`
+  jits its objective, so it is the production path rather than a corner. Probed on
+  the real container, a bare `int` leaf arrives concrete when eager and under
+  `jax.grad`, and as a `DynamicJaxprTracer` under `jax.jit` — where the branch it
+  selects raises. Before this change the class was `nondiff_argnums=(0, 1)`, which
+  is precisely what had been keeping it out of the trace.
+- **A class held as a leaf and returned through `jax.jit` was worse than that: it
+  was silently wrong.** It comes back a rank-zero array, and `Array(3) in (1, 2,
+  3)` compares elementwise and is false for every class, so a Class 1 family read
+  through a jitted output would have taken the elastic modulus with no complaint.
+  The container is what stops the case arising; `_validate_class` converting first
+  is the second line, correct where the value is concrete and a loud
+  concretization error where it is a tracer.
+- **Two namedtuple traps, both verified and both avoided.** `typing.NamedTuple`
+  forbids overriding `__new__`, so the two containers subclass a
+  `collections.namedtuple` base and annotate their fields bare. A default written
+  beside such an annotation would shadow the field's own descriptor and make every
+  instance report the default whatever it was built with, so `diameter_min`'s
+  default lives in `__new__` alone.
 - **`at_class_limit` stays a classmethod and takes a grade.** A module could
   derive the ratio in `__init__`, but the ratio has two origins: derived at a
   class limit in every production call site, named outright in the class sweep,
@@ -81,6 +91,30 @@ in beside a family, and a class is no longer threaded past one.
   with the family whose ratio sits at its limit. That pairing is what a catalogue
   is; `behavior_of(catalogue)` is the one thing the container knew that a family
   does not.
+
+### The suite runs across every core
+
+`pytest-xdist` is a dev dependency and `pyproject.toml` carries the same
+`[tool.pytest.ini_options]` block `jax_fdm` uses: `-n auto --dist loadfile`, with
+`-v` because bare progress dots are unreadable once workers interleave. Plain
+`uv run pytest` is now the fast path and `-n0` serializes for debugging.
+
+- **Measured, on ten cores: 159 s → 30 s.** Two changes compound. `tests/conftest.py`
+  enables JAX's persistent compilation cache, which took a run from 159 s to 107 s
+  cold and 62 s warm — the suite triggers some 2800 distinct compilations and was
+  repeating them every run. Fanning out across cores takes the warm run to 30 s.
+- **`--dist loadfile` is not only about legible output, and splitting files is
+  slower.** Measured: `loadgroup`, which lets a file spread over several workers,
+  runs in 36 s against 30 s and burns 727 % CPU against 434 % — every worker that
+  receives part of a file rebuilds that file's module fixtures and recompiles its
+  programs, and that costs more than the extra parallelism buys. Pinning a file is
+  also what two files need on their own terms: the Tesseract tests serve containers
+  through one chain, and OpenSees holds a single global model with no handle to it.
+- **One file now bounds the wall clock.** `test_pipeline.py` is a third of the
+  suite by itself at some 20 s, so nothing can finish sooner than it does. What is
+  left to win there is inside that file: `sized()` and `covered()` are plain
+  functions called 51 times, each re-running form finding, three analyses and three
+  bisections eagerly.
 
 ### The search hands back the design it answered with
 

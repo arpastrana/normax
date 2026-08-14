@@ -876,16 +876,15 @@ tube = catalogue(diameter)          # Tube(diameter, thickness, material, sectio
 | `section_class=` keyword beside a tube or a catalogue | read off it |
 | `MemberSection(catalogue.tube_at(d), steel)`, paired by hand twice | the tube already has the grade |
 
-### Both are `eqx.Module`s, and the class is a static field
+### Both stay `NamedTuple`s, and the class is a static pytree node
 
-**The plan said named tuples and the measurement said otherwise.** A class that is
-a pytree leaf is traced whenever its container crosses a trace, and the spike that
-cleared it only exercised the paths where that does not happen. The path that
-matters was missed: `_solved_diameter` is a `custom_jvp`, and **JAX traces a
-`custom_jvp`'s primal arguments under `jit` even when the container reaches it as
-a closed-over constant.** Probed directly on the real container:
+**The plan said the class could be a plain field and the measurement said
+otherwise.** The spike that cleared it only exercised the paths where a leaf stays
+concrete. The one that matters was missed: `_solved_diameter` is a `custom_jvp`,
+and **JAX traces a `custom_jvp`'s primal arguments under `jit` even when the
+container reaches it as a closed-over constant.** Probed on the real container:
 
-| path | class arrives as |
+| path | a bare `int` leaf arrives as |
 |---|---|
 | eager | `TypedInt` — concrete, branchable |
 | `jax.grad` of a closure | `TypedInt` |
@@ -896,37 +895,51 @@ is the production path. Before this phase the class was `nondiff_argnums=(0, 1)`
 which is exactly what kept it out of the trace; moving it inside the catalogue as
 a leaf gives that up.
 
-`eqx.field(static=True)` puts it in the tree structure instead, where no trace
-reaches it, and that fixes three things at once rather than one:
+**The fix keeps both containers named tuples.** `SectionClass(int)`, registered
+with `jax.tree_util.register_static`, is an integer that lives in the tree
+structure rather than in the leaves:
 
-| | leaf | static field |
+| | bare `int` leaf | `SectionClass` |
 |---|---|---|
 | `custom_jvp` primal under `jit` | traced, raises | Python `int` |
 | plain `jax.jit` argument | `TracerBoolConversionError` | Python `int` |
 | output of a plain `jax.jit` | rank-zero array; `x in (1, 2)` silently false | Python `int` |
+| `jax.tree.leaves` | one leaf | none |
+| two classes, one program | reused — wrong | recompiled — right |
 
-The third row is the one worth dwelling on. A class that survives a round trip as
-`Array(3)` compares false against every class, so a Class 1 family would quietly
-be read elastically. `is_plastic` now converts with `int()` before comparing —
-right where the value is concrete, loud where it is a tracer — but the container
-is what stops the case arising.
+It is a real `int` by inheritance, so `is_plastic`, `in CLASSES_IMPLEMENTED`,
+`class_limits(f_y)[named - 1]` and every f-string take it unchanged, and it is
+hashable and comparable, which is what a treedef entry has to be. The third row
+above is the one worth dwelling on: a class that survived as `Array(3)` compares
+false against every class, so a Class 1 family would quietly have been read
+elastically. `is_plastic` converts with `int()` before comparing as a second line,
+but the container is what stops the case arising.
 
-**What it costs is small and it is all in the containers.** `_replace` becomes a
-constructor call at the two places that relabel a family, `jax.tree.leaves(tube)`
-is the geometry and the grade rather than everything, and a walk over a design by
-`_fields` alone stops one level short — `tests/test_tesseract_parity.py` reads
-dataclass fields too now. The ratio, the wall and the grade stay leaves, so every
-derivative the phase was meant to keep is intact.
+**Coercion is in the constructor, which is the point.** A caller passing a bare
+`3` would otherwise put a leaf back in the tree and the failure would return.
+`typing.NamedTuple` forbids overriding `__new__`, so both containers subclass a
+`collections.namedtuple` base; `_make` is overridden too, since `_replace` routes
+through it and would otherwise bypass the coercion. Two verified traps avoided: a
+default written beside a bare field annotation **shadows the namedtuple's own
+descriptor**, so every instance reports the default whatever it was built with —
+`diameter_min`'s default lives in `__new__` alone.
+
+**An `eqx.Module` with `eqx.field(static=True)` was tried first and works
+identically**, to the same measured numbers. It was replaced because it makes the
+repo's simplest containers its most special ones: `_replace` disappears,
+`jax.tree.leaves` counts differently, and a walk over a design by `_fields` stops
+at the first module. `SectionClass` puts the exception in the one value that is
+genuinely exceptional rather than in the two containers that hold it.
 
 ### `at_class_limit` survives, as a classmethod
 
-A module could derive a field in `__init__`, equinox unflattening by field
-assignment rather than by the constructor. It still does not, and the reason is
-that the ratio has two origins rather than one: it is derived at a class limit in
-every production call site and named outright in the sweep, the gradient tests and
-the geometry fixtures that model a published section. One constructor cannot read
-as both. So the ratio stays the leading field and the derivation stays a
-classmethod, now taking the grade rather than a bare `f_y`:
+`__new__` could derive the ratio as well as coerce the class. It does not, and the
+reason is not the container: the ratio has two origins rather than one. It is
+derived at a class limit in every production call site and named outright in the
+class sweep, the gradient tests and the geometry fixtures that model a published
+section. One constructor cannot read as both. So the ratio stays the leading field
+and the derivation stays a classmethod, now taking the grade rather than a bare
+`f_y`:
 
 ```python
 TubeCatalogue.at_class_limit(Steel(), 3)      # the common case, ratio derived
