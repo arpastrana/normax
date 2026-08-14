@@ -3,8 +3,7 @@ from pathlib import Path
 
 import jax
 
-# Most of a run is XLA compiling the same programs again, so the cache is what
-# makes a second run cheap. Measured: 159 s without it, 65 s with it warm.
+# Most of a run is XLA recompiling the same programs; see CHANGELOG for the cost.
 COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))

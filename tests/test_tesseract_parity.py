@@ -250,9 +250,9 @@ def field_names(container):
     """
     A container's field names, whether it is a named tuple or a module.
 
-    A section is a module rather than a named tuple, its class having to live in
-    the tree structure, so walking a design by `_fields` alone stops one level
-    short and compares two containers instead of their contents.
+    Every stage container is a named tuple and a block is a module, so both are
+    walked. Walking by `_fields` alone would stop at the first module and compare
+    two containers rather than their contents, which passes for the wrong reason.
     """
     if hasattr(container, "_fields"):
         return container._fields
@@ -428,7 +428,8 @@ def test_the_boundary_does_not_downcast_to_single_precision(arch, one_case):
         if label.endswith("section_class"):
             # A label rather than a payload. It crosses as a Python integer of no
             # width at all, which is the stronger statement the others cannot make.
-            assert type(value) is int, label
+            assert isinstance(value, int), label
+            assert jax.tree.leaves(value) == [], label
             continue
 
         assert jnp.asarray(value).dtype == jnp.float64, label

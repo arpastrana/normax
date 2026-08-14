@@ -24,6 +24,7 @@ dev = [
     "blue-prints>=0.7.1",
     "pre-commit>=4.6.1",
     "pytest",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.16.2",
 ]
 pipeline = [
@@ -78,4 +79,18 @@ CI = "https://github.com/arpastrana/normax/actions"
 [project.optional-dependencies]
 spike = [
     "openseespy>=3.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -n auto fans the suite across cores; -n0 serializes. loadfile is measured faster.
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--tb=short",
+    "-v",
+    "-n",
+    "auto",
+    "--dist",
+    "loadfile",
 ]

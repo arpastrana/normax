@@ -5,6 +5,7 @@ import pytest
 
 from normax.ec3.classification import CLASS_LIMIT_FACTORS
 from normax.ec3.classification import CLASS_LIMIT_TOLERANCE
+from normax.ec3.classification import CLASSES_IMPLEMENTED
 from normax.ec3.classification import class_limits
 from normax.ec3.classification import classify_section
 from normax.ec3.classification import material_factor
@@ -248,7 +249,20 @@ def test_the_class_of_a_ratio_is_a_python_integer():
     # A traced or array value cannot select a clause under jit.
     value = section_class_at_ratio(55.0, 355.0)
 
-    assert type(value) is int
+    assert isinstance(value, int)
+    assert value == 3
+
+
+def test_a_class_is_an_integer_that_is_not_a_pytree_leaf():
+    # Both halves matter and they pull opposite ways. It has to be an integer, or
+    # no clause can branch on it; it must not be a leaf, or a trace turns it into
+    # one and the branch raises.
+    value = section_class_at_ratio(55.0, 355.0)
+
+    assert isinstance(value, int)
+    assert jax.tree.leaves(value) == []
+    assert value in CLASSES_IMPLEMENTED
+    assert f"Class {value}" == "Class 3"
 
 
 def test_a_class_four_ratio_is_refused():

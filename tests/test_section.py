@@ -214,7 +214,8 @@ def test_a_tubes_geometry_is_two_leaves():
 
     assert leaves[:2] == [tube.diameter, tube.thickness]
     assert len(leaves) == 2 + len(jax.tree.leaves(STEEL))
-    assert type(tube.section_class) is int
+    assert isinstance(tube.section_class, int)
+    assert jax.tree.leaves(tube.section_class) == []
 
 
 def test_properties_are_jittable():
