@@ -111,7 +111,6 @@ def frame_model(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
     catalogue: TubeCatalogue,
     *,
     normal: int | None,
@@ -127,10 +126,9 @@ def frame_model(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    steel :
-        Material properties. Only the modulus and the density reach the model.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family, whose ratio fixes the wall thickness and whose grade
+        supplies the modulus and the density.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -148,6 +146,7 @@ def frame_model(
     Poisson's ratio is not carried by the material container, since no clause
     implemented here needs it, and is supplied from EN 1993-1-1 3.2.6.
     """
+    steel = catalogue.material
     material = Material(
         elasticity_modulus=to_pascals(steel.e_mod),
         yield_stress=to_pascals(steel.f_y),
@@ -184,7 +183,6 @@ def frame_model(
 
 def prepare_model(
     structure: Structure,
-    steel: Steel,
     catalogue: TubeCatalogue,
     *,
     normal: int | None,
@@ -196,10 +194,9 @@ def prepare_model(
     ----------
     structure :
         The structure supplying the connectivity and the supported nodes.
-    steel :
-        Material properties. Placeholders only, replaced at every call.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family, whose ratio fixes the wall thickness and whose grade
+        supplies the material. Placeholders only, replaced at every call.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -228,7 +225,7 @@ def prepare_model(
     placeholder = jnp.full(structure.num_edges, catalogue.diameter_min)
 
     frame = frame_model(
-        structure, structure.nodes, placeholder, steel, catalogue, normal=normal
+        structure, structure.nodes, placeholder, catalogue, normal=normal
     )
 
     return compile_structure(frame)
@@ -238,7 +235,6 @@ def _injected_assembly(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
     catalogue: TubeCatalogue,
 ) -> CompiledStructure:
     """
@@ -252,10 +248,9 @@ def _injected_assembly(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    steel :
-        Material properties.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family, whose ratio fixes the wall thickness and whose grade
+        supplies the material.
 
     Returns
     -------
@@ -281,8 +276,9 @@ def _injected_assembly(
     every member being a beam.
     """
     outer = to_meters(diameters)
-    gross = catalogue.tube_at(outer).area
-    inertia = catalogue.tube_at(outer).second_moment
+    steel = catalogue.material
+    gross = catalogue(outer).area
+    inertia = catalogue(outer).second_moment
 
     e_mod = to_pascals(jnp.asarray(steel.e_mod))
     f_y = to_pascals(jnp.asarray(steel.f_y))
@@ -322,7 +318,6 @@ def member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
     catalogue: TubeCatalogue,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
@@ -337,10 +332,9 @@ def member_forces(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    steel :
-        Material properties.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family, whose ratio fixes the wall thickness and whose grade
+        supplies the material.
     loads :
         Force applied at every node.
 
@@ -366,7 +360,7 @@ def member_forces(
     not model, not an error, and they are the whole of the gap between these
     axial forces and the product of force density and length.
     """
-    compiled = _injected_assembly(model, xyz, diameters, steel, catalogue)
+    compiled = _injected_assembly(model, xyz, diameters, catalogue)
 
     response = solve(compiled, loads)
     field = element_forces(compiled, response, num_samples=2)
@@ -382,7 +376,6 @@ def buckling_modes(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
     catalogue: TubeCatalogue,
     loads: Float[Array, "nodes 3"],
     *,
@@ -399,10 +392,9 @@ def buckling_modes(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    steel :
-        Material properties.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family, whose ratio fixes the wall thickness and whose grade
+        supplies the material.
     loads :
         Load case the frame buckles under.
     num_modes :
@@ -436,7 +428,7 @@ def buckling_modes(
     plane, which is what makes the factor comparable with an in-plane member
     check rather than with a lateral one.
     """
-    compiled = _injected_assembly(model, xyz, diameters, steel, catalogue)
+    compiled = _injected_assembly(model, xyz, diameters, catalogue)
 
     response = solve_buckling(compiled, loads, num_modes=num_modes)
 
@@ -452,10 +444,9 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
 
     Attributes
     ----------
-    steel :
-        Material properties the frame is analyzed with.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family the frame is analyzed with, whose ratio fixes the wall
+        thickness and whose grade supplies the material.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -478,7 +469,6 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
     solve and nothing else: no case is compiled, and the block carries none.
     """
 
-    steel: Steel
     catalogue: TubeCatalogue
     normal: int | None = eqx.field(static=True)
     model: CompiledStructure
@@ -486,7 +476,6 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
     def __init__(
         self,
         structure: Structure,
-        steel: Steel,
         catalogue: TubeCatalogue,
         normal: int | None = None,
     ) -> None:
@@ -497,18 +486,23 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         ----------
         structure :
             The structure supplying the connectivity and the supported nodes.
-        steel :
-            Material properties the frame is analyzed with.
         catalogue :
-            The section family, whose ratio fixes the wall thickness.
+            The section family the frame is analyzed with, whose ratio fixes the
+            wall thickness and whose grade supplies the material.
         normal :
             Index of the global axis a planar structure has no thickness along,
             or None for a structure that occupies all three dimensions.
         """
-        self.steel = steel
         self.catalogue = catalogue
         self.normal = normal
-        self.model = prepare_model(structure, steel, catalogue, normal=normal)
+        self.model = prepare_model(structure, catalogue, normal=normal)
+
+    @property
+    def steel(self) -> Steel:
+        """
+        The material the frame is analyzed with.
+        """
+        return self.catalogue.material
 
     def __call__(
         self,
@@ -538,7 +532,6 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
                 self.model,
                 xyz,
                 diameters,
-                self.steel,
                 self.catalogue,
                 load_case,
             )
@@ -637,8 +630,7 @@ def frame_stability(
     modes = buckling_modes(
         analyzer.model,
         design.shape.xyz,
-        design.sizes.sections.diameters,
-        analyzer.steel,
+        design.sizes.sections.diameter,
         analyzer.catalogue,
         loads,
         num_modes=num_modes,
@@ -646,7 +638,7 @@ def frame_stability(
     alpha_cr = modes.factors[0]
 
     steel = analyzer.steel
-    tubes = analyzer.catalogue.tube_at(design.sizes.sections.diameters)
+    tubes = analyzer.catalogue(design.sizes.sections.diameter)
     gross = tubes.area
     inertia = tubes.second_moment
     axial_force = design.sizes.actions.axial_force[load_case]

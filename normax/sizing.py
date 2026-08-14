@@ -35,7 +35,7 @@ from jaxtyping import Float
 from normax.analysis import MemberForces
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import Steel
-from normax.ec3.section import MemberSection
+from normax.ec3.section import Tube
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
@@ -90,7 +90,7 @@ class MemberSizes(NamedTuple):
     standard. `normax.design.design_envelope` is where it happens.
     """
 
-    sections: MemberSection
+    sections: Tube
     actions: MemberActions
     utilization: Float[Array, "load_cases members"]
 
@@ -226,24 +226,29 @@ class Ec3Sizer(AbstractMemberSizer):
     ----------
     structure :
         The structure whose members are sized. Read for nothing.
-    steel :
-        Material properties and partial factors.
     catalogue :
-        The section family every member is drawn from.
+        The section family every member is drawn from, which is also where the
+        grade and the class come from.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
     section_class :
-        Cross-section class, read from the family rather than given.
+        Cross-section class, confirmed against the family rather than accepted
+        beside it.
 
     Notes
     -----
-    **The cross-section class is derived and never accepted.** It selects a
-    clause rather than scaling a number, so it has to be static, and a class
-    named independently of the family it describes is free to contradict it —
-    which would allow the plastic clauses to be applied to a Class 3 wall. It is
-    read once when the block is built, on the host, where the yield strength is
-    a concrete number and the Class 4 refusal can fire.
+    **A grade is not an argument here, because a section family already has
+    one.** The ratio that defines the family is a class limit read at a yield
+    strength, so a grade handed in beside it could be a different one; taking the
+    catalogue alone makes that unrepresentable.
+
+    **The cross-section class is confirmed and never taken on trust.** It selects
+    a clause rather than scaling a number, so it has to be static, and a class
+    named beside a ratio is free to contradict it — which would allow the plastic
+    clauses to be applied to a Class 3 wall. It is checked once when the block is
+    built, on the host, where the ratio and the yield strength are concrete
+    numbers and the Class 4 refusal can fire.
 
     **The structure settles nothing, and that is the honest answer here.** A
     code check reads one member at a time and knows nothing of connectivity, so
@@ -258,7 +263,6 @@ class Ec3Sizer(AbstractMemberSizer):
     """
 
     structure: Structure
-    steel: Steel
     catalogue: TubeCatalogue
     resultant: bool = eqx.field(static=True)
     section_class: int = eqx.field(static=True)
@@ -266,21 +270,19 @@ class Ec3Sizer(AbstractMemberSizer):
     def __init__(
         self,
         structure: Structure,
-        steel: Steel,
         catalogue: TubeCatalogue,
         resultant: bool = True,
     ) -> None:
         """
-        Build a sizer, reading its cross-section class off its section family.
+        Build a sizer, confirming its cross-section class against its family.
 
         Parameters
         ----------
         structure :
             The structure whose members are sized. Read for nothing.
-        steel :
-            Material properties and partial factors.
         catalogue :
-            The section family every member is drawn from.
+            The section family every member is drawn from, with the grade it is
+            rolled from and the class its wall falls in.
         resultant :
             Whether the two moments combine as a resultant in the cross-section
             check, or as a linear sum.
@@ -288,13 +290,20 @@ class Ec3Sizer(AbstractMemberSizer):
         Raises
         ------
         ValueError
-            If the family's ratio classifies as Class 4.
+            If the family's ratio classifies as Class 4, or as a class other
+            than the one the family names.
         """
         self.structure = structure
-        self.steel = steel
         self.catalogue = catalogue
         self.resultant = resultant
-        self.section_class = catalogue.section_class(steel.f_y)
+        self.section_class = catalogue.verified_class()
+
+    @property
+    def steel(self) -> Steel:
+        """
+        The steel every member is cut from.
+        """
+        return self.catalogue.material
 
     def __call__(
         self,
@@ -337,24 +346,20 @@ class Ec3Sizer(AbstractMemberSizer):
             demanded = diameter_required(
                 acting,
                 buckling_length,
-                self.steel,
                 self.catalogue,
-                section_class=self.section_class,
                 resultant=self.resultant,
             )
             used = utilization_design(
-                self.catalogue.tube_at(demanded),
+                self.catalogue(demanded),
                 acting,
                 buckling_length,
-                self.steel,
-                section_class=self.section_class,
                 resultant=self.resultant,
             )
 
             return acting, demanded, used
 
         actions, demanded, used = jax.vmap(size_case)(forces)
-        sections = MemberSection(self.catalogue.tube_at(demanded), self.steel)
+        sections = self.catalogue(demanded)
 
         return MemberSizes(sections, actions, used)
 
@@ -393,16 +398,14 @@ class Ec3Sizer(AbstractMemberSizer):
         does so because the shape decides how much bending each load case raises
         rather than because any member was reassigned.
         """
-        tubes = self.catalogue.tube_at(diameters)
+        tubes = self.catalogue(diameters)
 
         def governing_case(acting: MemberActions):
             return governing_limit_state(
                 tubes,
                 acting,
                 buckling_length,
-                self.steel,
                 self.catalogue,
-                section_class=self.section_class,
                 resultant=self.resultant,
             )
 
@@ -439,15 +442,13 @@ class Ec3Sizer(AbstractMemberSizer):
         most one rather than exactly one. It is exactly one for whichever case
         governs each member.
         """
-        tubes = self.catalogue.tube_at(diameters)
+        tubes = self.catalogue(diameters)
 
         def utilization_case(acting: MemberActions):
             return utilization_design(
                 tubes,
                 acting,
                 buckling_length,
-                self.steel,
-                section_class=self.section_class,
                 resultant=self.resultant,
             )
 

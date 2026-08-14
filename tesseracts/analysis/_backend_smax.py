@@ -42,6 +42,7 @@ from smax import CompiledStructure
 from normax.analysis import MemberForces
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
+from normax.ec3.classification import classify_section
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -52,7 +53,6 @@ def _member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    steel: Steel,
     catalogue: TubeCatalogue,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
@@ -67,10 +67,9 @@ def _member_forces(
         Position of every node.
     diameters :
         Outer diameter of every member.
-    steel :
-        Material properties.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family, whose ratio fixes the wall thickness and whose grade
+        supplies the material.
     loads :
         Force applied at every node.
 
@@ -99,7 +98,7 @@ def _member_forces(
     Every array a derivative might be taken through arrives as an argument, the
     loads included, rather than as a constant folded into the program.
     """
-    return member_forces(model, xyz, diameters, steel, catalogue, loads)
+    return member_forces(model, xyz, diameters, catalogue, loads)
 
 
 def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -149,15 +148,16 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
-    catalogue = TubeCatalogue(ratio=inputs["ratio"])
+    # An analysis reads geometry alone, so the class is derived and never read.
+    section_class = int(classify_section(inputs["ratio"], inputs["f_y"]))
+    catalogue = TubeCatalogue(inputs["ratio"], section_class, steel)
 
-    model = prepare_model(structure, steel, catalogue, normal=inputs["normal"])
+    model = prepare_model(structure, catalogue, normal=inputs["normal"])
 
     member = _member_forces(
         model,
         xyz,
         jnp.asarray(inputs["diameter"]),
-        steel,
         catalogue,
         jnp.asarray(inputs["loads"]),
     )

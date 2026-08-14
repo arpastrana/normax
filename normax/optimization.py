@@ -42,7 +42,12 @@ import numpy as np
 from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
+from jaxtyping import PyTree
 from scipy.optimize import minimize
+
+# What an objective returns: a mass, or a mass and whatever was computed with it.
+ObjectiveValue = Float[Array, ""] | tuple[Float[Array, ""], PyTree]
+ValueAndGradient = Callable[..., tuple[ObjectiveValue, Float[Array, "members"]]]
 
 
 class Trajectory(NamedTuple):
@@ -73,6 +78,39 @@ class Trajectory(NamedTuple):
     q: Float[Array, "steps members"]
     mass: Float[Array, "steps"]
     beta: Float[Array, "steps"]
+
+
+class SearchResult(NamedTuple):
+    """
+    The answer a search returned, and everything computed at it.
+
+    Attributes
+    ----------
+    value :
+        Objective at the answer, the last entry of the trajectory's own column.
+    aux :
+        Whatever the objective returned alongside its value there. None if it
+        returned nothing but a value.
+    trajectory :
+        Where the optimizer went, in the order it went there.
+
+    Notes
+    -----
+    **The point of the aux field is that the answer is not recomputed.** A search
+    over a pipeline ends holding a force density and nothing else, and the design
+    behind it — the shape, the forces, the sections, the utilization — is what a
+    caller actually wants to report on. Rebuilding it afterwards costs a second
+    trace and a second compilation of a program the search already ran hundreds
+    of times, which is far more than the forward pass it looks like.
+
+    The objective returns it instead, as `(value, aux)` under `has_aux`, and the
+    search carries out the one belonging to the point it answered with. Nothing
+    here knows what the aux is: to this module it is a pytree that rode along.
+    """
+
+    value: Float[Array, ""]
+    aux: PyTree | None
+    trajectory: Trajectory
 
 
 def shortest_member(
@@ -203,8 +241,10 @@ def annealing_schedule(
 
 
 def value_and_gradient(
-    objective: Callable[..., Float[Array, ""]],
-) -> Callable[..., tuple[Float[Array, ""], Float[Array, "members"]]]:
+    objective: Callable[..., ObjectiveValue],
+    *,
+    has_aux: bool = False,
+) -> ValueAndGradient:
     """
     The value and the gradient of an objective together, compiled once.
 
@@ -213,6 +253,9 @@ def value_and_gradient(
     objective :
         The mass, as a function of the force densities and of anything else it
         is parameterized by. Differentiated in its first argument alone.
+    has_aux :
+        Whether the objective returns a value and a pytree rather than a value.
+        The pytree is carried out untouched and never differentiated.
 
     Returns
     -------
@@ -222,6 +265,11 @@ def value_and_gradient(
 
     Notes
     -----
+    **An objective that returns what it computed costs nothing extra.** The
+    design behind a mass is already in the program, so returning it alongside
+    hands the caller the answer's shape, forces and sections for the price of
+    the traffic — where recomputing it afterwards is a second compilation.
+
     **The compilation boundary, exposed so that a caller can decide when it is
     paid.** `descend` builds one of these if it is not handed one, and a caller
     timing a search wants it built and called once beforehand instead: compiling
@@ -242,21 +290,19 @@ def value_and_gradient(
     traces the index arrays a solver was compiled around, and the first place
     that surfaces is a concretization error inside the assembly.
     """
-    return jax.jit(jax.value_and_grad(objective))
+    return jax.jit(jax.value_and_grad(objective, has_aux=has_aux))
 
 
 def minimize_bounded(
-    objective: Callable[[Float[Array, "members"]], Float[Array, ""]],
+    objective: Callable[[Float[Array, "members"]], ObjectiveValue],
     q: Float[Array, "members"],
     *,
     bounds: tuple[float, float],
     iterations: int,
     sharpness: float | Float[Array, ""] = 0.0,
-    gradient: Callable[
-        [Float[Array, "members"]], tuple[Float[Array, ""], Float[Array, "members"]]
-    ]
-    | None = None,
-) -> Trajectory:
+    has_aux: bool = False,
+    gradient: ValueAndGradient | None = None,
+) -> SearchResult:
     """
     Minimize a scalar objective in the force densities, under box bounds.
 
@@ -274,6 +320,9 @@ def minimize_bounded(
         Envelope sharpness to stamp on every iterate. Recorded and never used,
         this being generic over any scalar objective; zero says the caller had
         none to give.
+    has_aux :
+        Whether the objective returns a value and a pytree rather than a value.
+        A handed-in gradient must have been built the same way.
     gradient :
         A compiled value and gradient of the objective, from
         `value_and_gradient`. If None, one is built here and this call pays for
@@ -281,8 +330,8 @@ def minimize_bounded(
 
     Returns
     -------
-    trajectory :
-        Every iterate, its objective and the starting point.
+    found :
+        The answer, whatever the objective computed there, and the trajectory.
 
     Notes
     -----
@@ -324,63 +373,77 @@ def minimize_bounded(
     whenever it stops on its iteration limit part-way through a line search. It
     also steps once before honouring a limit of zero, so a trajectory that ends
     where it started is the only honest report of having gone nowhere.
+
+    **Only the newest aux is held**, since the answer is not known until the
+    search is over and a pytree per evaluation is a design per evaluation. The
+    answer is usually the point evaluated last, and when it is not, one call
+    recovers what it computed there — still cheaper than tracing the objective
+    again, which is what recomputing the answer outside this function costs.
     """
     evaluated: dict[bytes, float] = {}
+    newest: dict[bytes, PyTree] = {}
     visited = [np.asarray(q, dtype=np.float64)]
 
-    gradient = value_and_gradient(objective) if gradient is None else gradient
+    if gradient is None:
+        gradient = value_and_gradient(objective, has_aux=has_aux)
 
     def evaluate_objective(x: Float[np.ndarray, "members"]):
-        value, slope = gradient(jnp.asarray(x))
+        computed, slope = gradient(jnp.asarray(x))
+        value, aux = computed if has_aux else (computed, None)
         evaluated[x.tobytes()] = float(value)
+        newest.clear()
+        newest[x.tobytes()] = aux
 
         return float(value), np.asarray(slope, dtype=np.float64)
 
     def record_step(x: Float[np.ndarray, "members"]) -> None:
         visited.append(np.array(x, dtype=np.float64))
 
-    if iterations < 1:
-        return Trajectory(
-            q=jnp.asarray(np.stack(visited)),
-            mass=jnp.asarray([float(gradient(jnp.asarray(q))[0])]),
-            beta=jnp.full(1, sharpness),
+    if iterations > 0:
+        result = minimize(
+            evaluate_objective,
+            np.asarray(q, dtype=np.float64),
+            jac=True,
+            method="L-BFGS-B",
+            bounds=[bounds] * int(np.size(q)),
+            callback=record_step,
+            options={"maxiter": iterations},
         )
 
-    result = minimize(
-        evaluate_objective,
-        np.asarray(q, dtype=np.float64),
-        jac=True,
-        method="L-BFGS-B",
-        bounds=[bounds] * int(np.size(q)),
-        callback=record_step,
-        options={"maxiter": iterations},
-    )
+        if not np.array_equal(visited[-1], result.x):
+            visited.append(np.asarray(result.x, dtype=np.float64))
 
-    if not np.array_equal(visited[-1], result.x):
-        visited.append(np.asarray(result.x, dtype=np.float64))
+    masses = []
+    for step in visited:
+        recorded = evaluated.get(step.tobytes())
+        if recorded is None:
+            recorded = evaluate_objective(step)[0]
+        masses.append(recorded)
 
-    masses = [
-        evaluated.get(step.tobytes()) or float(gradient(jnp.asarray(step))[0])
-        for step in visited
-    ]
+    answer = visited[-1]
+    if answer.tobytes() not in newest:
+        evaluate_objective(answer)
 
-    return Trajectory(
+    trajectory = Trajectory(
         q=jnp.asarray(np.stack(visited)),
         mass=jnp.asarray(masses),
         beta=jnp.full(len(visited), sharpness),
     )
 
+    return SearchResult(trajectory.mass[-1], newest[answer.tobytes()], trajectory)
+
 
 def optimize_annealed(
     objective: Callable[
-        [Float[Array, "members"], float | Float[Array, ""]], Float[Array, ""]
+        [Float[Array, "members"], float | Float[Array, ""]], ObjectiveValue
     ],
     q: Float[Array, "members"],
     schedule: Sequence[float] | Float[Array, "rounds"],
     *,
     bounds: tuple[float, float],
     iterations: int = 50,
-) -> Trajectory:
+    has_aux: bool = False,
+) -> SearchResult:
     """
     Minimize over an annealing schedule, each round warm-starting the next.
 
@@ -396,11 +459,14 @@ def optimize_annealed(
         Smallest and largest value any force density may take.
     iterations :
         Most iterations to spend in each round.
+    has_aux :
+        Whether the objective returns a value and a pytree rather than a value.
 
     Returns
     -------
-    trajectory :
-        Every iterate of every round, and the sharpness it was taken under.
+    found :
+        The last round's answer, what the objective computed there, and every
+        iterate of every round with the sharpness it was taken under.
 
     Notes
     -----
@@ -428,7 +494,7 @@ def optimize_annealed(
     masses = []
     sharpnesses = []
 
-    compiled = value_and_gradient(objective)
+    compiled = value_and_gradient(objective, has_aux=has_aux)
     schedule = jnp.asarray(schedule)
 
     for sharpness in schedule:
@@ -436,22 +502,26 @@ def optimize_annealed(
         def round_objective(x, sharpness=sharpness):
             return objective(x, sharpness)
 
-        walked = minimize_bounded(
+        found = minimize_bounded(
             round_objective,
             q,
             bounds=bounds,
             iterations=iterations,
             sharpness=sharpness,
+            has_aux=has_aux,
             gradient=lambda x, sharpness=sharpness: compiled(x, sharpness),
         )
+        walked = found.trajectory
         q = walked.q[-1]
 
         iterates.append(walked.q)
         masses.append(walked.mass)
         sharpnesses.append(walked.beta)
 
-    return Trajectory(
+    trajectory = Trajectory(
         q=jnp.concatenate(iterates),
         mass=jnp.concatenate(masses),
         beta=jnp.concatenate(sharpnesses),
     )
+
+    return SearchResult(found.value, found.aux, trajectory)

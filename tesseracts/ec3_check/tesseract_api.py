@@ -161,9 +161,9 @@ class OutputSchema(BaseModel):
     """
 
 
-def _material_and_family(inputs: dict[str, Any]) -> tuple[Steel, TubeCatalogue]:
+def _section_family(inputs: dict[str, Any]) -> TubeCatalogue:
     """
-    The material and the section family, from the flat fields of the schema.
+    The section family, from the flat fields of the schema.
 
     Parameters
     ----------
@@ -172,8 +172,16 @@ def _material_and_family(inputs: dict[str, Any]) -> tuple[Steel, TubeCatalogue]:
 
     Returns
     -------
-    material :
-        The steel and the tube family.
+    catalogue :
+        The tube family, carrying the grade and the class it was described with.
+
+    Notes
+    -----
+    The grade, the ratio and the class cross the wire as separate scalars, since
+    a schema is flat, and are reassembled into the one container the clauses take
+    on this side. Nothing about the wire format changes because of that: what
+    crosses is what a caller can state, and what is built is what a clause can
+    read.
     """
     steel = Steel(
         f_y=inputs["f_y"],
@@ -183,12 +191,13 @@ def _material_and_family(inputs: dict[str, Any]) -> tuple[Steel, TubeCatalogue]:
         gamma_m1=inputs["gamma_m1"],
         alpha=inputs["alpha"],
     )
-    catalogue = TubeCatalogue(
+
+    return TubeCatalogue(
         ratio=inputs["ratio"],
+        section_class=inputs["section_class"],
+        material=steel,
         diameter_min=inputs["diameter_min"],
     )
-
-    return steel, catalogue
 
 
 def _forward_pass(
@@ -219,8 +228,7 @@ def _forward_pass(
     is a clause of the standard and not a product of an analysis. That is what
     keeps the analysis schema free of anything a solver has no opinion on.
     """
-    steel, catalogue = _material_and_family(inputs)
-    section_class = inputs["section_class"]
+    catalogue = _section_family(inputs)
     resultant = inputs["resultant"]
 
     end_moments_major = jnp.asarray(inputs["end_moments_major"])
@@ -245,22 +253,10 @@ def _forward_pass(
     )
 
     required = diameter_required(
-        actions,
-        buckling_length,
-        steel,
-        catalogue,
-        section_class=section_class,
-        resultant=resultant,
+        actions, buckling_length, catalogue, resultant=resultant
     )
-    sized = catalogue.tube_at(required)
-    used = utilization_of_tubes(
-        sized,
-        actions,
-        buckling_length,
-        steel,
-        section_class=section_class,
-        resultant=resultant,
-    )
+    sized = catalogue(required)
+    used = utilization_of_tubes(sized, actions, buckling_length, resultant=resultant)
 
     outputs = {
         "diameter": required,
@@ -273,13 +269,7 @@ def _forward_pass(
 
     if diagnostics:
         outputs["governing"] = governing_limit(
-            sized,
-            actions,
-            buckling_length,
-            steel,
-            catalogue,
-            section_class=section_class,
-            resultant=resultant,
+            sized, actions, buckling_length, catalogue, resultant=resultant
         )
 
     return outputs

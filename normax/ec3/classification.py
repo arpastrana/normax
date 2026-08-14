@@ -124,25 +124,41 @@ def is_plastic(section_class: int) -> bool:
     section properties under 6.2.2.5, which this package does not implement, and
     answering False would run Class 3's clauses on a shell.
     """
-    _validate_class(section_class)
-
-    return section_class in PLASTIC_CLASSES
+    return _validate_class(section_class) in PLASTIC_CLASSES
 
 
-def _validate_class(section_class: int) -> None:
+def _validate_class(section_class: int) -> int:
     """
     Refuse a class this package does not implement.
+
+    Returns
+    -------
+    section_class :
+        The class as a Python integer, whatever integral form it arrived in.
 
     Raises
     ------
     ValueError
         If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    **The conversion is what makes the comparison honest.** A class rides along
+    inside a section, and a section handed back through `jax.jit` arrives with its
+    class as a rank-zero array, on which `not in` compares elementwise and is
+    silently false for every class. Converting first turns that into the right
+    answer where the value is concrete, and into a loud concretization error where
+    it is a tracer — which is the only place a clause selector must not be.
     """
-    if section_class not in CLASSES_IMPLEMENTED:
+    named = int(section_class)
+
+    if named not in CLASSES_IMPLEMENTED:
         raise ValueError(
-            f"class must be 1, 2 or 3, not {section_class}; "
+            f"class must be 1, 2 or 3, not {named}; "
             "beyond the Class 3 limit EN 1993-1-6 applies"
         )
+
+    return named
 
 
 def ratio_at_class_limit(
@@ -178,9 +194,9 @@ def ratio_at_class_limit(
     Inverse of `section_class_at_ratio`, and the round trip through either order
     is exact to within the inclusive bound the classification applies.
     """
-    _validate_class(section_class)
+    named = _validate_class(section_class)
 
-    return class_limits(f_y)[section_class - 1]
+    return class_limits(f_y)[named - 1]
 
 
 def classify_section(
@@ -261,7 +277,4 @@ def section_class_at_ratio(
             f"{jnp.shape(ratio)}; a section family has a single ratio"
         )
 
-    section_class = int(classify_section(ratio, f_y))
-    _validate_class(section_class)
-
-    return section_class
+    return _validate_class(int(classify_section(ratio, f_y)))

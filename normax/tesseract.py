@@ -59,8 +59,6 @@ from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import Steel
-from normax.ec3.section import MemberSection
-from normax.ec3.section import Tube
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import utilization_design
 from normax.form_finding import AbstractFormFinder
@@ -281,10 +279,9 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     ----------
     client :
         The analysis Tesseract.
-    steel :
-        Material properties the frame is analyzed with.
     catalogue :
-        The section family, whose ratio fixes the wall thickness.
+        The section family the frame is analyzed with, whose ratio fixes the wall
+        thickness and whose grade supplies the material.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -306,7 +303,6 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     """
 
     client: Tesseract
-    steel: Steel
     catalogue: TubeCatalogue
     normal: int | None = eqx.field(static=True)
     edges: Int[Array, "members 2"]
@@ -316,7 +312,6 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         self,
         structure: Structure,
         client: Tesseract,
-        steel: Steel,
         catalogue: TubeCatalogue,
         normal: int | None = None,
     ) -> None:
@@ -329,20 +324,25 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
             The structure supplying the connectivity and the supported nodes.
         client :
             The analysis Tesseract.
-        steel :
-            Material properties the frame is analyzed with.
         catalogue :
-            The section family, whose ratio fixes the wall thickness.
+            The section family the frame is analyzed with, whose ratio fixes the
+            wall thickness and whose grade supplies the material.
         normal :
             Index of the global axis a planar structure has no thickness along,
             or None for a structure that occupies all three dimensions.
         """
         self.client = client
-        self.steel = steel
         self.catalogue = catalogue
         self.normal = normal
         self.edges = jnp.asarray(structure.edges, dtype=jnp.int64)
         self.supports = jnp.asarray(structure.supports, dtype=jnp.int64)
+
+    @property
+    def steel(self) -> Steel:
+        """
+        The material the frame is analyzed with.
+        """
+        return self.catalogue.material
 
     def __call__(
         self,
@@ -423,8 +423,8 @@ class TesseractSizer(AbstractMemberSizer):
     of it: this block is remote for one of its three answers and local for two,
     and a reader can see which.
 
-    The cross-section class is derived by the block it delegates to, and crosses
-    as a static field of the schema.
+    The cross-section class is confirmed by the block it delegates to, and
+    crosses as a static field of the schema.
     """
 
     client: Tesseract
@@ -434,7 +434,6 @@ class TesseractSizer(AbstractMemberSizer):
         self,
         structure: Structure,
         client: Tesseract,
-        steel: Steel,
         catalogue: TubeCatalogue,
         resultant: bool = True,
     ) -> None:
@@ -447,10 +446,9 @@ class TesseractSizer(AbstractMemberSizer):
             The structure whose members are sized. Read for nothing.
         client :
             The check's Tesseract.
-        steel :
-            Material properties and partial factors.
         catalogue :
-            The section family every member is drawn from.
+            The section family every member is drawn from, with the grade it is
+            rolled from and the class its wall falls in.
         resultant :
             Whether the two moments combine as a resultant in the cross-section
             check, or as a linear sum.
@@ -458,10 +456,11 @@ class TesseractSizer(AbstractMemberSizer):
         Raises
         ------
         ValueError
-            If the family's ratio classifies as Class 4.
+            If the family's ratio classifies as Class 4, or as a class other
+            than the one the family names.
         """
         self.client = client
-        self.local = Ec3Sizer(structure, steel, catalogue, resultant)
+        self.local = Ec3Sizer(structure, catalogue, resultant)
 
     @property
     def steel(self) -> Steel:
@@ -480,7 +479,7 @@ class TesseractSizer(AbstractMemberSizer):
     @property
     def section_class(self) -> int:
         """
-        Cross-section class, read from the family rather than given.
+        Cross-section class, confirmed against the family rather than given.
         """
         return self.local.section_class
 
@@ -551,20 +550,18 @@ class TesseractSizer(AbstractMemberSizer):
             for acting, sized in zip(carried, crossed)
         ]
         demanded = jnp.stack([sized["diameter"] for sized in crossed])
-        sections = MemberSection(local.catalogue.tube_at(demanded), local.steel)
+        sections = local.catalogue(demanded)
         actions = stack_load_cases(per_case)
 
-        def used_case(tubes: Tube, acting: MemberActions):
+        def used_case(diameter: Float[Array, "members"], acting: MemberActions):
             return utilization_design(
-                tubes,
+                local.catalogue(diameter),
                 acting,
                 buckling_length,
-                local.steel,
-                section_class=local.section_class,
                 resultant=local.resultant,
             )
 
-        used = jax.vmap(used_case)(sections.tubes, actions)
+        used = jax.vmap(used_case)(demanded, actions)
 
         return MemberSizes(sections, actions, used)
 

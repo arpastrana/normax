@@ -14,14 +14,20 @@
 """
 A circular hollow section, and the family a member's size is drawn from.
 
-Geometry, not EN 1993-1-1. No clause defines these; they are the standard
-annulus formulas, carried by the two numbers that fix a tube rather than
-recomputed from a diameter at every call site.
+Geometry, not EN 1993-1-1. No clause defines the annulus formulas below; the
+standard is what reads them, and the two places a class number appears here are
+labels on a family rather than clauses applied to one.
 
-A tube is stored as an outer diameter and a wall thickness, and every property
-is derived on access. Two leaves rather than eight is what keeps the derivative
-honest: a diameter and a wall cannot drift apart, and there is one place where
-a wall is chosen for a diameter.
+**A catalogue is a parametrized cross-section generator, and a tube is what it
+generates.** Calling a catalogue at a diameter returns a tube carrying
+everything it was generated with — the wall the family gives that diameter, the
+grade it is rolled from and the class its wall proportion falls in — so nothing
+downstream has to be handed a section and a grade that could disagree.
+
+A tube's geometry is stored as an outer diameter and a wall thickness, and every
+property is derived on access. Two geometric leaves rather than eight is what
+keeps the derivative honest: a diameter and a wall cannot drift apart, and there
+is one place where a wall is chosen for a diameter.
 
 Sizing a member means moving along a catalogue, whose fixed
 diameter-to-thickness ratio makes the wall proportional to the diameter. Every
@@ -34,8 +40,8 @@ catalogue and not to the tube** — a tube whose wall is held fixed as its
 diameter grows does not satisfy it.
 """
 
-from typing import NamedTuple
-
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -49,9 +55,22 @@ from normax.ec3.material import Steel
 DIAMETER_MINIMUM = 21.3
 
 
-class Tube(NamedTuple):
+def _is_traced(value: float | Float[Array, ""]) -> bool:
     """
-    One member's circular hollow section.
+    Whether a value is a tracer rather than a number that can be compared.
+
+    Returns
+    -------
+    traced :
+        True inside a jitted or differentiated function, for a value that
+        function is a function of.
+    """
+    return isinstance(value, jax.core.Tracer)
+
+
+class Tube(eqx.Module):
+    """
+    One member's circular hollow section, and what it is made of.
 
     Attributes
     ----------
@@ -59,20 +78,46 @@ class Tube(NamedTuple):
         Outer diameter.
     thickness :
         Wall thickness.
+    material :
+        The steel it is rolled from, and the partial factors applied to it.
+    section_class :
+        Cross-section class of its wall proportion, 1, 2 or 3.
 
     Notes
     -----
-    Every other property is computed on access rather than stored, so a tube is
-    two leaves and no derived quantity can disagree with the two it came from.
-    Under `jit` the repeated subexpressions are eliminated; eagerly they cost a
-    few flops.
+    **A section travels with its grade and its class, because neither a mass nor
+    a resistance can be read off geometry alone.** An area is geometry and a
+    density is a material, and mass per unit length needs both; a section modulus
+    is geometry and the class is what says which of the two to take. Carrying all
+    of it is what lets a design be weighed and re-read without reaching back into
+    the block that sized it.
+
+    Every geometric property is computed on access rather than stored, so a tube
+    has two geometric leaves and no derived quantity can disagree with the two it
+    came from. Under `jit` the repeated subexpressions are eliminated; eagerly
+    they cost a few flops.
+
+    **The class is static and every other field is a leaf, which is why this is
+    a module rather than a named tuple.** It selects a clause, so it has to be a
+    Python integer wherever a clause reads it, and a class that is a leaf becomes
+    a tracer the moment its container is a primal of the sizing map under `jit` —
+    measured, and it fails at the branch rather than quietly. Held in the tree
+    structure instead, it survives `jit`, `grad` and `vmap` untouched, while the
+    geometry and the grade stay differentiable.
+
+    The load case axis is variadic, like `normax.analysis.MemberForces`. A check
+    answers one size per member per load case, so the sections it returns carry
+    that axis on their geometry and not on their grade; reconciling them into one
+    size per member collapses it, and both ranks are the same container.
     """
 
-    diameter: Float[Array, "members"]
-    thickness: Float[Array, "members"]
+    diameter: Float[Array, "*load_cases members"]
+    thickness: Float[Array, "*load_cases members"]
+    material: Steel
+    section_class: int = eqx.field(static=True)
 
     @property
-    def ratio(self) -> Float[Array, "members"]:
+    def ratio(self) -> Float[Array, "*load_cases members"]:
         """
         Diameter-to-thickness ratio.
 
@@ -85,7 +130,7 @@ class Tube(NamedTuple):
         return jnp.asarray(self.diameter) / self.thickness
 
     @property
-    def diameter_inner(self) -> Float[Array, "members"]:
+    def diameter_inner(self) -> Float[Array, "*load_cases members"]:
         """
         Inner diameter of the bore.
 
@@ -97,7 +142,7 @@ class Tube(NamedTuple):
         return jnp.asarray(self.diameter) - 2.0 * jnp.asarray(self.thickness)
 
     @property
-    def area(self) -> Float[Array, "members"]:
+    def area(self) -> Float[Array, "*load_cases members"]:
         """
         Gross cross-sectional area.
 
@@ -117,7 +162,7 @@ class Tube(NamedTuple):
         return jnp.pi * wall * (jnp.asarray(self.diameter) - wall)
 
     @property
-    def second_moment(self) -> Float[Array, "members"]:
+    def second_moment(self) -> Float[Array, "*load_cases members"]:
         """
         Second moment of area about any centroidal axis.
 
@@ -138,7 +183,7 @@ class Tube(NamedTuple):
         return (jnp.pi / 64.0) * (outer**4 - bore**4)
 
     @property
-    def radius_of_gyration(self) -> Float[Array, "members"]:
+    def radius_of_gyration(self) -> Float[Array, "*load_cases members"]:
         """
         Radius of gyration about any centroidal axis.
 
@@ -156,7 +201,7 @@ class Tube(NamedTuple):
         return jnp.sqrt(self.second_moment / self.area)
 
     @property
-    def modulus_elastic(self) -> Float[Array, "members"]:
+    def modulus_elastic(self) -> Float[Array, "*load_cases members"]:
         """
         Elastic section modulus.
 
@@ -168,7 +213,7 @@ class Tube(NamedTuple):
         return 2.0 * self.second_moment / jnp.asarray(self.diameter)
 
     @property
-    def modulus_plastic(self) -> Float[Array, "members"]:
+    def modulus_plastic(self) -> Float[Array, "*load_cases members"]:
         """
         Plastic section modulus.
 
@@ -182,7 +227,7 @@ class Tube(NamedTuple):
         return (outer**3 - self.diameter_inner**3) / 6.0
 
 
-class TubeCatalogue(NamedTuple):
+class TubeCatalogue(eqx.Module):
     """
     The family of circular hollow sections a member is drawn from.
 
@@ -191,27 +236,50 @@ class TubeCatalogue(NamedTuple):
     ratio :
         Diameter-to-thickness ratio, fixed so that a member carries a single
         size variable.
+    section_class :
+        Cross-section class the ratio falls in, 1, 2 or 3.
+    material :
+        The steel the family is rolled from, and the partial factors applied
+        to it.
     diameter_min :
         Smallest diameter the family offers.
 
     Notes
     -----
-    The ratio fixes the cross-section class, but the class itself is not held
-    here: it selects between two clauses and so must stay a static Python value,
-    while every field of this container is a traceable leaf. `section_class`
-    recovers it, and is the only thing that should ever supply it — a class
-    named independently of the family it describes is free to contradict it.
+    **A section family is not geometry.** The number that defines the one used
+    here is the class limit of EN 1993-1-1 Table 5.2 sheet 3, which is a function
+    of the grade and of the class, so the grade and the class are the family's
+    identity rather than companions it is handed beside. Holding all three
+    together is what lets a call site take a catalogue alone, and what stops a
+    grade travelling beside a ratio that was derived from a different one.
 
-    The buckling curve is not held here either. It follows the fabrication
-    route rather than the shape, so it belongs to the grade.
+    Calling the catalogue at a diameter generates the tube, which carries the
+    grade and the class onward. That is the only place a wall is chosen for a
+    diameter.
+
+    **The class is static and the ratio is a leaf, which is the whole reason this
+    is a module rather than a named tuple.** A class selects between clauses, so a
+    clause needs it as a Python integer; carried as a leaf it is traced the moment
+    the catalogue is a primal of the sizing map under `jit`, and the branch it
+    selects then raises. The ratio has to stay a leaf for the opposite reason:
+    §3 wants it freeable, the gradient tests differentiate the map in it, and the
+    class sweep moves it across two class boundaries.
+
+    `verified_class` is what confirms the label against the ratio before a block
+    trusts it, since a label named beside a number is free to contradict it.
+
+    The buckling curve is not a field. It follows the fabrication route rather
+    than the shape, so it belongs to the grade.
     """
 
     ratio: float | Float[Array, ""]
+    section_class: int = eqx.field(static=True)
+    material: Steel
     diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM
 
-    def tube_at(self, diameter: Float[Array, "members"]) -> Tube:
+    def __call__(self, diameter: Float[Array, "*load_cases members"]) -> Tube:
         """
-        The tube of a given diameter, walled by this catalogue's ratio.
+        Generate the tube of a given diameter.
 
         Parameters
         ----------
@@ -221,54 +289,69 @@ class TubeCatalogue(NamedTuple):
         Returns
         -------
         tube :
-            A tube of that diameter, with the wall the family gives it.
+            A tube of that diameter, walled by this family's ratio and carrying
+            its grade and its class.
 
         Notes
         -----
-        The one place a wall is chosen for a diameter, so a diameter can never
-        be paired with the wrong one. The catalogue minimum is deliberately not
-        applied here: it is a limit on what may be ordered rather than on what
-        the formulas mean, and the sizing map applies it outside the root it
-        solves for.
-        """
-        return Tube(diameter, jnp.asarray(diameter) / self.ratio)
+        The one place a wall is chosen for a diameter, so a diameter can never be
+        paired with the wrong one, nor a section with the wrong grade. A
+        catalogue is called rather than asked for a tube because generating one
+        is the whole of what it does.
 
-    def section_class(self, f_y: float | Float[Array, ""]) -> int:
+        The catalogue minimum is deliberately not applied here: it is a limit on
+        what may be ordered rather than on what the formulas mean, and the sizing
+        map applies it outside the root it solves for.
         """
-        The cross-section class this family's ratio falls in.
+        thickness = jnp.asarray(diameter) / self.ratio
 
-        Parameters
-        ----------
-        f_y :
-            Yield strength.
+        return Tube(diameter, thickness, self.material, self.section_class)
+
+    def verified_class(self) -> int:
+        """
+        This family's class, confirmed against the ratio that fixes it.
 
         Returns
         -------
         section_class :
-            Class 1, 2 or 3, as a Python integer.
+            Class 1, 2 or 3, as the integer a clause can select on.
 
         Raises
         ------
         ValueError
-            If the ratio classifies as Class 4.
+            If the ratio classifies as Class 4, or as a class other than the one
+            named.
 
         Notes
         -----
-        EN 1993-1-1 Table 5.2 sheet 3. The one place a clause selector should
-        come from, since a class read off the family cannot disagree with the
-        wall the family gives a member. Naming the two independently allows the
-        plastic clauses to be applied to a Class 3 wall, which is unsafe.
+        EN 1993-1-1 Table 5.2 sheet 3. A class named beside a ratio is free to
+        contradict it, and allowing the plastic clauses onto a Class 3 wall is
+        unsafe, so a block reads its class through this rather than off the field.
 
-        The ratio must be concrete, so this belongs outside any traced function.
-        A class chosen at build time is exactly what makes the branches it
-        selects legal under jit.
+        **Verified where the numbers are concrete and trusted where they are
+        not.** A traced ratio or grade has no value to classify, and every
+        production call site builds a catalogue on the host, where the comparison
+        runs. Under a tracer there is nothing to compare against and the label
+        stands.
         """
-        return section_class_at_ratio(self.ratio, f_y)
+        if _is_traced(self.ratio) or _is_traced(self.material.f_y):
+            return self.section_class
+
+        classified = section_class_at_ratio(self.ratio, self.material.f_y)
+
+        if classified != self.section_class:
+            raise ValueError(
+                f"a ratio of {float(self.ratio)} at f_y {float(self.material.f_y)} "
+                f"is Class {classified}, not Class {self.section_class}; "
+                "the class selects a clause and cannot contradict the wall"
+            )
+
+        return classified
 
     @classmethod
     def at_class_limit(
         cls,
-        f_y: float | Float[Array, ""],
+        material: Steel,
         section_class: int,
         diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM,
     ) -> "TubeCatalogue":
@@ -277,8 +360,8 @@ class TubeCatalogue(NamedTuple):
 
         Parameters
         ----------
-        f_y :
-            Yield strength.
+        material :
+            The steel the family is rolled from.
         section_class :
             Class 1, 2 or 3.
         diameter_min :
@@ -300,49 +383,12 @@ class TubeCatalogue(NamedTuple):
         slenderness, and so minimises material, while staying inside the class.
         Class 4 is refused: beyond the third limit the tube is a shell and
         EN 1993-1-6 applies instead.
+
+        The way a family is ordinarily built, the ratio being the answer rather
+        than the input. `TubeCatalogue` itself is for the other case, where a
+        ratio is named — a swept one, or one read off a published section — and
+        the class is what is claimed about it.
         """
-        return cls(ratio_at_class_limit(f_y, section_class), diameter_min)
+        ratio = ratio_at_class_limit(material.f_y, section_class)
 
-
-class MemberSection(NamedTuple):
-    """
-    The section every member is given, and the material it is cut from.
-
-    Attributes
-    ----------
-    tubes :
-        Outer diameter and wall thickness of every member.
-    material :
-        Material properties, of which only the density is read here.
-
-    Notes
-    -----
-    **A section and its material travel together, because a mass needs both.**
-    An area is geometry and a density is a material, and neither alone answers
-    what a member weighs per unit of its length — which is the one quantity a
-    published section table states that no clause decides. Carrying the pair is
-    what lets a mass be computed from a design without reaching back into the
-    block that chose it.
-
-    The load case axis is variadic, like `normax.design.MemberForces`. A check
-    answers one size per member per load case, so the sections it returns carry
-    that axis; reconciling them into one size per member collapses it, and both
-    ranks are the same container.
-    """
-
-    tubes: Tube
-    material: Steel
-
-    @property
-    def diameters(self) -> Float[Array, "*load_cases members"]:
-        """
-        Outer diameter of every member.
-        """
-        return self.tubes.diameter
-
-    @property
-    def area(self) -> Float[Array, "*load_cases members"]:
-        """
-        Cross-sectional area of every member.
-        """
-        return self.tubes.area
+        return cls(ratio, section_class, material, diameter_min)

@@ -30,9 +30,11 @@ from typing import Any
 import jax.numpy as jnp
 
 from normax.analysis.opensees import Jacobian
+from normax.analysis.opensees import Model
 from normax.analysis.opensees import force_jacobian
 from normax.analysis.opensees import member_forces
 from normax.analysis.opensees import prepare_model
+from normax.ec3.classification import classify_section
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -52,7 +54,7 @@ BLOCKS = {
 OUTPUT_RANK = {"axial_force": 1, "end_moments_major": 2, "end_moments_minor": 2}
 
 
-def _build_model(inputs: dict[str, Any]) -> tuple[Structure, Steel, TubeCatalogue]:
+def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeCatalogue]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -63,8 +65,9 @@ def _build_model(inputs: dict[str, Any]) -> tuple[Structure, Steel, TubeCatalogu
 
     Returns
     -------
-    model :
-        The prepared analysis model, the material and the section family.
+    model_and_family :
+        The prepared analysis model, and the section family the members are
+        drawn from.
 
     Notes
     -----
@@ -84,11 +87,12 @@ def _build_model(inputs: dict[str, Any]) -> tuple[Structure, Steel, TubeCatalogu
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
-    catalogue = TubeCatalogue(ratio=inputs["ratio"])
+    # An analysis reads geometry alone, so the class is derived and never read.
+    section_class = int(classify_section(inputs["ratio"], inputs["f_y"]))
+    catalogue = TubeCatalogue(inputs["ratio"], section_class, steel)
 
     return (
-        prepare_model(structure, steel, catalogue, normal=inputs["normal"]),
-        steel,
+        prepare_model(structure, catalogue, normal=inputs["normal"]),
         catalogue,
     )
 
@@ -113,13 +117,12 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     elastic analysis under nodal loads having no use for either, exactly as in
     the other backend. Carrying them keeps one schema describing both.
     """
-    model, steel, catalogue = _build_model(inputs)
+    model, catalogue = _build_model(inputs)
 
     member = member_forces(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
-        steel,
         catalogue,
         jnp.asarray(inputs["loads"]),
     )
@@ -152,13 +155,12 @@ def _jacobian_blocks(inputs: dict[str, Any]) -> Jacobian:
     back-substitution each and dropping some would save a fraction of a sweep
     while making the two derivative rules disagree about what was solved.
     """
-    model, steel, catalogue = _build_model(inputs)
+    model, catalogue = _build_model(inputs)
 
     return force_jacobian(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
-        steel,
         catalogue,
         jnp.asarray(inputs["loads"]),
     )

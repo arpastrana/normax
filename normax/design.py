@@ -56,7 +56,6 @@ neither is a field. Reconciling the load cases lives further out still, in
 from typing import NamedTuple
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -64,13 +63,12 @@ from jaxtyping import Int
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
-from normax.ec3.section import MemberSection
+from normax.ec3.section import Tube
 from normax.ec3.sizing import diameter_envelope
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.loads import LoadCases
 from normax.loads import count_load_cases
-from normax.loads import select_load_case
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 
@@ -81,7 +79,7 @@ class DesignParameters(NamedTuple):
 
     Attributes
     ----------
-    q :
+    force_densities :
         Force density of every member. Negative in compression.
     diameters :
         Outer diameter every member is analyzed with.
@@ -100,7 +98,7 @@ class DesignParameters(NamedTuple):
     rather than a parameter of the design.
     """
 
-    q: Float[Array, "members"]
+    force_densities: Float[Array, "members"]
     diameters: Float[Array, "members"]
 
 
@@ -229,7 +227,7 @@ class StructuralDesignPipeline(eqx.Module):
         length. What is fixed is this composition's choice of what to pass, and
         that choice is temporary; see `docs/clauses.md`.
         """
-        shape = self.formfinder(params.q, loads.formfinding)
+        shape = self.formfinder(params.force_densities, loads.formfinding)
         forces = self.analyzer(shape.xyz, params.diameters, loads.analysis)
         sizes = self.sizer(forces, shape.lengths)
 
@@ -337,11 +335,13 @@ def design_envelope(
     adequate at every sharpness and annealing drives it onto the smallest
     adequate one from above.
 
-    **The tube is enveloped leafwise and the wall follows exactly.** The
-    envelope is scale-equivariant — taken in the logarithm, a constant factor
-    passes straight through it — so enveloping a diameter and a thickness that
-    is that diameter over a fixed ratio preserves the ratio, and no catalogue is
-    needed to re-derive a wall.
+    **The geometry is enveloped and the grade and the class ride through
+    untouched.** The envelope is scale-equivariant — taken in the logarithm, a
+    constant factor passes straight through it — so enveloping a diameter and a
+    thickness that is that diameter over a fixed ratio preserves the ratio, and
+    no catalogue is needed to re-derive a wall. What a tube is made of has no
+    load case axis to reduce, which is why the two geometric fields are named
+    here rather than mapped over.
 
     **Nothing here reads a standard, and nothing needs to.** `utilization`
     passes through untouched because it belongs to the per-case sections and
@@ -355,18 +355,22 @@ def design_envelope(
     followed by an exponential in floating point, so taking it would cost the
     last bits of a size for nothing.
     """
-    demanded = design.sizes.sections.tubes
+    demanded = design.sizes.sections
+    cases = count_load_cases(demanded.diameter)
 
-    if count_load_cases(demanded) == 1:
-        covering = select_load_case(demanded, 0)
-    elif sharpness is None:
-        covering = jax.tree.map(lambda field: jnp.max(field, axis=0), demanded)
-    else:
-        covering = jax.tree.map(
-            lambda field: diameter_envelope(field, sharpness), demanded
-        )
+    def cover_cases(
+        field: Float[Array, "load_cases members"],
+    ) -> Float[Array, "members"]:
+        if cases == 1:
+            return field[0]
+        if sharpness is None:
+            return jnp.max(field, axis=0)
 
-    sections = MemberSection(covering, design.sizes.sections.material)
-    sizes = MemberSizes(sections, design.sizes.actions, design.sizes.utilization)
+        return diameter_envelope(field, sharpness)
+
+    diameters = cover_cases(demanded.diameter)
+    thicknesses = cover_cases(demanded.thickness)
+    covering = Tube(diameters, thicknesses, demanded.material, demanded.section_class)
+    sizes = MemberSizes(covering, design.sizes.actions, design.sizes.utilization)
 
     return Design(design.shape, design.forces, sizes)
