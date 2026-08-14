@@ -527,16 +527,16 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         forces :
             Axial force and both end moments, per load case and member.
         """
-        analyzed = [
-            member_forces(
+        analyzed = []
+        for load_case in loads:
+            forces = member_forces(
                 self.model,
                 xyz,
                 diameters,
                 self.catalogue,
                 load_case,
             )
-            for load_case in loads
-        ]
+            analyzed.append(forces)
 
         return stack_load_cases(analyzed)
 
