@@ -49,8 +49,8 @@ from normax.analysis.smax import prepare_model
 from normax.design import MemberForces
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck

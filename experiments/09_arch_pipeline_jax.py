@@ -16,7 +16,7 @@ Force densities to a mass, differentiably, with EN 1993-1-1 in the middle.
 
 All three stages in one process and one gradient: `jax-fdm` finds the shape,
 `smax` says what the members carry, and the sizing map returns the diameter at
-which the standard is exactly satisfied. `normax.pipeline.mass` is the scalar,
+which the standard is exactly satisfied. `normax.design.compute_mass` is the scalar,
 and `jax.grad` of it crosses all three.
 
 Three things are checked, and two more are measured rather than asserted.
@@ -69,22 +69,22 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis.smax import Stability
 from normax.analysis.smax import buckling_modes
+from normax.analysis.smax import frame_stability
 from normax.design import DesignParameters
+from normax.design import DesignPipeline
 from normax.design import LoadCases
+from normax.design import MemberSections
+from normax.design import calculate_mass
 from normax.design import load_cases
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
-from normax.pipeline import DesignPipeline
-from normax.pipeline import MemberSections
-from normax.pipeline import Stability
-from normax.pipeline import calculate_mass
-from normax.pipeline import frame_stability
+from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck

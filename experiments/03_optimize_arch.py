@@ -82,24 +82,24 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis.smax import frame_stability
 from normax.design import DesignParameters
+from normax.design import DesignPipeline
 from normax.design import LoadCases
+from normax.design import MemberSections
+from normax.design import calculate_mass
+from normax.design import governing_load_case
 from normax.design import load_cases as load_cases_of
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
 from normax.optimization import Trajectory
 from normax.optimization import annealing_schedule
 from normax.optimization import optimize_annealed
 from normax.optimization import penalized_mass
 from normax.optimization import shortest_member
-from normax.pipeline import DesignPipeline
-from normax.pipeline import MemberSections
-from normax.pipeline import calculate_mass
-from normax.pipeline import frame_stability
-from normax.pipeline import governing_load_case
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck

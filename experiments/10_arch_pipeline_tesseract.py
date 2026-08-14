@@ -64,15 +64,15 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
+from normax.design import DesignPipeline
 from normax.design import LoadCases
+from normax.design import calculate_mass
 from normax.design import load_cases
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
-from normax.pipeline import DesignPipeline
-from normax.pipeline import calculate_mass
+from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
