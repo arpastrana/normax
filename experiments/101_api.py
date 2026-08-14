@@ -56,14 +56,13 @@ from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
+from normax.design import optimize_staggered
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
-from normax.optimization import minimize_bounded
-from normax.optimization import value_and_gradient
 from normax.sizing import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
@@ -355,35 +354,6 @@ def initialize_parameters(
     return DesignParameters(force_densities, diameters)
 
 
-def update_parameters(
-    force_densities: Float[Array, "members"],
-    params: DesignParameters,
-) -> DesignParameters:
-    """
-    The same design parameters at different force densities.
-
-    Parameters
-    ----------
-    force_densities :
-        Force density of every member. Negative in compression.
-    params :
-        The parameters supplying everything the optimizer does not vary.
-
-    Returns
-    -------
-    params :
-        The new force densities and the seed diameters.
-
-    Notes
-    -----
-    The force densities are the only variables of the search, so the objective
-    takes an array rather than a container and this is where the container is
-    put back together. What it restores is the diameters the frame is analyzed
-    with, which the check overwrites.
-    """
-    return DesignParameters(force_densities, params.diameters)
-
-
 def main(config_path: Path) -> None:
     """
     Design the arch a file describes, and report what the descent bought.
@@ -412,39 +382,45 @@ def main(config_path: Path) -> None:
     sharpness = jnp.asarray(config.optimization.envelope_sharpness)
 
     # The objective hands back the design it weighed, so nothing is designed twice.
-    def objective(
-        force_densities: Float[Array, "members"],
-    ) -> tuple[Float[Array, ""], Design]:
-        moved = update_parameters(force_densities, params)
-        design = pipeline(moved, loads)
+    def objective(params: DesignParameters) -> tuple[Float[Array, ""], Design]:
+        design = pipeline(params, loads)
         sized = design_envelope(design, sharpness)
         mass = compute_mass(sized)
 
         return mass, sized
 
-    # Gradient voodoo
-    objective_and_gradient = value_and_gradient(objective, has_aux=True)
-    (mass, _), gradient = objective_and_gradient(params.force_densities)
+    # Gradient voodoo. Differentiating the container reaches both of its leaves,
+    # and the force densities are the leaf a descent is allowed to move.
+    objective_and_gradient = jax.jit(jax.value_and_grad(objective, has_aux=True))
+    (mass, _), gradient = objective_and_gradient(params)
 
-    # The same objective handed to a bounded descent, which never sees a block.
+    # The same objective handed to a staggered descent, which never sees a block.
     bounds = config.optimization.bounds
-    found = minimize_bounded(
+    found = optimize_staggered(
         objective,
-        params.force_densities,
+        params,
         bounds=(bounds.min, bounds.max),
         iterations=config.optimization.iterations,
-        has_aux=True,
-        gradient=objective_and_gradient,
     )
 
     # The answer, and the design behind it, out of the search that already ran it.
     mass_opt = found.value
     design_opt = found.aux
 
-    print(f"Mass at the start: {float(mass):.9f} t")
-    print(f"Gradient in q: {gradient}")
-    print(f"Mass after the descent: {float(mass_opt):.9f} t")
+    # What the answer weighs if the frame is never re-analyzed at the sections the
+    # check demanded, which is the error a staggered search exists to remove.
+    frozen = DesignParameters(found.trajectory.q[-1], params.diameters)
+    misreported, _ = objective(frozen)
+
+    slope = gradient.force_densities
+
+    print(f"Mass at the start, analyzed at the seed: {float(mass):.9f} t")
+    print(f"L1 norm of the initial gradient: {jnp.linalg.norm(slope, ord=1)}")
+    print(f"Mass after the descent, at its own sections: {float(mass_opt):.9f} t")
     print(f"Saved: {100.0 * (1.0 - mass_opt / mass):.3f} %")
+    print(f"The answer weighed at the seed instead: {float(misreported):.9f} t")
+    coupling_error = 100.0 * (misreported / mass_opt - 1.0)
+    print(f"Coupling error at the answer: {coupling_error:+.5f} %")
     # Every load case exactly satisfied at the size it demanded, which is the
     # invariant the sizing map exists to hold.
     fully_stressed = float(jnp.min(design_opt.sizes.utilization))
