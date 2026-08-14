@@ -50,9 +50,13 @@ load case governs each member is an `argmax` — arithmetic over the fields belo
 rather than anything a stage produced, which is why both are functions here and
 neither is a field. Reconciling the load cases lives further out still, in
 `design_envelope`, and whether the frame is stable at all is
-`normax.stability`.
+`normax.stability`. Searching for a design is asked of one too, which is what
+`optimize_staggered` does: closing the coupling between the analysis and the
+check needs a diameter read off a design, and `normax.optimization` knows what a
+descent is without knowing what a design is.
 """
 
+from collections.abc import Callable
 from typing import NamedTuple
 
 import equinox as eqx
@@ -69,8 +73,19 @@ from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.loads import LoadCases
 from normax.loads import count_load_cases
+from normax.optimization import ObjectiveValue
+from normax.optimization import SearchResult
+from normax.optimization import Trajectory
+from normax.optimization import minimize_bounded
+from normax.optimization import value_and_gradient
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
+
+# Descents a staggered search may spend before its coupling is called stalled.
+STAGGERED_ROUNDS = 12
+
+# Analyses one round may spend closing its coupling at fixed force densities.
+SETTLING_PASSES = 400
 
 
 class DesignParameters(NamedTuple):
@@ -374,3 +389,168 @@ def design_envelope(
     sizes = MemberSizes(covering, design.sizes.actions, design.sizes.utilization)
 
     return Design(design.shape, design.forces, sizes)
+
+
+def optimize_staggered(
+    objective: Callable[[DesignParameters], ObjectiveValue],
+    params: DesignParameters,
+    *,
+    bounds: tuple[float, float],
+    iterations: int = 50,
+    tolerance: float = 1e-6,
+) -> SearchResult:
+    """
+    Minimize in the force densities, refreshing the analysis diameters per round.
+
+    Parameters
+    ----------
+    objective :
+        The mass, as a function of a whole set of design parameters, returning
+        the design it weighed alongside. Its sections must be reconciled to one
+        per member, which is what `design_envelope` does.
+    params :
+        Force densities to start from, and the diameters the first round is
+        analyzed with.
+    bounds :
+        Smallest and largest value any force density may take.
+    iterations :
+        Most iterations to spend in each round.
+    tolerance :
+        Largest fractional movement in any diameter that counts as settled, both
+        of a settling pass and of a whole round.
+
+    Returns
+    -------
+    found :
+        The last round's answer, the design behind it, and every iterate of
+        every round.
+
+    Raises
+    ------
+    ValueError
+        If the coupling has not closed, either within a round's settling passes or
+        within the round cap. The mass is then one computed at diameters the design
+        does not have, so it is not returned.
+
+    Notes
+    -----
+    **A round exists because the frame cannot be analyzed without sections and
+    the sections are what the check returns.** A whole descent runs at one set of
+    diameters, the coupling is then closed where that descent stopped, and the
+    structure is redesigned from there at the sections it settled on. What
+    converges is the coupling rather than the search: on the round that settling
+    no longer moves the diameters, the mass reported is that of a design analyzed
+    at its own sections.
+
+    **Refreshing per round rather than per evaluation is what keeps a quasi-Newton
+    search usable.** A line search compares values of one function, and a seed
+    that moves inside it hands the search a different function at every trial; the
+    curvature accumulated from differences of those gradients is contaminated the
+    same way. A refresh between descents leaves each of them a fixed function.
+
+    **The coupling is settled by repeated analysis at fixed force densities, not
+    by another descent.** Sizing is a contraction in the diameters, but a slow one
+    near its fixed point, so buying one pass of it per descent spends gradients on
+    something a forward evaluation resolves. Settling inside the round leaves the
+    round count measuring what it should: how many times the search had to be
+    redone because the sections it assumed had changed.
+
+    **Every round shares two compiled programs, built here rather than inside the
+    search.** The diameters are an argument of both rather than a constant captured
+    in them, so a round is the same program as its neighbour at different values
+    and the compilations are paid once. Capturing them instead recompiles all three
+    blocks per round, which costs more than the search does.
+
+    A raise rather than a returned residual, so that what comes back needs no
+    checking. A cap reached means the sizes and the stiffnesses are chasing each
+    other, which no tolerance on the answer would make untrue.
+
+    **The starting diameters are restated at their own dtype, which is what makes
+    the first round the same program as the second.** A seed written as
+    `jnp.full(members, 100.0)` is weakly typed, where the sizes a check returns
+    are not, and the two are different abstract values however equal their
+    contents: left alone they compile the pipeline twice. The force densities need
+    no such care, arriving through the search's own conversion.
+
+    **The sharpness recorded against every iterate is zero**, that being what
+    `minimize_bounded` stamps when a caller has none to give. A sharpness belongs
+    to the objective's closure here rather than to the schedule, so the rounds of
+    a staggered search are not told apart by it the way an annealed one's are.
+    """
+    iterates = []
+    masses = []
+    sharpnesses = []
+    residual = float("inf")
+
+    seed_diameters = jnp.asarray(params.diameters, dtype=params.diameters.dtype)
+    current = DesignParameters(params.force_densities, seed_diameters)
+
+    def seeded_objective(
+        force_densities: Float[Array, "members"],
+        diameters: Float[Array, "members"],
+    ) -> ObjectiveValue:
+        seeded = DesignParameters(force_densities, diameters)
+
+        return objective(seeded)
+
+    compiled = value_and_gradient(seeded_objective, has_aux=True)
+    weighed = eqx.filter_jit(seeded_objective)
+
+    def settle_diameters(
+        force_densities: Float[Array, "members"],
+        seed: Float[Array, "members"],
+    ) -> Float[Array, "members"]:
+        """
+        The diameters an analysis at these force densities asks of itself.
+        """
+        assumed = seed
+        moved = float("inf")
+        for _ in range(SETTLING_PASSES):
+            _, design = weighed(force_densities, assumed)
+            demanded = design.sizes.sections.diameter
+            moved = float(jnp.max(jnp.abs(demanded / assumed - 1.0)))
+            assumed = demanded
+
+            if moved < tolerance:
+                return demanded
+
+        raise ValueError(
+            f"diameters still moving by {moved:.3e} after {SETTLING_PASSES} "
+            f"passes at fixed force densities, above {tolerance:.3e}"
+        )
+
+    for _ in range(STAGGERED_ROUNDS):
+        held = current.diameters
+        found = minimize_bounded(
+            lambda x, seed=held: seeded_objective(x, seed),
+            current.force_densities,
+            bounds=bounds,
+            iterations=iterations,
+            has_aux=True,
+            gradient=lambda x, seed=held: compiled(x, seed),
+        )
+        walked = found.trajectory
+        iterates.append(walked.q)
+        masses.append(walked.mass)
+        sharpnesses.append(walked.beta)
+
+        answer = walked.q[-1]
+        settled = settle_diameters(answer, held)
+        current = DesignParameters(answer, settled)
+        residual = float(jnp.max(jnp.abs(settled / held - 1.0)))
+
+        if residual < tolerance:
+            break
+    else:
+        raise ValueError(
+            f"diameters still moving by {residual:.3e} after "
+            f"{STAGGERED_ROUNDS} rounds, above {tolerance:.3e}"
+        )
+
+    trajectory = Trajectory(
+        q=jnp.concatenate(iterates),
+        mass=jnp.concatenate(masses),
+        beta=jnp.concatenate(sharpnesses),
+    )
+
+    return SearchResult(found.value, found.aux, trajectory)
