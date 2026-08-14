@@ -121,12 +121,9 @@ class AnalysisConfig(NamedTuple):
     ----------
     diameter :
         Outer diameter every member is analyzed at.
-    envelope_sharpness :
-        Sharpness of the envelope reconciling the load cases into one size.
     """
 
     diameter: float
-    envelope_sharpness: float
 
 
 class SizingConfig(NamedTuple):
@@ -189,11 +186,23 @@ class OptimizationConfig(NamedTuple):
     ----------
     iterations :
         Most iterations to spend.
+    envelope_sharpness :
+        Sharpness of the envelope reconciling the load cases into one size.
     bounds :
         The box the force densities may move in.
+
+    Notes
+    -----
+    **The sharpness belongs to the search rather than to any stage.** Reconciling
+    the load cases is smoothing, so no block sees it: the analysis reconciles
+    nothing and the check reads one load case at a time. What it is is a
+    continuation parameter — the envelope approaches the true largest size as it
+    grows, so raising it across rounds drives the design onto the smallest adequate
+    one from above, which is a property of the descent and sits beside its budget.
     """
 
     iterations: int
+    envelope_sharpness: float
     bounds: BoundsConfig
 
 
@@ -251,9 +260,10 @@ def read_config(path: Path) -> TaskConfig:
     description is not one.
     """
     document = yaml.safe_load(path.read_text())
-    searched = document["optimization"]
+    searched = dict(document["optimization"])
 
-    bounds = BoundsConfig(**searched["bounds"])
+    bounds = BoundsConfig(**searched.pop("bounds"))
+    optimization = OptimizationConfig(bounds=bounds, **searched)
     load_cases = tuple(LoadCaseConfig(**entry) for entry in document["load_cases"])
 
     config = TaskConfig(
@@ -261,7 +271,7 @@ def read_config(path: Path) -> TaskConfig:
         form_finding=FormFindingConfig(**document["form_finding"]),
         analysis=AnalysisConfig(**document["analysis"]),
         sizing=SizingConfig(**document["sizing"]),
-        optimization=OptimizationConfig(searched["iterations"], bounds),
+        optimization=optimization,
         load_cases=load_cases,
     )
 
@@ -399,7 +409,7 @@ def main(config_path: Path) -> None:
     )
 
     params = initialize_parameters(structure, config)
-    sharpness = jnp.asarray(config.analysis.envelope_sharpness)
+    sharpness = jnp.asarray(config.optimization.envelope_sharpness)
 
     # The objective hands back the design it weighed, so nothing is designed twice.
     def objective(

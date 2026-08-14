@@ -10,7 +10,6 @@ form_finding:
   force_density: -80.0
 analysis:
   diameter: 100.0
-  envelope_sharpness: 50.0
 load_cases:
   - name: uniform
     magnitude: 180000.0
@@ -22,6 +21,7 @@ sizing:
   section_class: 3
 optimization:
   iterations: 25
+  envelope_sharpness: 50.0
   bounds:
     min: -100.0
     max: -1.0e-3

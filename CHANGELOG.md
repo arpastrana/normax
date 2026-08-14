@@ -92,6 +92,25 @@ in beside a family, and a class is no longer threaded past one.
   is; `behavior_of(catalogue)` is the one thing the container knew that a family
   does not.
 
+### The envelope sharpness moves to the search that anneals it
+
+`experiments/arch.yaml` carries `envelope_sharpness` under `optimization:` rather
+than `analysis:`, and `OptimizationConfig` holds it beside `iterations` and
+`bounds`.
+
+- **It belongs to no stage, which is why it was awkward under either.** The
+  analysis reconciles nothing and the check reads one load case at a time, so no
+  block sees a sharpness; `design_envelope` sits above all three. `sizing:` would
+  have been the more misleading of the two homes, putting smoothing back inside the
+  standard that P8 hoisted it out of.
+- **What it is, is a continuation parameter.** The envelope approaches the true
+  largest size as the sharpness grows, so raising it across rounds drives the
+  design onto the smallest adequate one from above — a property of the descent,
+  sitting beside its budget.
+- `read_config` now builds `OptimizationConfig` by keyword, so a missing or
+  misplaced field there is refused with the `TypeError` its docstring promises
+  rather than a `KeyError`. It was the one section still built positionally.
+
 ### The suite runs across every core
 
 `pytest-xdist` is a dev dependency and `pyproject.toml` carries the same
