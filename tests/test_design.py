@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -8,6 +10,7 @@ from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
+from normax.design import optimize_staggered
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
@@ -17,6 +20,7 @@ from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_half_span
 from normax.loads import loads_uniform
 from normax.loads import select_load_case
+from normax.optimization import SearchResult
 from normax.sizing import Ec3Sizer
 from normax.sizing import design_actions
 from normax.structures import build_arch_2d
@@ -43,6 +47,16 @@ SHARPNESS = 50.0
 # sooner and the plateau sits at a larger step than a single case wants.
 STEP = 1e-4
 TOLERANCE_GRADIENT = 1e-7
+
+# Bounds wide enough that a descent is not pinned by them, and what it may spend.
+BOUNDS = (-500.0, -1.0)
+STAGGERED_ITERATIONS = 10
+
+# Largest fractional movement in a diameter a closed coupling may still show.
+TOLERANCE_COUPLING = 1e-6
+
+# Below this, two masses of the same design disagree only by round-off.
+TOLERANCE_ROUNDOFF = 1e-9
 
 
 @pytest.fixture(scope="module")
@@ -93,6 +107,44 @@ def params(force_densities):
     return DesignParameters(force_densities, jnp.full(NUM_EDGES, SEED))
 
 
+def mass_objective(pipeline, loads):
+    """
+    The enveloped mass of a design, and the design that was weighed.
+    """
+
+    def objective(params):
+        design = pipeline(params, loads)
+        sized = design_envelope(design, SHARPNESS)
+
+        return compute_mass(sized), sized
+
+    return objective
+
+
+class StaggeredRun(NamedTuple):
+    """
+    One staggered search, and how many times it traced its objective.
+    """
+
+    found: SearchResult
+    traces: int
+
+
+def round_seams(trajectory):
+    """
+    Where one round hands over to the next, which is a repeated iterate.
+
+    A search records its starting point before it steps, so a warm-started round
+    repeats the row its predecessor ended on. That is the only mark of a round
+    boundary the concatenated trajectory carries.
+    """
+    return [
+        index
+        for index in range(len(trajectory.q) - 1)
+        if jnp.array_equal(trajectory.q[index], trajectory.q[index + 1])
+    ]
+
+
 @pytest.fixture(scope="module")
 def one_case(structure):
     applied = funicular(structure)
@@ -110,6 +162,27 @@ def three_cases(structure):
     ]
 
     return load_cases_of(cases)
+
+
+@pytest.fixture(scope="module")
+def staggered(pipeline, params, three_cases):
+    """One staggered search, counting the traces so every test shares them."""
+    traces = []
+    weighed = mass_objective(pipeline, three_cases)
+
+    def counted(design_params):
+        traces.append(1)
+
+        return weighed(design_params)
+
+    found = optimize_staggered(
+        counted,
+        params,
+        bounds=BOUNDS,
+        iterations=STAGGERED_ITERATIONS,
+    )
+
+    return StaggeredRun(found, len(traces))
 
 
 def test_sizer_reads_its_class_off_its_family(structure, steel):
@@ -292,3 +365,87 @@ def test_design_actions_reduce_the_two_ends(pipeline, params, three_cases):
 
     assert jnp.array_equal(acting.axial_force, forces.axial_force[1])
     assert jnp.allclose(jnp.abs(acting.moment_major), largest)
+
+
+def test_the_staggered_search_closes_its_coupling(staggered, pipeline, three_cases):
+    # The claim the routine exists to make: the answer is a design analyzed at
+    # its own sections, so the mass reported is one the structure really has.
+    settled = staggered.found.aux.sizes.sections.diameter
+    answer = DesignParameters(staggered.found.trajectory.q[-1], settled)
+    weighed = design_envelope(pipeline(answer, three_cases), SHARPNESS)
+    demanded = weighed.sizes.sections.diameter
+
+    assert float(jnp.max(jnp.abs(demanded / settled - 1.0))) < TOLERANCE_COUPLING
+
+
+def test_the_staggered_search_traces_the_objective_twice(staggered):
+    # Once for the descent's value and gradient, once for the value alone the
+    # settling passes need. Both take the diameters as an argument rather than
+    # capturing them, so neither is retraced however many rounds the coupling
+    # takes; capturing them would compile all three blocks per round.
+    assert round_seams(staggered.found.trajectory)
+    assert staggered.traces == 2
+
+
+def test_a_round_starts_where_the_last_one_stopped(staggered):
+    """
+    A seam is one point weighed under two seeds.
+
+    The force densities repeat, so the round was warm-started; the mass moves
+    anyway, because only the seed changed between the two rows. Both together are
+    what a refresh between descents means, and the first seam is where the seed
+    moves furthest.
+    """
+    walked = staggered.found.trajectory
+    seams = round_seams(walked)
+
+    assert seams
+
+    first = seams[0]
+    before = float(walked.mass[first])
+    after = float(walked.mass[first + 1])
+
+    assert abs(after / before - 1.0) > TOLERANCE_ROUNDOFF
+
+
+def test_the_staggered_search_reports_the_value_it_ends_on(staggered):
+    """The answer is the last row of the concatenated trajectory."""
+    walked = staggered.found.trajectory
+
+    assert float(staggered.found.value) == float(walked.mass[-1])
+
+
+def test_the_staggered_search_refuses_a_coupling_that_has_not_settled(
+    pipeline,
+    params,
+    three_cases,
+    monkeypatch,
+):
+    # A mass computed at diameters the design does not have is not returned, so
+    # a successful return is itself the evidence that the coupling closed.
+    monkeypatch.setattr("normax.design.STAGGERED_ROUNDS", 1)
+    weighed = mass_objective(pipeline, three_cases)
+
+    with pytest.raises(ValueError, match="still moving"):
+        optimize_staggered(
+            weighed,
+            params,
+            bounds=BOUNDS,
+            iterations=STAGGERED_ITERATIONS,
+        )
+
+
+def test_the_frozen_seed_misreports_the_mass(staggered, pipeline, three_cases):
+    """
+    Weighing the answer at the seed instead reports a mass it does not have.
+
+    The direction is not asserted, because it is not signable: a member analyzed
+    fatter than it is attracts force, so a seed that is uniform where the design
+    is not can land either side of it however thin it is.
+    """
+    answer = staggered.found.trajectory.q[-1]
+    frozen = DesignParameters(answer, jnp.full(NUM_EDGES, SEED))
+    weighed = design_envelope(pipeline(frozen, three_cases), SHARPNESS)
+    reported = float(compute_mass(weighed))
+
+    assert abs(reported / float(staggered.found.value) - 1.0) > TOLERANCE_ROUNDOFF
