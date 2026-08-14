@@ -1,3 +1,4 @@
+import dataclasses
 from typing import NamedTuple
 
 import equinox as eqx
@@ -9,18 +10,19 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
-from normax.design import DesignPipeline
-from normax.design import calculate_mass
-from normax.design import load_cases as load_cases_of
+from normax.design import StructuralDesignPipeline
+from normax.design import compute_mass
+from normax.design import design_envelope
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
+from normax.loads import assemble_load_cases as load_cases_of
+from normax.loads import loads_half_span
+from normax.loads import loads_point
+from normax.loads import loads_uniform
 from normax.sizing import Ec3Sizer
 from normax.structures import Structure
-from normax.structures import arch_2d
-from normax.structures import loads_half_span
-from normax.structures import loads_point
-from normax.structures import loads_uniform
+from normax.structures import build_arch_2d
 from normax.tesseract import STAGES
 from normax.tesseract import Chain
 from normax.tesseract import TesseractAnalyzer
@@ -107,7 +109,7 @@ def chain():
 
 @pytest.fixture(scope="module")
 def structure():
-    return arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
+    return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
 
 
 def funicular(structure):
@@ -123,7 +125,7 @@ def arch(structure, chain, steel):
     The arch, the three Tesseracts, and the `q` that reaches the target rise.
     """
     trial = jnp.full(NUM_EDGES, -1.0)
-    shape = FdmFormFinder().compile(structure)(trial, funicular(structure))
+    shape = FdmFormFinder(structure)(trial, funicular(structure))
     reached = jnp.max(shape.xyz[:, 2])
 
     params = DesignParameters(trial * reached / RISE, jnp.full(NUM_EDGES, SEED))
@@ -135,7 +137,7 @@ def arch(structure, chain, steel):
 def one_case(structure):
     applied = funicular(structure)
 
-    return load_cases_of(applied, [applied])
+    return load_cases_of([applied])
 
 
 @pytest.fixture(scope="module")
@@ -154,7 +156,7 @@ def three_cases(structure):
 
     cases = [loads_uniform(structure, spread), half, point]
 
-    return load_cases_of(funicular(structure), cases)
+    return load_cases_of(cases)
 
 
 def both_pipelines(arch, section_class, resultant=True):
@@ -165,7 +167,7 @@ def both_pipelines(arch, section_class, resultant=True):
     Notes
     -----
     The claim the whole module exists to make is visible in the two calls below:
-    `DesignPipeline` is the same class either way, and nothing it does depends
+    `StructuralDesignPipeline` is the same class either way, and nothing it does depends
     on which blocks it was handed. The in-process side is compiled, so what is
     measured is the boundary rather than two fusion schedules: the Tesseract
     stages compile internally, and an eager oracle beside them would charge the
@@ -178,19 +180,19 @@ def both_pipelines(arch, section_class, resultant=True):
     assertion. Nothing here needs it: the stages compile behind the boundary.
     """
     steel = arch.steel
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, section_class)
+    catalogue = TubeCatalogue.at_class_limit(steel, section_class)
 
-    in_process = DesignPipeline(
-        FdmFormFinder(),
-        SmaxAnalyzer(steel, catalogue, NORMAL),
-        Ec3Sizer(steel, catalogue, resultant),
-    ).compile(arch.structure)
+    in_process = StructuralDesignPipeline(
+        FdmFormFinder(arch.structure),
+        SmaxAnalyzer(arch.structure, catalogue, NORMAL),
+        Ec3Sizer(arch.structure, catalogue, resultant),
+    )
 
-    composed = DesignPipeline(
-        TesseractFormFinder(arch.chain.formfinding),
-        TesseractAnalyzer(arch.chain.analysis, steel, catalogue, NORMAL),
-        TesseractSizer(arch.chain.ec3, steel, catalogue, resultant),
-    ).compile(arch.structure)
+    composed = StructuralDesignPipeline(
+        TesseractFormFinder(arch.structure, arch.chain.formfinding),
+        TesseractAnalyzer(arch.structure, arch.chain.analysis, catalogue, NORMAL),
+        TesseractSizer(arch.structure, arch.chain.ec3, catalogue, resultant),
+    )
 
     return eqx.filter_jit(in_process), composed
 
@@ -199,11 +201,20 @@ def both(arch, loads, section_class, sharpness=None, **kwargs):
     """
     The same design taken in process and across the three Tesseracts.
     """
-    in_process, composed = both_pipelines(arch, section_class)
-    oracle = in_process(arch.params, loads, sharpness, **kwargs)
-    crossed = composed(arch.params, loads, sharpness, **kwargs)
+    oracle, crossed = both_designs(arch, loads, section_class, **kwargs)
 
-    return oracle, crossed
+    return design_envelope(oracle, sharpness), design_envelope(crossed, sharpness)
+
+
+def both_designs(arch, loads, section_class, **kwargs):
+    """
+    The same design by both routes, with every load case still on its own.
+    """
+    in_process, composed = both_pipelines(arch, section_class)
+
+    return in_process(arch.params, loads, **kwargs), composed(
+        arch.params, loads, **kwargs
+    )
 
 
 def objectives(arch, loads, section_class, sharpness=None):
@@ -214,12 +225,12 @@ def objectives(arch, loads, section_class, sharpness=None):
     seed = arch.params.diameters
 
     def oracle(q):
-        design = in_process(DesignParameters(q, seed), loads, sharpness)
-        return calculate_mass(design)
+        design = in_process(DesignParameters(q, seed), loads)
+        return compute_mass(design_envelope(design, sharpness))
 
     def crossed(q):
-        design = composed(DesignParameters(q, seed), loads, sharpness)
-        return calculate_mass(design)
+        design = composed(DesignParameters(q, seed), loads)
+        return compute_mass(design_envelope(design, sharpness))
 
     return oracle, crossed
 
@@ -235,17 +246,33 @@ def relative(oracle, composed):
     return float(np.max(np.abs(left - right))) / scale
 
 
-def named_fields(container):
+def field_names(container):
     """
-    Every field of a result, with a nested container expanded one level.
+    A container's field names, whether it is a named tuple or a module.
+
+    A section is a module rather than a named tuple, its class having to live in
+    the tree structure, so walking a design by `_fields` alone stops one level
+    short and compares two containers instead of their contents.
     """
-    for field in container._fields:
+    if hasattr(container, "_fields"):
+        return container._fields
+    if dataclasses.is_dataclass(container):
+        return tuple(field.name for field in dataclasses.fields(container))
+
+    return ()
+
+
+def named_fields(container, prefix=""):
+    """
+    Every leaf of a result, labelled by the path that reaches it.
+    """
+    for field in field_names(container):
         value = getattr(container, field)
-        if hasattr(value, "_fields"):
-            for inner in value._fields:
-                yield f"{field}.{inner}", getattr(value, inner)
+        label = f"{prefix}{field}"
+        if field_names(value):
+            yield from named_fields(value, f"{label}.")
         else:
-            yield field, value
+            yield label, value
 
 
 def field_by_field(oracle, composed, limit_envelope):
@@ -266,7 +293,7 @@ def field_by_field(oracle, composed, limit_envelope):
 def test_the_composed_mass_is_the_in_process_mass(arch, one_case, section_class):
     oracle, composed = both(arch, one_case, section_class)
 
-    assert relative(calculate_mass(oracle), calculate_mass(composed)) < TOLERANCE_PARITY
+    assert relative(compute_mass(oracle), compute_mass(composed)) < TOLERANCE_PARITY
 
 
 @pytest.mark.parametrize("section_class", [2, 3])
@@ -285,7 +312,8 @@ def test_the_mass_gradient_survives_the_boundary(arch, one_case, section_class):
     oracle, composed = objectives(arch, one_case, section_class)
 
     difference = relative(
-        jax.grad(oracle)(arch.params.q), jax.grad(composed)(arch.params.q)
+        jax.grad(oracle)(arch.params.force_densities),
+        jax.grad(composed)(arch.params.force_densities),
     )
 
     assert difference < TOLERANCE_DERIVATIVE
@@ -295,10 +323,27 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     # The buckling length is an input rather than a mesh length, so it has to
     # reach the check as itself and not as the member length beside it.
     buckling_length = jnp.full(NUM_EDGES, 1_000.0)
-    oracle, composed = both(arch, one_case, 3, buckling_length=buckling_length)
+    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
 
-    assert relative(calculate_mass(oracle), calculate_mass(composed)) < TOLERANCE_PARITY
-    assert np.allclose(np.asarray(composed.buckling_length), 1_000.0)
+    shape = FdmFormFinder(arch.structure)(
+        arch.params.force_densities, one_case.formfinding
+    )
+    analyzer = SmaxAnalyzer(arch.structure, catalogue, NORMAL)
+    forces = analyzer(shape.xyz, arch.params.diameters, one_case.analysis)
+
+    local = Ec3Sizer(arch.structure, catalogue)
+    crossed = TesseractSizer(arch.structure, arch.chain.ec3, catalogue)
+
+    oracle = local(forces, buckling_length)
+    composed = crossed(forces, buckling_length)
+
+    assert relative(oracle.sections.diameter, composed.sections.diameter) < (
+        TOLERANCE_PARITY
+    )
+    assert not np.allclose(
+        np.asarray(oracle.sections.diameter),
+        np.asarray(local(forces, shape.lengths).sections.diameter),
+    )
 
 
 def test_the_linear_sum_reading_of_the_moments_crosses_unchanged(arch, one_case):
@@ -308,7 +353,7 @@ def test_the_linear_sum_reading_of_the_moments_crosses_unchanged(arch, one_case)
     oracle = in_process(arch.params, one_case)
     crossed = composed(arch.params, one_case)
 
-    assert relative(calculate_mass(oracle), calculate_mass(crossed)) < TOLERANCE_PARITY
+    assert relative(compute_mass(oracle), compute_mass(crossed)) < TOLERANCE_PARITY
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +367,7 @@ def test_the_composed_gradient_matches_central_differences(
     # unchanged is right, without the in-process pipeline vouching for it.
     _, composed = objectives(arch, one_case, section_class)
 
-    q = arch.params.q
+    q = arch.params.force_densities
     gradient = jax.grad(composed)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
 
@@ -338,7 +383,7 @@ def test_the_composed_gradient_matches_central_differences(
 def test_the_composed_gradient_is_finite_and_nowhere_zero(arch, one_case):
     _, composed = objectives(arch, one_case, 3)
 
-    gradient = jax.grad(composed)(arch.params.q)
+    gradient = jax.grad(composed)(arch.params.force_densities)
 
     assert np.all(np.isfinite(np.asarray(gradient)))
     assert float(jnp.min(jnp.abs(gradient))) > 0.0
@@ -350,7 +395,7 @@ def test_the_chain_differentiates_in_both_directions(arch, one_case):
     # the reverse gradient.
     _, composed = objectives(arch, one_case, 3)
 
-    q = arch.params.q
+    q = arch.params.force_densities
     direction = jnp.ones_like(q)
     _, forward = jax.jvp(composed, (q,), (direction,))
     reverse = jnp.sum(jax.grad(composed)(q) * direction)
@@ -366,7 +411,10 @@ def test_every_member_is_utilized_exactly_once_over(arch, one_case, section_clas
     _, composed = both(arch, one_case, section_class)
 
     assert np.allclose(
-        np.asarray(composed.utilization), 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION
+        np.asarray(composed.sizes.utilization),
+        1.0,
+        rtol=0.0,
+        atol=TOLERANCE_UTILIZATION,
     )
 
 
@@ -377,9 +425,15 @@ def test_the_boundary_does_not_downcast_to_single_precision(arch, one_case):
     _, composed = objectives(arch, one_case, 3)
 
     for label, value in named_fields(composed_design):
+        if label.endswith("section_class"):
+            # A label rather than a payload. It crosses as a Python integer of no
+            # width at all, which is the stronger statement the others cannot make.
+            assert type(value) is int, label
+            continue
+
         assert jnp.asarray(value).dtype == jnp.float64, label
 
-    assert jax.grad(composed)(arch.params.q).dtype == jnp.float64
+    assert jax.grad(composed)(arch.params.force_densities).dtype == jnp.float64
 
 
 def differentiable(tesseract, direction):
@@ -464,7 +518,7 @@ def sized_through_the_check(arch, result, catalogue):
     member = apply_tesseract(
         chain.analysis,
         {
-            "xyz": result.xyz,
+            "xyz": result.shape.xyz,
             "diameter": arch.params.diameters,
             "edges": np.asarray(structure.edges, dtype=np.int64),
             "supports": np.asarray(structure.supports, dtype=np.int64),
@@ -483,7 +537,7 @@ def sized_through_the_check(arch, result, catalogue):
             "axial_force": axial_force,
             "end_moments_major": member["end_moments_major"],
             "end_moments_minor": member["end_moments_minor"],
-            "buckling_length": result.lengths,
+            "buckling_length": result.shape.lengths,
             "f_y": steel.f_y,
             "e_mod": steel.e_mod,
             "density": steel.density,
@@ -499,14 +553,18 @@ def sized_through_the_check(arch, result, catalogue):
 
 
 def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
-    catalogue = TubeCatalogue.at_class_limit(arch.steel.f_y, 3)
-    oracle, _ = both(arch, one_case, 3)
+    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
+    oracle, _ = both_designs(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, catalogue)
 
-    sizer = Ec3Sizer(arch.steel, catalogue)
+    sizer = Ec3Sizer(arch.structure, catalogue)
     reported = np.asarray(check(axial_force)["governing"])
     expected = np.asarray(
-        sizer.governing(oracle.diameters, oracle.actions, oracle.buckling_length)
+        sizer.governing(
+            oracle.sizes.sections.diameter[0],
+            oracle.sizes.actions,
+            oracle.shape.lengths,
+        )
     )
 
     assert np.array_equal(reported, expected[0])
@@ -515,7 +573,7 @@ def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
 def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
     # A concrete cotangent on a non-differentiable output raises rather than
     # returning a zero, which is the whole reason the composition drops it.
-    catalogue = TubeCatalogue.at_class_limit(arch.steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
     oracle, _ = both(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, catalogue)
 
@@ -556,13 +614,6 @@ def test_a_chain_asked_for_a_stage_that_is_not_there_says_so(tmp_path):
         local_chain(tmp_path)
 
 
-def test_an_uncompiled_tesseract_block_refuses_to_run(arch, one_case):
-    # A block that never saw a structure has no topology to serialize, and says
-    # so rather than sending a schema an empty field.
-    with pytest.raises(ValueError, match="not compiled"):
-        TesseractFormFinder(arch.chain.formfinding)(arch.params.q, one_case.formfinding)
-
-
 # --------------------------------------------------------------------------- #
 # Several load cases, across the boundary
 # --------------------------------------------------------------------------- #
@@ -584,7 +635,7 @@ def test_every_field_of_the_enveloped_design_survives_the_boundary(
 def test_the_enveloped_mass_gradient_survives_the_boundary(arch, three_cases):
     oracle, composed = objectives(arch, three_cases, 3, 100.0)
 
-    q = arch.params.q
+    q = arch.params.force_densities
     difference = relative(jax.grad(oracle)(q), jax.grad(composed)(q))
 
     assert difference < TOLERANCE_DERIVATIVE
@@ -598,15 +649,16 @@ def test_the_composed_envelope_form_finds_once_for_all_the_load_cases(
     # that differed between cases would mean a different structure per case.
     oracle, composed = both(arch, three_cases, 3, 500.0)
 
-    assert relative(oracle.xyz, composed.xyz) < TOLERANCE_PARITY
-    assert relative(oracle.lengths, composed.lengths) < TOLERANCE_PARITY
+    assert relative(oracle.shape.xyz, composed.shape.xyz) < TOLERANCE_PARITY
+    assert relative(oracle.shape.lengths, composed.shape.lengths) < TOLERANCE_PARITY
 
 
 def test_the_composed_envelope_covers_every_load_case(arch, three_cases):
+    _, demanded = both_designs(arch, three_cases, 3)
     _, composed = both(arch, three_cases, 3, 500.0)
 
-    assert float(jnp.max(composed.utilization)) <= 1.0 + 1e-12
+    assert float(jnp.max(composed.sizes.utilization)) <= 1.0 + 1e-12
     assert np.all(
-        np.asarray(composed.diameters)
-        >= np.asarray(jnp.max(composed.required, axis=0)) - 1e-9
+        np.asarray(composed.sizes.sections.diameter)
+        >= np.asarray(jnp.max(demanded.sizes.sections.diameter, axis=0)) - 1e-9
     )

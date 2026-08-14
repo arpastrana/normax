@@ -36,6 +36,10 @@ ALPHA = IMPERFECTION_FACTORS["a"]
 GAMMA_M0 = 1.0
 GAMMA_M1 = 1.0
 
+# The family the guide's section is drawn from. Its ratio is Class 1 at this
+# grade, which `test_section_is_class_one` is what checks.
+FAMILY = TubeCatalogue(RATIO, 1, Steel(f_y=YIELD, e_mod=MODULUS))
+
 NEWTON_TO_KILONEWTON = 1e-3
 
 # As printed in the guide, rounded to 2 s.f. on the buckling intermediates.
@@ -79,8 +83,8 @@ TOLERANCE_GUIDE = 1e-2
 
 @pytest.fixture
 def chain():
-    gross = TubeCatalogue(RATIO).tube_at(DIAMETER).area
-    inertia = TubeCatalogue(RATIO).tube_at(DIAMETER).second_moment
+    gross = FAMILY(DIAMETER).area
+    inertia = FAMILY(DIAMETER).second_moment
     critical = force_critical(inertia, LENGTH_BUCKLING, Steel(e_mod=MODULUS))
     non_dimensional = slenderness_from_force(gross, Steel(f_y=YIELD), critical)
     reduction = reduction_buckling(non_dimensional, ALPHA)
@@ -88,10 +92,10 @@ def chain():
     return {
         "area": gross,
         "second_moment": inertia,
-        "modulus_elastic": TubeCatalogue(RATIO).tube_at(DIAMETER).modulus_elastic,
-        "modulus_plastic": TubeCatalogue(RATIO).tube_at(DIAMETER).modulus_plastic,
+        "modulus_elastic": FAMILY(DIAMETER).modulus_elastic,
+        "modulus_plastic": FAMILY(DIAMETER).modulus_plastic,
         "epsilon": material_factor(YIELD),
-        "ratio": DIAMETER / TubeCatalogue(RATIO).tube_at(DIAMETER).thickness,
+        "ratio": DIAMETER / FAMILY(DIAMETER).thickness,
         "class_limit_1": class_limits(YIELD)[0],
         "n_c_rd": resistance_compression(gross, Steel(f_y=YIELD, gamma_m0=GAMMA_M0)),
         "n_cr": critical,
@@ -171,7 +175,7 @@ def test_chain_is_float64(chain):
 def test_chain_vectorizes_over_members(chain):
     diameters = jnp.full((5,), DIAMETER)
 
-    areas = TubeCatalogue(RATIO).tube_at(diameters).area
+    areas = FAMILY(diameters).area
 
     assert areas.shape == (5,)
     assert np.asarray(areas) == pytest.approx(float(chain["area"]))

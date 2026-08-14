@@ -68,37 +68,27 @@ CROSSOVER_MOMENT_MAX = 1.6e8
 SHEAR_FACTOR = 4.0
 
 
-class ClassBranch(NamedTuple):
+def behavior_of(catalogue: TubeCatalogue) -> str:
     """
-    A section class, and the wall proportion that sits at its limit.
+    Whether a family's class takes plastic or elastic section properties.
 
-    Attributes
+    Parameters
     ----------
-    section_class :
-        Class the resistances are evaluated on.
     catalogue :
-        Tube family whose ratio holds the section at that class limit.
+        Tube family whose ratio holds the section at a class limit.
+
+    Returns
+    -------
+    behavior :
+        "plastic" for Classes 1 and 2, "elastic" for Class 3.
+
+    Notes
+    -----
+    A function rather than a container's property, because there is nothing left
+    to pair the class with: a family carries the class its ratio sits at, so the
+    branch this sweep compares *is* a catalogue.
     """
-
-    section_class: int
-    catalogue: TubeCatalogue
-
-    @classmethod
-    def at_limit(cls, section_class: int) -> "ClassBranch":
-        """
-        The branch whose wall proportion sits exactly at a class limit.
-        """
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
-        branch = cls(section_class, catalogue)
-
-        return branch
-
-    @property
-    def behavior(self) -> str:
-        """
-        Whether the branch takes plastic or elastic section properties.
-        """
-        return "plastic" if is_plastic(self.section_class) else "elastic"
+    return "plastic" if is_plastic(catalogue.section_class) else "elastic"
 
 
 class MassComparison(NamedTuple):
@@ -222,7 +212,7 @@ class ReadingPair(NamedTuple):
 
 
 def diameter_for(
-    branch: ClassBranch,
+    catalogue: TubeCatalogue,
     moment_major: float,
     moment_minor: float = 0.0,
 ) -> Float[Array, ""]:
@@ -231,53 +221,47 @@ def diameter_for(
     """
     moments = (moment_major, moment_minor)
     actions = MemberActions(FORCE, *moments, MOMENT_FACTOR, MOMENT_FACTOR)
-    diameter = diameter_required(
-        actions,
-        LENGTH,
-        STEEL,
-        branch.catalogue,
-        section_class=branch.section_class,
-    )
+    diameter = diameter_required(actions, LENGTH, catalogue)
 
     return diameter
 
 
-def mass_for(branch: ClassBranch, moment_major: float) -> float:
+def mass_for(catalogue: TubeCatalogue, moment_major: float) -> float:
     """
     Mass in kilograms of one member on one class branch.
     """
-    diameter = diameter_for(branch, moment_major)
-    tube = branch.catalogue.tube_at(diameter)
+    diameter = diameter_for(catalogue, moment_major)
+    tube = catalogue(diameter)
 
-    return float(mass_of_tubes(tube, LENGTH, STEEL)) * 1e3
+    return float(mass_of_tubes(tube, LENGTH)) * 1e3
 
 
 def compare_masses(
-    branches: Sequence[ClassBranch],
+    families: Sequence[TubeCatalogue],
     moment: float,
 ) -> MassComparison:
     """
     Diameter and mass on every branch at one demand mix.
     """
-    diameters = tuple(float(diameter_for(branch, moment)) for branch in branches)
-    masses = tuple(mass_for(branch, moment) for branch in branches)
+    diameters = tuple(float(diameter_for(catalogue, moment)) for catalogue in families)
+    masses = tuple(mass_for(catalogue, moment) for catalogue in families)
     compared = MassComparison(moment, diameters, masses)
 
     return compared
 
 
-def crossover_moment(branches: Sequence[ClassBranch]) -> CrossoverResult:
+def crossover_moment(families: Sequence[TubeCatalogue]) -> CrossoverResult:
     """
     The moment at which the two branches weigh the same, if there is one.
     """
     sampled = jnp.linspace(0.0, CROSSOVER_MOMENT_MAX, CROSSOVER_SAMPLES)
     gaps = [
-        mass_for(branches[0], moment) - mass_for(branches[1], moment)
+        mass_for(families[0], moment) - mass_for(families[1], moment)
         for moment in sampled
     ]
     difference = jnp.asarray(gaps)
     changes = jnp.where(jnp.diff(jnp.sign(difference)) != 0)[0]
-    below = branches[0] if float(difference[0]) < 0.0 else branches[1]
+    below = families[0] if float(difference[0]) < 0.0 else families[1]
 
     if changes.size == 0:
         crossing = CrossoverResult(None, below.section_class)
@@ -288,12 +272,12 @@ def crossover_moment(branches: Sequence[ClassBranch]) -> CrossoverResult:
     return crossing
 
 
-def shear_check(branch: ClassBranch, moment: float) -> ShearCheck:
+def shear_check(catalogue: TubeCatalogue, moment: float) -> ShearCheck:
     """
     What clause 6.2.6 would have seen at one demand mix.
     """
-    diameter = diameter_for(branch, moment)
-    area = area_shear(branch.catalogue.tube_at(diameter).area)
+    diameter = diameter_for(catalogue, moment)
+    area = area_shear(catalogue(diameter).area)
     steel = Steel(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0)
     resistance = resistance_shear(area, steel)
     demand = SHEAR_FACTOR * moment / LENGTH
@@ -302,21 +286,14 @@ def shear_check(branch: ClassBranch, moment: float) -> ShearCheck:
     return checked
 
 
-def reading_pair(branch: ClassBranch, moment: float) -> ReadingPair:
+def reading_pair(catalogue: TubeCatalogue, moment: float) -> ReadingPair:
     """
     The two readings of Eq. 6.42, under equal moments about both axes.
     """
     actions = MemberActions(FORCE, moment, moment, MOMENT_FACTOR, MOMENT_FACTOR)
     diameters = []
     for choice in (True, False):
-        diameter = diameter_required(
-            actions,
-            LENGTH,
-            STEEL,
-            branch.catalogue,
-            section_class=branch.section_class,
-            resultant=choice,
-        )
+        diameter = diameter_required(actions, LENGTH, catalogue, resultant=choice)
         diameters.append(float(diameter))
 
     readings = ReadingPair(moment, diameters[0], diameters[1])
@@ -324,15 +301,15 @@ def reading_pair(branch: ClassBranch, moment: float) -> ReadingPair:
     return readings
 
 
-def report_branches(report: Report, branches: Sequence[ClassBranch]) -> None:
+def report_families(report: Report, families: Sequence[TubeCatalogue]) -> None:
     """
     The wall proportion each class limit stands for.
     """
     entries = []
-    for branch in branches:
-        ratio = float(branch.catalogue.ratio)
-        label = f"Class {branch.section_class}"
-        proportion = f"d/t = {ratio:.3f} ({branch.behavior})"
+    for catalogue in families:
+        ratio = float(catalogue.ratio)
+        label = f"Class {catalogue.section_class}"
+        proportion = f"d/t = {ratio:.3f} ({behavior_of(catalogue)})"
         entries.append((label, proportion))
 
     title = "Class 2 limit against Class 3 limit, S355, 6 m member, 600 kN compression"
@@ -341,11 +318,11 @@ def report_branches(report: Report, branches: Sequence[ClassBranch]) -> None:
     report.write_entries(entries)
 
 
-def report_masses(report: Report, branches: Sequence[ClassBranch]) -> None:
+def report_masses(report: Report, families: Sequence[TubeCatalogue]) -> None:
     """
     Which class limit is lighter, over the whole demand mix.
     """
-    compared = [compare_masses(branches, moment) for moment in MOMENTS]
+    compared = [compare_masses(families, moment) for moment in MOMENTS]
 
     columns = (
         ReportColumn("M_y [kNm]", ".0f"),
@@ -358,14 +335,14 @@ def report_masses(report: Report, branches: Sequence[ClassBranch]) -> None:
     )
     rows = []
     for found in compared:
-        lighter = f"Class {branches[found.lighter].section_class}"
+        lighter = f"Class {families[found.lighter].section_class}"
         sizes = (*found.diameters, *found.masses)
         rows.append((found.moment / 1e6, *sizes, lighter, found.saving))
 
     report.write_heading("What each demand mix costs on either branch")
     report.write_table(columns, rows)
 
-    crossing = crossover_moment(branches)
+    crossing = crossover_moment(families)
     report.write_heading("Where the crossover sits")
     if crossing.moment is None:
         report.write_note(
@@ -383,11 +360,11 @@ def report_masses(report: Report, branches: Sequence[ClassBranch]) -> None:
         )
 
 
-def report_shear(report: Report, branch: ClassBranch) -> None:
+def report_shear(report: Report, catalogue: TubeCatalogue) -> None:
     """
     The shear the excluded clause would have seen, open item 0d.
     """
-    checked = [shear_check(branch, moment) for moment in MOMENTS[1:]]
+    checked = [shear_check(catalogue, moment) for moment in MOMENTS[1:]]
     columns = (
         ReportColumn("M_y [kNm]", ".0f"),
         ReportColumn("d [mm]", ".2f"),
@@ -423,7 +400,7 @@ def report_shear(report: Report, branch: ClassBranch) -> None:
     )
 
 
-def report_readings(report: Report, branch: ClassBranch) -> None:
+def report_readings(report: Report, catalogue: TubeCatalogue) -> None:
     """
     The two readings of Eq. 6.42, and what choosing between them costs.
     """
@@ -443,7 +420,7 @@ def report_readings(report: Report, branch: ClassBranch) -> None:
         ReportColumn("diameter", ".2%"),
         ReportColumn("area", ".2%"),
     )
-    readings = [reading_pair(branch, moment) for moment in MOMENTS[1:]]
+    readings = [reading_pair(catalogue, moment) for moment in MOMENTS[1:]]
     rows = [
         (
             found.moment / 1e6,
@@ -469,12 +446,14 @@ def main(verbose: bool = True) -> None:
     Sweep the demand mix and report which class limit is lighter.
     """
     report = Report(verbose)
-    branches = [ClassBranch.at_limit(section_class) for section_class in CLASSES]
+    families = [
+        TubeCatalogue.at_class_limit(STEEL, section_class) for section_class in CLASSES
+    ]
 
-    report_branches(report, branches)
-    report_masses(report, branches)
-    report_shear(report, branches[1])
-    report_readings(report, branches[1])
+    report_families(report, families)
+    report_masses(report, families)
+    report_shear(report, families[1])
+    report_readings(report, families[1])
 
 
 if __name__ == "__main__":

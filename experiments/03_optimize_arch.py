@@ -187,7 +187,7 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
 SECTION_CLASS = 3
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, SECTION_CLASS)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL, SECTION_CLASS)
 
 # The reads the reports make, compiled. Left eager each one costs an XLA
 # compilation per primitive, which is most of what reporting a design costs.
@@ -560,9 +560,10 @@ def report_descent(report: Report, setup: ArchProblem, floor: float) -> DescentR
 
         return penalized
 
-    walked = optimize_annealed(
+    searched = optimize_annealed(
         objective, setup.q, schedule, bounds=setup.bounds, iterations=ITERATIONS
     )
+    walked = searched.trajectory
 
     columns = (
         ReportColumn("step"),

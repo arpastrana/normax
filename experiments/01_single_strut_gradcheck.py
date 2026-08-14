@@ -52,7 +52,7 @@ from normax.reporting import checks_passed
 TITLE = "Four independent derivatives of one strut, tabulated against each other."
 
 STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
 SECTION_CLASS = 3
 
 TARGET = 1e-8
@@ -176,13 +176,7 @@ def diameter_of(case: StrutCase) -> Float[Array, ""]:
     Fully-stressed diameter under axial force alone.
     """
     actions = MemberActions(case.axial_force, 0.0, 0.0, 1.0, 1.0)
-    diameter = diameter_required(
-        actions,
-        case.buckling_length,
-        STEEL,
-        CATALOGUE,
-        section_class=SECTION_CLASS,
-    )
+    diameter = diameter_required(actions, case.buckling_length, CATALOGUE)
 
     return diameter
 
@@ -191,15 +185,9 @@ def utilization_at(diameter: Float[Array, ""], case: StrutCase) -> Float[Array, 
     """
     Utilization at a diameter, from the exact clause functions.
     """
-    tube = CATALOGUE.tube_at(diameter)
+    tube = CATALOGUE(diameter)
     actions = MemberActions(case.axial_force, 0.0, 0.0, 1.0, 1.0)
-    demand = utilization_design(
-        tube,
-        actions,
-        case.buckling_length,
-        STEEL,
-        section_class=SECTION_CLASS,
-    )
+    demand = utilization_design(tube, actions, case.buckling_length)
 
     return demand
 
@@ -223,9 +211,7 @@ def derivatives_force(case: StrutCase) -> DerivativeSet:
 
     solved = diameter_of(case)
     step = abs(case.axial_force) * STEP
-    exact = derivative_force(
-        solved, case.axial_force, case.buckling_length, STEEL, CATALOGUE
-    )
+    exact = derivative_force(solved, case.axial_force, case.buckling_length, CATALOGUE)
     quotient = central_difference(lambda x: float(sized(x)), case.axial_force, step)
 
     forward = float(jax.jacfwd(sized)(case.axial_force))
@@ -247,9 +233,7 @@ def derivatives_length(case: StrutCase) -> DerivativeSet:
 
     solved = diameter_of(case)
     step = case.buckling_length * STEP
-    exact = derivative_length(
-        solved, case.axial_force, case.buckling_length, STEEL, CATALOGUE
-    )
+    exact = derivative_length(solved, case.axial_force, case.buckling_length, CATALOGUE)
     quotient = central_difference(lambda x: float(sized(x)), case.buckling_length, step)
 
     forward = float(jax.jacfwd(sized)(case.buckling_length))
@@ -270,7 +254,7 @@ def derivatives_tension(case: StrutCase) -> DerivativeSet:
         return diameter_of(probed)
 
     step = abs(case.axial_force) * STEP
-    exact = derivative_force_tension(case.axial_force, STEEL, CATALOGUE)
+    exact = derivative_force_tension(case.axial_force, CATALOGUE)
     quotient = central_difference(lambda x: float(sized(x)), case.axial_force, step)
 
     forward = float(jax.jacfwd(sized)(case.axial_force))

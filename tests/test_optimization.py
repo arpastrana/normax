@@ -8,6 +8,7 @@ from normax.optimization import minimize_bounded
 from normax.optimization import optimize_annealed
 from normax.optimization import penalized_mass
 from normax.optimization import shortest_member
+from normax.optimization import value_and_gradient
 
 # A bowl whose minimum is known exactly, so the driver is tested against
 # arithmetic rather than against the pipeline it usually drives.
@@ -24,6 +25,12 @@ def wall(q, beta=1.0):
     # Minimized outside the box, so the answer sits on the bound and the bound
     # is what has to hold it there.
     return beta * jnp.sum((q + 50.0) ** 2)
+
+
+def bowl_with_design(q, beta=1.0):
+    # Stands in for the pipeline: what the objective computed on the way to its
+    # value, which a caller wants back rather than recomputed.
+    return bowl(q, beta), {"q": q, "residual": q - CENTER}
 
 
 # --------------------------------------------------------------------------- #
@@ -65,13 +72,13 @@ def test_the_schedule_refuses_to_have_no_rounds():
 # One descent
 # --------------------------------------------------------------------------- #
 def test_the_descent_finds_a_minimum_it_can_reach():
-    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
+    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50).trajectory
 
     assert np.allclose(np.asarray(walked.q[-1]), np.asarray(CENTER), atol=1e-6)
 
 
 def test_the_descent_never_goes_uphill():
-    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
+    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50).trajectory
     masses = np.asarray(walked.mass)
 
     assert np.all(np.diff(masses) <= 1e-12)
@@ -80,21 +87,21 @@ def test_the_descent_never_goes_uphill():
 def test_the_descent_records_the_starting_point_first():
     # The trajectory is what a figure plots, so it has to begin where the search
     # began rather than after its first step.
-    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=5)
+    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=5).trajectory
 
     assert np.allclose(np.asarray(walked.q[0]), np.asarray(START))
     assert float(walked.mass[0]) == pytest.approx(float(bowl(START)))
 
 
 def test_the_recorded_mass_belongs_to_the_recorded_iterate():
-    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
+    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50).trajectory
 
     for step, mass in zip(walked.q, walked.mass):
         assert float(mass) == pytest.approx(float(bowl(step)), rel=1e-12)
 
 
 def test_the_bounds_hold_every_iterate():
-    walked = minimize_bounded(wall, START, bounds=BOUNDS, iterations=30)
+    walked = minimize_bounded(wall, START, bounds=BOUNDS, iterations=30).trajectory
     visited = np.asarray(walked.q)
 
     assert np.all(visited >= BOUNDS[0] - 1e-12)
@@ -102,7 +109,7 @@ def test_the_bounds_hold_every_iterate():
 
 
 def test_a_minimum_outside_the_box_lands_on_the_bound():
-    walked = minimize_bounded(wall, START, bounds=BOUNDS, iterations=30)
+    walked = minimize_bounded(wall, START, bounds=BOUNDS, iterations=30).trajectory
 
     assert np.allclose(np.asarray(walked.q[-1]), BOUNDS[0])
 
@@ -111,7 +118,7 @@ def test_spending_no_iterations_leaves_the_starting_point():
     # L-BFGS-B takes a step before it honours a limit of zero, and that step is
     # a clipped trial point rather than an improvement, so the driver refuses to
     # report it as an answer.
-    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=0)
+    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=0).trajectory
 
     assert np.allclose(np.asarray(walked.q[-1]), np.asarray(START))
     assert walked.q.shape[0] == 1
@@ -120,10 +127,95 @@ def test_spending_no_iterations_leaves_the_starting_point():
 def test_the_last_iterate_is_the_answer_the_search_returned():
     # The point reported last and the point kept as best differ whenever the
     # search stops part-way through a line search, and callers read the last.
-    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=2)
+    walked = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=2).trajectory
     masses = np.asarray(walked.mass)
 
     assert float(masses[-1]) == min(masses)
+
+
+# --------------------------------------------------------------------------- #
+# What the objective computed, carried out of the search
+# --------------------------------------------------------------------------- #
+def test_the_search_reports_the_value_the_trajectory_ends_on():
+    found = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
+
+    assert float(found.value) == float(found.trajectory.mass[-1])
+
+
+def test_an_objective_that_computes_nothing_else_carries_nothing():
+    found = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
+
+    assert found.aux is None
+
+
+def test_the_aux_belongs_to_the_answer_and_not_to_some_other_iterate():
+    # The point the search answers with is not always the last one it evaluated,
+    # and a design carried out of the wrong evaluation would be a design of a
+    # structure nobody asked about.
+    found = minimize_bounded(
+        bowl_with_design, START, bounds=BOUNDS, iterations=50, has_aux=True
+    )
+    answer = np.asarray(found.trajectory.q[-1])
+
+    assert np.allclose(np.asarray(found.aux["q"]), answer)
+    assert np.allclose(np.asarray(found.aux["residual"]), answer - np.asarray(CENTER))
+
+
+def test_the_aux_survives_a_search_that_goes_nowhere():
+    found = minimize_bounded(
+        bowl_with_design, START, bounds=BOUNDS, iterations=0, has_aux=True
+    )
+
+    assert np.allclose(np.asarray(found.aux["q"]), np.asarray(START))
+
+
+def test_carrying_a_design_costs_at_most_one_extra_evaluation():
+    # The design comes out of the evaluations the search already made, save for
+    # the answer when it is not the point evaluated last, which costs one call.
+    def count_evaluations(objective, has_aux):
+        calls = []
+        compiled = value_and_gradient(objective, has_aux=has_aux)
+
+        def counted(q):
+            calls.append(q)
+            return compiled(q)
+
+        minimize_bounded(
+            objective,
+            START,
+            bounds=BOUNDS,
+            iterations=20,
+            has_aux=has_aux,
+            gradient=counted,
+        )
+
+        return len(calls)
+
+    plain = count_evaluations(bowl, False)
+    carried = count_evaluations(bowl_with_design, True)
+
+    assert carried <= plain + 1
+
+
+def test_carrying_a_design_leaves_the_search_where_it_was():
+    plain = minimize_bounded(bowl, START, bounds=BOUNDS, iterations=50)
+    carried = minimize_bounded(
+        bowl_with_design, START, bounds=BOUNDS, iterations=50, has_aux=True
+    )
+
+    assert np.allclose(np.asarray(carried.trajectory.q), np.asarray(plain.trajectory.q))
+    assert np.allclose(
+        np.asarray(carried.trajectory.mass), np.asarray(plain.trajectory.mass)
+    )
+
+
+def test_the_annealed_search_carries_the_last_round_out():
+    schedule = annealing_schedule(1.0, 4.0, 3)
+    found = optimize_annealed(
+        bowl_with_design, START, schedule, bounds=BOUNDS, iterations=10, has_aux=True
+    )
+
+    assert np.allclose(np.asarray(found.aux["q"]), np.asarray(found.trajectory.q[-1]))
 
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +223,8 @@ def test_the_last_iterate_is_the_answer_the_search_returned():
 # --------------------------------------------------------------------------- #
 def test_the_annealed_descent_reports_every_round():
     schedule = annealing_schedule(1.0, 4.0, 3)
-    walked = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=10)
+    found = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=10)
+    walked = found.trajectory
 
     assert set(np.unique(np.asarray(walked.beta))) == set(
         float(sharpness) for sharpness in schedule
@@ -142,7 +235,8 @@ def test_each_round_starts_where_the_last_one_stopped():
     # Warm starting is the whole point of a schedule: a sharper round refines a
     # design rather than rediscovering it.
     schedule = annealing_schedule(1.0, 4.0, 3)
-    walked = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=10)
+    found = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=10)
+    walked = found.trajectory
 
     betas = np.asarray(walked.beta)
     visited = np.asarray(walked.q)
@@ -154,7 +248,8 @@ def test_each_round_starts_where_the_last_one_stopped():
 
 def test_the_annealed_descent_reaches_the_same_minimum():
     schedule = annealing_schedule(1.0, 4.0, 3)
-    walked = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=25)
+    found = optimize_annealed(bowl, START, schedule, bounds=BOUNDS, iterations=25)
+    walked = found.trajectory
 
     assert np.allclose(np.asarray(walked.q[-1]), np.asarray(CENTER), atol=1e-6)
 
@@ -163,9 +258,10 @@ def test_the_sharpness_reaches_the_objective():
     # A round has to be taken under its own sharpness, or annealing does nothing
     # at all and the schedule is decoration. Read off the objective rather than
     # inside it: the sharpness arrives traced, so only its effect is concrete.
-    walked = optimize_annealed(
+    found = optimize_annealed(
         bowl, START, annealing_schedule(2.0, 8.0, 3), bounds=BOUNDS, iterations=3
     )
+    walked = found.trajectory
 
     assert sorted(set(np.asarray(walked.beta).tolist())) == pytest.approx(
         [2.0, 4.0, 8.0]

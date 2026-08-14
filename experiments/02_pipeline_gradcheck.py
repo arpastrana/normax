@@ -144,7 +144,7 @@ class ClassBranch(NamedTuple):
         """
         The branch whose wall proportion sits exactly at a class limit.
         """
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
         branch = cls(section_class, catalogue)
 
         return branch
@@ -213,13 +213,7 @@ def diameter_of(case: MemberCase, branch: ClassBranch) -> Float[Array, ""]:
     """
     Fully-stressed diameter under the full interaction.
     """
-    diameter = diameter_required(
-        case.actions,
-        case.buckling_length,
-        STEEL,
-        branch.catalogue,
-        section_class=branch.section_class,
-    )
+    diameter = diameter_required(case.actions, case.buckling_length, branch.catalogue)
 
     return diameter
 
@@ -307,13 +301,7 @@ def report_axial_limit(report: Report) -> None:
         branch = ClassBranch.at_limit(section_class)
         case = MemberCase(-5e5, 0.0, 0.0, 4000.0)
         actions = MemberActions(case.axial_force, 0.0, 0.0, 1.0, 1.0)
-        bare = diameter_required(
-            actions,
-            case.buckling_length,
-            STEEL,
-            branch.catalogue,
-            section_class=section_class,
-        )
+        bare = diameter_required(actions, case.buckling_length, branch.catalogue)
         with_moment = float(diameter_of(case, branch))
         axial_only = float(bare)
         gap = abs(with_moment - axial_only)
@@ -338,21 +326,10 @@ def report_limit_states(report: Report, branch: ClassBranch) -> float:
     worst = 0.0
     for case in CASES:
         diameter = diameter_of(case, branch)
-        tube = branch.catalogue.tube_at(diameter)
-        utilization = utilization_design(
-            tube,
-            case.actions,
-            case.buckling_length,
-            STEEL,
-            section_class=branch.section_class,
-        )
+        tube = branch.catalogue(diameter)
+        utilization = utilization_design(tube, case.actions, case.buckling_length)
         limit_state = governing_limit_state(
-            tube,
-            case.actions,
-            case.buckling_length,
-            STEEL,
-            branch.catalogue,
-            section_class=branch.section_class,
+            tube, case.actions, case.buckling_length, branch.catalogue
         )
         demand = float(utilization)
         worst = max(worst, abs(demand - 1.0))
@@ -382,16 +359,10 @@ def report_objective(report: Report, branch: ClassBranch) -> None:
 
     def objective(axial_force):
         actions = MemberActions(axial_force, 4e7, 1.5e7, MOMENT_FACTOR, MOMENT_FACTOR)
-        sizes = diameter_required(
-            actions,
-            lengths,
-            STEEL,
-            branch.catalogue,
-            section_class=branch.section_class,
-        )
-        tubes = branch.catalogue.tube_at(sizes)
+        sizes = diameter_required(actions, lengths, branch.catalogue)
+        tubes = branch.catalogue(sizes)
 
-        return mass_of_tubes(tubes, lengths, STEEL)
+        return mass_of_tubes(tubes, lengths)
 
     gradient = jax.grad(objective)(forces)
     total = float(objective(forces)) * 1e3

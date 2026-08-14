@@ -119,7 +119,7 @@ ITERATIONS = 60
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
 
 BACKENDS = ("smax", "opensees")
 
@@ -404,13 +404,13 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     xyz = setup.xyz
     diameters = setup.seed
     prepared_ddm = backend_opensees.prepare_model(
-        setup.structure, STEEL, CATALOGUE, normal=NORMAL
+        setup.structure, CATALOGUE, normal=NORMAL
     )
-    prepared_smax = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
+    prepared_smax = prepare_smax(setup.structure, CATALOGUE, normal=NORMAL)
 
     def ddm():
         return backend_opensees.force_jacobian(
-            prepared_ddm, xyz, diameters, STEEL, CATALOGUE, setup.funicular
+            prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
         )
 
     run = traced_forces(prepared_smax, setup.funicular)
@@ -433,7 +433,7 @@ def traced_forces(prepared, applied) -> Callable[..., dict[str, Float[Array, "..
     """
 
     def run(coords, sizes):
-        member = forces_smax(prepared, coords, sizes, STEEL, CATALOGUE, applied)
+        member = forces_smax(prepared, coords, sizes, CATALOGUE, applied)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
@@ -454,16 +454,14 @@ def agreement(report: Report) -> float:
     xyz = setup.xyz
     diameters = setup.seed
     prepared_ddm = backend_opensees.prepare_model(
-        setup.structure, STEEL, CATALOGUE, normal=NORMAL
+        setup.structure, CATALOGUE, normal=NORMAL
     )
-    prepared_smax = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
+    prepared_smax = prepare_smax(setup.structure, CATALOGUE, normal=NORMAL)
 
     mine = backend_opensees.member_forces(
-        prepared_ddm, xyz, diameters, STEEL, CATALOGUE, setup.funicular
+        prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
     )
-    theirs = forces_smax(
-        prepared_smax, xyz, diameters, STEEL, CATALOGUE, setup.funicular
-    )
+    theirs = forces_smax(prepared_smax, xyz, diameters, CATALOGUE, setup.funicular)
 
     force_columns = (
         ReportColumn("force", align="<"),
@@ -481,7 +479,7 @@ def agreement(report: Report) -> float:
     report.write_table(force_columns, force_rows)
 
     blocks = backend_opensees.force_jacobian(
-        prepared_ddm, xyz, diameters, STEEL, CATALOGUE, setup.funicular
+        prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
     )
     run = traced_forces(prepared_smax, setup.funicular)
     by_coordinate = jax.jacfwd(run, argnums=0)(xyz, diameters)
@@ -548,12 +546,10 @@ def blind(report: Report) -> None:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    prepared = prepare_smax(setup.structure, STEEL, CATALOGUE, normal=NORMAL)
+    prepared = prepare_smax(setup.structure, CATALOGUE, normal=NORMAL)
 
     def run(coords):
-        member = forces_smax(
-            prepared, coords, diameters, STEEL, CATALOGUE, setup.funicular
-        )
+        member = forces_smax(prepared, coords, diameters, CATALOGUE, setup.funicular)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
@@ -774,7 +770,7 @@ def descend_with(setup: ArchSetup, backend: str) -> DescentResult:
         compiling = time.perf_counter() - start
 
         start = time.perf_counter()
-        walked = minimize_bounded(
+        searched = minimize_bounded(
             total,
             setup.q,
             bounds=setup.bounds,
@@ -783,7 +779,7 @@ def descend_with(setup: ArchSetup, backend: str) -> DescentResult:
         )
         elapsed = time.perf_counter() - start
 
-    found = DescentResult(backend, walked, elapsed, compiling)
+    found = DescentResult(backend, searched.trajectory, elapsed, compiling)
 
     return found
 

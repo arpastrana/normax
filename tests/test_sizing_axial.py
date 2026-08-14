@@ -26,7 +26,7 @@ from normax.ec3.sizing import utilization_design
 # which is what makes this the fixture that de-risks the machinery.
 
 STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
 SECTION_CLASS = 3
 
 LENGTH = 4000.0
@@ -46,11 +46,7 @@ def sized(
     catalogue=CATALOGUE,
 ):
     return diameter_required(
-        MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0),
-        buckling_length,
-        STEEL,
-        catalogue,
-        section_class=section_class,
+        MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0), buckling_length, catalogue
     )
 
 
@@ -63,11 +59,7 @@ def used(
     catalogue=CATALOGUE,
 ):
     return utilization_design(
-        catalogue.tube_at(d),
-        MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0),
-        buckling_length,
-        STEEL,
-        section_class=section_class,
+        catalogue(d), MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0), buckling_length
     )
 
 
@@ -97,16 +89,16 @@ def test_the_minimum_diameter_is_the_smallest_standard_tube():
 def test_the_class_limit_constructor_lands_on_its_own_class(section_class):
     # The ratio is set to the limit, and the limits are inclusive upper bounds,
     # so the section classifies as the class it was built for.
-    catalogue = TubeCatalogue.at_class_limit(355.0, section_class)
+    catalogue = TubeCatalogue.at_class_limit(Steel(), section_class)
 
     assert int(classify_section(catalogue.ratio, 355.0)) == section_class
 
 
 def test_the_class_limit_constructor_reproduces_the_documented_ratios():
-    assert TubeCatalogue.at_class_limit(355.0, 3).ratio == pytest.approx(
+    assert TubeCatalogue.at_class_limit(Steel(), 3).ratio == pytest.approx(
         59.58, rel=1e-3
     )
-    assert TubeCatalogue.at_class_limit(355.0, 2).ratio == pytest.approx(
+    assert TubeCatalogue.at_class_limit(Steel(), 2).ratio == pytest.approx(
         46.34, rel=1e-3
     )
 
@@ -130,12 +122,7 @@ def test_a_class_four_section_is_refused_rather_than_called_elastic():
 @pytest.mark.parametrize("buckling_length", LENGTHS)
 @pytest.mark.parametrize("axial_force", FORCES)
 def test_the_bracket_is_never_above_the_root(axial_force, buckling_length):
-    lower = diameter_bracket(
-        MemberActions(axial_force, 0.0, 0.0),
-        STEEL,
-        CATALOGUE,
-        section_class=SECTION_CLASS,
-    )
+    lower = diameter_bracket(MemberActions(axial_force, 0.0, 0.0), CATALOGUE)
 
     assert float(sized(axial_force, buckling_length)) >= float(lower) - 1e-9
 
@@ -144,12 +131,7 @@ def test_the_bracket_is_never_above_the_root(axial_force, buckling_length):
 def test_the_bracket_is_at_or_beyond_full_utilization(axial_force):
     # The lower bound is the squash diameter, where the axial force alone
     # exhausts the section. Buckling can only make that worse.
-    lower = diameter_bracket(
-        MemberActions(axial_force, 0.0, 0.0),
-        STEEL,
-        CATALOGUE,
-        section_class=SECTION_CLASS,
-    )
+    lower = diameter_bracket(MemberActions(axial_force, 0.0, 0.0), CATALOGUE)
 
     assert float(used(lower, axial_force)) >= 1.0 - 1e-9
 
@@ -159,9 +141,7 @@ def test_the_bracket_does_not_carry_the_catalogue_minimum():
     # check. Folding it into the search would stop the search at a diameter
     # where the check is unsatisfied, which is where the implicit derivative
     # stops being valid, so it is applied to the answer instead.
-    lower = diameter_bracket(
-        MemberActions(0.0, 0.0, 0.0), STEEL, CATALOGUE, section_class=SECTION_CLASS
-    )
+    lower = diameter_bracket(MemberActions(0.0, 0.0, 0.0), CATALOGUE)
 
     assert float(lower) < DIAMETER_MINIMUM
     assert float(sized(0.0)) == pytest.approx(DIAMETER_MINIMUM)
@@ -169,12 +149,12 @@ def test_the_bracket_does_not_carry_the_catalogue_minimum():
 
 def test_the_bracket_is_the_closed_form_squash_diameter():
     # A f_y / gamma_M0 = |N| inverted, with A quadratic in the diameter.
-    unit = float(CATALOGUE.tube_at(1.0).area)
+    unit = float(CATALOGUE(1.0).area)
     expected = float(jnp.sqrt(5e5 * STEEL.gamma_m0 / (STEEL.f_y * unit)))
 
-    assert diameter_bracket(
-        MemberActions(-5e5, 0.0, 0.0), STEEL, CATALOGUE, section_class=SECTION_CLASS
-    ) == pytest.approx(expected, rel=1e-12)
+    assert diameter_bracket(MemberActions(-5e5, 0.0, 0.0), CATALOGUE) == pytest.approx(
+        expected, rel=1e-12
+    )
 
 
 # ---- The map ---- #
@@ -198,11 +178,11 @@ def test_the_sized_member_reproduces_the_buckling_resistance(
     # Independent of the residual: rebuild N_b,Rd from 6.47 at the solved
     # diameter and check it carries the force.
     d = sized(axial_force, buckling_length)
-    gross = CATALOGUE.tube_at(d).area
+    gross = CATALOGUE(d).area
     lam = slenderness_from_force(
         gross,
         Steel(f_y=STEEL.f_y),
-        force_critical(CATALOGUE.tube_at(d).second_moment, buckling_length, Steel()),
+        force_critical(CATALOGUE(d).second_moment, buckling_length, Steel()),
     )
     resistance = resistance_buckling(
         reduction_buckling(lam, STEEL.alpha), gross, Steel(f_y=STEEL.f_y)
@@ -257,7 +237,7 @@ def test_the_map_agrees_with_a_dense_scan():
 def test_a_tension_member_is_sized_by_the_gross_section():
     # No buckling in tension, so 6.2.3 governs alone and the diameter follows
     # in closed form from A f_y / gamma_M0 = N.
-    unit = float(CATALOGUE.tube_at(1.0).area)
+    unit = float(CATALOGUE(1.0).area)
     expected = float(jnp.sqrt(5e5 * STEEL.gamma_m0 / (STEEL.f_y * unit)))
 
     assert float(sized(5e5)) == pytest.approx(expected, rel=1e-12)
@@ -276,7 +256,7 @@ def test_a_sized_tension_member_reaches_its_plastic_resistance(axial_force):
     d = sized(axial_force)
 
     assert float(
-        resistance_yielding(CATALOGUE.tube_at(d).area, Steel(f_y=STEEL.f_y))
+        resistance_yielding(CATALOGUE(d).area, Steel(f_y=STEEL.f_y))
     ) == pytest.approx(axial_force, rel=1e-9)
 
 
@@ -297,13 +277,7 @@ def test_nothing_is_ever_sized_below_the_floor():
     forces = jnp.asarray([-1e-3, -1.0, -1e3, 0.0, 1.0, 1e3])
 
     assert jnp.all(
-        diameter_required(
-            MemberActions(forces, 0.0, 0.0, 1.0, 1.0),
-            LENGTH,
-            STEEL,
-            CATALOGUE,
-            section_class=SECTION_CLASS,
-        )
+        diameter_required(MemberActions(forces, 0.0, 0.0, 1.0, 1.0), LENGTH, CATALOGUE)
         >= DIAMETER_MINIMUM - 1e-12
     )
 
@@ -314,29 +288,25 @@ def test_nothing_is_ever_sized_below_the_floor():
 def test_mass_is_density_times_volume():
     d = jnp.asarray([100.0, 200.0])
     lengths = jnp.asarray([3000.0, 5000.0])
-    volume = float(jnp.sum(CATALOGUE.tube_at(d).area * lengths))
+    volume = float(jnp.sum(CATALOGUE(d).area * lengths))
 
-    assert mass_of_tubes(CATALOGUE.tube_at(d), lengths, STEEL) == pytest.approx(
+    assert mass_of_tubes(CATALOGUE(d), lengths) == pytest.approx(
         float(STEEL.density) * volume
     )
 
 
 def test_mass_of_the_fixture_section_matches_the_tabulated_tube():
     # EN 10210 gives CHS 244.5 x 10 as 57.8 kg/m, so a 4 m length is 231 kg.
-    catalogue = TubeCatalogue(24.45)
-    kilograms = float(mass_of_tubes(catalogue.tube_at(244.5), 4000.0, STEEL)) * 1e3
+    catalogue = TubeCatalogue(24.45, 1, STEEL)
+    kilograms = float(mass_of_tubes(catalogue(244.5), 4000.0)) * 1e3
 
     assert kilograms == pytest.approx(4.0 * 57.8, rel=5e-3)
 
 
 def test_mass_grows_when_any_member_grows():
     lengths = jnp.asarray([3000.0, 5000.0])
-    light = mass_of_tubes(
-        CATALOGUE.tube_at(jnp.asarray([100.0, 200.0])), lengths, STEEL
-    )
-    heavy = mass_of_tubes(
-        CATALOGUE.tube_at(jnp.asarray([100.0, 201.0])), lengths, STEEL
-    )
+    light = mass_of_tubes(CATALOGUE(jnp.asarray([100.0, 200.0])), lengths)
+    heavy = mass_of_tubes(CATALOGUE(jnp.asarray([100.0, 201.0])), lengths)
 
     assert heavy > light
 
@@ -346,7 +316,7 @@ def test_mass_grows_when_any_member_grows():
 
 @pytest.mark.parametrize("section_class", [2, 3])
 def test_both_class_branches_size_a_member(section_class):
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+    catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
     d = sized(-5e5, section_class=section_class, catalogue=catalogue)
 
     assert float(
@@ -357,7 +327,7 @@ def test_both_class_branches_size_a_member(section_class):
 def test_the_two_class_branches_agree_without_bending():
     # Classes 1 to 3 all take the gross area in compression, so with no moment
     # the section modulus never enters and the two branches must coincide.
-    thin = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+    thin = TubeCatalogue.at_class_limit(STEEL, 3)
     plastic_size = sized(-5e5, section_class=2, catalogue=thin)
     elastic_size = sized(-5e5, section_class=3, catalogue=thin)
 
@@ -372,11 +342,7 @@ def test_the_map_vectorizes_over_members():
     lengths = jnp.full_like(forces, LENGTH)
 
     sizes = diameter_required(
-        MemberActions(forces, 0.0, 0.0, 1.0, 1.0),
-        lengths,
-        STEEL,
-        CATALOGUE,
-        section_class=SECTION_CLASS,
+        MemberActions(forces, 0.0, 0.0, 1.0, 1.0), lengths, CATALOGUE
     )
 
     assert sizes.shape == forces.shape
@@ -389,26 +355,20 @@ def test_the_map_broadcasts_a_scalar_force_over_many_lengths():
     lengths = jnp.asarray(LENGTHS)
 
     sizes = diameter_required(
-        MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0),
-        lengths,
-        STEEL,
-        CATALOGUE,
-        section_class=SECTION_CLASS,
+        MemberActions(-5e5, 0.0, 0.0, 1.0, 1.0), lengths, CATALOGUE
     )
 
     assert sizes.shape == lengths.shape
 
 
 def test_the_map_is_jittable():
-    jitted = jax.jit(diameter_required, static_argnames=("section_class", "resultant"))
+    # Only the moment combination is static now. The class crosses inside the
+    # catalogue, where it is part of the tree structure rather than a leaf, so it
+    # neither needs marking nor becomes a tracer.
+    jitted = jax.jit(diameter_required, static_argnames=("resultant",))
 
     assert jitted(
-        MemberActions(-5e5),
-        LENGTH,
-        STEEL,
-        CATALOGUE,
-        section_class=SECTION_CLASS,
-        resultant=True,
+        MemberActions(-5e5), LENGTH, CATALOGUE, resultant=True
     ) == pytest.approx(float(sized(-5e5)))
 
 
@@ -417,11 +377,7 @@ def test_the_map_is_vmappable():
 
     def one(force):
         return diameter_required(
-            MemberActions(force, 0.0, 0.0, 1.0, 1.0),
-            LENGTH,
-            STEEL,
-            CATALOGUE,
-            section_class=SECTION_CLASS,
+            MemberActions(force, 0.0, 0.0, 1.0, 1.0), LENGTH, CATALOGUE
         )
 
     assert np.asarray(jax.vmap(one)(forces)) == pytest.approx(

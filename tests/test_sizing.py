@@ -42,7 +42,7 @@ CLASSES = [2, 3]
 
 
 def catalogue_for(section_class):
-    return TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+    return TubeCatalogue.at_class_limit(STEEL, section_class)
 
 
 def sized(actions, buckling_length=LENGTH, *, moment_factor=0.9, section_class=3):
@@ -51,9 +51,7 @@ def sized(actions, buckling_length=LENGTH, *, moment_factor=0.9, section_class=3
     return diameter_required(
         MemberActions(*actions, moment_factor, moment_factor),
         buckling_length,
-        STEEL,
         catalogue,
-        section_class=section_class,
     )
 
 
@@ -61,11 +59,9 @@ def used(d, actions, buckling_length=LENGTH, *, moment_factor=0.9, section_class
     catalogue = catalogue_for(section_class)
 
     return utilization_design(
-        catalogue.tube_at(d),
+        catalogue(d),
         MemberActions(*actions, moment_factor, moment_factor),
         buckling_length,
-        STEEL,
-        section_class=section_class,
     )
 
 
@@ -119,12 +115,10 @@ def test_the_cross_section_check_can_govern_over_the_member_check():
     assert (
         float(
             governing_limit_state(
-                catalogue_for(3).tube_at(floored),
+                catalogue_for(3)(floored),
                 MemberActions(-1e3, 60e6, 0.0, C_M_MINIMUM, C_M_MINIMUM),
                 stocky,
-                STEEL,
                 catalogue_for(3),
-                section_class=3,
             )
         )
         == LIMIT_CROSS_SECTION
@@ -135,12 +129,7 @@ def test_a_tension_member_is_sized_by_the_cross_section_alone():
     catalogue = catalogue_for(3)
     d = sized((5e5, 40e6, 15e6))
     code = governing_limit_state(
-        catalogue.tube_at(d),
-        MemberActions(5e5, 40e6, 15e6, 0.9, 0.9),
-        LENGTH,
-        STEEL,
-        catalogue,
-        section_class=3,
+        catalogue(d), MemberActions(5e5, 40e6, 15e6, 0.9, 0.9), LENGTH, catalogue
     )
 
     assert float(code) == LIMIT_TENSION
@@ -241,12 +230,7 @@ def test_the_diagnostic_names_a_real_limit_state(actions, section_class):
     catalogue = catalogue_for(section_class)
     d = sized(actions, section_class=section_class)
     code = governing_limit_state(
-        catalogue.tube_at(d),
-        MemberActions(*actions, 0.9, 0.9),
-        LENGTH,
-        STEEL,
-        catalogue,
-        section_class=section_class,
+        catalogue(d), MemberActions(*actions, 0.9, 0.9), LENGTH, catalogue
     )
 
     assert float(code) in {
@@ -262,12 +246,7 @@ def test_the_diagnostic_reports_the_minimum_size_ahead_of_any_clause():
     catalogue = catalogue_for(3)
     d = sized((-1.0, 0.0, 0.0))
     code = governing_limit_state(
-        catalogue.tube_at(d),
-        MemberActions(-1.0, 0.0, 0.0, 0.9, 0.9),
-        LENGTH,
-        STEEL,
-        catalogue,
-        section_class=3,
+        catalogue(d), MemberActions(-1.0, 0.0, 0.0, 0.9, 0.9), LENGTH, catalogue
     )
 
     assert float(d) == pytest.approx(DIAMETER_MINIMUM)
@@ -278,12 +257,7 @@ def test_a_slender_compression_member_is_governed_by_the_member_check():
     catalogue = catalogue_for(3)
     d = sized((-5e5, 40e6, 15e6), 12000.0)
     code = governing_limit_state(
-        catalogue.tube_at(d),
-        MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9),
-        12000.0,
-        STEEL,
-        catalogue,
-        section_class=3,
+        catalogue(d), MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9), 12000.0, catalogue
     )
 
     assert float(code) in {LIMIT_MAJOR, LIMIT_MINOR}
@@ -295,12 +269,7 @@ def test_the_named_equation_is_the_one_that_actually_wins():
     catalogue = catalogue_for(2)
     d = sized((-5e5, 80e6, 5e6), 12000.0, section_class=2)
     code = governing_limit_state(
-        catalogue.tube_at(d),
-        MemberActions(-5e5, 80e6, 5e6, 0.9, 0.9),
-        12000.0,
-        STEEL,
-        catalogue,
-        section_class=2,
+        catalogue(d), MemberActions(-5e5, 80e6, 5e6, 0.9, 0.9), 12000.0, catalogue
     )
 
     assert float(code) == LIMIT_MAJOR
@@ -318,13 +287,9 @@ def test_the_diagnostic_needs_the_minor_axis_it_was_sized_with():
         actions.axial_force, actions.moment_major, 0.0, actions.moment_factor_major, 1.0
     )
 
-    d = diameter_required(actions, LENGTH, STEEL, catalogue, section_class=3)
-    both = governing_limit_state(
-        catalogue.tube_at(d), actions, LENGTH, STEEL, catalogue, section_class=3
-    )
-    dropped = governing_limit_state(
-        catalogue.tube_at(d), major_only, LENGTH, STEEL, catalogue, section_class=3
-    )
+    d = diameter_required(actions, LENGTH, catalogue)
+    both = governing_limit_state(catalogue(d), actions, LENGTH, catalogue)
+    dropped = governing_limit_state(catalogue(d), major_only, LENGTH, catalogue)
 
     assert float(both) == LIMIT_CROSS_SECTION
     assert float(dropped) == LIMIT_MAJOR
@@ -436,11 +401,7 @@ def test_the_map_vectorizes_over_members():
     catalogue = catalogue_for(3)
 
     sizes = diameter_required(
-        MemberActions(forces, moments, 0.0, 0.9, 0.9),
-        LENGTH,
-        STEEL,
-        catalogue,
-        section_class=3,
+        MemberActions(forces, moments, 0.0, 0.9, 0.9), LENGTH, catalogue
     )
 
     assert sizes.shape == forces.shape
@@ -448,16 +409,28 @@ def test_the_map_vectorizes_over_members():
 
 
 def test_the_map_is_jittable_with_moments():
-    jitted = jax.jit(diameter_required, static_argnames=("section_class", "resultant"))
+    # The catalogue crosses as a closed-over constant, which is what keeps its
+    # class a Python integer and leaves no static argument to mark. That is how
+    # every block in the package holds one.
     catalogue = catalogue_for(3)
 
-    assert jitted(
-        MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9),
-        LENGTH,
-        STEEL,
-        catalogue,
-        section_class=3,
-        resultant=True,
+    def demanded(actions, buckling_length):
+        return diameter_required(actions, buckling_length, catalogue)
+
+    assert jax.jit(demanded)(
+        MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9), LENGTH
+    ) == pytest.approx(float(sized((-5e5, 40e6, 15e6))))
+
+
+def test_the_class_survives_a_catalogue_crossing_as_an_argument():
+    # The case the container is shaped for. Handed in as an argument, a class
+    # carried as a leaf would be traced and the clause it selects would raise;
+    # held in the tree structure it crosses untouched, and the ratio beside it
+    # still crosses as a number.
+    actions = MemberActions(-5e5, 40e6, 15e6, 0.9, 0.9)
+
+    assert jax.jit(diameter_required)(
+        actions, LENGTH, catalogue_for(3)
     ) == pytest.approx(float(sized((-5e5, 40e6, 15e6))))
 
 
@@ -477,9 +450,7 @@ def sized_reading(
     return diameter_required(
         MemberActions(*actions, moment_factor, moment_factor),
         buckling_length,
-        STEEL,
         catalogue_for(section_class),
-        section_class=section_class,
         resultant=resultant,
     )
 
@@ -502,11 +473,9 @@ def test_both_readings_are_exactly_fully_stressed(actions, section_class):
     for resultant in (True, False):
         d = sized_reading(actions, resultant=resultant, section_class=section_class)
         value = utilization_design(
-            catalogue_for(section_class).tube_at(d),
+            catalogue_for(section_class)(d),
             MemberActions(*actions, 0.9, 0.9),
             LENGTH,
-            STEEL,
-            section_class=section_class,
             resultant=resultant,
         )
 
@@ -544,12 +513,10 @@ def test_the_reading_cannot_bite_where_the_member_check_governs():
     resultant = sized_reading((-5e5, 40e6, 40e6), slender, resultant=True)
     summed = sized_reading((-5e5, 40e6, 40e6), slender, resultant=False)
     code = governing_limit_state(
-        catalogue_for(3).tube_at(resultant),
+        catalogue_for(3)(resultant),
         MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         slender,
-        STEEL,
         catalogue_for(3),
-        section_class=3,
     )
 
     assert float(code) in {LIMIT_MAJOR, LIMIT_MINOR}
@@ -562,17 +529,13 @@ def test_the_plastic_branch_ignores_the_reading():
     kept = diameter_required(
         MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         LENGTH,
-        STEEL,
         catalogue_for(2),
-        section_class=2,
         resultant=True,
     )
     dropped = diameter_required(
         MemberActions(-5e5, 40e6, 40e6, 0.9, 0.9),
         LENGTH,
-        STEEL,
         catalogue_for(2),
-        section_class=2,
         resultant=False,
     )
 
@@ -585,9 +548,7 @@ def test_both_readings_are_differentiable():
             lambda n: diameter_required(
                 MemberActions(n, 40e6, 40e6, 0.9, 0.9),
                 LENGTH,
-                STEEL,
                 catalogue_for(3),
-                section_class=3,
                 resultant=resultant,
             )
         )(-5e5)
@@ -603,11 +564,9 @@ def test_a_root_above_the_search_interval_returns_nan_not_a_diameter():
     # assumed. Were the root above it, the untested top would come back looking
     # like an answer, and it would fail the very check it claims to satisfy.
     steel = Steel()
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel, 3)
 
-    sized = diameter_required(
-        MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0), 1e30, steel, catalogue, section_class=3
-    )
+    sized = diameter_required(MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0), 1e30, catalogue)
 
     assert jnp.isnan(sized)
 
@@ -617,22 +576,14 @@ def test_the_ceiling_is_out_of_physical_reach():
     # length of order 1e28 mm can push the root past it. Anything a structure
     # could have still finds its root.
     steel = Steel()
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel, 3)
 
     for buckling_length in (1e3, 1e6, 1e12, 1e18, 1e24):
         sized = diameter_required(
-            MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0),
-            buckling_length,
-            steel,
-            catalogue,
-            section_class=3,
+            MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0), buckling_length, catalogue
         )
         used = utilization_design(
-            catalogue.tube_at(sized),
-            MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0),
-            buckling_length,
-            steel,
-            section_class=3,
+            catalogue(sized), MemberActions(-1e5, 0.0, 0.0, 1.0, 1.0), buckling_length
         )
 
         assert not jnp.isnan(sized)
@@ -643,15 +594,9 @@ def test_the_guard_does_not_fire_on_a_member_carrying_nothing():
     # A flat check has no root but never exceeds one, so the interval is not the
     # reason it has no root and the catalogue decides the size.
     steel = Steel()
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel, 3)
 
-    sized = diameter_required(
-        MemberActions(0.0, 0.0, 0.0, 1.0, 1.0),
-        1000.0,
-        steel,
-        catalogue,
-        section_class=3,
-    )
+    sized = diameter_required(MemberActions(0.0, 0.0, 0.0, 1.0, 1.0), 1000.0, catalogue)
 
     assert not jnp.isnan(sized)
     assert float(sized) == pytest.approx(float(catalogue.diameter_min), rel=1e-12)
@@ -661,15 +606,11 @@ def test_a_failed_bracket_poisons_the_gradient_too():
     # Loud in both passes: there is no valid design, so there is no sensitivity
     # of one either.
     steel = Steel()
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel, 3)
 
     def size(axial_force):
         return diameter_required(
-            MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0),
-            1e30,
-            steel,
-            catalogue,
-            section_class=3,
+            MemberActions(axial_force, 0.0, 0.0, 1.0, 1.0), 1e30, catalogue
         )
 
     assert jnp.isnan(jax.grad(size)(-1e5))
@@ -678,7 +619,7 @@ def test_a_failed_bracket_poisons_the_gradient_too():
 def test_the_guard_costs_one_evaluation_and_changes_no_answer():
     # Every ordinary case must return exactly what it returned before the guard.
     steel = Steel()
-    catalogue = TubeCatalogue.at_class_limit(steel.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(steel, 3)
 
     for axial_force, moment_major, buckling_length in (
         (-1e4, 0.0, 1000.0),
@@ -689,16 +630,12 @@ def test_the_guard_costs_one_evaluation_and_changes_no_answer():
         sized = diameter_required(
             MemberActions(axial_force, moment_major, 0.0, 1.0, 1.0),
             buckling_length,
-            steel,
             catalogue,
-            section_class=3,
         )
         used = utilization_design(
-            catalogue.tube_at(sized),
+            catalogue(sized),
             MemberActions(axial_force, moment_major, 0.0, 1.0, 1.0),
             buckling_length,
-            steel,
-            section_class=3,
         )
 
         assert not jnp.isnan(sized)
@@ -712,25 +649,29 @@ def test_the_guard_costs_one_evaluation_and_changes_no_answer():
 def test_the_class_a_catalogue_reports_is_the_one_that_sizes_it(section_class):
     catalogue = catalogue_for(section_class)
 
-    assert catalogue.section_class(STEEL.f_y) == section_class
+    assert catalogue.section_class == section_class
+    assert catalogue.verified_class() == section_class
 
 
 def test_sizing_one_family_as_the_wrong_class_overstresses_it():
-    # Why the class comes off the catalogue rather than being named beside it.
-    # One family throughout, so only the claimed class differs: a Class 3 wall
-    # sized by the plastic clauses looks fully stressed to those clauses and is
-    # over capacity by the ones that actually apply to it.
-    catalogue = catalogue_for(3)
-    truth = catalogue.section_class(STEEL.f_y)
+    # Why the class travels with the family rather than beside it. One ratio
+    # throughout, so only the label differs: a Class 3 wall labeled plastic is
+    # sized by clauses that do not apply to it and comes out over capacity by
+    # the ones that do.
+    honest_family = catalogue_for(3)
+    mislabeled = TubeCatalogue(honest_family.ratio, 2, honest_family.material)
     actions = MemberActions(-3e5, 2e7, 0.0, 0.9, 0.9)
 
-    honest = diameter_required(actions, LENGTH, STEEL, catalogue, section_class=truth)
-    mistaken = diameter_required(actions, LENGTH, STEEL, catalogue, section_class=2)
+    honest = diameter_required(actions, LENGTH, honest_family)
+    mistaken = diameter_required(actions, LENGTH, mislabeled)
 
     assert float(mistaken) < float(honest)
 
-    checked = utilization_design(
-        catalogue.tube_at(mistaken), actions, LENGTH, STEEL, section_class=truth
-    )
+    checked = utilization_design(honest_family(mistaken), actions, LENGTH)
 
     assert float(checked) > 1.0
+
+    # And the mislabeling is refused where a block would read it, which is what
+    # keeps the mistake above out of reach of anything the pipeline builds.
+    with pytest.raises(ValueError):
+        mislabeled.verified_class()

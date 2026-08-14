@@ -31,6 +31,7 @@ from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.f
 from blueprints.structural_sections.steel.standard_profiles import chs
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.classification import classify_section
 from normax.ec3.material import Steel
 from normax.ec3.resistance import area_shear
 from normax.ec3.resistance import moment_resultant
@@ -74,6 +75,20 @@ PROFILE_NAMES = [
     "CHS 508x20",
 ]
 MESH_TOLERANCE = 5e-3
+
+# The grade the published profiles are read at. Only their geometry is compared
+# below, but a family carries a grade and a class, so both are named.
+PROFILE_STEEL = Steel()
+
+
+def family_of(profile):
+    """
+    The family a published profile belongs to, labeled as Table 5.2 labels it.
+    """
+    ratio = profile.outer_diameter / profile.wall_thickness
+    section_class = int(classify_section(ratio, PROFILE_STEEL.f_y))
+
+    return TubeCatalogue(ratio, section_class, PROFILE_STEEL)
 
 
 @pytest.fixture(scope="module")
@@ -201,29 +216,23 @@ def test_worked_example_chs_compression_agrees():
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_thickness_agrees(profiles, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    assert TubeCatalogue(ratio).tube_at(
-        profile.outer_diameter
-    ).thickness == pytest.approx(profile.wall_thickness)
+    assert family_of(profile)(profile.outer_diameter).thickness == pytest.approx(
+        profile.wall_thickness
+    )
 
 
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_inner_diameter_agrees(profiles, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    assert TubeCatalogue(ratio).tube_at(
-        profile.outer_diameter
-    ).diameter_inner == pytest.approx(profile.inner_diameter)
+    assert family_of(profile)(profile.outer_diameter).diameter_inner == pytest.approx(
+        profile.inner_diameter
+    )
 
 
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_area_agrees(profiles, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    assert TubeCatalogue(ratio).tube_at(profile.outer_diameter).area == pytest.approx(
+    assert family_of(profile)(profile.outer_diameter).area == pytest.approx(
         profile.area, rel=MESH_TOLERANCE
     )
 
@@ -231,9 +240,7 @@ def test_area_agrees(profiles, name):
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_second_moment_agrees(profiles, meshed, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).second_moment
+    ours = family_of(profile)(profile.outer_diameter).second_moment
 
     assert ours == pytest.approx(meshed[name].ixx_c, rel=MESH_TOLERANCE)
     assert ours == pytest.approx(meshed[name].iyy_c, rel=MESH_TOLERANCE)
@@ -242,9 +249,7 @@ def test_second_moment_agrees(profiles, meshed, name):
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_modulus_elastic_agrees(profiles, meshed, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).modulus_elastic
+    ours = family_of(profile)(profile.outer_diameter).modulus_elastic
 
     assert ours == pytest.approx(meshed[name].zxx_plus, rel=MESH_TOLERANCE)
 
@@ -252,9 +257,7 @@ def test_modulus_elastic_agrees(profiles, meshed, name):
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_modulus_plastic_agrees(profiles, meshed, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).modulus_plastic
+    ours = family_of(profile)(profile.outer_diameter).modulus_plastic
 
     assert ours == pytest.approx(meshed[name].sxx, rel=MESH_TOLERANCE)
 
@@ -262,9 +265,7 @@ def test_modulus_plastic_agrees(profiles, meshed, name):
 @pytest.mark.parametrize("name", PROFILE_NAMES)
 def test_radius_of_gyration_agrees(profiles, meshed, name):
     profile = profiles[name]
-    ratio = profile.outer_diameter / profile.wall_thickness
-
-    ours = TubeCatalogue(ratio).tube_at(profile.outer_diameter).radius_of_gyration
+    ours = family_of(profile)(profile.outer_diameter).radius_of_gyration
 
     assert ours == pytest.approx(meshed[name].rx_c, rel=MESH_TOLERANCE)
 

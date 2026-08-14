@@ -3,15 +3,29 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.ec3.classification import classify_section
+from normax.ec3.material import Steel
 from normax.ec3.section import Tube
 from normax.ec3.section import TubeCatalogue
 
 DIAMETERS = [50.0, 114.3, 244.5, 508.0]
+
+# The last of these is a shell at S355 rather than any of the three classes the
+# clauses cover, which is deliberate: geometry is defined past where they stop.
 RATIOS = [10.0, 24.45, 59.58, 90.0]
+
+STEEL = Steel()
+
+
+def family_at(r):
+    """
+    The family of a ratio, labeled with the class Table 5.2 puts it in.
+    """
+    return TubeCatalogue(r, int(classify_section(r, STEEL.f_y)), STEEL)
 
 
 def sample(d, r):
-    return TubeCatalogue(r).tube_at(d)
+    return family_at(r)(d)
 
 
 # ---- The two leaves ---- #
@@ -35,7 +49,9 @@ def test_the_catalogue_walls_the_tube_at_its_ratio(d, r):
 @pytest.mark.parametrize("r", RATIOS)
 @pytest.mark.parametrize("d", DIAMETERS)
 def test_a_tube_can_be_built_without_a_catalogue(d, r):
-    direct = Tube(d, d / r)
+    # Which means naming the grade and the class the catalogue would have given
+    # it, a tube being a section and what it is made of rather than a shape.
+    direct = Tube(d, d / r, STEEL, family_at(r).section_class)
 
     assert float(direct.area) == float(sample(d, r).area)
 
@@ -142,7 +158,8 @@ def test_a_fixed_wall_does_not_scale_that_way():
     # The counterexample the note in the module docstring points at: hold the
     # wall and the area stops being quadratic, so the argument above belongs
     # to the catalogue rather than to the tube.
-    held = Tube(2.0 * 244.5, 10.0).area / Tube(244.5, 10.0).area
+    grown = Tube(2.0 * 244.5, 10.0, STEEL, 1)
+    held = grown.area / Tube(244.5, 10.0, STEEL, 1).area
 
     assert float(held) < 4.0
 
@@ -186,22 +203,30 @@ def test_properties_vectorize_over_members():
     )
 
 
-def test_a_tube_is_two_leaves():
+def test_a_tubes_geometry_is_two_leaves():
     # Properties are computed, so they are not leaves and cannot carry a
-    # cotangent of their own.
-    leaves = jax.tree.leaves(sample(244.5, 24.45))
+    # cotangent of their own. Past the first two the leaves are the grade, and the
+    # geometry comes first so that a load case axis can be read off the front of
+    # the tree. The class is not a leaf at all: it selects a clause, so it lives
+    # in the tree structure where a trace cannot reach it.
+    tube = sample(244.5, 24.45)
+    leaves = jax.tree.leaves(tube)
 
-    assert len(leaves) == 2
+    assert leaves[:2] == [tube.diameter, tube.thickness]
+    assert len(leaves) == 2 + len(jax.tree.leaves(STEEL))
+    assert type(tube.section_class) is int
 
 
 def test_properties_are_jittable():
-    jitted = jax.jit(lambda d, r: TubeCatalogue(r).tube_at(d).area)
+    # The ratio crosses as a traced leaf and the class as a literal, which is the
+    # split the container is built around: one is a number, the other a label.
+    jitted = jax.jit(lambda d, r: TubeCatalogue(r, 1, STEEL)(d).area)
 
     assert jitted(244.5, 24.45) == pytest.approx(sample(244.5, 24.45).area)
 
 
 def test_properties_are_differentiable():
-    slope = jax.grad(lambda d: TubeCatalogue(24.45).tube_at(d).area)(244.5)
+    slope = jax.grad(lambda d: family_at(24.45)(d).area)(244.5)
 
     # A = pi d^2 (r - 1) / r^2, so dA/dd is twice the area over the diameter.
     assert float(slope) == pytest.approx(2.0 * float(sample(244.5, 24.45).area) / 244.5)

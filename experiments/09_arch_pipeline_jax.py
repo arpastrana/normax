@@ -154,7 +154,7 @@ STEEL = Steel()
 
 # Preparing the analysis model needs a section family to stand up a frame, and
 # every property of it is replaced per call, so one seed serves both classes.
-CATALOGUE_SEED = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+CATALOGUE_SEED = TubeCatalogue.at_class_limit(STEEL, 3)
 
 CLASSES = (2, 3)
 
@@ -388,7 +388,7 @@ def design_at_class(
     """
     Fully-stressed design of the arch on one section class.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+    catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
     pipeline = pipeline_from_setup(setup, catalogue)
     design = eqx.filter_jit(pipeline)(setup.params, setup.loads)
 
@@ -688,8 +688,8 @@ def generate_figures(
     study = results.refinement
     FIGURES.mkdir(exist_ok=True)
 
-    seed_tubes = pipeline.sizer.catalogue.tube_at(setup.seed)
-    assumed = float(mass_of_tubes(seed_tubes, design.lengths, STEEL))
+    seed_tubes = pipeline.sizer.catalogue(setup.seed)
+    assumed = float(mass_of_tubes(seed_tubes, design.lengths))
     seeded = SizedMembers(setup.seed, assumed)
     sized = SizedMembers(design.diameters, float(calculate_mass(design)))
     sections = figure_sections(design.xyz, setup.structure.edges, seeded, sized)

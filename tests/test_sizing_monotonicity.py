@@ -40,20 +40,24 @@ C_M = 0.9
 RATIO_PLASTIC = 70.0 * float(material_factor(YIELD)) ** 2
 RATIO_ELASTIC = 90.0 * float(material_factor(YIELD)) ** 2
 
+STEEL = Steel(f_y=YIELD)
+
+# The two families the argument is made in, each labeled with the class its ratio
+# sits on the limit of.
+FAMILY_PLASTIC = TubeCatalogue(RATIO_PLASTIC, 2, STEEL)
+FAMILY_ELASTIC = TubeCatalogue(RATIO_ELASTIC, 3, STEEL)
+
 DIAMETERS = jnp.linspace(60.0, 900.0, 400)
 
 
 def member_utilization(
     diameter, axial_force, moment_major, moment_minor, *, section_class
 ):
-    ratio = RATIO_PLASTIC if is_plastic(section_class) else RATIO_ELASTIC
-    gross = TubeCatalogue(ratio).tube_at(diameter).area
-    inertia = TubeCatalogue(ratio).tube_at(diameter).second_moment
-    modulus = (
-        TubeCatalogue(ratio).tube_at(diameter).modulus_plastic
-        if is_plastic(section_class)
-        else TubeCatalogue(ratio).tube_at(diameter).modulus_elastic
-    )
+    plastic = is_plastic(section_class)
+    tube = (FAMILY_PLASTIC if plastic else FAMILY_ELASTIC)(diameter)
+    gross = tube.area
+    inertia = tube.second_moment
+    modulus = tube.modulus_plastic if plastic else tube.modulus_elastic
 
     non_dimensional = slenderness_from_force(
         gross,
@@ -72,11 +76,9 @@ def member_utilization(
 
 
 def cross_section_utilization(diameter, axial_force, moment_major, moment_minor):
-    ratio = RATIO_PLASTIC
-    gross = TubeCatalogue(ratio).tube_at(diameter).area
-    plastic_moment = resistance_bending_plastic(
-        TubeCatalogue(ratio).tube_at(diameter).modulus_plastic, Steel(f_y=YIELD)
-    )
+    tube = FAMILY_PLASTIC(diameter)
+    gross = tube.area
+    plastic_moment = resistance_bending_plastic(tube.modulus_plastic, STEEL)
     axial = axial_force / resistance_yielding(gross, Steel(f_y=YIELD))
 
     return moment_resultant(moment_major, moment_minor) / resistance_bending_reduced(
@@ -155,9 +157,9 @@ def test_cross_section_utilization_strictly_decreases_with_diameter(actions):
 
 def test_reduced_moment_grows_with_diameter():
     diameters = jnp.linspace(150.0, 900.0, 300)
-    gross = TubeCatalogue(RATIO_PLASTIC).tube_at(diameters).area
+    gross = FAMILY_PLASTIC(diameters).area
     plastic_moment = resistance_bending_plastic(
-        TubeCatalogue(RATIO_PLASTIC).tube_at(diameters).modulus_plastic,
+        FAMILY_PLASTIC(diameters).modulus_plastic,
         Steel(f_y=YIELD),
     )
     reduced = resistance_bending_reduced(
@@ -171,8 +173,8 @@ def test_reduced_moment_grows_with_diameter():
 
 
 def test_the_reduction_factor_grows_with_diameter():
-    gross = TubeCatalogue(RATIO_PLASTIC).tube_at(DIAMETERS).area
-    inertia = TubeCatalogue(RATIO_PLASTIC).tube_at(DIAMETERS).second_moment
+    gross = FAMILY_PLASTIC(DIAMETERS).area
+    inertia = FAMILY_PLASTIC(DIAMETERS).second_moment
     reduction = reduction_buckling(
         slenderness_from_force(
             gross,
@@ -186,8 +188,8 @@ def test_the_reduction_factor_grows_with_diameter():
 
 
 def test_slenderness_falls_with_diameter():
-    gross = TubeCatalogue(RATIO_PLASTIC).tube_at(DIAMETERS).area
-    inertia = TubeCatalogue(RATIO_PLASTIC).tube_at(DIAMETERS).second_moment
+    gross = FAMILY_PLASTIC(DIAMETERS).area
+    inertia = FAMILY_PLASTIC(DIAMETERS).second_moment
     non_dimensional = slenderness_from_force(
         gross,
         Steel(f_y=YIELD),
@@ -213,8 +215,9 @@ def test_the_two_fixed_ratios_bracket_the_class_three_boundary():
 
 
 def test_elastic_and_plastic_moduli_differ_by_the_shape_factor():
-    plastic = TubeCatalogue(24.45).tube_at(244.5).modulus_plastic
-    elastic = TubeCatalogue(24.45).tube_at(244.5).modulus_elastic
+    stocky = TubeCatalogue(24.45, 1, STEEL)(244.5)
+    plastic = stocky.modulus_plastic
+    elastic = stocky.modulus_elastic
 
     assert resistance_bending_plastic(
         plastic, Steel(f_y=YIELD)

@@ -375,7 +375,7 @@ def report_parity(
     """
     The design and the gradient, taken in process and taken across the boundary.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+    catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
     in_process = in_process_pipeline(setup, catalogue)
     composed_blocks = composed_pipeline(setup, chain, catalogue)
 
@@ -488,7 +488,7 @@ def report_modes(report: Report, setup: ArchSetup, chain: Chain) -> float:
     """
     Forward mode against reverse mode, through all three stages.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(STEEL, 3)
 
     composed_blocks = composed_pipeline(setup, chain, catalogue)
 
@@ -657,7 +657,7 @@ def main(verbose: bool = True) -> None:
 
     modes = report_modes(report, setup, chain)
 
-    catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+    catalogue = TubeCatalogue.at_class_limit(STEEL, 3)
     refused = refusal_message(setup, chain, catalogue)
     entries = (("refused", refused),)
 

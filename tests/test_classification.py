@@ -10,6 +10,7 @@ from normax.ec3.classification import classify_section
 from normax.ec3.classification import material_factor
 from normax.ec3.classification import ratio_at_class_limit
 from normax.ec3.classification import section_class_at_ratio
+from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 
 # EN 1993-1-1 Table 5.2, the epsilon row, rounded to 2 d.p. in the standard.
@@ -140,7 +141,8 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
     # one ratio across two classes.
     limit = float(np.asarray(class_limits(f_y))[index])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = diameters / TubeCatalogue(limit).tube_at(diameters).thickness
+    walled = TubeCatalogue(limit, index + 1, Steel(f_y))(diameters)
+    ratios = diameters / walled.thickness
 
     assert np.all(np.asarray(classify_section(ratios, f_y)) == index + 1)
 
@@ -149,7 +151,8 @@ def test_a_section_built_to_a_limit_classifies_there_from_its_geometry(f_y, inde
 def test_the_round_trip_stays_inside_the_tolerance(f_y):
     limit = float(np.asarray(class_limits(f_y))[2])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = np.asarray(diameters / TubeCatalogue(limit).tube_at(diameters).thickness)
+    walled = TubeCatalogue(limit, 3, Steel(f_y))(diameters)
+    ratios = np.asarray(diameters / walled.thickness)
 
     assert np.max(np.abs(ratios - limit)) / limit < CLASS_LIMIT_TOLERANCE
 
@@ -161,7 +164,8 @@ def test_the_round_trip_straddles_the_limit_at_the_design_grade():
     # across two classes.
     limit = float(np.asarray(class_limits(355.0))[2])
     diameters = jnp.linspace(21.3, 500.0, 64)
-    ratios = np.asarray(diameters / TubeCatalogue(limit).tube_at(diameters).thickness)
+    walled = TubeCatalogue(limit, 3, Steel())(diameters)
+    ratios = np.asarray(diameters / walled.thickness)
 
     assert ratios.max() > limit
     assert ratios.min() < limit
@@ -201,11 +205,43 @@ def test_the_class_of_a_ratio_inverts_the_ratio_of_a_class(f_y, section_class):
 @pytest.mark.parametrize("f_y", GRADES)
 @pytest.mark.parametrize("section_class", [1, 2, 3])
 def test_a_catalogue_reports_the_class_it_was_built_at(f_y, section_class):
-    # The invariant the structural fix rests on: a class read off the family
-    # cannot contradict the wall the family gives a member.
-    catalogue = TubeCatalogue.at_class_limit(f_y, section_class)
+    # The invariant the structural fix rests on: a class named beside a ratio is
+    # confirmed against it, so the two cannot contradict each other.
+    catalogue = TubeCatalogue.at_class_limit(Steel(f_y), section_class)
 
-    assert catalogue.section_class(f_y) == section_class
+    assert catalogue.section_class == section_class
+    assert catalogue.verified_class() == section_class
+
+
+@pytest.mark.parametrize("f_y", GRADES)
+def test_a_catalogue_refuses_a_class_its_ratio_contradicts(f_y):
+    # A class is a field now, so it can be named wrongly; what it cannot do is go
+    # unchecked. The refusal is where a block reads it, not where it is stored,
+    # since storing it is what lets the ratio be swept or differentiated.
+    plastic = TubeCatalogue(ratio_at_class_limit(f_y, 3), 1, Steel(f_y))
+
+    assert plastic.section_class == 1
+
+    with pytest.raises(ValueError):
+        plastic.verified_class()
+
+
+@pytest.mark.parametrize("f_y", GRADES)
+def test_a_catalogue_refuses_a_shell_whatever_it_is_labeled(f_y):
+    beyond = float(np.asarray(class_limits(f_y))[2]) * 2.0
+
+    for section_class in (1, 2, 3):
+        with pytest.raises(ValueError):
+            TubeCatalogue(beyond, section_class, Steel(f_y)).verified_class()
+
+
+def test_a_traced_ratio_leaves_the_class_as_it_stands():
+    # Nothing concrete to compare against, so the label stands rather than the
+    # comparison failing. Every family a block is built from is built on the host.
+    def labeled(ratio):
+        return float(TubeCatalogue(ratio, 1, Steel()).verified_class())
+
+    assert jax.jit(labeled)(200.0) == 1
 
 
 def test_the_class_of_a_ratio_is_a_python_integer():

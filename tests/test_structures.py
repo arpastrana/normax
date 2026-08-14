@@ -2,17 +2,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.structures import arch_2d
-from normax.structures import cable_2d
-from normax.structures import gridshell_3d
-from normax.structures import loads_half_span
-from normax.structures import loads_point
-from normax.structures import loads_uniform
+from normax.loads import loads_half_span
+from normax.loads import loads_point
+from normax.loads import loads_uniform
+from normax.structures import build_arch_2d
+from normax.structures import build_gridshell_3d
 
 
 @pytest.fixture
 def structures():
-    return [cable_2d(), arch_2d(), gridshell_3d()]
+    return [build_arch_2d(), build_gridshell_3d()]
 
 
 def test_arrays_are_jax(structures):
@@ -70,57 +69,51 @@ def test_loads_hang_from_free_nodes_only(structures):
         assert np.all(loads[:, :2] == 0.0)
 
 
-def test_cable_counts():
-    structure = cable_2d(num_edges=7)
+def test_arch_counts():
+    structure = build_arch_2d(num_edges=7)
 
     assert structure.nodes.shape[0] == 8
     assert structure.edges.shape[0] == 7
     assert structure.supports.tolist() == [0, 7]
 
 
-def test_cable_spans_supports():
-    structure = cable_2d(num_edges=7, span=12.0)
+def test_arch_spans_supports():
+    structure = build_arch_2d(num_edges=7, span=12.0)
     nodes = np.asarray(structure.nodes)
 
     assert nodes[0].tolist() == [0.0, 0.0, 0.0]
     assert nodes[-1].tolist() == [12.0, 0.0, 0.0]
 
 
-def test_cable_is_planar():
-    assert np.all(np.asarray(cable_2d().nodes)[:, 1] == 0.0)
+def test_arch_is_planar():
+    assert np.all(np.asarray(build_arch_2d().nodes)[:, 1] == 0.0)
 
 
-def test_cable_sags_and_arch_rises():
-    sag = np.asarray(cable_2d(num_edges=8, sag=2.0).nodes)[:, 2]
-    rise = np.asarray(arch_2d(num_edges=8, rise=2.0).nodes)[:, 2]
+def test_the_arch_rises_to_its_crown_and_returns_to_its_supports():
+    rise = np.asarray(build_arch_2d(num_edges=8, rise=2.0).nodes)[:, 2]
 
-    assert sag.min() == pytest.approx(-2.0)
     assert rise.max() == pytest.approx(2.0)
-    assert sag == pytest.approx(-rise)
+    assert rise[0] == pytest.approx(0.0)
+    assert rise[-1] == pytest.approx(0.0)
 
 
-def test_cable_and_arch_share_a_topology():
-    assert np.all(np.asarray(cable_2d().edges) == np.asarray(arch_2d().edges))
-    assert np.all(np.asarray(cable_2d().supports) == np.asarray(arch_2d().supports))
-
-
-def test_line_starts_flat():
-    assert np.all(np.asarray(cable_2d().nodes)[:, 2] == 0.0)
+def test_an_arch_of_no_rise_starts_flat():
+    assert np.all(np.asarray(build_arch_2d().nodes)[:, 2] == 0.0)
 
 
 @pytest.mark.parametrize("num_edges", [0, -1])
-def test_line_rejects_empty_discretization(num_edges):
+def test_the_arch_rejects_empty_discretization(num_edges):
     with pytest.raises(ValueError):
-        cable_2d(num_edges=num_edges)
+        build_arch_2d(num_edges=num_edges)
 
 
-def test_line_rejects_nonpositive_span():
+def test_the_arch_rejects_a_nonpositive_span():
     with pytest.raises(ValueError):
-        arch_2d(span=0.0)
+        build_arch_2d(span=0.0)
 
 
 def test_gridshell_counts():
-    structure = gridshell_3d(num_rings=3, num_spokes=6)
+    structure = build_gridshell_3d(num_rings=3, num_spokes=6)
 
     assert structure.nodes.shape[0] == 1 + 3 * 6
     assert structure.edges.shape[0] == 2 * 3 * 6
@@ -128,7 +121,7 @@ def test_gridshell_counts():
 
 
 def test_gridshell_supports_are_the_outer_ring():
-    structure = gridshell_3d(num_rings=3, num_spokes=6, radius=5.0)
+    structure = build_gridshell_3d(num_rings=3, num_spokes=6, radius=5.0)
     nodes = np.asarray(structure.nodes)
     supports = np.asarray(structure.supports)
 
@@ -137,7 +130,7 @@ def test_gridshell_supports_are_the_outer_ring():
 
 
 def test_gridshell_apex():
-    nodes = np.asarray(gridshell_3d(rise=2.5).nodes)
+    nodes = np.asarray(build_gridshell_3d(rise=2.5).nodes)
 
     assert nodes[0].tolist() == [0.0, 0.0, 2.5]
     assert nodes[:, 2].max() == pytest.approx(2.5)
@@ -147,7 +140,7 @@ def test_gridshell_apex():
 def test_gridshell_nodes_lie_on_a_sphere(rise):
     radius = 5.0
     nodes = np.asarray(
-        gridshell_3d(num_rings=4, num_spokes=9, radius=radius, rise=rise).nodes
+        build_gridshell_3d(num_rings=4, num_spokes=9, radius=radius, rise=rise).nodes
     )
 
     radius_sphere = (radius**2 + rise**2) / (2.0 * rise)
@@ -157,7 +150,7 @@ def test_gridshell_nodes_lie_on_a_sphere(rise):
 
 
 def test_gridshell_hoops_close_each_ring():
-    structure = gridshell_3d(num_rings=2, num_spokes=5)
+    structure = build_gridshell_3d(num_rings=2, num_spokes=5)
     nodes = np.asarray(structure.nodes)
     edges = np.asarray(structure.edges)
 
@@ -169,7 +162,7 @@ def test_gridshell_hoops_close_each_ring():
 
 
 def test_gridshell_radials_reach_the_apex():
-    structure = gridshell_3d(num_rings=3, num_spokes=6)
+    structure = build_gridshell_3d(num_rings=3, num_spokes=6)
     edges = np.asarray(structure.edges)
 
     assert np.count_nonzero(edges[:, 0] == 0) == 6
@@ -187,7 +180,7 @@ def test_gridshell_radials_reach_the_apex():
 )
 def test_gridshell_rejects_degenerate_inputs(kwargs):
     with pytest.raises(ValueError):
-        gridshell_3d(**kwargs)
+        build_gridshell_3d(**kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +188,7 @@ def test_gridshell_rejects_degenerate_inputs(kwargs):
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def loaded():
-    return arch_2d(num_edges=10, span=10_000.0, rise=3_000.0)
+    return build_arch_2d(num_edges=10, span=10_000.0, rise=3_000.0)
 
 
 def test_a_uniform_load_case_hangs_the_same_force_from_every_free_node(loaded):

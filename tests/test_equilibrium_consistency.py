@@ -17,8 +17,8 @@ from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
-from normax.structures import arch_2d
-from normax.structures import loads_uniform
+from normax.loads import loads_uniform
+from normax.structures import build_arch_2d
 
 # A 10 m arch of ten members, rising about a third of its span under a force
 # density of 75 N/mm and a 20 kN load at every free node. Units are mm and N.
@@ -43,7 +43,7 @@ TOLERANCE_BENDING = 1.0e-3
 
 @pytest.fixture(scope="module")
 def structure():
-    return arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
+    return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
 
 
 def funicular(structure, load=LOAD):
@@ -60,12 +60,12 @@ def steel():
 
 @pytest.fixture(scope="module")
 def catalogue(steel):
-    return TubeCatalogue.at_class_limit(steel.f_y, 3)
+    return TubeCatalogue.at_class_limit(steel, 3)
 
 
 @pytest.fixture(scope="module")
 def model(structure, steel, catalogue):
-    return prepare_model(structure, steel, catalogue, normal=NORMAL)
+    return prepare_model(structure, catalogue, normal=NORMAL)
 
 
 @pytest.fixture(scope="module")
@@ -85,12 +85,7 @@ def state(q, structure):
 @pytest.fixture(scope="module")
 def member(model, state, steel, catalogue, structure):
     return member_forces(
-        model,
-        state.xyz,
-        jnp.full(NUM_EDGES, DIAMETER),
-        steel,
-        catalogue,
-        funicular(structure),
+        model, state.xyz, jnp.full(NUM_EDGES, DIAMETER), catalogue, funicular(structure)
     )
 
 
@@ -98,7 +93,7 @@ def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY
     """
     Largest relative gap between the analyzed and the funicular axial force.
     """
-    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
+    structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
     applied = funicular(structure, load)
     q = jnp.full(NUM_EDGES, force_density)
     graph = equilibrium_graph(structure)
@@ -106,10 +101,9 @@ def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY
 
     expected = q * state.lengths[:, 0]
     member = member_forces(
-        prepare_model(structure, steel, catalogue, normal=NORMAL),
+        prepare_model(structure, catalogue, normal=NORMAL),
         state.xyz,
         jnp.full(NUM_EDGES, diameter),
-        steel,
         catalogue,
         applied,
     )
@@ -123,12 +117,7 @@ def span_field(structure, xyz, steel, catalogue):
     """
     compiled = compile_structure(
         frame_model(
-            structure,
-            xyz,
-            jnp.full(NUM_EDGES, DIAMETER),
-            steel,
-            catalogue,
-            normal=NORMAL,
+            structure, xyz, jnp.full(NUM_EDGES, DIAMETER), catalogue, normal=NORMAL
         )
     )
     loads = funicular(structure)
@@ -144,12 +133,7 @@ def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
     structure, state, steel, catalogue
 ):
     model = frame_model(
-        structure,
-        state.xyz,
-        jnp.full(NUM_EDGES, DIAMETER),
-        steel,
-        catalogue,
-        normal=NORMAL,
+        structure, state.xyz, jnp.full(NUM_EDGES, DIAMETER), catalogue, normal=NORMAL
     )
 
     assert diagnose_mechanisms(model).num_mechanisms == 0
@@ -159,12 +143,7 @@ def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
     structure, state, steel, catalogue
 ):
     model = frame_model(
-        structure,
-        state.xyz,
-        jnp.full(NUM_EDGES, DIAMETER),
-        steel,
-        catalogue,
-        normal=None,
+        structure, state.xyz, jnp.full(NUM_EDGES, DIAMETER), catalogue, normal=None
     )
     unrestrained = Frame(
         model.nodes,
@@ -350,7 +329,7 @@ def test_the_gradient_through_both_stages_matches_central_differences(
 
     def objective(q):
         state = equilibrium_state(q, structure.nodes[fdm.indices_fixed], fdm, applied)
-        member = member_forces(model, state.xyz, diameters, steel, catalogue, applied)
+        member = member_forces(model, state.xyz, diameters, catalogue, applied)
         return jnp.sum(member.axial_force**2)
 
     gradient = jax.grad(objective)(q)
@@ -373,7 +352,7 @@ def test_the_gradient_through_both_stages_is_finite(
 
     def objective(q):
         state = equilibrium_state(q, structure.nodes[fdm.indices_fixed], fdm, applied)
-        member = member_forces(model, state.xyz, diameters, steel, catalogue, applied)
+        member = member_forces(model, state.xyz, diameters, catalogue, applied)
         return jnp.sum(member.axial_force**2)
 
     gradient = jax.grad(objective)(q)

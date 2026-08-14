@@ -144,7 +144,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
 STEEL = Steel()
 SECTION_CLASS = 3
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, SECTION_CLASS)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL, SECTION_CLASS)
 
 CLASSES = (2, 3)
 
@@ -313,7 +313,7 @@ def beam_problem() -> BeamProblem:
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
     arch = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=ARCH_RISE)
     structure = arch._replace(nodes=arch.nodes.at[:, 2].set(0.0))
-    model = prepare_model(structure, STEEL, CATALOGUE, normal=NORMAL)
+    model = prepare_model(structure, CATALOGUE, normal=NORMAL)
     setup = BeamProblem(structure, model, loads_uniform(structure, spread))
 
     return setup
@@ -336,7 +336,6 @@ def build(
         setup.model,
         setup.structure.nodes,
         diameters,
-        STEEL,
         catalogue,
         setup.loads,
     )
@@ -351,16 +350,10 @@ def build(
     )
 
     lengths = setup.lengths
-    required = diameter_required(
-        actions, lengths, STEEL, catalogue, section_class=section_class
-    )
-    sized = catalogue.tube_at(required)
-    used = utilization_design(
-        sized, actions, lengths, STEEL, section_class=section_class
-    )
-    design = BeamDesign(
-        actions, lengths, required, used, mass_of_tubes(sized, lengths, STEEL)
-    )
+    required = diameter_required(actions, lengths, catalogue)
+    sized = catalogue(required)
+    used = utilization_design(sized, actions, lengths)
+    design = BeamDesign(actions, lengths, required, used, mass_of_tubes(sized, lengths))
 
     return design
 
@@ -396,7 +389,7 @@ def diameter_closed_form(
     The unit-diameter modulus comes from the section module rather than being
     restated here, so the two cannot drift apart.
     """
-    unit = catalogue.tube_at(1.0)
+    unit = catalogue(1.0)
     modulus = (
         unit.modulus_plastic if is_plastic(section_class) else unit.modulus_elastic
     )
@@ -502,7 +495,7 @@ def report_design(
     Every member's actions, size, utilization and governing limit state.
     """
     codes = governing_compiled(
-        catalogue.tube_at(design.diameters),
+        catalogue(design.diameters),
         design.actions,
         design.lengths,
         STEEL,
@@ -636,8 +629,8 @@ def write_figures(setup: BeamProblem, results: BeamResults) -> None:
     design = results.design
     FIGURES.mkdir(exist_ok=True)
 
-    seed_tubes = CATALOGUE.tube_at(setup.seed)
-    assumed = float(mass_of_tubes(seed_tubes, design.lengths, STEEL))
+    seed_tubes = CATALOGUE(setup.seed)
+    assumed = float(mass_of_tubes(seed_tubes, design.lengths))
     seeded = SizedMembers(setup.seed, assumed)
     sized = SizedMembers(design.diameters, float(design.mass))
     profile = figure_beam_profile(setup.positions, seeded, sized)
@@ -659,7 +652,7 @@ def main(verbose: bool = True) -> None:
     # The same seed diameters sized twice, once per class branch.
     designs = {}
     for section_class in CLASSES:
-        catalogue = TubeCatalogue.at_class_limit(STEEL.f_y, section_class)
+        catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
         design = build(setup, setup.seed, catalogue, section_class)
         report_design(report, design, catalogue, section_class)
         designs[section_class] = design

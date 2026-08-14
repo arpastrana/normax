@@ -1,6 +1,15 @@
 import importlib.util
 from pathlib import Path
 
+import jax
+
+# Most of a run is XLA compiling the same programs again, so the cache is what
+# makes a second run cheap. Measured: 159 s without it, 65 s with it warm.
+COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
+COMPILATION_CACHE.mkdir(exist_ok=True)
+jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+
 # TEMPORARY, until smax is published. It is not on PyPI yet, so it and jax-fdm
 # sit in the "pipeline" dependency group and CI installs "dev" alone. Delete
 # this block and move both into the project dependencies once smax is public.

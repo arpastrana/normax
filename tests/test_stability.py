@@ -22,6 +22,10 @@ E_MOD = 210_000.0
 F_Y = 355.0
 RATIO = 59.577_464_788_732_41
 
+# The family every section here is drawn from. Its ratio sits on the Class 3
+# limit at this grade, which is what the label states.
+FAMILY = TubeCatalogue(RATIO, 3, Steel(f_y=F_Y, e_mod=E_MOD))
+
 
 # --------------------------------------------------------------------------- #
 # The two routes to slenderness are one equation — algebra, so no source needed
@@ -32,8 +36,8 @@ RATIO = 59.577_464_788_732_41
 def test_the_member_route_and_the_global_route_agree(
     diameter, axial_force, buckling_length
 ):
-    gross = TubeCatalogue(RATIO).tube_at(diameter).area
-    inertia = TubeCatalogue(RATIO).tube_at(diameter).second_moment
+    gross = FAMILY(diameter).area
+    inertia = FAMILY(diameter).second_moment
 
     critical = force_critical(inertia, buckling_length, Steel(e_mod=E_MOD))
     by_member = slenderness_from_force(gross, Steel(f_y=F_Y), critical)
@@ -52,7 +56,7 @@ def test_the_member_route_and_the_global_route_agree(
 def test_a_buckling_length_survives_a_round_trip_through_a_load_factor(
     diameter, axial_force
 ):
-    inertia = TubeCatalogue(RATIO).tube_at(diameter).second_moment
+    inertia = FAMILY(diameter).second_moment
     original = 3500.0
 
     alpha_cr = force_critical(inertia, original, Steel(e_mod=E_MOD)) / abs(axial_force)
@@ -69,7 +73,7 @@ def test_the_load_factor_scales_the_members_share_of_the_load():
 
 
 def test_a_stiffer_frame_is_a_less_slender_member():
-    gross = TubeCatalogue(RATIO).tube_at(100.0).area
+    gross = FAMILY(100.0).area
     factor = amplifier_resistance(gross, Steel(f_y=F_Y), -1e5)
 
     assert float(slenderness_global(factor, 20.0)) < float(
@@ -82,8 +86,8 @@ def test_the_routes_agree_elementwise_over_members():
     lengths = jnp.array([800.0, 1500.0, 2600.0])
     axial_force = jnp.array([-4e4, -9e4, -3e5])
 
-    gross = TubeCatalogue(RATIO).tube_at(diameters).area
-    inertia = TubeCatalogue(RATIO).tube_at(diameters).second_moment
+    gross = FAMILY(diameters).area
+    inertia = FAMILY(diameters).second_moment
     critical = force_critical(inertia, lengths, Steel(e_mod=E_MOD))
 
     by_member = slenderness_from_force(gross, Steel(f_y=F_Y), critical)
@@ -181,7 +185,7 @@ def test_the_global_slenderness_is_differentiable():
 def test_an_unloaded_member_has_no_amplifier():
     # A gridshell's boundary hoops span support to support and carry nothing.
     # The amplifier is a ratio to the load a member carries, so there is none.
-    gross = TubeCatalogue(RATIO).tube_at(jnp.array([100.0, 100.0])).area
+    gross = FAMILY(jnp.array([100.0, 100.0])).area
     factor = amplifier_resistance(gross, Steel(f_y=F_Y), jnp.array([-1e5, 0.0]))
 
     assert np.isfinite(float(factor[0]))
@@ -189,7 +193,7 @@ def test_an_unloaded_member_has_no_amplifier():
 
 
 def test_an_unloaded_member_has_no_equivalent_buckling_length():
-    inertia = TubeCatalogue(RATIO).tube_at(jnp.array([100.0, 100.0])).second_moment
+    inertia = FAMILY(jnp.array([100.0, 100.0])).second_moment
     lengths = buckling_length_global(
         0.4, jnp.array([-1e5, 0.0]), inertia, Steel(e_mod=E_MOD)
     )
@@ -201,7 +205,7 @@ def test_an_unloaded_member_has_no_equivalent_buckling_length():
 def test_an_unloaded_member_is_not_reported_as_infinitely_slender():
     # Infinity would read as a statement about the member. nan says the question
     # does not apply, and a reduction over the members says so too.
-    gross = TubeCatalogue(RATIO).tube_at(jnp.array([80.0, 80.0])).area
+    gross = FAMILY(jnp.array([80.0, 80.0])).area
     slender = slenderness_global(
         amplifier_resistance(gross, Steel(f_y=F_Y), jnp.array([-5e4, 0.0])), 0.4
     )
@@ -211,8 +215,8 @@ def test_an_unloaded_member_is_not_reported_as_infinitely_slender():
 
 
 def test_a_loaded_member_is_untouched_by_the_guard():
-    gross = TubeCatalogue(RATIO).tube_at(120.0).area
-    inertia = TubeCatalogue(RATIO).tube_at(120.0).second_moment
+    gross = FAMILY(120.0).area
+    inertia = FAMILY(120.0).second_moment
     axial_force = -2.5e5
 
     critical = force_critical(inertia, 3000.0, Steel(e_mod=E_MOD))

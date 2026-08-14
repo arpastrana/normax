@@ -92,7 +92,7 @@ TOLERANCE_GRADIENT = 1e-7
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL.f_y, 3)
+CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
 
 
 class FunicularArch(NamedTuple):
@@ -195,11 +195,9 @@ def handoff_gap(
     Largest relative disagreement on axial force, and the bending behind it.
     """
     arch = funicular_arch(load, force_density)
-    prepared = prepare_model(arch.structure, steel, CATALOGUE, normal=NORMAL)
+    prepared = prepare_model(arch.structure, CATALOGUE, normal=NORMAL)
     diameters = jnp.full(NUM_EDGES, diameter)
-    member = member_forces(
-        prepared, arch.state.xyz, diameters, steel, CATALOGUE, arch.loads
-    )
+    member = member_forces(prepared, arch.state.xyz, diameters, CATALOGUE, arch.loads)
 
     departure = jnp.abs(member.axial_force - arch.axial_force)
     axial = jnp.max(departure / jnp.abs(arch.axial_force))
@@ -345,13 +343,11 @@ def main(verbose: bool = True) -> None:
 
     arch = funicular_arch(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    prepared = prepare_model(arch.structure, STEEL, CATALOGUE, normal=NORMAL)
-    member = member_forces(
-        prepared, arch.state.xyz, diameters, STEEL, CATALOGUE, arch.loads
-    )
+    prepared = prepare_model(arch.structure, CATALOGUE, normal=NORMAL)
+    member = member_forces(prepared, arch.state.xyz, diameters, CATALOGUE, arch.loads)
 
     model = frame_model(
-        arch.structure, arch.state.xyz, diameters, STEEL, CATALOGUE, normal=NORMAL
+        arch.structure, arch.state.xyz, diameters, CATALOGUE, normal=NORMAL
     )
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
@@ -366,9 +362,7 @@ def main(verbose: bool = True) -> None:
             arch.graph,
             arch.loads,
         )
-        analyzed = member_forces(
-            prepared, state.xyz, diameters, STEEL, CATALOGUE, arch.loads
-        )
+        analyzed = member_forces(prepared, state.xyz, diameters, CATALOGUE, arch.loads)
 
         return jnp.sum(analyzed.axial_force**2)
 

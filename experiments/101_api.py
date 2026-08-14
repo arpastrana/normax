@@ -32,7 +32,8 @@ what the optimizer differentiates and what compiles.
 finding traces a linear solve, the frame analysis traces an assembly, and the
 code check carries a hand-derived tangent at the root of a residual. Replacing
 one with a block that crosses a Tesseract boundary, or wraps a solver written in
-another language, is a different argument to `DesignPipeline` and nothing else:
+another language, is a different argument to `StructuralDesignPipeline` and
+nothing else:
 `normax.tesseract` holds three such blocks and
 `tests/test_tesseract_parity.py` measures that the swap changes no number.
 
@@ -50,6 +51,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -334,16 +336,17 @@ def initialize_parameters(
     Returns
     -------
     params :
-        A uniform force density, a uniform seed diameter, and the sharpness.
+        A uniform force density and a uniform seed diameter, one of each per
+        member.
     """
-    q = jnp.full(structure.num_edges, config.form_finding.force_density)
+    force_densities = jnp.full(structure.num_edges, config.form_finding.force_density)
     diameters = jnp.full(structure.num_edges, config.analysis.diameter)
 
-    return DesignParameters(q, diameters)
+    return DesignParameters(force_densities, diameters)
 
 
 def update_parameters(
-    q: Float[Array, "members"],
+    force_densities: Float[Array, "members"],
     params: DesignParameters,
 ) -> DesignParameters:
     """
@@ -351,7 +354,7 @@ def update_parameters(
 
     Parameters
     ----------
-    q :
+    force_densities :
         Force density of every member. Negative in compression.
     params :
         The parameters supplying everything the optimizer does not vary.
@@ -359,7 +362,7 @@ def update_parameters(
     Returns
     -------
     params :
-        The new force densities, the seed diameters and the sharpness.
+        The new force densities and the seed diameters.
 
     Notes
     -----
@@ -368,7 +371,7 @@ def update_parameters(
     put back together. What it restores is the diameters the frame is analyzed
     with, which the check overwrites.
     """
-    return DesignParameters(q, params.diameters)
+    return DesignParameters(force_densities, params.diameters)
 
 
 def main(config_path: Path) -> None:
@@ -386,43 +389,47 @@ def main(config_path: Path) -> None:
     loads = arch_load_cases(structure, config.load_cases)
 
     material = Steel()
-    catalogue = TubeCatalogue.at_class_limit(material.f_y, config.sizing.section_class)
+    catalogue = TubeCatalogue.at_class_limit(material, config.sizing.section_class)
 
     # Three swappable blocks
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, material, catalogue, NORMAL),
-        Ec3Sizer(structure, material, catalogue),
+        SmaxAnalyzer(structure, catalogue, NORMAL),
+        Ec3Sizer(structure, catalogue),
     )
 
     params = initialize_parameters(structure, config)
     sharpness = jnp.asarray(config.analysis.envelope_sharpness)
 
-    # Define the objective function (closure over the design parameters)
-    def objective(q: Float[Array, "members"]) -> Float[Array, ""]:
-        moved = update_parameters(q, params)
+    # The objective hands back the design it weighed, so nothing is designed twice.
+    def objective(
+        force_densities: Float[Array, "members"],
+    ) -> tuple[Float[Array, ""], Design]:
+        moved = update_parameters(force_densities, params)
         design = pipeline(moved, loads)
         sized = design_envelope(design, sharpness)
+        mass = compute_mass(sized)
 
-        return compute_mass(sized)
+        return mass, sized
 
     # Gradient voodoo
-    objective_and_gradient = value_and_gradient(objective)
-    mass, gradient = objective_and_gradient(params.q)
+    objective_and_gradient = value_and_gradient(objective, has_aux=True)
+    (mass, _), gradient = objective_and_gradient(params.force_densities)
 
     # The same objective handed to a bounded descent, which never sees a block.
     bounds = config.optimization.bounds
-    optimization_trajectory = minimize_bounded(
+    found = minimize_bounded(
         objective,
-        params.q,
+        params.force_densities,
         bounds=(bounds.min, bounds.max),
         iterations=config.optimization.iterations,
+        has_aux=True,
         gradient=objective_and_gradient,
     )
 
-    params_opt = update_parameters(optimization_trajectory.q[-1], params)
-    design_opt = design_envelope(pipeline(params_opt, loads), sharpness)
-    mass_opt = compute_mass(design_opt)
+    # The answer, and the design behind it, out of the search that already ran it.
+    mass_opt = found.value
+    design_opt = found.aux
 
     print(f"Mass at the start: {float(mass):.9f} t")
     print(f"Gradient in q: {gradient}")
