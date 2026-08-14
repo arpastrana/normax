@@ -831,7 +831,7 @@ The thesis at the top of this file is swappability, and until now it was a claim
 the code made only inside the analysis stage. It is now the shape of the whole
 package.
 
-`normax/stages.py` states what a block is — `compile(structure)` on the host,
+`normax/design.py` states what a block is — `compile(structure)` on the host,
 `__call__` on design parameters and load cases — and `DesignPipeline` composes
 three of them. `normax/composition.py` is deleted: the Tesseract chain is three
 blocks under the same contract, not a second pipeline, and

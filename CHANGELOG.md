@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+### A design is one field per stage
+
+`normax/stages.py` is `normax/design.py`, and it holds what the name says:
+`Design(shape, forces, sizes)`, one field per block in the order they ran and
+nothing that no block produced. `MemberSections` is gone with the eight fields
+it flattened into one place, and `DesignPipeline` is `StructuralDesignPipeline`.
+
+- **`MemberSizes(sections, actions)` — a check answers two questions.** What it
+  decided is a section; what it read is not what the analysis reported, because
+  reducing two end moments to a design moment and an equivalent uniform moment
+  factor is EN 1993-1-1 Table B.3. That reduction is lossy — under double
+  curvature the factor floors at 0.4, a factor of 2.5 on the interaction term,
+  and it cannot be recovered from the design moment alone. For `TesseractSizer`
+  the clause is applied on the far side, so the actions are the only record of
+  what that block read, and recomputing them locally would substitute our
+  Table B.3 for theirs.
+- **`MemberSection(tubes, material)`** lives beside `Tube` in
+  `normax/ec3/section.py`. A section and its material travel together because a
+  mass needs an area and a density and neither alone answers what a member
+  weighs per metre — the one quantity a published section table states that no
+  clause decides. `compute_mass(design)` replaces `calculate_mass` and needs no
+  block: every term of `ρ Σ A L` is already on the design.
+- **`FormFoundShape` carries its lengths again**, so the pipeline holds no
+  connectivity and needs none. `AbstractFormFinder.member_lengths` and
+  `AbstractMemberSizer.mass_per_length` both leave the protocol with it.
+
+### The load case envelope is hoisted out of the pipeline
+
+`size_envelope(design, sharpness)` in `normax/sizing.py` reconciles the load
+cases and returns the same `Design` with one section per member. The pipeline
+decides nothing; `sharpness` leaves `DesignParameters`, being a schedule knob
+that no optimizer varies.
+
+- **What it buys is measured, not aesthetic.** The expensive half of a pipeline
+  evaluation — a form-find, three frame solves, three root-finds — does not
+  depend on the sharpness. `experiments/06_load_case_aggregation.py` sweeps
+  seven of them, which cost seven full evaluations and now cost one and seven
+  `logsumexp` calls.
+- **The tube is enveloped leafwise and the wall follows exactly.** The envelope
+  is scale-equivariant in the logarithm, so `envelope(d)/r` and `envelope(d/r)`
+  agree to 2.2e-15 and the `d/t` ratio survives a `jax.tree.map` over the whole
+  tube — measured at 3.55e-14 on the arch. No catalogue is needed to re-derive a
+  wall.
+- It is also the step toward the simultaneous formulation: replacing "envelope
+  the per-case requirement" with "take `d` as a variable and add `u ≤ 1`" is now
+  a change in the loss alone.
+
+### The check runs batched
+
+`design_actions(forces)` takes one load case, is elementwise over members, and
+is `jax.vmap`ped rather than indexed. `Ec3Sizer.__call__`, `governing` and
+`utilization` all lost their Python loops over load cases, the root find
+batching cleanly through its `custom_vjp`. **Bitwise identical to the loop**,
+max gap 0.0, checked before the loops were removed.
+
 ### A block is built from a structure, and holds only what it reads
 
 The two-call `compile(structure)` dance is gone. A block's constructor takes the
@@ -88,7 +143,7 @@ basins, so the mass it reports is the collapse and not an optimum.
 ### One pipeline, three swappable blocks
 
 The API is three objects and a composition, and the duplication that came of not
-having them is gone. `normax/stages.py` states what a block is, and
+having them is gone. `normax/design.py` states what a block is, and
 `DesignPipeline` holds one of each and composes them.
 
 - **`normax/composition.py` is deleted.** It ran the same three stages across a
@@ -108,7 +163,7 @@ having them is gone. `normax/stages.py` states what a block is, and
   relative, and the two *old* spellings differ from each other by the same amount
   under `jit`, so that is XLA association and not the composition.
 - **A structure no longer carries a load.** `Structure` is topology, geometry and
-  supports; `normax.stages.LoadCases` carries the case a shape answers to and the
+  supports; `normax.design.LoadCases` carries the case a shape answers to and the
   cases it is checked against, and `loads` is a required argument everywhere it
   was a `None` default. A structure asked to survive several cases has no
   business owning one of them.
