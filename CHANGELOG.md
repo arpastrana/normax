@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+### The analysis is re-run at the sections the check demanded
+
+`optimize_staggered(objective, params, bounds=..., iterations=..., tolerance=...)`
+minimizes in the force densities while closing the coupling between the frame
+analysis and the code check. `experiments/101_api.py` uses it, and its objective
+now takes a whole `DesignParameters` rather than an array plus a captured seed.
+
+- **It lives in `normax.design`, not `normax.optimization`.** Closing the coupling
+  needs a diameter read off a design, and `normax.optimization` knows what a
+  descent is without knowing what a design is — it imports nothing from the
+  package and stays that way. `minimize_bounded` needed no change: its evaluation
+  cache, its visited set and its post-hoc re-evaluations are all locals of one
+  call, so each round is an independent, self-consistent search.
+- **A round is a whole descent, because refreshing per evaluation breaks the
+  search.** Measured: with the seed moving inside the objective, L-BFGS-B stopped
+  after 4 evaluations at the start point reporting `CONVERGENCE: RELATIVE
+  REDUCTION OF F <= FACTR*EPSMCH`. A line search compares values of one function,
+  and a seed that moves inside it hands the search a different function at every
+  trial; the curvature accumulated from differences of those gradients is
+  contaminated the same way.
+- **A round settles its coupling by forward analyses at fixed force densities,
+  not by buying one pass of it per descent.** Sizing is a contraction in the
+  diameters but a slow one, measured at a ratio of 0.85 per pass near its fixed
+  point on `experiments/arch.yaml` and the same whether the force densities move
+  or not. One pass per descent left the residual at 1.8e-5 after 12 descents and
+  still falling by 15% a round; settling inside the round closes it in **2 rounds,
+  16 gradient calls and 31 forward passes**. The force densities stop moving after
+  the first round — `|Δq|∞` of 1.1e-5 thereafter — so those extra descents were
+  spending gradients on what a forward evaluation resolves.
+- **A raise rather than a returned residual, so what comes back needs no
+  checking.** Both caps are generous against what the arch spends:
+  `SETTLING_PASSES = 400` and `STAGGERED_ROUNDS = 12`.
+- **What it changes on the arch.** 0.138368113 t analyzed at its own sections
+  against 0.138057108 t at the 100 mm seed, so the frozen seed understated the
+  design by 0.225%; utilization is 1.000000000000 either way. The start mass is
+  still reported at the seed and is now labeled as such.
+- **The sign of that error is not predictable, which is why no test asserts it.**
+  Mass rises monotonically with a *uniform* seed — 0.082435 t to 0.083738 t as the
+  seed goes 25 mm to 400 mm on the test arch — but a settled seed is not uniform,
+  and the settled design comes in below a uniform 100 mm seed. It is
+  redistribution, not level: a member analyzed fatter than it is attracts force.
+  On the one-variable scan the gap changes sign, +0.32% at `q = −100` against
+  −0.04% at `q = −3.16`.
+- **It misreports the mass rather than moving the design, as far as one variable
+  can show.** Scanned with a single force density shared by every member, the
+  frozen and the settled curves are minimized at the same `q` — but that `q` is
+  the bound, so what is shown is that a frozen seed does not move a boundary
+  optimum, not that it never moves one.
+- **Weak typing had been compiling the pipeline twice.** `jnp.full(members,
+  100.0)` is weakly typed where the diameters a check returns are not, and the two
+  are different abstract values however equal their contents, so the first round
+  and the second were different programs. The seed is restated at its own dtype on
+  the way in. Two traces remain and are asserted: value-and-gradient for the
+  descent, value alone for the settling passes, neither once per round.
+- **`update_parameters` is deleted from `experiments/101_api.py`.** Nothing has to
+  rebuild the container now, and the start-of-run gradient differentiates the
+  container itself and reads its force-density leaf.
+
 ### A section family carries its grade and its class
 
 `TubeCatalogue(ratio, section_class, material)` is a parametrized cross-section
