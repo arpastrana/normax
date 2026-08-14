@@ -40,12 +40,14 @@ catalogue and not to the tube** — a tube whose wall is held fixed as its
 diameter grows does not satisfy it.
 """
 
-import equinox as eqx
+import collections
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.ec3.classification import SectionClass
 from normax.ec3.classification import ratio_at_class_limit
 from normax.ec3.classification import section_class_at_ratio
 from normax.ec3.material import Steel
@@ -68,7 +70,16 @@ def _is_traced(value: float | Float[Array, ""]) -> bool:
     return isinstance(value, jax.core.Tracer)
 
 
-class Tube(eqx.Module):
+_TubeFields = collections.namedtuple(
+    "_TubeFields", ("diameter", "thickness", "material", "section_class")
+)
+
+_CatalogueFields = collections.namedtuple(
+    "_CatalogueFields", ("ratio", "section_class", "material", "diameter_min")
+)
+
+
+class Tube(_TubeFields):
     """
     One member's circular hollow section, and what it is made of.
 
@@ -97,13 +108,14 @@ class Tube(eqx.Module):
     came from. Under `jit` the repeated subexpressions are eliminated; eagerly
     they cost a few flops.
 
-    **The class is static and every other field is a leaf, which is why this is
-    a module rather than a named tuple.** It selects a clause, so it has to be a
-    Python integer wherever a clause reads it, and a class that is a leaf becomes
-    a tracer the moment its container is a primal of the sizing map under `jit` —
-    measured, and it fails at the branch rather than quietly. Held in the tree
-    structure instead, it survives `jit`, `grad` and `vmap` untouched, while the
-    geometry and the grade stay differentiable.
+    **The class is coerced to a `SectionClass` when a tube is built, and every
+    other field is a leaf.** A class selects a clause, so it has to be a Python
+    integer wherever one reads it, and a bare integer here would be a leaf and so
+    a tracer the moment the container is a primal of the sizing map under `jit`.
+    `SectionClass` is an integer that travels in the tree structure rather than in
+    the leaves, so it survives `jit`, `grad` and `vmap` as itself while the
+    geometry and the grade stay differentiable. Coercing in the constructor is what
+    makes that unconditional rather than a convention a caller has to remember.
 
     The load case axis is variadic, like `normax.analysis.MemberForces`. A check
     answers one size per member per load case, so the sections it returns carry
@@ -114,7 +126,38 @@ class Tube(eqx.Module):
     diameter: Float[Array, "*load_cases members"]
     thickness: Float[Array, "*load_cases members"]
     material: Steel
-    section_class: int = eqx.field(static=True)
+    section_class: SectionClass
+
+    def __new__(
+        cls,
+        diameter: Float[Array, "*load_cases members"],
+        thickness: Float[Array, "*load_cases members"],
+        material: Steel,
+        section_class: int,
+    ) -> "Tube":
+        """
+        Build a tube, holding its class out of the leaves.
+
+        Returns
+        -------
+        tube :
+            The same four values, the class as a `SectionClass`.
+        """
+        return super().__new__(
+            cls, diameter, thickness, material, SectionClass(section_class)
+        )
+
+    @classmethod
+    def _make(cls, values: "tuple[object, ...]") -> "Tube":
+        """
+        Rebuild from an iterable, through the constructor rather than around it.
+
+        Returns
+        -------
+        tube :
+            A tube with its class coerced, which `_replace` then inherits.
+        """
+        return cls(*values)
 
     @property
     def ratio(self) -> Float[Array, "*load_cases members"]:
@@ -227,7 +270,7 @@ class Tube(eqx.Module):
         return (outer**3 - self.diameter_inner**3) / 6.0
 
 
-class TubeCatalogue(eqx.Module):
+class TubeCatalogue(_CatalogueFields):
     """
     The family of circular hollow sections a member is drawn from.
 
@@ -257,13 +300,15 @@ class TubeCatalogue(eqx.Module):
     grade and the class onward. That is the only place a wall is chosen for a
     diameter.
 
-    **The class is static and the ratio is a leaf, which is the whole reason this
-    is a module rather than a named tuple.** A class selects between clauses, so a
-    clause needs it as a Python integer; carried as a leaf it is traced the moment
-    the catalogue is a primal of the sizing map under `jit`, and the branch it
-    selects then raises. The ratio has to stay a leaf for the opposite reason:
-    §3 wants it freeable, the gradient tests differentiate the map in it, and the
-    class sweep moves it across two class boundaries.
+    **The class travels in the tree structure and the ratio in the leaves, and the
+    split is the whole reason `SectionClass` exists.** A class selects between
+    clauses, so a clause needs it as a Python integer; a bare integer here would be
+    a leaf and so a tracer the moment the catalogue is a primal of the sizing map
+    under `jit`, and the branch it selects would raise. The ratio has to stay a
+    leaf for the opposite reason: §3 wants it freeable, the gradient tests
+    differentiate the map in it, and the class sweep moves it across two class
+    boundaries. The constructor coerces the class so neither can be got wrong by a
+    caller.
 
     `verified_class` is what confirms the label against the ratio before a block
     trusts it, since a label named beside a number is free to contradict it.
@@ -273,9 +318,47 @@ class TubeCatalogue(eqx.Module):
     """
 
     ratio: float | Float[Array, ""]
-    section_class: int = eqx.field(static=True)
+    section_class: SectionClass
     material: Steel
-    diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM
+    diameter_min: float | Float[Array, ""]
+
+    def __new__(
+        cls,
+        ratio: float | Float[Array, ""],
+        section_class: int,
+        material: Steel,
+        diameter_min: float | Float[Array, ""] = DIAMETER_MINIMUM,
+    ) -> "TubeCatalogue":
+        """
+        Build a family, holding its class out of the leaves.
+
+        Returns
+        -------
+        catalogue :
+            The same four values, the class as a `SectionClass`.
+
+        Notes
+        -----
+        The default sits here rather than in the class body. A namedtuple reads a
+        field through a descriptor on the class, and assigning a default beside the
+        annotation shadows it — every instance would then report the default
+        whatever it was built with.
+        """
+        return super().__new__(
+            cls, ratio, SectionClass(section_class), material, diameter_min
+        )
+
+    @classmethod
+    def _make(cls, values: "tuple[object, ...]") -> "TubeCatalogue":
+        """
+        Rebuild from an iterable, through the constructor rather than around it.
+
+        Returns
+        -------
+        catalogue :
+            A family with its class coerced, which `_replace` then inherits.
+        """
+        return cls(*values)
 
     def __call__(self, diameter: Float[Array, "*load_cases members"]) -> Tube:
         """
@@ -307,7 +390,7 @@ class TubeCatalogue(eqx.Module):
 
         return Tube(diameter, thickness, self.material, self.section_class)
 
-    def verified_class(self) -> int:
+    def verified_class(self) -> SectionClass:
         """
         This family's class, confirmed against the ratio that fixes it.
 

@@ -22,6 +22,7 @@ The class is assembled by counting exceeded limits rather than by branching,
 which keeps it usable under jit and vmap.
 """
 
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -44,6 +45,34 @@ PLASTIC_CLASSES = (1, 2)
 # some ten thousand times that and some ten orders below any difference in `d/t`
 # a real section has, so it separates rounding from geometry and nothing else.
 CLASS_LIMIT_TOLERANCE = 1e-12
+
+
+@jax.tree_util.register_static
+class SectionClass(int):
+    """
+    A cross-section class, carried in a pytree's structure rather than its leaves.
+
+    Notes
+    -----
+    **An ordinary integer everywhere except to JAX.** It compares, branches,
+    formats and does arithmetic as `int` does, so every clause that selects on a
+    class takes one without knowing it exists. What it changes is where it sits
+    when its container crosses a trace: registered static, it flattens to no
+    leaves and travels in the tree structure, so `jit`, `grad` and `vmap` hand it
+    back as the same Python integer it went in as.
+
+    **That is not a nicety, it is what makes a class usable at all.** A class held
+    as a leaf is traced whenever its container is a primal of a `custom_jvp` under
+    `jit` — which is how `normax.ec3.sizing` differentiates the sizing map — and
+    the branch it selects then raises. Held as a leaf and returned through a plain
+    `jit` it is worse than that: it comes back a rank-zero array, on which
+    `in CLASSES_IMPLEMENTED` compares elementwise and is quietly false for every
+    class.
+
+    Two containers differing only in their class therefore differ in their tree
+    structure, so a program compiled for one is not reused for the other. That is
+    the right answer: they select different clauses.
+    """
 
 
 def material_factor(f_y: float | Float[Array, ""]) -> Float[Array, ""]:
@@ -127,14 +156,14 @@ def is_plastic(section_class: int) -> bool:
     return _validate_class(section_class) in PLASTIC_CLASSES
 
 
-def _validate_class(section_class: int) -> int:
+def _validate_class(section_class: int) -> SectionClass:
     """
     Refuse a class this package does not implement.
 
     Returns
     -------
     section_class :
-        The class as a Python integer, whatever integral form it arrived in.
+        The class as a `SectionClass`, whatever integral form it arrived in.
 
     Raises
     ------
@@ -143,14 +172,13 @@ def _validate_class(section_class: int) -> int:
 
     Notes
     -----
-    **The conversion is what makes the comparison honest.** A class rides along
-    inside a section, and a section handed back through `jax.jit` arrives with its
-    class as a rank-zero array, on which `not in` compares elementwise and is
-    silently false for every class. Converting first turns that into the right
-    answer where the value is concrete, and into a loud concretization error where
-    it is a tracer — which is the only place a clause selector must not be.
+    **The conversion is a second line of defence rather than the first.** A
+    container is what keeps a class out of a trace; this catches a class that was
+    built as a bare integer anyway and travelled as a leaf, turning it into the
+    right answer where the value is concrete and into a loud concretization error
+    where it is a tracer — which is the only place a clause selector must not be.
     """
-    named = int(section_class)
+    named = SectionClass(section_class)
 
     if named not in CLASSES_IMPLEMENTED:
         raise ValueError(
@@ -240,7 +268,7 @@ def classify_section(
 def section_class_at_ratio(
     ratio: float | Float[Array, ""],
     f_y: float | Float[Array, ""],
-) -> int:
+) -> SectionClass:
     """
     Cross-section class of one ratio, as a value that can select a clause.
 
@@ -254,7 +282,7 @@ def section_class_at_ratio(
     Returns
     -------
     section_class :
-        Class 1, 2 or 3, as a Python integer.
+        Class 1, 2 or 3, as the integer a clause can select on.
 
     Raises
     ------
