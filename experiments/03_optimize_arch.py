@@ -82,6 +82,9 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.design import DesignParameters
+from normax.design import LoadCases
+from normax.design import load_cases as load_cases_of
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding import FdmFormFinder
@@ -102,9 +105,6 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing import Ec3Sizer
-from normax.stages import DesignParameters
-from normax.stages import LoadCases
-from normax.stages import load_cases as load_cases_of
 from normax.structures import arch_2d
 from normax.structures import loads_half_span
 from normax.structures import loads_uniform

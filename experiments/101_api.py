@@ -50,6 +50,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.design import DesignParameters
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding import FdmFormFinder
@@ -58,10 +59,10 @@ from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
-from normax.pipeline import DesignPipeline
-from normax.pipeline import calculate_mass
+from normax.pipeline import StructuralDesignPipeline
+from normax.pipeline import compute_mass
 from normax.sizing import Ec3Sizer
-from normax.stages import DesignParameters
+from normax.sizing import size_envelope
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 
@@ -337,9 +338,8 @@ def initialize_parameters(
     """
     q = jnp.full(structure.num_edges, config.form_finding.force_density)
     diameters = jnp.full(structure.num_edges, config.analysis.diameter)
-    sharpness = jnp.asarray(config.analysis.envelope_sharpness)
 
-    return DesignParameters(q, diameters, sharpness)
+    return DesignParameters(q, diameters)
 
 
 def update_parameters(
@@ -366,9 +366,9 @@ def update_parameters(
     The force densities are the only variables of the search, so the objective
     takes an array rather than a container and this is where the container is
     put back together. What it restores is the diameters the frame is analyzed
-    with, which the check overwrites, and the sharpness, which is a smoothing.
+    with, which the check overwrites.
     """
-    return DesignParameters(q, params.diameters, params.sharpness)
+    return DesignParameters(q, params.diameters)
 
 
 def main(config_path: Path) -> None:
@@ -389,20 +389,22 @@ def main(config_path: Path) -> None:
     catalogue = TubeCatalogue.at_class_limit(material.f_y, config.sizing.section_class)
 
     # Three swappable blocks
-    pipeline = DesignPipeline(
+    pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
         SmaxAnalyzer(structure, material, catalogue, NORMAL),
         Ec3Sizer(structure, material, catalogue),
     )
 
     params = initialize_parameters(structure, config)
+    sharpness = jnp.asarray(config.analysis.envelope_sharpness)
 
     # Define the objective function (closure over the design parameters)
     def objective(q: Float[Array, "members"]) -> Float[Array, ""]:
         moved = update_parameters(q, params)
         design = pipeline(moved, loads)
+        sized = size_envelope(design, sharpness)
 
-        return calculate_mass(design)
+        return compute_mass(sized)
 
     # Gradient voodoo
     objective_and_gradient = value_and_gradient(objective)
@@ -419,14 +421,22 @@ def main(config_path: Path) -> None:
     )
 
     params_opt = update_parameters(optimization_trajectory.q[-1], params)
-    design_opt = pipeline(params_opt, loads)
-    mass_opt = calculate_mass(design_opt)
+    design_opt = size_envelope(pipeline(params_opt, loads), sharpness)
+    mass_opt = compute_mass(design_opt)
+
+    # The standard asked a second time, at the size the envelope settled on
+    # rather than the one any single load case demanded.
+    used = pipeline.sizer.utilization(
+        design_opt.sizes.sections.diameters,
+        design_opt.sizes.actions,
+        design_opt.shape.lengths,
+    )
 
     print(f"Mass at the start: {float(mass):.9f} t")
     print(f"Gradient in q: {gradient}")
     print(f"Mass after the descent: {float(mass_opt):.9f} t")
     print(f"Saved: {100.0 * (1.0 - mass_opt / mass):.3f} %")
-    print(f"Worst utilization: {float(jnp.max(design_opt.utilization)):.12f}")
+    print(f"Worst utilization: {float(jnp.max(used)):.12f}")
 
     print("\nHasta la vista, baby!")
 

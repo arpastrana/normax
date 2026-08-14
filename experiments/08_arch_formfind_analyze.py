@@ -46,6 +46,7 @@ from smax import diagnose_mechanisms
 from normax.analysis.smax import frame_model
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
+from normax.design import MemberForces
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding import equilibrium_graph
@@ -54,7 +55,6 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.stages import MemberForces
 from normax.structures import Structure
 from normax.structures import arch_2d
 from normax.structures import loads_uniform

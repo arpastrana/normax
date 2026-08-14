@@ -70,6 +70,9 @@ from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import buckling_modes
+from normax.design import DesignParameters
+from normax.design import LoadCases
+from normax.design import load_cases
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import mass_of_tubes
@@ -87,9 +90,6 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing import Ec3Sizer
-from normax.stages import DesignParameters
-from normax.stages import LoadCases
-from normax.stages import load_cases
 from normax.structures import Structure
 from normax.structures import arch_2d
 from normax.structures import loads_uniform
