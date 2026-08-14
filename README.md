@@ -39,8 +39,8 @@ from normax.analysis.smax import SmaxAnalyzer
 from normax.ec3.material import SteelGrade
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding import FdmFormFinder
-from normax.pipeline import DesignPipeline
-from normax.pipeline import calculate_mass
+from normax.design import DesignPipeline
+from normax.design import calculate_mass
 from normax.sizing import Ec3Sizer
 from normax.design import DesignParameters
 from normax.design import load_cases

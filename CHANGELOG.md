@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Every stage owns its own contract
+
+`normax/design.py` is down to six things — `DesignParameters`, `Design`,
+`StructuralDesignPipeline`, and the three questions asked *of* a design. Each
+stage's container and abstract block moved to the stage itself:
+
+| module | container | contract |
+|---|---|---|
+| `normax/form_finding/__init__.py` | `FormFoundShape` | `AbstractFormFinder` |
+| `normax/analysis/__init__.py` | `MemberForces` | `AbstractFrameAnalyzer` |
+| `normax/sizing.py` | `MemberSizes` | `AbstractMemberSizer` |
+
+- **`normax/form_finding.py` is a package**: the contract in `__init__.py`, the
+  force density method in `fdm.py`. That is what keeps `jax-fdm` out of
+  `normax.design` — verified, `import normax.design` leaves `jax_fdm` unloaded —
+  and out of the T2 container, whose requirements are still the wheel and `smax`.
+- **`AbstractFrameAnalyzer.__call__` takes `xyz`, not a `FormFoundShape`.** Both
+  analyzers only ever read `shape.xyz`; taking the container would have made the
+  analysis contract unreadable without the form finder's dependencies for no
+  gain.
+- **`normax/pipeline.py` became `normax/stability.py` and then dissolved.**
+  `Stability` and `frame_stability` live at the bottom of
+  `normax/analysis/smax.py`, the only backend that can answer them: the check
+  needs an eigensolve, and the OpenSees one cannot trace one.
+- **`node_positions` is deleted.** It was `equilibrium_state(...).xyz` with a
+  name on it. `positions_vertical` stays — it is the only executable form of the
+  argument that a held plan is funicular under uniform force densities alone.
+
+### The envelope reconciles and nothing else
+
+`design_envelope(design, sharpness)` lives in `normax.design`, takes no sizer,
+and reads no standard.
+
+- **`MemberSizes` gained `utilization`**, filled by the check inside the same
+  `vmap` that sizes. It is a **diagonal, not a matrix**: entry *(i, m)* is member
+  *m* under case *i* at the section **case i** demanded, so it is one by
+  construction — measured at 0.9999999999999939 to 1.0000000000000024, which is
+  the bisection's convergence and the §6.5 invariant stored rather than asserted.
+  Below one only where the catalogue minimum bound.
+- **It is never re-derived**, so the envelope carries it through and utilization
+  is computed exactly once per design. Reading it as a verdict on a reconciled
+  design is the mistake the docstring warns about.
+- **`governing_load_case` reads the demanded diameters**, not a utilization.
+  `argmax` over the sections each case asked for gives the same answer, since
+  capacity is strictly increasing in the diameter: at the reconciled section the
+  case that demanded the largest is exactly satisfied and every other is at a
+  section larger than it asked for. Exact at the true largest, and measured to
+  agree at β = 50. That is what makes the second re-check unnecessary rather than
+  merely cheap.
+
 ### A design is one field per stage
 
 `normax/stages.py` is `normax/design.py`, and it holds what the name says:

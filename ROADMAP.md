@@ -1015,13 +1015,68 @@ the measurement has.
 connectivity and the fixed plan, take a rank-revealing factorization once on the
 host to classify edges, and expose `q_independent → q_all` as a traced linear map
 so the whole thing differentiates and drops in where
-`normax.form_finding.node_positions` sits now. The classification is topology and
+`normax.form_finding.equilibrium_state` sits now. The classification is topology and
 belongs outside the trace, exactly as the form-finding graph does today. It also
 depends on the plan, so it is fixed for a given plan and has to be redone if the
 plan changes.
 
 Until then, the length floor of `normax.optimization.penalized_mass` is what keeps a
 per-edge search honest, and it is a penalty rather than a guarantee.
+
+---
+
+## After the deadline — `normax.ec3` as a library, and a second sizer
+
+**Not hackathon scope.** The shape is already in the code; this records the two
+moves that finish it and the one thing that is currently in the wrong module.
+
+**`normax.ec3` becomes a standalone library**, imported the way `smax` and
+`openseespy` are — a dependency that knows nothing about this package. The
+precondition already holds: **every import inside `normax/ec3/` points at
+`normax.ec3.*` and at nothing else**, so the subtree lifts out with no
+untangling. What lifts out is a clean-room, differentiable, *inverted* EN
+1993-1-1 in JAX, which is useful to people who will never form-find anything.
+
+**The interfaces move to `normax.sizing.ec3`**, turning `normax/sizing.py` into a
+package and giving the check the shape the analysis already has:
+
+```
+normax/analysis/__init__.py   MemberForces, AbstractFrameAnalyzer   ← the contract
+normax/analysis/smax.py       SmaxAnalyzer                          ← a backend
+normax/analysis/opensees.py   the OpenSees one                      ← another
+
+normax/sizing/__init__.py     MemberSizes, AbstractMemberSizer      ← the contract
+normax/sizing/ec3.py          Ec3Sizer                              ← a backend
+normax/sizing/skyciv.py       a SkyCiv sizer                        ← another
+```
+
+`normax.sizing.skyciv` is the point of the exercise: a commercial member sizer
+reached over HTTP, behind the same `AbstractMemberSizer`, so **which standard a
+design is checked against becomes an argument, the way the solver already is.**
+That is also the strongest form the thesis can take — the in-process check and a
+remote proprietary one, composed identically, differing only in who wrote the
+clauses and whether they can be read at all.
+
+**Two containers move up rather than out, and one is already misplaced.**
+
+- **`MemberSection` is defined in `normax/ec3/section.py` and used by nothing
+  inside `normax.ec3`.** It belongs to the pipeline rather than the standard: it
+  is what `MemberSizes.sections` holds, and any second sizer has to produce one.
+  Move it to `normax/sizing/__init__.py` whether or not the extraction happens.
+- `MemberActions` is genuinely EN 1993-1-1's input, but `MemberSizes.actions` is
+  typed on it, so a pipeline using SkyCiv alone would still import the EC3
+  library for a container.
+
+The analysis stage already settled the principle: `MemberForces` lives in
+`normax.analysis` and not in `smax`. **normax owns the vocabulary, a backend owns
+the clauses.** Whatever a second sizer must speak belongs in
+`normax/sizing/__init__.py`; what only EN 1993-1-1 reads goes out with the
+library.
+
+**What it costs.** `tesseracts/ec3_check/tesseract_api.py` imports `normax.ec3`
+directly and would import the library instead — a version pin in
+`tesseract_requirements.txt` rather than a path. No schema changes, and no
+gradient changes: the adjoints are inside the subtree that moves.
 
 ---
 
