@@ -13,7 +13,7 @@ PIPELINE_TESTS = (
     "test_analysis_prepared.py",
     "test_equilibrium_consistency.py",
     "test_pipeline.py",
-    "test_stages.py",
+    "test_design.py",
     "test_tesseract_parity.py",
 )
 

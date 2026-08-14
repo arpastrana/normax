@@ -8,6 +8,9 @@ import pytest
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import buckling_modes
 from normax.analysis.smax import prepare_model
+from normax.design import DesignParameters
+from normax.design import LoadCases
+from normax.design import load_cases as load_cases_of
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.sizing import LIMIT_MAJOR
@@ -22,9 +25,6 @@ from normax.pipeline import calculate_mass
 from normax.pipeline import frame_stability
 from normax.pipeline import governing_load_case
 from normax.sizing import Ec3Sizer
-from normax.stages import DesignParameters
-from normax.stages import LoadCases
-from normax.stages import load_cases as load_cases_of
 from normax.structures import arch_2d
 from normax.structures import loads_half_span
 from normax.structures import loads_point
