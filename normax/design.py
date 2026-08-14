@@ -54,6 +54,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.ec3.actions import MemberActions
+from normax.ec3.section import MemberSection
 
 
 class DesignParameters(NamedTuple):
@@ -66,9 +67,6 @@ class DesignParameters(NamedTuple):
         Force density of every member. Negative in compression.
     diameters :
         Outer diameter every member is analyzed with.
-    sharpness :
-        Sharpness of the envelope over load cases. None asks for the true
-        largest size any of them demands.
 
     Notes
     -----
@@ -78,47 +76,46 @@ class DesignParameters(NamedTuple):
     design variable in their own right, and an optimizer that varies the shape
     alone still has to supply them.
 
-    **The sharpness travels with the parameters because it is annealed**, and a
-    schedule that raised it by rebuilding the pipeline would compile a program
-    per round. Reaching the objective as an array leaf instead makes every round
-    the same program at a different value. It is a smoothing rather than a
-    design variable all the same, and no gradient is taken with respect to it.
+    **A sharpness is not here, and that is deliberate.** Reconciling load cases
+    is smoothing rather than a stage, so it happens above the pipeline in
+    `normax.sizing.size_envelope` and its sharpness is an argument of the loss
+    rather than a parameter of the design.
     """
 
     q: Float[Array, "members"]
     diameters: Float[Array, "members"]
-    sharpness: Float[Array, ""] | None = None
 
 
 class FormFoundShape(NamedTuple):
     """
-    The geometry a form finder settles on.
+    The geometry a form finder settles on, and what its members measure there.
 
     Attributes
     ----------
     xyz :
         Position of every node at equilibrium.
+    lengths :
+        Length of every member.
 
     Notes
     -----
-    **The handoff downstream is a geometry and nothing else** — no prestress, no
-    initial member forces, and no quantity derived from the coordinates. A frame
-    analysis is given this, starts from an unstressed reference state, and finds
-    its own axial forces; that those agree with the form finder's is a
-    prediction that gets tested rather than an input that gets imposed.
+    **The handoff downstream is a geometry** — no prestress and no initial
+    member forces. A frame analysis is given this, starts from an unstressed
+    reference state, and finds its own axial forces; that those agree with the
+    form finder's is a prediction that gets tested rather than an input that
+    gets imposed. The form finder's own forces are absent for that reason, and
+    they cost nothing to recover: an edge carries the product of its force
+    density and its length.
 
-    Everything a form finder could also report is recoverable from what it does:
-    a member force is its force density times its length, and a length is
-    `normax.structures.member_lengths` of these coordinates. Reporting either
-    would be handing a caller arithmetic it can do, and inviting two stages to
-    do it differently.
-
-    One field, deliberately. What a form finder is for is the shape, and the
-    container says so; it is a container rather than a bare array so that a form
-    finder which one day settles more than coordinates has somewhere to put it.
+    **The lengths are here because measuring needs the connectivity**, which a
+    form finder holds and nothing downstream does. They are read as the length a
+    member buckles over and as the `L` of `ρ Σ A L`, and a length is geometry
+    rather than any stage's opinion, so a block reporting one is reporting what
+    it measured rather than what it decided.
     """
 
     xyz: Float[Array, "nodes 3"]
+    lengths: Float[Array, "members"]
 
 
 class MemberForces(NamedTuple):
@@ -160,31 +157,66 @@ class MemberForces(NamedTuple):
 
 class MemberSizes(NamedTuple):
     """
-    What a code check demands of every member, under every load case.
+    What a code check decided, and what it read to decide it.
 
     Attributes
     ----------
+    sections :
+        The section every load case demands of every member on its own.
     actions :
         The design actions the check read, every field carrying a leading load
         case axis.
-    required :
-        Diameter every load case demands of every member on its own.
 
     Notes
     -----
+    **A check answers two questions and this is the pair.** What it read is not
+    what the analysis reported: reducing two end moments to a design moment and
+    an equivalent uniform moment factor is EN 1993-1-1 Table B.3, a clause, and
+    the factor it produces cannot be recovered from the design moment alone. So
+    the actions are output as well as input, and for a block that applies that
+    clause across a boundary they are the only record of what the far side read.
+
     **Every load case is sized for separately, and nothing is combined here.** A
     member has one size and has to satisfy all of them, but reconciling that is
     smoothing rather than a clause and belongs above a block that implements a
-    standard.
-
-    The actions are returned as well as consumed, because reducing two end
-    moments to a design moment and a factor is itself a clause. A design that
-    carries them can be checked again at a different set of sizes without
-    analyzing anything a second time.
+    standard. `normax.sizing.size_envelope` is where it happens.
     """
 
+    sections: MemberSection
     actions: MemberActions
-    required: Float[Array, "load_cases members"]
+
+
+class Design(NamedTuple):
+    """
+    One structure carried through all three stages.
+
+    Attributes
+    ----------
+    shape :
+        The geometry form finding settled on, and its member lengths.
+    forces :
+        What every member carries under every load case.
+    sizes :
+        The sections the check demands, and the actions it read.
+
+    Notes
+    -----
+    One field per stage, in the order they ran, and nothing that no stage
+    produced. A mass is not here because it is `ρ Σ A L` — arithmetic over two
+    of these fields, which `normax.pipeline.compute_mass` does — and neither is
+    a utilization, which is the standard asked a second question at a size it
+    did not choose.
+
+    **The load case axis lives in `forces` and `sizes` and not in `shape`.** A
+    structure is form-found once and checked against several cases, so the
+    geometry is shared and the sections are not — until `size_envelope`
+    reconciles them, which returns this same container with one section per
+    member.
+    """
+
+    shape: FormFoundShape
+    forces: MemberForces
+    sizes: MemberSizes
 
 
 class AbstractFormFinder(eqx.Module):
@@ -220,38 +252,7 @@ class AbstractFormFinder(eqx.Module):
         Returns
         -------
         shape :
-            The geometry at equilibrium.
-        """
-
-    @abc.abstractmethod
-    def member_lengths(
-        self,
-        xyz: Float[Array, "nodes 3"],
-    ) -> Float[Array, "members"]:
-        """
-        Measure every member of a geometry this block could have produced.
-
-        Parameters
-        ----------
-        xyz :
-            Position of every node.
-
-        Returns
-        -------
-        lengths :
-            Distance between the two nodes of every member.
-
-        Notes
-        -----
-        **The counterpart of the sizer's `mass_per_length`, and here for the
-        same reason.** A total mass is `ρ Σ A L`: the section family supplies
-        the `A` and only the block owning one can, and the connectivity supplies
-        the `L` and this is the block that owns one. Neither is a clause or a
-        solve, and neither can be answered by a caller holding a geometry alone.
-
-        Asked of a geometry rather than reported beside one, because a shape is
-        what a form finder is for and a length is arithmetic about a shape. A
-        caller that wants both makes two calls and can see that it did.
+            The geometry at equilibrium, and its member lengths.
         """
 
 
@@ -345,33 +346,6 @@ class AbstractMemberSizer(eqx.Module):
         -------
         sizes :
             The design actions read, and the diameter each load case demands.
-        """
-
-    @abc.abstractmethod
-    def mass_per_length(
-        self,
-        diameters: Float[Array, "members"],
-    ) -> Float[Array, "members"]:
-        """
-        Mass a member of a given size carries per unit of its length.
-
-        Parameters
-        ----------
-        diameters :
-            Outer diameter of every member.
-
-        Returns
-        -------
-        mass_per_length :
-            Mass per unit length of every member.
-
-        Notes
-        -----
-        The one quantity a block is asked for that no clause decides. A section
-        family fixes both the area and the material, so only the block that owns
-        one can answer, and published section tables state exactly this. What is
-        done with it — a total mass, an objective — is not the block's business,
-        which is why it stops here rather than returning a mass.
         """
 
     @abc.abstractmethod

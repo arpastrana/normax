@@ -42,6 +42,7 @@ from jaxtyping import Float
 
 from normax.ec3.classification import ratio_at_class_limit
 from normax.ec3.classification import section_class_at_ratio
+from normax.ec3.material import Steel
 
 # EN 10210 lists no smaller hot-finished tube, so a member is never sized below
 # this however light its actions.
@@ -301,3 +302,47 @@ class TubeCatalogue(NamedTuple):
         EN 1993-1-6 applies instead.
         """
         return cls(ratio_at_class_limit(f_y, section_class), diameter_min)
+
+
+class MemberSection(NamedTuple):
+    """
+    The section every member is given, and the material it is cut from.
+
+    Attributes
+    ----------
+    tubes :
+        Outer diameter and wall thickness of every member.
+    material :
+        Material properties, of which only the density is read here.
+
+    Notes
+    -----
+    **A section and its material travel together, because a mass needs both.**
+    An area is geometry and a density is a material, and neither alone answers
+    what a member weighs per unit of its length — which is the one quantity a
+    published section table states that no clause decides. Carrying the pair is
+    what lets a mass be computed from a design without reaching back into the
+    block that chose it.
+
+    The load case axis is variadic, like `normax.design.MemberForces`. A check
+    answers one size per member per load case, so the sections it returns carry
+    that axis; reconciling them into one size per member collapses it, and both
+    ranks are the same container.
+    """
+
+    tubes: Tube
+    material: Steel
+
+    @property
+    def diameters(self) -> Float[Array, "*load_cases members"]:
+        """
+        Outer diameter of every member.
+        """
+        return self.tubes.diameter
+
+    @property
+    def area(self) -> Float[Array, "*load_cases members"]:
+        """
+        Cross-sectional area of every member.
+        """
+        return self.tubes.area

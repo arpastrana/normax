@@ -54,19 +54,20 @@ from jaxtyping import Int
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
+from normax.design import AbstractFormFinder
+from normax.design import AbstractFrameAnalyzer
+from normax.design import AbstractMemberSizer
+from normax.design import FormFoundShape
+from normax.design import MemberForces
+from normax.design import MemberSizes
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import Steel
+from normax.ec3.section import MemberSection
 from normax.ec3.section import TubeCatalogue
 from normax.loads import count_load_cases
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
 from normax.sizing import Ec3Sizer
-from normax.stages import AbstractFormFinder
-from normax.stages import AbstractFrameAnalyzer
-from normax.stages import AbstractMemberSizer
-from normax.stages import FormFoundShape
-from normax.stages import MemberForces
-from normax.stages import MemberSizes
 from normax.structures import Structure
 from normax.structures import member_lengths
 
@@ -244,7 +245,14 @@ class TesseractFormFinder(AbstractFormFinder):
         Returns
         -------
         shape :
-            The geometry, the member lengths and the forces they carry.
+            The geometry at equilibrium, and its member lengths.
+
+        Notes
+        -----
+        The lengths are measured here rather than carried by the schema. A
+        length is a distance between two nodes, geometry that no standard has an
+        opinion on, so computing it locally cannot disagree with the far side
+        and asking for it would pay a round trip for a subtraction.
         """
         crossed = apply_tesseract(
             self.client,
@@ -256,34 +264,10 @@ class TesseractFormFinder(AbstractFormFinder):
                 "loads": loads,
             },
         )
-        shape = FormFoundShape(crossed["xyz"])
+        lengths = member_lengths(crossed["xyz"], self.edges)
+        shape = FormFoundShape(crossed["xyz"], lengths)
 
         return shape
-
-    def member_lengths(
-        self,
-        xyz: Float[Array, "nodes 3"],
-    ) -> Float[Array, "members"]:
-        """
-        Measure every member of a geometry this block could have produced.
-
-        Parameters
-        ----------
-        xyz :
-            Position of every node.
-
-        Returns
-        -------
-        lengths :
-            Distance between the two nodes of every member.
-
-        Notes
-        -----
-        Answered in process rather than across the boundary. A distance between
-        two nodes is arithmetic on arrays already held here, and a schema that
-        carried it would be paying a round trip for a subtraction.
-        """
-        return member_lengths(xyz, self.edges)
 
 
 class TesseractAnalyzer(AbstractFrameAnalyzer):
@@ -564,34 +548,9 @@ class TesseractSizer(AbstractMemberSizer):
             for acting, sized in zip(carried, crossed)
         ]
         demanded = jnp.stack([sized["diameter"] for sized in crossed])
-        sizes = MemberSizes(stack_load_cases(per_case), demanded)
+        sections = MemberSection(local.catalogue.tube_at(demanded), local.steel)
 
-        return sizes
-
-    def mass_per_length(
-        self,
-        diameters: Float[Array, "members"],
-    ) -> Float[Array, "members"]:
-        """
-        Mass a member of a given size carries per unit of its length.
-
-        Parameters
-        ----------
-        diameters :
-            Outer diameter of every member.
-
-        Returns
-        -------
-        mass_per_length :
-            Mass per unit length of every member.
-
-        Notes
-        -----
-        Answered in process. A section family fixes the area and the material,
-        and neither is something the standard decides, so nothing about this
-        belongs on the far side of the boundary.
-        """
-        return self.local.mass_per_length(diameters)
+        return MemberSizes(sections, stack_load_cases(per_case))
 
     def governing(
         self,

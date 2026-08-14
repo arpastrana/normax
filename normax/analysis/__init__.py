@@ -45,7 +45,7 @@ function of things no optimizer varies, so recomputing it per iterate is waste,
 and for a traced backend it is worse than waste: compilation reads support flags
 in Python, so a rebuild inside the trace is what stops the stage being jitted.
 
-**What a backend returns is `normax.stages.MemberForces`, one load case of it.**
+**What a backend returns is `normax.design.MemberForces`, one load case of it.**
 A solver answers one case at a time and a block answers all of them, and the two
 are the same container at two ranks rather than two containers; `stack_load_cases`
 is what puts them together. A load case reaches a backend as the dense nodal

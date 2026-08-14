@@ -34,10 +34,9 @@ from jax_fdm.equilibrium import LoadState
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.stages import AbstractFormFinder
-from normax.stages import FormFoundShape
+from normax.design import AbstractFormFinder
+from normax.design import FormFoundShape
 from normax.structures import Structure
-from normax.structures import member_lengths
 
 
 def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
@@ -283,33 +282,9 @@ class FdmFormFinder(AbstractFormFinder):
         Returns
         -------
         shape :
-            The geometry at equilibrium.
+            The geometry at equilibrium, and its member lengths.
         """
         state = equilibrium_state(q, self.xyz_fixed, self.graph, loads)
-        shape = FormFoundShape(state.xyz)
+        shape = FormFoundShape(state.xyz, state.lengths[:, 0])
 
         return shape
-
-    def member_lengths(
-        self,
-        xyz: Float[Array, "nodes 3"],
-    ) -> Float[Array, "members"]:
-        """
-        Measure every member of a geometry this block could have produced.
-
-        Parameters
-        ----------
-        xyz :
-            Position of every node.
-
-        Returns
-        -------
-        lengths :
-            Distance between the two nodes of every member.
-
-        Notes
-        -----
-        The graph's edges rather than a second copy of them, so a block cannot
-        measure an ordering the solve did not use.
-        """
-        return member_lengths(xyz, self.graph.edges)

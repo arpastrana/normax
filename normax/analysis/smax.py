@@ -67,12 +67,12 @@ from smax import solve_buckling
 
 from normax.analysis import Buckling
 from normax.analysis import support_fixities
+from normax.design import AbstractFrameAnalyzer
+from normax.design import FormFoundShape
+from normax.design import MemberForces
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.loads import stack_load_cases
-from normax.stages import AbstractFrameAnalyzer
-from normax.stages import FormFoundShape
-from normax.stages import MemberForces
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_meter
 from normax.units import to_meters
