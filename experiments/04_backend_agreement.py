@@ -69,14 +69,13 @@ from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
-from normax.materials import SteelGrade
+from normax.materials import Steel355
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
 from normax.reporting import Report
 from normax.reporting import ReportColumn
-from normax.sections import TubeFamily
-from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
@@ -120,7 +119,7 @@ ITERATIONS = 60
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-GRADE = SteelGrade()
+GRADE = Steel355()
 SECTION_CLASS = 3
 
 BACKENDS = ("smax", "opensees")
@@ -314,19 +313,13 @@ def relative(actual, expected) -> float:
     return float(np.max(np.abs(actual - expected))) / (scale if scale > 0.0 else 1.0)
 
 
-def tube_family(structure: Structure) -> TubeFamily:
-    """
-    The class-limit family the frames run on, read off a configured sizer.
-    """
-    return Ec3Sizer.at_class_limit(structure, GRADE, SECTION_CLASS).family
-
-
 def mass_objective(setup: ArchSetup, chain) -> Callable[[Float[Array, "edges"]], Any]:
     """
     Force densities to a mass, through whichever backend is selected.
     """
     structure = setup.structure
-    sizer = TesseractSizer.at_class_limit(structure, chain.ec3, GRADE, SECTION_CLASS)
+    family = thinnest_family(GRADE, SECTION_CLASS)
+    sizer = TesseractSizer(structure, chain.ec3, family)
     pipeline = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
         TesseractAnalyzer(structure, chain.analysis, sizer.family, NORMAL),
@@ -415,7 +408,7 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     """
     xyz = setup.xyz
     diameters = setup.seed
-    family = tube_family(setup.structure)
+    family = thinnest_family(GRADE, SECTION_CLASS)
     prepared_ddm = backend_opensees.prepare_model(
         setup.structure, family, normal=NORMAL
     )
@@ -468,7 +461,7 @@ def agreement(report: Report) -> float:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    family = tube_family(setup.structure)
+    family = thinnest_family(GRADE, SECTION_CLASS)
     prepared_ddm = backend_opensees.prepare_model(
         setup.structure, family, normal=NORMAL
     )
@@ -562,7 +555,7 @@ def blind(report: Report) -> None:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    family = tube_family(setup.structure)
+    family = thinnest_family(GRADE, SECTION_CLASS)
     prepared = prepare_smax(setup.structure, family(SEED))
 
     def run(coords):

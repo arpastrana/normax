@@ -95,7 +95,7 @@ from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_half_span
 from normax.loads import loads_uniform
-from normax.materials import SteelGrade
+from normax.materials import Steel355
 from normax.optimization import Trajectory
 from normax.optimization import annealing_schedule
 from normax.optimization import optimize_annealed
@@ -106,6 +106,7 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import Descent
@@ -182,7 +183,7 @@ FLOOR_WEIGHT = 50.0
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-GRADE = SteelGrade()
+GRADE = Steel355()
 SECTION_CLASS = 3
 
 # The reads the reports make, compiled. Left eager each one costs an XLA
@@ -348,10 +349,11 @@ def arch_problem() -> ArchProblem:
 
     # The analysis is configured with one tube, drawn from the sizer's family;
     # the check chooses within that family.
-    sizer = Ec3Sizer.at_class_limit(structure, GRADE, SECTION_CLASS)
+    family = thinnest_family(GRADE, SECTION_CLASS)
+    sizer = Ec3Sizer(structure, family)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, sizer.family(SEED)),
+        SmaxAnalyzer(structure, family(SEED)),
         sizer,
     )
     funicular = trial * reached / RISE

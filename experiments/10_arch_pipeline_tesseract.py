@@ -73,12 +73,13 @@ from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
-from normax.materials import SteelGrade
+from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import Chain
@@ -148,7 +149,7 @@ TOLERANCE_SERVED = 1e-11
 IMAGES = ("normax-formfinding", "normax-ec3-check")
 VERSION = "0.1.0"
 
-GRADE = SteelGrade()
+GRADE = Steel355()
 
 LIMIT_NAMES = {
     0.0: "catalogue minimum",
@@ -223,10 +224,11 @@ def in_process_pipeline(
     The three blocks that compute here, built against the arch.
     """
     structure = setup.structure
-    sizer = Ec3Sizer.at_class_limit(structure, GRADE, section_class)
+    family = thinnest_family(GRADE, section_class)
+    sizer = Ec3Sizer(structure, family)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, sizer.family(SEED)),
+        SmaxAnalyzer(structure, family(SEED)),
         sizer,
     )
 
@@ -242,7 +244,8 @@ def composed_pipeline(
     The same three blocks, each reached across a Tesseract boundary.
     """
     structure = setup.structure
-    sizer = TesseractSizer.at_class_limit(structure, chain.ec3, GRADE, section_class)
+    family = thinnest_family(GRADE, section_class)
+    sizer = TesseractSizer(structure, chain.ec3, family)
     blocks = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
         TesseractAnalyzer(structure, chain.analysis, sizer.family, NORMAL),
@@ -699,7 +702,8 @@ def main(verbose: bool = True) -> None:
 
     modes = report_modes(report, setup, chain)
 
-    sizer = Ec3Sizer.at_class_limit(setup.structure, GRADE, 3)
+    family = thinnest_family(GRADE, 3)
+    sizer = Ec3Sizer(setup.structure, family)
     refused = refusal_message(setup, chain, sizer)
     entries = (("refused", refused),)
 

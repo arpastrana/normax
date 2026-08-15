@@ -76,13 +76,14 @@ from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
-from normax.materials import SteelGrade
+from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import design_actions
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import MeshRefinement
@@ -132,7 +133,7 @@ COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
-GRADE = SteelGrade()
+GRADE = Steel355()
 
 CLASSES = (2, 3)
 
@@ -292,8 +293,8 @@ def arch_setup(num_edges: int) -> ArchSetup:
     graph = equilibrium_graph(structure)
     # Standing a frame up needs a section, and every property of it is replaced
     # per call; the seed tube is drawn from the class-3 family as bare geometry.
-    seeded = Ec3Sizer.at_class_limit(structure, GRADE, 3)
-    analyzer = SmaxAnalyzer(structure, seeded.family(SEED))
+    seeded = thinnest_family(GRADE, 3)
+    analyzer = SmaxAnalyzer(structure, seeded(SEED))
     applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
@@ -313,10 +314,11 @@ def pipeline_from_setup(
     Bind a section class and this mesh into the three blocks.
     """
     structure = setup.structure
-    sizer = Ec3Sizer.at_class_limit(structure, GRADE, section_class)
+    family = thinnest_family(GRADE, section_class)
+    sizer = Ec3Sizer(structure, family)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, sizer.family(SEED)),
+        SmaxAnalyzer(structure, family(SEED)),
         sizer,
     )
 

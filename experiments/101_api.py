@@ -69,11 +69,12 @@ from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
-from normax.materials import SteelGrade
+from normax.materials import Steel355
 from normax.optimization import minimize_bounded
 from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import figure_trajectory
@@ -424,12 +425,13 @@ def main(config_path: Path) -> None:
 
     # The one place the standard is named. Everything EC3-flavored — the
     # partial factors, the class-limit wall — is derived inside the block.
-    grade = SteelGrade()
-    sizer = Ec3Sizer.at_class_limit(structure, grade, config.sizing.section_class)
+    grade = Steel355()
+    family = thinnest_family(grade, config.sizing.section_class)
+    sizer = Ec3Sizer(structure, family)
 
     # The analysis is configured with one tube; the check is what chooses between
-    # them. The tube is drawn from the sizer's own family, read as bare geometry.
-    section = sizer.family(config.analysis.diameter)
+    # them. The tube is drawn from the same family, read as bare geometry.
+    section = family(config.analysis.diameter)
 
     # Three swappable blocks
     pipeline = StructuralDesignPipeline(

@@ -50,13 +50,14 @@ from normax.design import MemberForces
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import loads_uniform
+from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sections import MemberSections
-from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import GapScaling
@@ -88,7 +89,7 @@ TOLERANCE_GRADIENT = 1e-7
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-GRADE = SteelGrade()
+GRADE = Steel355()
 SECTION_CLASS = 3
 
 # The tube a frame is stood up as; every property of it is replaced per call.
@@ -99,11 +100,11 @@ def graded_section(structure: Structure, grade: SteelGrade) -> MemberSections:
     The tube the frame stands up as, cut from a given grade.
 
     The wall proportion is the class limit, which is the sizer's clause work;
-    the driver reads the family off a configured block rather than deriving it.
+    the driver asks the sizer's module for the family rather than deriving it.
     """
-    sizer = Ec3Sizer.at_class_limit(structure, grade, SECTION_CLASS)
+    family = thinnest_family(grade, SECTION_CLASS)
 
-    return sizer.family(DIAMETER)
+    return family(DIAMETER)
 
 
 class FunicularArch(NamedTuple):
