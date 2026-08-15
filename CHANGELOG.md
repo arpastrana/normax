@@ -2,6 +2,92 @@
 
 ## Unreleased
 
+### The plane is measured, and the analysis holds one tube
+
+Two arguments left the analysis stage. `SmaxAnalyzer(structure, section)` is the
+whole constructor now, where it used to be `(structure, catalogue, normal)`.
+
+- **`normal_axis(structure)` reads the plane off the geometry**, and
+  `support_fixities(structure)` takes no axis at all. Whether a structure is
+  planar is a fact about the structure, so a caller asked to restate it could
+  only restate it wrongly. It reproduces every axis that used to be hardcoded:
+  the XZ arch measures 1, the straight X-beam measures 1, the gridshell measures
+  None. The axes are tried as Y, X, Z, so a straight structure — thin along two
+  axes, of which only one may be restrained or it could not bend — keeps its
+  vertical plane free.
+- **The fixities a planar structure needs are worked out rather than handed in.**
+  The normal translation is restrained at every node, without which a pinned
+  planar frame is a mechanism in three dimensions and the solve returns nan; the
+  two out-of-plane rotations are restrained at the supports, without which a
+  straight one is a mechanism even then. The in-plane bending rotation is never
+  restrained anywhere, so a base still carries no moment. The rotations are held
+  wherever the structure is planar, curved or straight: in-plane and out-of-plane
+  response decouple exactly in a planar frame, so the restraint the curved case
+  does not need cannot reach its results either, and making it unconditional
+  keeps one rule instead of two.
+- **OpenSees keeps a declared normal, and now refuses one that disagrees.** Its
+  two in-plane axes become the solver's own axes, so the declaration is load
+  bearing there rather than a restatement; `frame_plane` measures the geometry and
+  raises when the two disagree.
+- **The analysis is configured with one tube; the check is handed the family.** A
+  frame is built out of the sections it has, and choosing among sizes is the
+  check's business, so a catalogue in an analyzer was an offer of sizes nothing in
+  a solve had any use for. What the tube carries onward is its wall proportion,
+  its grade and its class, and the family those three define is rebuilt from it
+  wherever a traced diameter has to be walled — in `_injected_assembly` and in
+  `frame_stability`. `TubeCatalogue.__call__` stays the one place a wall is chosen
+  for a diameter.
+- **The `smax` Tesseract backend prepares its assembly from the primal
+  coordinates.** Measuring a plane needs concrete coordinates, and a derivative
+  endpoint's are traced, so `prepare_assembly` runs once on the inputs a caller
+  sent and `solve_assembled` is what the trace enters. Preparation was already
+  meant to sit outside the trace — compiling reads support flags with a Python
+  conditional — and now it provably does.
+- **A size is held to what it reads, which is the moments.** The field-by-field
+  Tesseract parity moved `sizes.sections.diameter` to 1.17e-14 in class 2 and
+  1.35e-14 in class 3, a hair above a `TOLERANCE_PARITY` of 1e-14 that the sizes
+  had been sharing with the geometry. The cause was measured rather than guessed:
+  substituting one route's moments into the other collapses the disagreement to
+  9e-16, and substituting the axial forces alone leaves it exactly where it was, so
+  a size inherits the funicular moment's near-cancellation, damped by the small
+  share of utilization that moment claims. The check itself crosses exactly — one
+  sizer fed both force sets reproduces the same figure, and the stage-alone tests
+  still hold a diameter to 1e-14 on identical forces. `TOLERANCE_SIZE` is
+  therefore 1e-13, two orders tighter than the moments it descends from. The
+  geometry crosses bit-identically either way.
+
+### The driver's mass has a floor under the shortest member
+
+`experiments/101_api.py` penalizes its objective with
+`normax.optimization.penalized_mass`, and `experiments/arch.yaml` describes the
+floor: `length_floor: {fraction, sharpness, weight}` under `optimization`.
+
+- **The saving it reports is now a design rather than a collapse.** Floored:
+  **0.138951969 t from a start of 0.165643794 t, a saving of 16.114%**, shortest
+  member 607.8 mm against a 600 mm floor and **none of the ten members under it**.
+  Unfloored, the same run with `weight: 0.0`: 0.138056811 t and 16.654%, with
+  **2 of 10 members below the floor** and the shortest at 543.2 mm. The extra
+  0.54 percentage points were bought by shortening members, not by improving the
+  form, which is why the floored number is the one to quote.
+- **The floor is stated as a fraction of the nominal bay**, `span / num_edges`, so
+  one file means the same thing at any span or discretization. 0.6 of the bay, as
+  in `experiments/03_optimize_arch.py`, whose annealed 60-iteration descent shows
+  the unconstrained case collapsing far harder — 16 of 20 members below the floor
+  at a length ratio of 105.
+- **The penalty is why the objective and the mass are now printed apart.** The
+  search reads the penalized value and the design weighs what it weighs; at the
+  answer they differ by 6e-6 relative, the smooth minimum understating the true
+  shortest member by a little and so biting slightly early. `settle_diameters`
+  reads only the design the objective hands back, so penalizing the value leaves
+  the coupling measurement alone.
+- **The six experiments broken by the P8 and P5d restructurings run again**, and
+  each reproduces the numbers recorded for it rather than merely importing: `03`,
+  `04`, `08`, `09`, `10`, `11`. Two API gaps had to be closed by composing blocks
+  by hand rather than by renaming: a pipeline no longer takes a
+  `buckling_length=`, which `09` needs to price the member-length assumption, and
+  per-case sections live only on an unenveloped design, which is what `03` reads
+  to say which load case governs where.
+
 ### What a frozen analysis seed costs is measured rather than assumed
 
 The frame analysis wants sections before the check has produced any, so it is run
@@ -18,7 +104,8 @@ at a seed diameter and the two are coupled: `d = C(d)`. Two functions in
   seed against 0.138367347 t re-analyzed at its own sections, so the seed
   understates the design by +0.22493%**, from a start of 0.165643794 t and a saving
   of 16.654% with both ends weighed the same way. Utilization is 1.000000000000
-  either way.
+  either way. Those are the unfloored numbers, which the driver now reaches only at
+  `weight: 0.0`; floored it is +0.24867% on 0.138951969 t.
 - **`optimize_staggered` is the alternative, and it is not what the driver runs.**
   It alternates descents with settling passes until the force densities stop moving,
   and on the arch it closes in **2 rounds, 16 gradient calls and 31 forward

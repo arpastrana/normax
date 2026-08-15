@@ -57,7 +57,7 @@ loads = assemble_load_cases([uniform])
 
 pipeline = StructuralDesignPipeline(
     FdmFormFinder(structure),
-    SmaxAnalyzer(structure, catalogue, normal=1),
+    SmaxAnalyzer(structure, catalogue(100.0)),
     Ec3Sizer(structure, catalogue),
 )
 
@@ -86,7 +86,9 @@ and that is what an optimizer differentiates.
 ratio is a class limit read at a yield strength, so the grade and the class are the
 family's identity rather than companions handed in beside it; calling the catalogue
 at a diameter generates the tube, which carries both onward. Nothing downstream can
-pair a wall with the class of a different one.
+pair a wall with the class of a different one. The check is handed the family, since
+choosing within it is what a check does; the analysis is handed one tube of it,
+because a solver is configured with the sections its elements have.
 
 Swapping a block is a constructor argument. `normax.tesseract` holds the same three
 reached across a Tesseract boundary, and `StructuralDesignPipeline` cannot tell the

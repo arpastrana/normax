@@ -108,10 +108,12 @@ what carries our use; the clause is a citation for the form, not for the case.
 
 ### What `normax` passes as `L_cr` — a modelling choice, not a clause
 
-**Every member is assumed to buckle over its own length.** `DesignPipeline`
-measures the form-found geometry and hands that length to the check, and there
-is no way to pass anything else: the pipeline takes no buckling length and
-`MemberSections` reports no separate one.
+**Every member is assumed to buckle over its own length.**
+`StructuralDesignPipeline` measures the form-found geometry and hands that length
+to the check, and there is no way to pass anything else: the pipeline takes no
+buckling length and a `Design` reports no separate one. Composing the three
+blocks by hand is what a stated `L_cr` needs, as
+`experiments/09_arch_pipeline_jax.py` does to price this assumption.
 
 That is a **strong assumption rather than a conservative one**. It presumes
 every node of the model is held in position by structure outside it. Where that
