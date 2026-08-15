@@ -81,12 +81,6 @@ from normax.optimization import value_and_gradient
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 
-# Descents a staggered search may spend before its coupling is called stalled.
-STAGGERED_ROUNDS = 12
-
-# Analyses one round may spend closing its coupling at fixed force densities.
-SETTLING_PASSES = 400
-
 
 class DesignParameters(NamedTuple):
     """
@@ -391,13 +385,88 @@ def design_envelope(
     return Design(design.shape, design.forces, sizes)
 
 
+def settle_diameters(
+    objective: Callable[[DesignParameters], ObjectiveValue],
+    params: DesignParameters,
+    *,
+    settling_passes: int = 400,
+    settling_tolerance: float = 1e-6,
+) -> Float[Array, "members"]:
+    """
+    The diameters an analysis at these force densities asks of itself.
+
+    Parameters
+    ----------
+    objective :
+        The mass, as a function of a whole set of design parameters, returning
+        the design it weighed alongside. Its sections must be reconciled to one
+        per member, which is what `design_envelope` does.
+    params :
+        Force densities to hold, and the diameters to start the analysis at.
+    settling_passes :
+        Most analyses to spend before the coupling is called stalled.
+    settling_tolerance :
+        Largest fractional movement in any diameter that counts as settled.
+
+    Returns
+    -------
+    settled :
+        Diameters the analysis and the check agree on, at these force densities.
+
+    Raises
+    ------
+    ValueError
+        If the diameters are still moving when the passes run out.
+
+    Notes
+    -----
+    **The analysis needs sections and the check is what returns them**, so a
+    design read off one pass was analyzed at sections it does not have. Repeating
+    the pass at the sections just demanded closes that: sizing is a contraction in
+    the diameters, and its fixed point is a structure analyzed at its own sections.
+
+    **Forward passes rather than another descent**, because the contraction is slow
+    near its fixed point and a pass of it costs one forward evaluation where a
+    descent costs many gradients. Nothing here moves the force densities.
+
+    A raise rather than a returned residual, so that what comes back needs no
+    checking. Passes exhausted means the sizes and the stiffnesses are chasing each
+    other, which no tolerance on the answer would make untrue.
+
+    The starting diameters are restated at their own dtype, which is what makes the
+    second pass the same program as the first. A seed written as
+    `jnp.full(members, 100.0)` is weakly typed where the sizes a check returns are
+    not, and the two are different abstract values however equal their contents:
+    left alone they compile the pipeline twice.
+    """
+    weighed = eqx.filter_jit(objective)
+    assumed = jnp.asarray(params.diameters, dtype=params.diameters.dtype)
+    moved = float("inf")
+
+    for _ in range(settling_passes):
+        _, design = weighed(DesignParameters(params.force_densities, assumed))
+        demanded = design.sizes.sections.diameter
+        moved = float(jnp.max(jnp.abs(demanded / assumed - 1.0)))
+        assumed = demanded
+
+        if moved < settling_tolerance:
+            return demanded
+
+    raise ValueError(
+        f"diameters still moving by {moved:.3e} after {settling_passes} "
+        f"passes at fixed force densities, above {settling_tolerance:.3e}"
+    )
+
+
 def optimize_staggered(
     objective: Callable[[DesignParameters], ObjectiveValue],
     params: DesignParameters,
     *,
     bounds: tuple[float, float],
     iterations: int = 50,
-    tolerance: float = 1e-6,
+    rounds: int = 12,
+    settling_passes: int = 400,
+    settling_tolerance: float = 1e-6,
 ) -> SearchResult:
     """
     Minimize in the force densities, refreshing the analysis diameters per round.
@@ -415,7 +484,12 @@ def optimize_staggered(
         Smallest and largest value any force density may take.
     iterations :
         Most iterations to spend in each round.
-    tolerance :
+    rounds :
+        Most descents to spend before the coupling is called stalled.
+    settling_passes :
+        Most analyses one round may spend closing the coupling at fixed force
+        densities.
+    settling_tolerance :
         Largest fractional movement in any diameter that counts as settled, both
         of a settling pass and of a whole round.
 
@@ -448,29 +522,24 @@ def optimize_staggered(
     curvature accumulated from differences of those gradients is contaminated the
     same way. A refresh between descents leaves each of them a fixed function.
 
-    **The coupling is settled by repeated analysis at fixed force densities, not
-    by another descent.** Sizing is a contraction in the diameters, but a slow one
-    near its fixed point, so buying one pass of it per descent spends gradients on
-    something a forward evaluation resolves. Settling inside the round leaves the
-    round count measuring what it should: how many times the search had to be
-    redone because the sections it assumed had changed.
+    **The coupling is settled by `settle_diameters` and not by another descent.**
+    Sizing is a contraction in the diameters, but a slow one near its fixed point,
+    so buying one pass of it per descent spends gradients on something a forward
+    evaluation resolves. Settling inside the round leaves the round count measuring
+    what it should: how many times the search had to be redone because the sections
+    it assumed had changed.
 
-    **Every round shares two compiled programs, built here rather than inside the
-    search.** The diameters are an argument of both rather than a constant captured
-    in them, so a round is the same program as its neighbour at different values
-    and the compilations are paid once. Capturing them instead recompiles all three
-    blocks per round, which costs more than the search does.
+    **Every round shares the same two compiled programs.** The diameters are an
+    argument of both rather than a constant captured in them, so a round is the
+    same program as its neighbour at different values and the compilations are paid
+    once. Capturing them instead recompiles all three blocks per round, which costs
+    more than the search does.
 
     A raise rather than a returned residual, so that what comes back needs no
     checking. A cap reached means the sizes and the stiffnesses are chasing each
-    other, which no tolerance on the answer would make untrue.
-
-    **The starting diameters are restated at their own dtype, which is what makes
-    the first round the same program as the second.** A seed written as
-    `jnp.full(members, 100.0)` is weakly typed, where the sizes a check returns
-    are not, and the two are different abstract values however equal their
-    contents: left alone they compile the pipeline twice. The force densities need
-    no such care, arriving through the search's own conversion.
+    other, which no tolerance on the answer would make untrue. Both caps belong to
+    the caller for that reason: they are the budget a problem is given, not a
+    property of the coupling.
 
     **The sharpness recorded against every iterate is zero**, that being what
     `minimize_bounded` stamps when a caller has none to give. A sharpness belongs
@@ -494,32 +563,8 @@ def optimize_staggered(
         return objective(seeded)
 
     compiled = value_and_gradient(seeded_objective, has_aux=True)
-    weighed = eqx.filter_jit(seeded_objective)
 
-    def settle_diameters(
-        force_densities: Float[Array, "members"],
-        seed: Float[Array, "members"],
-    ) -> Float[Array, "members"]:
-        """
-        The diameters an analysis at these force densities asks of itself.
-        """
-        assumed = seed
-        moved = float("inf")
-        for _ in range(SETTLING_PASSES):
-            _, design = weighed(force_densities, assumed)
-            demanded = design.sizes.sections.diameter
-            moved = float(jnp.max(jnp.abs(demanded / assumed - 1.0)))
-            assumed = demanded
-
-            if moved < tolerance:
-                return demanded
-
-        raise ValueError(
-            f"diameters still moving by {moved:.3e} after {SETTLING_PASSES} "
-            f"passes at fixed force densities, above {tolerance:.3e}"
-        )
-
-    for _ in range(STAGGERED_ROUNDS):
+    for _ in range(rounds):
         held = current.diameters
         found = minimize_bounded(
             lambda x, seed=held: seeded_objective(x, seed),
@@ -535,16 +580,21 @@ def optimize_staggered(
         sharpnesses.append(walked.beta)
 
         answer = walked.q[-1]
-        settled = settle_diameters(answer, held)
+        settled = settle_diameters(
+            objective,
+            DesignParameters(answer, held),
+            settling_passes=settling_passes,
+            settling_tolerance=settling_tolerance,
+        )
         current = DesignParameters(answer, settled)
         residual = float(jnp.max(jnp.abs(settled / held - 1.0)))
 
-        if residual < tolerance:
+        if residual < settling_tolerance:
             break
     else:
         raise ValueError(
             f"diameters still moving by {residual:.3e} after "
-            f"{STAGGERED_ROUNDS} rounds, above {tolerance:.3e}"
+            f"{rounds} rounds, above {settling_tolerance:.3e}"
         )
 
     trajectory = Trajectory(
