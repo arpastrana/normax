@@ -71,6 +71,18 @@ MOMENT_FIELDS = (
     "moment_factor_minor",
 )
 
+# A size reads the moments, so it inherits their near-cancellation rather than the
+# axial force's precision, damped by the small share of utilization a funicular
+# moment claims. Measured: substituting the moments of one route into the other
+# collapses the disagreement in the sizes to 9e-16, and substituting the axial
+# forces alone leaves it where it was. The check itself crosses exactly, which the
+# stage-alone tests below assert at the parity tolerance on identical forces.
+TOLERANCE_SIZE = 1e-13
+SIZE_FIELDS = (
+    "diameter",
+    "thickness",
+)
+
 # Derivatives are looser than values, and not because of the boundary. Each
 # stage linearizes on its own here and all three linearize together in process,
 # so the same sum is accumulated in a different order and the implicit tangent
@@ -184,7 +196,7 @@ def both_pipelines(arch, section_class, resultant=True):
 
     in_process = StructuralDesignPipeline(
         FdmFormFinder(arch.structure),
-        SmaxAnalyzer(arch.structure, catalogue, NORMAL),
+        SmaxAnalyzer(arch.structure, catalogue(SEED)),
         Ec3Sizer(arch.structure, catalogue, resultant),
     )
 
@@ -279,9 +291,14 @@ def field_by_field(oracle, composed, limit_envelope):
     """
     Every field of two designs, with the limit each one is held to.
     """
+    inherited = {
+        **{leaf: TOLERANCE_MOMENT for leaf in MOMENT_FIELDS},
+        **{leaf: TOLERANCE_SIZE for leaf in SIZE_FIELDS},
+    }
+
     for (label, left), (_, right) in zip(named_fields(oracle), named_fields(composed)):
         leaf = label.rpartition(".")[2]
-        limit = TOLERANCE_MOMENT if leaf in MOMENT_FIELDS else limit_envelope
+        limit = inherited.get(leaf, limit_envelope)
 
         yield label, left, right, limit
 
@@ -328,7 +345,7 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     shape = FdmFormFinder(arch.structure)(
         arch.params.force_densities, one_case.formfinding
     )
-    analyzer = SmaxAnalyzer(arch.structure, catalogue, NORMAL)
+    analyzer = SmaxAnalyzer(arch.structure, catalogue(SEED))
     forces = analyzer(shape.xyz, arch.params.diameters, one_case.analysis)
 
     local = Ec3Sizer(arch.structure, catalogue)

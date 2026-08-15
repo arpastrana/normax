@@ -136,7 +136,7 @@ def prepared(geometry, steel, catalogue):
 
     return (
         backend_opensees.prepare_model(structure, catalogue, normal=NORMAL),
-        prepare_smax(structure, catalogue, normal=NORMAL),
+        prepare_smax(structure, catalogue(SEED)),
     )
 
 
@@ -256,7 +256,7 @@ def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
     The separation the two-dimensional model relies on, measured not assumed.
     """
     structure, xyz = geometry
-    model = prepare_smax(structure, catalogue, normal=NORMAL)
+    model = prepare_smax(structure, catalogue(SEED))
 
     def run(coords):
         member = forces_smax(model, coords, diameters, catalogue, funicular(structure))
@@ -279,7 +279,7 @@ def test_the_one_block_the_plane_cannot_reach_is_the_minor_axis_moment(
     Nonzero in three dimensions, so the blindness is real rather than nominal.
     """
     structure, xyz = geometry
-    model = prepare_smax(structure, catalogue, normal=NORMAL)
+    model = prepare_smax(structure, catalogue(SEED))
 
     def run(coords):
         return forces_smax(

@@ -134,14 +134,14 @@ def analysis_model(structure, steel, catalogue):
     """
     The compiled analysis model alone, for the calls that take no block.
     """
-    return prepare_model(structure, catalogue, normal=NORMAL)
+    return prepare_model(structure, catalogue(SEED))
 
 
 def analyzer_of(structure, steel, catalogue):
     """
     The analysis block, compiled against a structure.
     """
-    return SmaxAnalyzer(structure, catalogue, NORMAL)
+    return SmaxAnalyzer(structure, catalogue(SEED))
 
 
 def pipeline_of(setup, steel, catalogue):
@@ -151,7 +151,7 @@ def pipeline_of(setup, steel, catalogue):
     structure, _, _ = setup
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalogue, NORMAL),
+        SmaxAnalyzer(structure, catalogue(SEED)),
         Ec3Sizer(structure, catalogue),
     )
 
@@ -520,7 +520,7 @@ def test_the_critical_factors_are_positive_and_ordered(setup, steel):
         analysis_model(structure, steel, catalogue),
         result.shape.xyz,
         result.sizes.sections.diameter,
-        catalogue,
+        catalogue(SEED),
         funicular(structure),
         num_modes=4,
     )
@@ -543,7 +543,7 @@ def test_the_fully_stressed_arch_is_unstable_on_its_own(setup, steel):
         analysis_model(structure, steel, catalogue),
         result.shape.xyz,
         result.sizes.sections.diameter,
-        catalogue,
+        catalogue(SEED),
         funicular(structure),
         num_modes=1,
     )
@@ -561,7 +561,7 @@ def test_the_critical_mode_stays_in_the_plane(setup, steel):
         analysis_model(structure, steel, catalogue),
         result.shape.xyz,
         result.sizes.sections.diameter,
-        catalogue,
+        catalogue(SEED),
         funicular(structure),
         num_modes=1,
     )
@@ -582,7 +582,7 @@ def test_the_critical_mode_is_antisymmetric(setup, steel):
         analysis_model(structure, steel, catalogue),
         result.shape.xyz,
         result.sizes.sections.diameter,
-        catalogue,
+        catalogue(SEED),
         funicular(structure),
         num_modes=1,
     )
@@ -610,7 +610,7 @@ def test_the_mode_figure_builds(setup, steel):
         analysis_model(structure, steel, catalogue),
         result.shape.xyz,
         result.sizes.sections.diameter,
-        catalogue,
+        catalogue(SEED),
         funicular(structure),
         num_modes=4,
     )

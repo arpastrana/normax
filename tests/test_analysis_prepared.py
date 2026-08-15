@@ -19,7 +19,6 @@ SPAN = 10_000.0
 LOAD = 20_000.0
 NUM_EDGES = 10
 FORCE_DENSITY = -75.0
-NORMAL = 1
 DIAMETER = 100.0
 
 # Compiling reassociates the arithmetic, so a jitted result differs from an eager
@@ -64,6 +63,11 @@ def catalogue(steel):
 
 
 @pytest.fixture(scope="module")
+def section(catalogue):
+    return catalogue(DIAMETER)
+
+
+@pytest.fixture(scope="module")
 def structure():
     return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
 
@@ -95,57 +99,54 @@ def diameters():
 # Nothing about the placeholder survives into a result
 # --------------------------------------------------------------------------- #
 def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
-    structure, state, steel, catalogue, diameters
+    structure, state, steel, section, diameters
 ):
     # The placeholder geometry differs from the analyzed one by the whole of form
     # finding, so if it reached the assembly the two would not agree at all.
-    from_start = prepare_model(structure, catalogue, normal=NORMAL)
-    from_found = prepare_model(
-        structure._replace(nodes=state.xyz), catalogue, normal=NORMAL
-    )
+    from_start = prepare_model(structure, section)
+    from_found = prepare_model(structure._replace(nodes=state.xyz), section)
 
-    a = member_forces(from_start, state.xyz, diameters, catalogue, funicular(structure))
-    b = member_forces(from_found, state.xyz, diameters, catalogue, funicular(structure))
+    a = member_forces(from_start, state.xyz, diameters, section, funicular(structure))
+    b = member_forces(from_found, state.xyz, diameters, section, funicular(structure))
 
     assert np.all(np.asarray(a.axial_force) == np.asarray(b.axial_force))
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
 
 
 def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
-    structure, state, steel, catalogue, diameters
+    structure, state, steel, catalogue, section, diameters
 ):
     # An absurd placeholder: a unit modulus, a unit density and a tube whose
     # smallest size is larger than anything the arch uses.
-    absurd = prepare_model(
-        structure._replace(nodes=state.xyz * 3.0),
-        TubeCatalogue(
-            ratio=catalogue.ratio,
-            section_class=catalogue.section_class,
-            material=Steel(e_mod=1.0, density=1.0),
-            diameter_min=999.0,
-        ),
-        normal=NORMAL,
+    absurd_family = TubeCatalogue(
+        ratio=catalogue.ratio,
+        section_class=catalogue.section_class,
+        material=Steel(e_mod=1.0, density=1.0),
+        diameter_min=999.0,
     )
-    honest = prepare_model(structure, catalogue, normal=NORMAL)
+    absurd = prepare_model(
+        structure._replace(nodes=state.xyz * 3.0), absurd_family(999.0)
+    )
+    honest = prepare_model(structure, section)
 
-    a = member_forces(absurd, state.xyz, diameters, catalogue, funicular(structure))
-    b = member_forces(honest, state.xyz, diameters, catalogue, funicular(structure))
+    a = member_forces(absurd, state.xyz, diameters, section, funicular(structure))
+    b = member_forces(honest, state.xyz, diameters, section, funicular(structure))
 
     assert np.all(np.asarray(a.axial_force) == np.asarray(b.axial_force))
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
 
 
 def test_a_prepared_model_carries_no_load_case_of_its_own(
-    structure, state, steel, catalogue, diameters
+    structure, state, steel, section, diameters
 ):
     # Preparing compiles the shape of the nodal channels and nothing else, so a
     # load case is always the caller's and two of them reuse one program.
-    model = prepare_model(structure, catalogue, normal=NORMAL)
+    model = prepare_model(structure, section)
 
     applied = funicular(structure)
-    once = member_forces(model, state.xyz, diameters, catalogue, applied)
-    twice = member_forces(model, state.xyz, diameters, catalogue, applied)
-    halved = member_forces(model, state.xyz, diameters, catalogue, 0.5 * applied)
+    once = member_forces(model, state.xyz, diameters, section, applied)
+    twice = member_forces(model, state.xyz, diameters, section, applied)
+    halved = member_forces(model, state.xyz, diameters, section, 0.5 * applied)
 
     assert np.all(np.asarray(once.axial_force) == np.asarray(twice.axial_force))
     assert np.allclose(
@@ -156,13 +157,13 @@ def test_a_prepared_model_carries_no_load_case_of_its_own(
 # --------------------------------------------------------------------------- #
 # Every leaf a derivative might be taken through stays live
 # --------------------------------------------------------------------------- #
-def test_the_geometry_is_a_live_leaf(structure, state, steel, catalogue, diameters):
-    model = prepare_model(structure, catalogue, normal=NORMAL)
+def test_the_geometry_is_a_live_leaf(structure, state, steel, section, diameters):
+    model = prepare_model(structure, section)
 
     def total(xyz):
         return jnp.sum(
             member_forces(
-                model, xyz, diameters, catalogue, funicular(structure)
+                model, xyz, diameters, section, funicular(structure)
             ).axial_force
             ** 2
         )
@@ -173,13 +174,13 @@ def test_the_geometry_is_a_live_leaf(structure, state, steel, catalogue, diamete
     assert float(jnp.max(jnp.abs(gradient))) > 0.0
 
 
-def test_the_diameters_are_a_live_leaf(structure, state, steel, catalogue, diameters):
-    model = prepare_model(structure, catalogue, normal=NORMAL)
+def test_the_diameters_are_a_live_leaf(structure, state, steel, section, diameters):
+    model = prepare_model(structure, section)
 
     def total(sizes):
         return jnp.sum(
             member_forces(
-                model, state.xyz, sizes, catalogue, funicular(structure)
+                model, state.xyz, sizes, section, funicular(structure)
             ).moment_major
             ** 2
         )
@@ -190,12 +191,14 @@ def test_the_diameters_are_a_live_leaf(structure, state, steel, catalogue, diame
     assert float(jnp.max(jnp.abs(gradient))) > 0.0
 
 
-def test_the_modulus_is_a_live_leaf(structure, state, steel, catalogue, diameters):
+def test_the_modulus_is_a_live_leaf(
+    structure, state, steel, catalogue, section, diameters
+):
     # Member forces of a uniform-E linear frame are E-independent, so the axial
     # force cannot distinguish an injected modulus from a baked one. A
     # displacement can, and its derivative is checked against the difference
     # quotient rather than against zero.
-    model = prepare_model(structure, catalogue, normal=NORMAL)
+    model = prepare_model(structure, section)
     applied = funicular(structure)
 
     def compliance(e_mod):
@@ -205,7 +208,7 @@ def test_the_modulus_is_a_live_leaf(structure, state, steel, catalogue, diameter
             steel._replace(e_mod=e_mod),
             catalogue.diameter_min,
         )
-        member = member_forces(model, state.xyz, diameters, graded, applied)
+        member = member_forces(model, state.xyz, diameters, graded(DIAMETER), applied)
 
         return jnp.sum(member.moment_major**2) / e_mod
 
@@ -221,11 +224,11 @@ def test_the_modulus_is_a_live_leaf(structure, state, steel, catalogue, diameter
 # --------------------------------------------------------------------------- #
 # The stage is jittable, which is what preparing once buys
 # --------------------------------------------------------------------------- #
-def test_the_analysis_traces_under_jit(structure, state, steel, catalogue, diameters):
-    model = prepare_model(structure, catalogue, normal=NORMAL)
+def test_the_analysis_traces_under_jit(structure, state, steel, section, diameters):
+    model = prepare_model(structure, section)
 
     def run(xyz, sizes):
-        member = member_forces(model, xyz, sizes, catalogue, funicular(structure))
+        member = member_forces(model, xyz, sizes, section, funicular(structure))
 
         return member.axial_force, member.moment_major
 
@@ -237,14 +240,14 @@ def test_the_analysis_traces_under_jit(structure, state, steel, catalogue, diame
 
 
 def test_the_gradient_of_the_analysis_traces_under_jit(
-    structure, state, steel, catalogue, diameters
+    structure, state, steel, section, diameters
 ):
-    model = prepare_model(structure, catalogue, normal=NORMAL)
+    model = prepare_model(structure, section)
 
     def total(xyz):
         return jnp.sum(
             member_forces(
-                model, xyz, diameters, catalogue, funicular(structure)
+                model, xyz, diameters, section, funicular(structure)
             ).axial_force
             ** 2
         )

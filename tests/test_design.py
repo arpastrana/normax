@@ -32,9 +32,6 @@ RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
 NUM_EDGES = 10
 
-# The arch lies in the XZ plane, so it has no thickness along Y.
-NORMAL = 1
-
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
@@ -97,7 +94,7 @@ def force_densities(structure):
 def pipeline(structure, steel, catalogue):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalogue, NORMAL),
+        SmaxAnalyzer(structure, catalogue(SEED)),
         Ec3Sizer(structure, catalogue),
     )
 
