@@ -196,7 +196,7 @@ class Ec3Sizer(AbstractMemberSizer):
         Returns
         -------
         sizes :
-            The section each load case demands, and the actions read to get it.
+            The section each load case demands, and how hard it is worked.
 
         Notes
         -----
@@ -229,17 +229,17 @@ class Ec3Sizer(AbstractMemberSizer):
                 resultant=self.resultant,
             )
 
-            return acting, demanded, used
+            return demanded, used
 
-        actions, demanded, used = jax.vmap(size_case)(forces)
+        demanded, used = jax.vmap(size_case)(forces)
         sections = self.catalogue(demanded)
 
-        return MemberSizes(sections, actions, used)
+        return MemberSizes(sections, used)
 
     def governing(
         self,
         diameters: Float[Array, "members"],
-        actions: MemberActions,
+        forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
@@ -249,9 +249,9 @@ class Ec3Sizer(AbstractMemberSizer):
         ----------
         diameters :
             Outer diameter every member was given.
-        actions :
-            Design actions to check against, every field carrying a leading load
-            case axis.
+        forces :
+            What every member carries under every load case, reduced to design
+            actions here because that reduction is a clause.
         buckling_length :
             Length every member is assumed to buckle over.
 
@@ -273,7 +273,9 @@ class Ec3Sizer(AbstractMemberSizer):
         """
         tubes = self.catalogue(diameters)
 
-        def governing_case(acting: MemberActions):
+        def governing_case(carried: MemberForces):
+            acting = design_actions(carried)
+
             return governing_limit_state(
                 tubes,
                 acting,
@@ -282,12 +284,12 @@ class Ec3Sizer(AbstractMemberSizer):
                 resultant=self.resultant,
             )
 
-        return jax.vmap(governing_case)(actions)
+        return jax.vmap(governing_case)(forces)
 
     def utilization(
         self,
         diameters: Float[Array, "members"],
-        actions: MemberActions,
+        forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
@@ -297,9 +299,9 @@ class Ec3Sizer(AbstractMemberSizer):
         ----------
         diameters :
             Outer diameter every member was given.
-        actions :
-            Design actions to check against, every field carrying a leading load
-            case axis.
+        forces :
+            What every member carries under every load case, reduced to design
+            actions here because that reduction is a clause.
         buckling_length :
             Length every member is assumed to buckle over.
 
@@ -317,7 +319,9 @@ class Ec3Sizer(AbstractMemberSizer):
         """
         tubes = self.catalogue(diameters)
 
-        def utilization_case(acting: MemberActions):
+        def utilization_case(carried: MemberForces):
+            acting = design_actions(carried)
+
             return utilization_design(
                 tubes,
                 acting,
@@ -325,4 +329,4 @@ class Ec3Sizer(AbstractMemberSizer):
                 resultant=self.resultant,
             )
 
-        return jax.vmap(utilization_case)(actions)
+        return jax.vmap(utilization_case)(forces)

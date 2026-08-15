@@ -20,7 +20,9 @@ from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_half_span
 from normax.loads import loads_point
 from normax.loads import loads_uniform
+from normax.loads import select_load_case
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import design_actions
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import STAGES
@@ -62,13 +64,13 @@ TOLERANCE_PARITY_ENVELOPE = 1e-12
 # the analysis inputs therefore reaches far further here than in the axial force
 # it came from.
 #
-# The moment factors read a ratio of the two end moments, so they inherit it.
+# The moment factors read a ratio of the two end moments, so they inherit it;
+# they left the design with the actions record, so they are compared explicitly
+# against the boundary outputs that still publish them rather than in the walk.
 TOLERANCE_MOMENT = 1e-11
 MOMENT_FIELDS = (
     "moment_major",
     "moment_minor",
-    "moment_factor_major",
-    "moment_factor_minor",
 )
 
 # A size reads the moments, so it inherits their near-cancellation rather than the
@@ -580,12 +582,32 @@ def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
     expected = np.asarray(
         sizer.governing(
             oracle.sizes.sections.diameter[0],
-            oracle.sizes.actions,
+            oracle.forces,
             oracle.shape.lengths,
         )
     )
 
     assert np.array_equal(reported, expected[0])
+
+
+def test_the_moment_factors_survive_the_boundary(arch, one_case):
+    # The factors left the design when the actions record left the contract, so
+    # the field walk no longer reaches them. The boundary still publishes them,
+    # and here they are held against the local reduction of the same forces at
+    # the tolerance the end moments they are read from are held to.
+    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
+    oracle, _ = both_designs(arch, one_case, 3)
+    check, axial_force = sized_through_the_check(arch, oracle, catalogue)
+
+    crossed = check(axial_force)
+    acting = design_actions(select_load_case(oracle.forces, 0))
+
+    assert relative(acting.moment_factor_major, crossed["moment_factor_major"]) < (
+        TOLERANCE_MOMENT
+    )
+    assert relative(acting.moment_factor_minor, crossed["moment_factor_minor"]) < (
+        TOLERANCE_MOMENT
+    )
 
 
 def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):

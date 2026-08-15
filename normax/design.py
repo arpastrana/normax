@@ -122,7 +122,7 @@ class Design(NamedTuple):
     forces :
         What every member carries under every load case.
     sizes :
-        The sections the check demands, and the actions it read.
+        The sections the check demands, and how hard each one is worked.
 
     Notes
     -----
@@ -380,7 +380,7 @@ def design_envelope(
     diameters = cover_cases(demanded.diameter)
     thicknesses = cover_cases(demanded.thickness)
     covering = Tube(diameters, thicknesses, demanded.material, demanded.section_class)
-    sizes = MemberSizes(covering, design.sizes.actions, design.sizes.utilization)
+    sizes = MemberSizes(covering, design.sizes.utilization)
 
     return Design(design.shape, design.forces, sizes)
 

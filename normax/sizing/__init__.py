@@ -30,37 +30,33 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.ec3.actions import MemberActions
 from normax.ec3.section import Tube
 
 
 class MemberSizes(NamedTuple):
     """
-    What a code check decided, what it read to decide it, and what it is worth.
+    What a code check decided, and what it is worth.
 
     Attributes
     ----------
     sections :
         The section every load case demands of every member on its own.
-    actions :
-        The design actions the check read, every field carrying a leading load
-        case axis.
     utilization :
         Demand over resistance of every member under its own load case, **at the
         section that case demanded** rather than at any reconciled one.
 
     Notes
     -----
-    **What it read is not what the analysis reported.** Reducing two end moments
-    to a design moment and an equivalent uniform moment factor is EN 1993-1-1
-    Table B.3, a clause, and the factor it produces cannot be recovered from the
-    design moment alone. So the actions are output as well as input, and for a
-    block that applies that clause across a boundary they are the only record of
-    what the far side read.
+    **What the check read is not recorded here, and that is what keeps the
+    contract standard-agnostic.** Reducing an analysis to the quantities a
+    standard states — a design moment and an equivalent uniform moment factor,
+    for EN 1993-1-1 — is clause work, and its product is different under a
+    different standard. Each sizer applies its own reduction to the forces a
+    design already carries, so no field of this container names any clause's
+    vocabulary.
 
-    **The utilization goes with the actions rather than with the sections, and
-    reading it as a verdict on a finished design is the mistake to avoid.** It is
-    a diagonal rather than a matrix:
+    **Reading the utilization as a verdict on a finished design is the mistake
+    to avoid.** It is a diagonal rather than a matrix:
     entry *(i, m)* is member *m* under case *i* at the section **case i**
     demanded, so it is exactly one — that is what a fully-stressed size means —
     except where the catalogue minimum bound and a member is oversized for want
@@ -81,7 +77,6 @@ class MemberSizes(NamedTuple):
     """
 
     sections: Tube
-    actions: MemberActions
     utilization: Float[Array, "load_cases members"]
 
 
@@ -127,16 +122,16 @@ class AbstractMemberSizer(eqx.Module):
         Returns
         -------
         sizes :
-            The section each load case demands, the actions read to get it, and
-            how hard that section is worked — one wherever the size was free to
-            move, below one where the catalogue minimum bound.
+            The section each load case demands, and how hard that section is
+            worked — one wherever the size was free to move, below one where
+            the catalogue minimum bound.
         """
 
     @abc.abstractmethod
     def utilization(
         self,
         diameters: Float[Array, "members"],
-        actions: MemberActions,
+        forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
@@ -146,9 +141,9 @@ class AbstractMemberSizer(eqx.Module):
         ----------
         diameters :
             Outer diameter every member was given.
-        actions :
-            The design actions to check against, every field carrying a leading
-            load case axis.
+        forces :
+            What every member carries under every load case, which the sizer
+            reduces to its own standard's terms before checking.
         buckling_length :
             Length every member is assumed to buckle over.
 

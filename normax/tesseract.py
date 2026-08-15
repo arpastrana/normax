@@ -501,14 +501,15 @@ class TesseractSizer(AbstractMemberSizer):
         Returns
         -------
         sizes :
-            The design actions read, and the diameter each load case demands.
+            The diameter each load case demands, and how hard it is worked.
 
         Notes
         -----
         EN 1993-1-1 Table B.3 is applied on the far side rather than here, so
         what comes back is a design moment and a factor rather than two end
         moments. Reducing one to the other is a clause, and this block does not
-        second-guess the one that owns it.
+        second-guess the one that owns it: the utilization below is re-read at
+        the factors the boundary reported rather than at a local reduction.
         """
         local = self.local
         carried = [
@@ -563,12 +564,12 @@ class TesseractSizer(AbstractMemberSizer):
 
         used = jax.vmap(used_case)(demanded, actions)
 
-        return MemberSizes(sections, actions, used)
+        return MemberSizes(sections, used)
 
     def governing(
         self,
         diameters: Float[Array, "members"],
-        actions: MemberActions,
+        forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
@@ -578,9 +579,9 @@ class TesseractSizer(AbstractMemberSizer):
         ----------
         diameters :
             Outer diameter every member was given.
-        actions :
-            Design actions to check against, every field carrying a leading load
-            case axis.
+        forces :
+            What every member carries under every load case, which the check
+            reduces to design actions itself.
         buckling_length :
             Length every member is assumed to buckle over.
 
@@ -595,12 +596,12 @@ class TesseractSizer(AbstractMemberSizer):
         does carry this diagnostic, but only for a size it chose itself, and a
         design that has been reconciled across load cases is not at one.
         """
-        return self.local.governing(diameters, actions, buckling_length)
+        return self.local.governing(diameters, forces, buckling_length)
 
     def utilization(
         self,
         diameters: Float[Array, "members"],
-        actions: MemberActions,
+        forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
@@ -610,9 +611,9 @@ class TesseractSizer(AbstractMemberSizer):
         ----------
         diameters :
             Outer diameter every member was given.
-        actions :
-            Design actions to check against, every field carrying a leading load
-            case axis.
+        forces :
+            What every member carries under every load case, which the check
+            reduces to design actions itself.
         buckling_length :
             Length every member is assumed to buckle over.
 
@@ -627,4 +628,4 @@ class TesseractSizer(AbstractMemberSizer):
         rather than solving for one. It is the same clauses either way, which is
         why the answer is the one the boundary would have given.
         """
-        return self.local.utilization(diameters, actions, buckling_length)
+        return self.local.utilization(diameters, forces, buckling_length)

@@ -236,7 +236,7 @@ def test_a_compression_arch_is_governed_by_the_member_check(
 ):
     catalogue, result = sized(setup, steel, section_class)
     codes = Ec3Sizer(setup[0], catalogue).governing(
-        result.sizes.sections.diameter, result.sizes.actions, result.shape.lengths
+        result.sizes.sections.diameter, result.forces, result.shape.lengths
     )[0]
 
     assert np.all(np.asarray(codes) == LIMIT_MAJOR)
@@ -270,7 +270,7 @@ def test_the_mass_agrees_with_the_scalar_entry_point(setup, steel, seed):
 def test_every_member_is_in_compression(setup, steel):
     _, result = sized(setup, steel, 3)
 
-    assert np.all(np.asarray(result.sizes.actions.axial_force) < 0.0)
+    assert np.all(np.asarray(result.forces.axial_force) < 0.0)
 
 
 def test_the_arch_is_symmetric_about_midspan(setup, steel):
@@ -864,7 +864,7 @@ def test_the_governing_load_case_is_the_one_working_a_member_hardest(
     catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
     sizer = Ec3Sizer(setup[0], catalogue)
     reread = sizer.utilization(
-        result.sizes.sections.diameter, result.sizes.actions, result.shape.lengths
+        result.sizes.sections.diameter, result.forces, result.shape.lengths
     )
 
     decided = np.asarray(governing_load_case(demanded.sizes.sections.diameter))
@@ -904,8 +904,8 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
     )
 
     assert np.allclose(np.asarray(shaped.shape.xyz), np.asarray(patched.shape.xyz))
-    assert float(jnp.max(jnp.abs(patched.sizes.actions.moment_major))) > float(
-        jnp.max(jnp.abs(shaped.sizes.actions.moment_major))
+    assert float(jnp.max(jnp.abs(patched.forces.moment_major))) > float(
+        jnp.max(jnp.abs(shaped.forces.moment_major))
     )
 
 

@@ -651,7 +651,7 @@ def frame_stability(
     tubes = family(design.sizes.sections.diameter)
     gross = tubes.area
     inertia = tubes.second_moment
-    axial_force = design.sizes.actions.axial_force[load_case]
+    axial_force = design.forces.axial_force[load_case]
 
     return Stability(
         factors=modes.factors,

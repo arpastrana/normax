@@ -92,6 +92,7 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import design_actions
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import MeshRefinement
@@ -514,8 +515,8 @@ def report_design(
     Write each member's actions, size, utilization, and governing limit.
     """
     diameters = design.sizes.sections.diameter
-    actions = design.sizes.actions
-    codes = pipeline.sizer.governing(diameters, actions, design.shape.lengths)[0]
+    actions = jax.vmap(design_actions)(design.forces)
+    codes = pipeline.sizer.governing(diameters, design.forces, design.shape.lengths)[0]
     limits = {LIMIT_NAMES[float(code)] for code in codes}
 
     columns = (

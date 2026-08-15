@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### The actions record leaves the contract (extraction phases 1–2)
+
+Phases 1 and 2 of `docs/ec3x_extraction.md` are executed. Phase 1 splits
+`normax/sizing.py` into a package — `normax/sizing/__init__.py` carries
+`MemberSizes` and `AbstractMemberSizer`, `normax/sizing/ec3.py` carries
+`Ec3Sizer` and `design_actions`, with no re-export so a call site names the
+standard it sizes against the way an analysis names its solver. Phase 2 drops
+`MemberActions` from the contract: `MemberSizes` is `(sections, utilization)`,
+`utilization` and `governing` take the `MemberForces` a design already carries
+and apply Table B.3 inside the `vmap` they already run, and `frame_stability`
+reads `design.forces.axial_force` — its own stage's output — instead of the
+check's copy of it.
+
+- **Measured after the gate: nothing moved.** The suite is 1891 pass (1890 plus
+  one new test), every tolerance at its recorded value, and
+  `experiments/101_api.py` reprints 0.138951969 t, 16.114 % saved, +0.24867 %
+  and a utilization of 1.000000000000 bit for bit. The re-derivation is exact
+  because it is the same `design_actions` arithmetic that produced the record,
+  now run where it is consumed; the reduction is elementwise and stateless.
+- **The moment factors left the parity walk with the record**, reaching it only
+  through `sizes.actions`. They are now compared explicitly against the boundary
+  outputs that still publish them
+  (`test_the_moment_factors_survive_the_boundary`), at `TOLERANCE_MOMENT`, the
+  tolerance the end moments they are read from are held to. `TOLERANCE_MOMENT`
+  keeps its purpose in the walk through `forces.moment_*`.
+- **The ec3 Tesseract boundary did not change.** Its `OutputSchema` still
+  publishes the factors — that boundary is the EC3 block's own, so EC3
+  vocabulary belongs on it — and `Ec3TesseractSizer` keeps rebuilding a
+  `MemberActions` from the boundary's factors and recomputing utilization
+  locally.
+
 ### The `ec3x` extraction is planned, and dated inside the deadline
 
 `docs/ec3x_extraction.md` promotes the `ROADMAP.md` sketch filed as after the

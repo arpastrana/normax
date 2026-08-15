@@ -121,15 +121,13 @@ TOLERANCE_DERIVATIVE = 1e-12
 # what is left over: measured here it is 3.9e-4 of the axial action times the
 # length. A last-bit difference in the analysis inputs is amplified by the
 # reciprocal of that ratio before it reaches the moment, so the floor sits three
-# orders above the axial force it came from — 3.6e-13 against 7e-16. The moment
-# factors read a ratio of the two end moments and inherit it, and the diameter
-# inherits a fiftieth of it, the moment being worth that much of the utilization.
+# orders above the axial force it came from — 3.6e-13 against 7e-16. The
+# diameter inherits a fiftieth of it, the moment being worth that much of the
+# utilization.
 TOLERANCE_MOMENT = 1e-11
 MOMENT_FIELDS = (
     "moment_major",
     "moment_minor",
-    "moment_factor_major",
-    "moment_factor_minor",
 )
 
 # Serializing across a socket costs a few more digits than importing the module
@@ -433,7 +431,7 @@ def report_parity(
     enveloped = design_envelope(oracle.result)
     diameters = enveloped.sizes.sections.diameter
     codes = in_process.sizer.governing(
-        diameters, enveloped.sizes.actions, enveloped.shape.lengths
+        diameters, enveloped.forces, enveloped.shape.lengths
     )
     limits = {LIMIT_NAMES[float(code)] for code in codes[0]}
     departure = float(jnp.max(jnp.abs(composed.result.sizes.utilization - 1.0)))
