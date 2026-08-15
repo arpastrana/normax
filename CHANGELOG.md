@@ -2,49 +2,61 @@
 
 ## Unreleased
 
-### The analysis is re-run at the sections the check demanded
+### What a frozen analysis seed costs is measured rather than assumed
 
-`optimize_staggered(objective, params, bounds=..., iterations=..., tolerance=...)`
-minimizes in the force densities while closing the coupling between the frame
-analysis and the code check. `experiments/101_api.py` uses it, and its objective
-now takes a whole `DesignParameters` rather than an array plus a captured seed.
+The frame analysis wants sections before the check has produced any, so it is run
+at a seed diameter and the two are coupled: `d = C(d)`. Two functions in
+`normax.design` address that coupling, and the driver uses the cheaper one.
 
-- **It lives in `normax.design`, not `normax.optimization`.** Closing the coupling
+- **`settle_diameters(objective, params, settling_passes=..., settling_tolerance=...)`
+  closes the coupling at fixed force densities**, by forward analyses alone, and
+  returns the diameters an analysis at those force densities asks of itself.
+- **`experiments/101_api.py` runs a plain bounded descent and calls it once at the
+  answer.** The frame is analyzed at the 100 mm seed for the whole search, so the
+  descent is a single self-consistent minimization in the force densities, and what
+  the shortcut cost is then a number rather than a caveat: **0.138056811 t at the
+  seed against 0.138367347 t re-analyzed at its own sections, so the seed
+  understates the design by +0.22493%**, from a start of 0.165643794 t and a saving
+  of 16.654% with both ends weighed the same way. Utilization is 1.000000000000
+  either way.
+- **`optimize_staggered` is the alternative, and it is not what the driver runs.**
+  It alternates descents with settling passes until the force densities stop moving,
+  and on the arch it closes in **2 rounds, 16 gradient calls and 31 forward
+  passes** — `|Δq|∞` of 1.1e-5 after the first round. It buys a mass reported at
+  the design's own sections; it does not buy a better design, because its gradient
+  is taken at frozen sections too and so omits `∂d/∂q` either way. For a first
+  milestone that trade is not worth the machinery, so the routine stays in the
+  library under test and the driver stays a descent.
+- **Both live in `normax.design`, not `normax.optimization`.** Closing the coupling
   needs a diameter read off a design, and `normax.optimization` knows what a
   descent is without knowing what a design is — it imports nothing from the
   package and stays that way. `minimize_bounded` needed no change: its evaluation
   cache, its visited set and its post-hoc re-evaluations are all locals of one
   call, so each round is an independent, self-consistent search.
-- **A round is a whole descent, because refreshing per evaluation breaks the
-  search.** Measured: with the seed moving inside the objective, L-BFGS-B stopped
-  after 4 evaluations at the start point reporting `CONVERGENCE: RELATIVE
+- **A staggered round is a whole descent, because refreshing per evaluation breaks
+  the search.** Measured: with the seed moving inside the objective, L-BFGS-B
+  stopped after 4 evaluations at the start point reporting `CONVERGENCE: RELATIVE
   REDUCTION OF F <= FACTR*EPSMCH`. A line search compares values of one function,
   and a seed that moves inside it hands the search a different function at every
   trial; the curvature accumulated from differences of those gradients is
   contaminated the same way.
-- **A round settles its coupling by forward analyses at fixed force densities,
-  not by buying one pass of it per descent.** Sizing is a contraction in the
-  diameters but a slow one, measured at a ratio of 0.85 per pass near its fixed
-  point on `experiments/arch.yaml` and the same whether the force densities move
-  or not. One pass per descent left the residual at 1.8e-5 after 12 descents and
-  still falling by 15% a round; settling inside the round closes it in **2 rounds,
-  16 gradient calls and 31 forward passes**. The force densities stop moving after
-  the first round — `|Δq|∞` of 1.1e-5 thereafter — so those extra descents were
-  spending gradients on what a forward evaluation resolves.
+- **Settling is forward passes rather than one coupling pass per descent.** Sizing
+  is a contraction in the diameters but a slow one, measured at a ratio of 0.85 per
+  pass near its fixed point on `experiments/arch.yaml` and the same whether the
+  force densities move or not. One pass per descent left the residual at 1.8e-5
+  after 12 descents and still falling by 15% a round, which is gradients spent on
+  what a forward evaluation resolves.
 - **A raise rather than a returned residual, so what comes back needs no
-  checking.** Both caps are generous against what the arch spends:
-  `SETTLING_PASSES = 400` and `STAGGERED_ROUNDS = 12`.
-- **What it changes on the arch.** 0.138368113 t analyzed at its own sections
-  against 0.138057108 t at the 100 mm seed, so the frozen seed understated the
-  design by 0.225%; utilization is 1.000000000000 either way. The start mass is
-  still reported at the seed and is now labeled as such.
+  checking.** Every cap is the caller's budget: `settling_passes` and
+  `settling_tolerance` sit in the `optimization` block of `experiments/arch.yaml`
+  beside `iterations`, and `rounds` is a keyword of the staggered search the driver
+  no longer passes. The arch is given 400 passes at 1e-6, against the 31 it spends.
 - **The sign of that error is not predictable, which is why no test asserts it.**
   Mass rises monotonically with a *uniform* seed — 0.082435 t to 0.083738 t as the
   seed goes 25 mm to 400 mm on the test arch — but a settled seed is not uniform,
-  and the settled design comes in below a uniform 100 mm seed. It is
-  redistribution, not level: a member analyzed fatter than it is attracts force.
-  On the one-variable scan the gap changes sign, +0.32% at `q = −100` against
-  −0.04% at `q = −3.16`.
+  so it is redistribution rather than level that decides: a member analyzed fatter
+  than it is attracts force. On the one-variable scan the gap changes sign, +0.32%
+  at `q = −100` against −0.04% at `q = −3.16`.
 - **It misreports the mass rather than moving the design, as far as one variable
   can show.** Scanned with a single force density shared by every member, the
   frozen and the settled curves are minimized at the same `q` — but that `q` is
