@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
+from ec3x.section import DIAMETER_MINIMUM
 from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import SmaxAnalyzer
@@ -21,8 +21,10 @@ from normax.loads import loads_half_span
 from normax.loads import loads_point
 from normax.loads import loads_uniform
 from normax.loads import select_load_case
+from normax.materials import SteelGrade
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import design_actions
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import STAGES
@@ -126,6 +128,18 @@ def structure():
     return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
 
 
+def neutral_grade(steel):
+    """
+    The certificate half of the fixture steel, in normax's terms.
+    """
+    return SteelGrade(
+        f_y=steel.f_y,
+        f_u=steel.f_u,
+        e_mod=steel.e_mod,
+        density=steel.density,
+    )
+
+
 def funicular(structure):
     """
     The uniform load case the arch is form-found under.
@@ -193,20 +207,19 @@ def both_pipelines(arch, section_class, resultant=True):
     descriptor and every later test errors out of capture rather than failing an
     assertion. Nothing here needs it: the stages compile behind the boundary.
     """
-    steel = arch.steel
-    catalogue = TubeCatalogue.at_class_limit(steel, section_class)
+    family = thinnest_family(neutral_grade(arch.steel), section_class)
 
-    sizer = Ec3Sizer(arch.structure, catalogue, resultant)
+    sizer = Ec3Sizer(arch.structure, family, resultant)
     in_process = StructuralDesignPipeline(
         FdmFormFinder(arch.structure),
-        SmaxAnalyzer(arch.structure, sizer.family(SEED)),
+        SmaxAnalyzer(arch.structure, family(SEED)),
         sizer,
     )
 
     composed = StructuralDesignPipeline(
         TesseractFormFinder(arch.structure, arch.chain.formfinding),
-        TesseractAnalyzer(arch.structure, arch.chain.analysis, sizer.family, NORMAL),
-        TesseractSizer(arch.structure, arch.chain.ec3, sizer.family, resultant),
+        TesseractAnalyzer(arch.structure, arch.chain.analysis, family, NORMAL),
+        TesseractSizer(arch.structure, arch.chain.ec3, family, resultant),
     )
 
     return eqx.filter_jit(in_process), composed
@@ -343,16 +356,16 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     # The buckling length is an input rather than a mesh length, so it has to
     # reach the check as itself and not as the member length beside it.
     buckling_length = jnp.full(NUM_EDGES, 1_000.0)
-    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
+    family = thinnest_family(neutral_grade(arch.steel), 3)
 
     shape = FdmFormFinder(arch.structure)(
         arch.params.force_densities, one_case.formfinding
     )
-    local = Ec3Sizer(arch.structure, catalogue)
-    analyzer = SmaxAnalyzer(arch.structure, local.family(SEED))
+    local = Ec3Sizer(arch.structure, family)
+    analyzer = SmaxAnalyzer(arch.structure, family(SEED))
     forces = analyzer(shape.xyz, arch.params.diameters, one_case.analysis)
 
-    crossed = TesseractSizer(arch.structure, arch.chain.ec3, local.family)
+    crossed = TesseractSizer(arch.structure, arch.chain.ec3, family)
 
     oracle = local(forces, buckling_length)
     composed = crossed(forces, buckling_length)
@@ -523,7 +536,7 @@ def test_the_check_never_reports_a_mass(chain):
 # --------------------------------------------------------------------------- #
 # The diagnostic that must not be differentiated
 # --------------------------------------------------------------------------- #
-def sized_through_the_check(arch, result, catalogue):
+def sized_through_the_check(arch, result, family):
     """
     The check alone, called across its own boundary with a finished geometry.
     """
@@ -542,7 +555,7 @@ def sized_through_the_check(arch, result, catalogue):
             "f_y": steel.f_y,
             "e_mod": steel.e_mod,
             "density": steel.density,
-            "ratio": catalogue.ratio,
+            "ratio": family.ratio,
             "normal": NORMAL,
         },
     )
@@ -559,9 +572,9 @@ def sized_through_the_check(arch, result, catalogue):
             "density": steel.density,
             "gamma_m0": steel.gamma_m0,
             "gamma_m1": steel.gamma_m1,
-            "ratio": catalogue.ratio,
+            "ratio": family.ratio,
             "alpha": steel.alpha,
-            "diameter_min": catalogue.diameter_min,
+            "diameter_min": DIAMETER_MINIMUM,
             "section_class": 3,
             "resultant": True,
         },
@@ -569,11 +582,11 @@ def sized_through_the_check(arch, result, catalogue):
 
 
 def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
-    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
+    family = thinnest_family(neutral_grade(arch.steel), 3)
     oracle, _ = both_designs(arch, one_case, 3)
-    check, axial_force = sized_through_the_check(arch, oracle, catalogue)
+    check, axial_force = sized_through_the_check(arch, oracle, family)
 
-    sizer = Ec3Sizer(arch.structure, catalogue)
+    sizer = Ec3Sizer(arch.structure, family)
     reported = np.asarray(check(axial_force)["governing"])
     expected = np.asarray(
         sizer.governing(
@@ -591,9 +604,9 @@ def test_the_moment_factors_survive_the_boundary(arch, one_case):
     # the field walk no longer reaches them. The boundary still publishes them,
     # and here they are held against the local reduction of the same forces at
     # the tolerance the end moments they are read from are held to.
-    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
+    family = thinnest_family(neutral_grade(arch.steel), 3)
     oracle, _ = both_designs(arch, one_case, 3)
-    check, axial_force = sized_through_the_check(arch, oracle, catalogue)
+    check, axial_force = sized_through_the_check(arch, oracle, family)
 
     crossed = check(axial_force)
     acting = design_actions(select_load_case(oracle.forces, 0))
@@ -609,9 +622,9 @@ def test_the_moment_factors_survive_the_boundary(arch, one_case):
 def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
     # A concrete cotangent on a non-differentiable output raises rather than
     # returning a zero, which is the whole reason the composition drops it.
-    catalogue = TubeCatalogue.at_class_limit(arch.steel, 3)
+    family = thinnest_family(neutral_grade(arch.steel), 3)
     oracle, _ = both(arch, one_case, 3)
-    check, axial_force = sized_through_the_check(arch, oracle, catalogue)
+    check, axial_force = sized_through_the_check(arch, oracle, family)
 
     with pytest.raises(ValueError, match="governing"):
         jax.grad(lambda forces: jnp.sum(check(forces)["governing"]))(axial_force)

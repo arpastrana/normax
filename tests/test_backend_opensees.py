@@ -25,7 +25,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.section import TubeCatalogue
 
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
@@ -37,9 +36,8 @@ from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_uniform
-from normax.materials import SteelGrade
-from normax.sections import TubeFamily
-from normax.sizing.ec3 import design_steel
+from normax.materials import Steel355
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractFormFinder
@@ -72,16 +70,14 @@ TOLERANCE_GRADIENT = 1e-9
 
 @pytest.fixture(scope="module")
 def steel():
-    return SteelGrade()
+    return Steel355()
 
 
 @pytest.fixture(scope="module")
 def catalogue(steel):
     # The class-limit wall proportion, as bare geometry: both backends read the
     # ratio and the grade, and neither has any use for the class.
-    limit = TubeCatalogue.at_class_limit(design_steel(steel), 3)
-
-    return TubeFamily(limit.ratio, steel)
+    return thinnest_family(steel, 3)
 
 
 @pytest.fixture(scope="module")
@@ -339,7 +335,7 @@ def objective(setup, diameters, steel, catalogue, chain):
     pipeline = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
         TesseractAnalyzer(structure, chain.analysis, catalogue, NORMAL),
-        TesseractSizer.at_class_limit(structure, chain.ec3, steel, 3),
+        TesseractSizer(structure, chain.ec3, catalogue),
     )
 
     applied = funicular(structure)

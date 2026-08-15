@@ -9,9 +9,10 @@ from normax.analysis.smax import prepare_model
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import loads_uniform
+from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.sections import TubeFamily
-from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import build_arch_2d
 
 # A 10 m arch of ten members under a 20 kN load at every free node, in the XZ
@@ -55,14 +56,14 @@ def relative(actual, expected):
 
 @pytest.fixture(scope="module")
 def steel():
-    return SteelGrade()
+    return Steel355()
 
 
 @pytest.fixture(scope="module")
-def catalogue(steel, structure):
-    # The class-limit wall proportion, read off a configured sizer as bare
-    # geometry: the analysis needs a family and has no use for the class.
-    return Ec3Sizer.at_class_limit(structure, steel, 3).family
+def catalogue(steel):
+    # The class-limit wall proportion, as bare geometry: the analysis needs a
+    # family and has no use for the class.
+    return thinnest_family(steel, 3)
 
 
 @pytest.fixture(scope="module")
@@ -119,11 +120,11 @@ def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
 def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
     structure, state, steel, catalogue, section, diameters
 ):
-    # An absurd placeholder: a unit modulus, a unit density and a tube whose
-    # smallest size is larger than anything the arch uses.
+    # An absurd placeholder: unit strengths, a unit modulus, a unit density and
+    # a tube whose smallest size is larger than anything the arch uses.
     absurd_family = TubeFamily(
         ratio=catalogue.ratio,
-        material=SteelGrade(e_mod=1.0, density=1.0),
+        material=SteelGrade(f_y=1.0, f_u=1.0, e_mod=1.0, density=1.0),
     )
     absurd = prepare_model(
         structure._replace(nodes=state.xyz * 3.0), absurd_family(999.0)

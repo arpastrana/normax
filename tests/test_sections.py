@@ -4,6 +4,7 @@ import numpy as np
 from ec3x.material import Steel
 from ec3x.section import TubeCatalogue
 
+from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
@@ -31,7 +32,7 @@ def tube_pair(diameters):
     The same tubes, stated by both libraries at one wall proportion.
     """
     catalogue = TubeCatalogue(RATIO, 3, Steel())
-    family = TubeFamily(RATIO, SteelGrade())
+    family = TubeFamily(RATIO, Steel355())
 
     return catalogue(diameters), family(diameters)
 
@@ -75,7 +76,7 @@ def test_the_load_case_axis_is_variadic():
 
 
 def test_the_geometry_is_differentiable_through_the_family():
-    family = TubeFamily(RATIO, SteelGrade())
+    family = TubeFamily(RATIO, Steel355())
 
     def total_area(diameter):
         return jnp.sum(family(diameter).area)

@@ -4,8 +4,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
+from ec3x.section import DIAMETER_MINIMUM
 from ec3x.sizing import LIMIT_MAJOR
 
 from normax.analysis.smax import SmaxAnalyzer
@@ -24,7 +23,9 @@ from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_half_span
 from normax.loads import loads_point
 from normax.loads import loads_uniform
+from normax.materials import Steel355
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import build_arch_2d
 from normax.visualization import Descent
 from normax.visualization import Form
@@ -68,7 +69,7 @@ TOLERANCE_GRADIENT_CASES = 2e-7
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return Steel355()
 
 
 @pytest.fixture(scope="module")
@@ -118,34 +119,32 @@ def params_of(setup):
     return DesignParameters(q, jnp.full(NUM_EDGES, SEED))
 
 
-def analyzer_of(structure, steel, catalogue):
+def analyzer_of(structure, steel, family):
     """
     The analysis block, compiled against a structure.
     """
-    section = Ec3Sizer(structure, catalogue).family(SEED)
-
-    return SmaxAnalyzer(structure, section)
+    return SmaxAnalyzer(structure, family(SEED))
 
 
-def pipeline_of(setup, steel, catalogue):
+def pipeline_of(setup, steel, family):
     """
     The three blocks a design is solved by, compiled against the arch.
     """
     structure, _, _ = setup
-    sizer = Ec3Sizer(structure, catalogue)
+    sizer = Ec3Sizer(structure, family)
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, sizer.family(SEED)),
+        SmaxAnalyzer(structure, family(SEED)),
         sizer,
     )
 
 
-def mass_of(setup, steel, catalogue):
+def mass_of(setup, steel, family):
     """
     The mass as a function of the force densities alone.
     """
-    pipeline = pipeline_of(setup, steel, catalogue)
+    pipeline = pipeline_of(setup, steel, family)
     loads = one_case(setup[0])
     seed = jnp.full(NUM_EDGES, SEED)
 
@@ -155,12 +154,12 @@ def mass_of(setup, steel, catalogue):
     return total
 
 
-def sizes_of(setup, steel, catalogue):
+def sizes_of(setup, steel, family):
     """
     The mass as a function of the diameters the frame is analyzed with.
     """
     _, _, q = setup
-    pipeline = pipeline_of(setup, steel, catalogue)
+    pipeline = pipeline_of(setup, steel, family)
     loads = one_case(setup[0])
 
     def total(diameters):
@@ -177,8 +176,8 @@ def sized(setup, steel, section_class, buckling_length=None):
     takes one; the composition always hands it the member length.
     """
     structure, _, _ = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, section_class)
-    pipeline = pipeline_of(setup, steel, catalogue)
+    family = thinnest_family(steel, section_class)
+    pipeline = pipeline_of(setup, steel, family)
     params = params_of(setup)
     loads = one_case(structure)
 
@@ -189,7 +188,7 @@ def sized(setup, steel, section_class, buckling_length=None):
         forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
         design = Design(shape, forces, pipeline.sizer(forces, buckling_length))
 
-    return catalogue, design_envelope(design)
+    return family, design_envelope(design)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,19 +207,17 @@ def test_every_member_is_utilized_exactly_once_over(setup, steel, section_class)
 def test_no_member_is_pinned_to_the_catalogue_minimum(setup, steel, section_class):
     # Where the floor binds the utilization is below one by design, so the
     # invariant above only means something if the floor is clear of the design.
-    catalogue, result = sized(setup, steel, section_class)
+    family, result = sized(setup, steel, section_class)
 
-    assert float(jnp.min(result.sizes.sections.diameter)) > float(
-        catalogue.diameter_min
-    )
+    assert float(jnp.min(result.sizes.sections.diameter)) > float(DIAMETER_MINIMUM)
 
 
 @pytest.mark.parametrize("section_class", [2, 3])
 def test_a_compression_arch_is_governed_by_the_member_check(
     setup, steel, section_class
 ):
-    catalogue, result = sized(setup, steel, section_class)
-    codes = Ec3Sizer(setup[0], catalogue).governing(
+    family, result = sized(setup, steel, section_class)
+    codes = Ec3Sizer(setup[0], family).governing(
         result.sizes.sections.diameter, result.forces, result.shape.lengths
     )[0]
 
@@ -231,9 +228,9 @@ def test_a_compression_arch_is_governed_by_the_member_check(
 # What the composition produces
 # --------------------------------------------------------------------------- #
 def test_the_mass_is_the_sum_over_members(setup, steel):
-    catalogue, result = sized(setup, steel, 3)
+    family, result = sized(setup, steel, 3)
     by_hand = steel.density * jnp.sum(
-        catalogue(result.sizes.sections.diameter).area * result.shape.lengths
+        family(result.sizes.sections.diameter).area * result.shape.lengths
     )
 
     assert float(compute_mass(result)) == pytest.approx(float(by_hand), rel=1e-14)
@@ -241,9 +238,9 @@ def test_the_mass_is_the_sum_over_members(setup, steel):
 
 def test_the_mass_agrees_with_the_scalar_entry_point(setup, steel, seed):
     structure, fdm, q = setup
-    catalogue, result = sized(setup, steel, 3)
+    family, result = sized(setup, steel, 3)
     scalar = compute_mass(
-        pipeline_of(setup, steel, catalogue)(
+        pipeline_of(setup, steel, family)(
             DesignParameters(q, seed),
             one_case(setup[0]),
         )
@@ -308,11 +305,11 @@ def test_the_mass_gradient_matches_central_differences(
     setup, steel, seed, section_class
 ):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, section_class)
+    family = thinnest_family(steel, section_class)
 
     def objective(q):
         return compute_mass(
-            pipeline_of(setup, steel, catalogue)(
+            pipeline_of(setup, steel, family)(
                 DesignParameters(q, seed),
                 one_case(setup[0]),
             )
@@ -332,9 +329,9 @@ def test_the_mass_gradient_matches_central_differences(
 
 def test_the_mass_gradient_is_finite_and_nowhere_zero(setup, steel, seed):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
-    gradient = jax.grad(mass_of(setup, steel, catalogue))(q)
+    gradient = jax.grad(mass_of(setup, steel, family))(q)
 
     assert np.all(np.isfinite(np.asarray(gradient)))
     assert float(jnp.min(jnp.abs(gradient))) > 0.0
@@ -342,11 +339,11 @@ def test_the_mass_gradient_is_finite_and_nowhere_zero(setup, steel, seed):
 
 def test_forward_and_reverse_mode_agree_on_the_mass(setup, steel, seed):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
     def objective(q):
         return compute_mass(
-            pipeline_of(setup, steel, catalogue)(
+            pipeline_of(setup, steel, family)(
                 DesignParameters(q, seed),
                 one_case(setup[0]),
             )
@@ -359,9 +356,9 @@ def test_the_mass_is_differentiable_in_the_analyzed_diameters(setup, steel, seed
     # The staggered coupling is one-way, but it is not a dead input: the sections
     # the frame is built from move the forces, and so the sizes.
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
-    gradient = jax.grad(sizes_of(setup, steel, catalogue))(seed)
+    gradient = jax.grad(sizes_of(setup, steel, family))(seed)
 
     assert np.all(np.isfinite(np.asarray(gradient)))
     assert float(jnp.max(jnp.abs(gradient))) > 0.0
@@ -371,9 +368,9 @@ def test_the_gradient_changes_sign_across_the_arch(setup, steel, seed):
     # The springing gains more from length than it loses to section, and the
     # crown the other way round, so the sensitivity crosses zero in between.
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
-    gradient = jax.grad(mass_of(setup, steel, catalogue))(q)
+    gradient = jax.grad(mass_of(setup, steel, family))(q)
 
     assert float(gradient[0]) > 0.0
     assert float(gradient[NUM_EDGES // 2]) < 0.0
@@ -384,13 +381,13 @@ def test_the_gradient_changes_sign_across_the_arch(setup, steel, seed):
 # --------------------------------------------------------------------------- #
 def test_repeating_the_pass_reaches_a_fixed_point(setup, steel, seed):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
     diameters = seed
     moves = []
     for _ in range(5):
         result = design_envelope(
-            pipeline_of(setup, steel, catalogue)(
+            pipeline_of(setup, steel, family)(
                 DesignParameters(q, diameters), one_case(setup[0])
             )
         )
@@ -414,18 +411,16 @@ def test_repeating_the_pass_reaches_a_fixed_point(setup, steel, seed):
 
 def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
     first = design_envelope(
-        pipeline_of(setup, steel, catalogue)(
-            DesignParameters(q, seed), one_case(setup[0])
-        )
+        pipeline_of(setup, steel, family)(DesignParameters(q, seed), one_case(setup[0]))
     )
 
     diameters = first.sizes.sections.diameter
     for _ in range(5):
         settled = design_envelope(
-            pipeline_of(setup, steel, catalogue)(
+            pipeline_of(setup, steel, family)(
                 DesignParameters(q, diameters), one_case(setup[0])
             )
         )
@@ -443,10 +438,8 @@ def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
 # --------------------------------------------------------------------------- #
 def test_the_section_figure_builds(setup, steel, seed):
     structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-    assumed = float(
-        steel.density * jnp.sum(catalogue(seed).area * result.shape.lengths)
-    )
+    family, result = sized(setup, steel, 3)
+    assumed = float(steel.density * jnp.sum(family(seed).area * result.shape.lengths))
 
     figure = figure_sections(
         result.shape.xyz,
@@ -477,10 +470,8 @@ def test_the_convergence_figure_builds():
 def test_the_section_figure_reports_a_lighter_design(setup, steel, seed):
     # The label flips wording on the sign, so the sign is worth pinning.
     structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-    assumed = float(
-        steel.density * jnp.sum(catalogue(seed).area * result.shape.lengths)
-    )
+    family, result = sized(setup, steel, 3)
+    assumed = float(steel.density * jnp.sum(family(seed).area * result.shape.lengths))
 
     figure = figure_sections(
         result.shape.xyz,
@@ -517,12 +508,12 @@ def load_cases(setup):
 
 def covered(setup, steel, load_cases, beta, section_class=3):
     structure, _, _ = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, section_class)
-    pipeline = pipeline_of(setup, steel, catalogue)
+    family = thinnest_family(steel, section_class)
+    pipeline = pipeline_of(setup, steel, family)
 
     demanded = pipeline(params_of(setup), load_cases)
 
-    return catalogue, design_envelope(demanded, beta), demanded
+    return family, design_envelope(demanded, beta), demanded
 
 
 @pytest.mark.parametrize("beta", [10.0, 100.0, 500.0])
@@ -569,7 +560,7 @@ def test_the_excess_respects_its_bound(setup, steel, load_cases, beta):
 def test_the_unsmoothed_design_is_fully_stressed(setup, steel, load_cases):
     # Invariant 6.5 survives the aggregation: some case works every member to
     # exactly one, even though no single case works all of them.
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
+    family, result, demanded = covered(setup, steel, load_cases, 500.0)
     exact = covered(setup, steel, load_cases, None)[1]
 
     worst = np.max(np.asarray(exact.sizes.utilization), axis=0)
@@ -580,7 +571,7 @@ def test_the_unsmoothed_design_is_fully_stressed(setup, steel, load_cases):
 def test_the_unsmoothed_design_is_never_heavier_than_the_envelope(
     setup, steel, load_cases
 ):
-    catalogue, result, demanded = covered(setup, steel, load_cases, 50.0)
+    family, result, demanded = covered(setup, steel, load_cases, 50.0)
     exact = covered(setup, steel, load_cases, None)[1]
 
     assert float(compute_mass(exact)) <= float(compute_mass(result))
@@ -590,16 +581,16 @@ def test_one_load_case_reproduces_the_single_case_design(setup, steel, load_case
     # An envelope over one case is that case, whatever the sharpness, so the
     # aggregation cannot be quietly changing the answer.
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
     seeds = jnp.full(NUM_EDGES, SEED)
 
-    single = pipeline_of(setup, steel, catalogue)(
+    single = pipeline_of(setup, steel, family)(
         DesignParameters(q, seeds),
         one_case(setup[0]),
     )
     one = LoadCases(load_cases.formfinding, load_cases.analysis[:1])
     covering = design_envelope(
-        pipeline_of(setup, steel, catalogue)(DesignParameters(q, seeds), one), 25.0
+        pipeline_of(setup, steel, family)(DesignParameters(q, seeds), one), 25.0
     )
 
     assert np.allclose(
@@ -619,8 +610,8 @@ def test_the_governing_load_case_is_the_one_working_a_member_hardest(
     # for, so one by construction — and reading it as a verdict on a reconciled
     # design would compare a matrix of ones. The standard has to be read again
     # at the section the envelope settled on.
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
-    sizer = Ec3Sizer(setup[0], catalogue)
+    family, result, demanded = covered(setup, steel, load_cases, 500.0)
+    sizer = Ec3Sizer(setup[0], family)
     reread = sizer.utilization(
         result.sizes.sections.diameter, result.forces, result.shape.lengths
     )
@@ -648,13 +639,13 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
     # The load case is an argument to the analysis alone; form finding keeps the
     # loads the shape answers to.
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
     seeds = jnp.full(NUM_EDGES, SEED)
 
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
     asymmetric = loads_half_span(structure, spread, factor=0.0)
 
-    pipeline = pipeline_of(setup, steel, catalogue)
+    pipeline = pipeline_of(setup, steel, family)
     shaped = pipeline(DesignParameters(q, seeds), one_case(structure))
     patched = pipeline(
         DesignParameters(q, seeds),
@@ -671,9 +662,9 @@ def test_the_enveloped_mass_gradient_matches_central_differences(
     setup, steel, load_cases
 ):
     structure, fdm, q = setup
-    catalogue = TubeCatalogue.at_class_limit(steel, 3)
+    family = thinnest_family(steel, 3)
 
-    pipeline = pipeline_of(setup, steel, catalogue)
+    pipeline = pipeline_of(setup, steel, family)
 
     def objective(q):
         design = pipeline(DesignParameters(q, jnp.full(NUM_EDGES, SEED)), load_cases)
@@ -758,7 +749,7 @@ def test_the_optimization_figure_marks_the_funicular_start_and_not_the_sweep(set
 
 def test_the_load_case_figure_builds(setup, steel, load_cases):
     structure, _, _ = setup
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
+    family, result, demanded = covered(setup, steel, load_cases, 500.0)
     exact = covered(setup, steel, load_cases, None)[1]
     decided = governing_load_case(demanded.sizes.sections.diameter)
 
@@ -784,7 +775,7 @@ def test_the_load_case_figure_takes_as_many_forms_as_it_is_given(
     setup, steel, load_cases
 ):
     structure, _, _ = setup
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
+    family, result, demanded = covered(setup, steel, load_cases, 500.0)
     exact = covered(setup, steel, load_cases, None)[1]
     decided = governing_load_case(demanded.sizes.sections.diameter)
 
@@ -802,7 +793,7 @@ def test_the_two_forms_are_drawn_on_the_same_axes(setup, steel, load_cases):
     # A form that dropped has to look lower rather than differently framed, or
     # a collapsed leg is invisible.
     structure, _, _ = setup
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
+    family, result, demanded = covered(setup, steel, load_cases, 500.0)
     exact = covered(setup, steel, load_cases, None)[1]
     decided = governing_load_case(demanded.sizes.sections.diameter)
 
@@ -921,7 +912,7 @@ def test_the_load_case_counts_share_one_scale(setup, steel, load_cases):
     # A bar is read against its neighbours, so independently scaled panels would
     # make an even split look lopsided.
     structure, _, _ = setup
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
+    family, result, demanded = covered(setup, steel, load_cases, 500.0)
     exact = covered(setup, steel, load_cases, None)[1]
     decided = governing_load_case(demanded.sizes.sections.diameter)
 

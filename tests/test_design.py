@@ -5,8 +5,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
@@ -22,9 +20,12 @@ from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_half_span
 from normax.loads import loads_uniform
 from normax.loads import select_load_case
+from normax.materials import Steel355
 from normax.optimization import SearchResult
+from normax.sections import TubeFamily
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import design_actions
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import build_arch_2d
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
@@ -59,13 +60,13 @@ TOLERANCE_ROUNDOFF = 1e-9
 
 
 @pytest.fixture(scope="module")
-def steel():
-    return Steel()
+def grade():
+    return Steel355()
 
 
 @pytest.fixture(scope="module")
-def catalogue(steel):
-    return TubeCatalogue.at_class_limit(steel, 3)
+def family(grade):
+    return thinnest_family(grade, 3)
 
 
 @pytest.fixture(scope="module")
@@ -93,11 +94,11 @@ def force_densities(structure):
 
 
 @pytest.fixture(scope="module")
-def pipeline(structure, steel, catalogue):
+def pipeline(structure, family):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, Ec3Sizer(structure, catalogue).family(SEED)),
-        Ec3Sizer(structure, catalogue),
+        SmaxAnalyzer(structure, family(SEED)),
+        Ec3Sizer(structure, family),
     )
 
 
@@ -184,19 +185,19 @@ def staggered(pipeline, params, three_cases):
     return StaggeredRun(found, len(traces))
 
 
-def test_sizer_reads_its_class_off_its_family(structure, steel):
+def test_sizer_reads_its_class_off_its_family(structure, grade):
     """The class is derived from the family and never accepted beside it."""
     for section_class in (1, 2, 3):
-        catalogue = TubeCatalogue.at_class_limit(steel, section_class)
-        sizer = Ec3Sizer(structure, catalogue)
+        family = thinnest_family(grade, section_class)
+        sizer = Ec3Sizer(structure, family)
 
         assert sizer.section_class == section_class
 
 
-def test_sizer_refuses_a_class_four_family(structure, steel):
+def test_sizer_refuses_a_class_four_family(structure, grade):
     """A family too slender to be checked by these clauses is refused at build."""
     with pytest.raises(ValueError):
-        Ec3Sizer(structure, TubeCatalogue(200.0, 3, steel))
+        Ec3Sizer(structure, TubeFamily(200.0, grade))
 
 
 def test_form_finder_matches_the_free_function(structure, force_densities, one_case):

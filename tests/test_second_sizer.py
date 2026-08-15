@@ -17,11 +17,12 @@ from normax.design import design_envelope
 from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_uniform
-from normax.materials import SteelGrade
+from normax.materials import Steel355
 from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 
@@ -129,7 +130,7 @@ def structure():
 
 @pytest.fixture(scope="module")
 def pipeline(structure):
-    grade = SteelGrade()
+    grade = Steel355()
     family = TubeFamily(RATIO, grade)
 
     return StructuralDesignPipeline(
@@ -221,7 +222,7 @@ def test_the_two_philosophies_disagree_about_the_sizes(
     limit_state = StructuralDesignPipeline(
         pipeline.formfinder,
         pipeline.analyzer,
-        Ec3Sizer.at_class_limit(structure, SteelGrade(), 3),
+        Ec3Sizer(structure, thinnest_family(Steel355(), 3)),
     )
 
     naive = pipeline(params, one_case).sizes.sections.diameter
