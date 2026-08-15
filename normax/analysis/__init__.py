@@ -160,33 +160,6 @@ class AbstractFrameAnalyzer(eqx.Module):
         """
 
 
-class Buckling(NamedTuple):
-    """
-    The elastic instability of a whole frame, rather than of one member.
-
-    Attributes
-    ----------
-    factors :
-        Multiple of the applied load at which the frame buckles, smallest first.
-    shapes :
-        Displacement of every node in each mode, in the six degrees of freedom.
-
-    Notes
-    -----
-    The smallest factor is what EN 1993-1-1 writes as `α_cr`. A value below one
-    says the frame becomes unstable before it is loaded to its design value, and
-    a member check cannot see that: it reads the slenderness of one member over
-    an assumed buckling length, while this reads the mode the whole structure
-    has.
-
-    Mode shapes are not normalized to any physical amplitude. An eigenvector
-    fixes a shape and not a size, so only ratios within a mode mean anything.
-    """
-
-    factors: Float[Array, "modes"]
-    shapes: Float[Array, "modes nodes 6"]
-
-
 def normal_axis(structure: Structure) -> int | None:
     """
     The global axis a structure has no thickness along, if it has one.

@@ -27,6 +27,7 @@ so a second standard added beside it inherits none of ours.
 import equinox as eqx
 import jax
 from ec3x.actions import MemberActions
+from ec3x.classification import section_class_at_ratio
 from ec3x.material import Steel
 from ec3x.section import Tube
 from ec3x.section import TubeCatalogue
@@ -281,6 +282,52 @@ class Ec3Sizer(AbstractMemberSizer):
         """
         steel = design_steel(grade)
         catalogue = TubeCatalogue.at_class_limit(steel, section_class)
+
+        return cls(structure, catalogue, resultant)
+
+    @classmethod
+    def from_family(
+        cls,
+        structure: Structure,
+        family: TubeFamily,
+        resultant: bool = True,
+    ) -> "Ec3Sizer":
+        """
+        The sizer over a section family stated as bare geometry.
+
+        Parameters
+        ----------
+        structure :
+            The structure whose members are sized. Read for nothing.
+        family :
+            The section family every member is drawn from, whose ratio fixes
+            the wall proportion and whose grade supplies the material.
+        resultant :
+            Whether the two moments combine as a resultant in the cross-section
+            check, or as a linear sum.
+
+        Returns
+        -------
+        sizer :
+            A sizer over that family, classified by this standard.
+
+        Raises
+        ------
+        ValueError
+            If the family's ratio classifies as Class 4.
+
+        Notes
+        -----
+        The inverse of the `family` property, so a block configured by a
+        neutral family names no EC3 vocabulary. What the standard adds — the
+        partial factors, the buckling curve, the class the ratio falls in — is
+        derived in here at its defaults, exactly as `at_class_limit` derives
+        it from a bare grade. A design needing other factors builds a
+        `TubeCatalogue` explicitly and takes the plain constructor.
+        """
+        steel = design_steel(family.material)
+        section_class = section_class_at_ratio(family.ratio, steel.f_y)
+        catalogue = TubeCatalogue(family.ratio, section_class, steel)
 
         return cls(structure, catalogue, resultant)
 

@@ -47,12 +47,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
-from ec3x.actions import MemberActions
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
-from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
@@ -438,7 +433,7 @@ class TesseractSizer(AbstractMemberSizer):
         self,
         structure: Structure,
         client: Tesseract,
-        catalogue: TubeCatalogue,
+        family: TubeFamily,
         resultant: bool = True,
     ) -> None:
         """
@@ -450,9 +445,9 @@ class TesseractSizer(AbstractMemberSizer):
             The structure whose members are sized. Read for nothing.
         client :
             The check's Tesseract.
-        catalogue :
-            The section family every member is drawn from, with the grade it is
-            rolled from and the class its wall falls in.
+        family :
+            The section family every member is drawn from, whose ratio fixes
+            the wall proportion and whose grade supplies the material.
         resultant :
             Whether the two moments combine as a resultant in the cross-section
             check, or as a linear sum.
@@ -460,11 +455,10 @@ class TesseractSizer(AbstractMemberSizer):
         Raises
         ------
         ValueError
-            If the family's ratio classifies as Class 4, or as a class other
-            than the one the family names.
+            If the family's ratio classifies as Class 4.
         """
         self.client = client
-        self.local = Ec3Sizer(structure, catalogue, resultant)
+        self.local = Ec3Sizer.from_family(structure, family, resultant)
 
     @classmethod
     def at_class_limit(
@@ -498,19 +492,12 @@ class TesseractSizer(AbstractMemberSizer):
         The same constructor the in-process block offers, so a driver builds
         either sizer from the same two arguments and imports nothing from the
         standard's library. The moment-combination flag stays at its default
-        here; a caller selecting the linear sum builds a catalogue explicitly
+        here; a caller selecting the linear sum names a family explicitly
         and takes the plain constructor, the flag being clause configuration.
         """
         local = Ec3Sizer.at_class_limit(structure, grade, section_class)
 
-        return cls(structure, client, local.catalogue)
-
-    @property
-    def steel(self) -> Steel:
-        """
-        Material properties and partial factors.
-        """
-        return self.local.steel
+        return cls(structure, client, local.family)
 
     @property
     def family(self) -> TubeFamily:
@@ -518,20 +505,6 @@ class TesseractSizer(AbstractMemberSizer):
         The section family this block sizes over, as bare geometry.
         """
         return self.local.family
-
-    @property
-    def catalogue(self) -> TubeCatalogue:
-        """
-        The section family every member is drawn from.
-        """
-        return self.local.catalogue
-
-    @property
-    def section_class(self) -> int:
-        """
-        Cross-section class, confirmed against the family rather than given.
-        """
-        return self.local.section_class
 
     def __call__(
         self,
@@ -557,9 +530,10 @@ class TesseractSizer(AbstractMemberSizer):
         -----
         EN 1993-1-1 Table B.3 is applied on the far side rather than here, so
         what comes back is a design moment and a factor rather than two end
-        moments. Reducing one to the other is a clause, and this block does not
-        second-guess the one that owns it: the utilization below is re-read at
-        the factors the boundary reported rather than at a local reduction.
+        moments. Only the diameters are read off the boundary's answer: the
+        re-check at those diameters is the in-process block's, running the same
+        clauses over the same forces, and the parity tests measure that the
+        boundary's own reduction agrees with it.
         """
         local = self.local
         carried = [
@@ -590,29 +564,15 @@ class TesseractSizer(AbstractMemberSizer):
             for acting in carried
         ]
 
-        per_case = [
-            MemberActions(
-                acting.axial_force,
-                sized["moment_major"],
-                sized["moment_minor"],
-                sized["moment_factor_major"],
-                sized["moment_factor_minor"],
-            )
-            for acting, sized in zip(carried, crossed)
-        ]
         demanded = jnp.stack([sized["diameter"] for sized in crossed])
         sections = local.catalogue(demanded)
-        actions = stack_load_cases(per_case)
 
-        def used_case(diameter: Float[Array, "members"], acting: MemberActions):
-            return utilization_design(
-                local.catalogue(diameter),
-                acting,
-                buckling_length,
-                resultant=local.resultant,
-            )
-
-        used = jax.vmap(used_case)(demanded, actions)
+        # The diagonal read: each case's demanded size against that case alone.
+        per_case = []
+        for diameter, acting in zip(demanded, carried):
+            single = stack_load_cases([acting])
+            per_case.append(local.utilization(diameter, single, buckling_length)[0])
+        used = jnp.stack(per_case)
 
         return MemberSizes(neutral_sections(sections), used)
 

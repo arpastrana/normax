@@ -228,8 +228,8 @@ class StructuralDesignPipeline(eqx.Module):
         conservative one: it presumes every node is held in position by
         structure outside the model, and where that does not hold the frame
         buckles in a mode spanning many members and the assumption is unsafe.
-        `frame_stability` measures the gap, by recovering the buckling length a
-        critical load factor is equivalent to.
+        Verifying a design against the stability of the whole frame is future
+        work, and nothing in this package computes it.
 
         The clauses below take a buckling length as an argument and always
         will — EN 1993-1-1 Eq. 6.50 is written in `L_cr`, not in a member
