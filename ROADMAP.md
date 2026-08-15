@@ -1,8 +1,8 @@
 # ROADMAP — Backpropagating Through Structural Engineering Codes
 
 Repo: `normax` · Deadline **Aug 31, 11:59 PM AoE** · **Code freeze Aug 27**
-Read `docs/clauses.md` first — the verified EC3 spec, and the only source any
-clause may be implemented from.
+Read ec3x's `docs/clauses.md` first — the verified EC3 spec, and the only
+source any clause may be implemented from. It moved with the clause library.
 This file is the execution order.
 
 **Thesis (from the 2025 winners post): swappability.** Both top places won on

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### The verification record follows the clauses out
+
+`docs/clauses.md` transfers to `ec3x/docs/clauses.md`, reversing the extraction
+doc's keep-it-here call the same day it flagged the awkwardness: a library
+whose correctness argument lives in another repository is a strange thing to
+hand someone, and ec3x has a life of its own now. `references/` is copied
+beside it (gitignored in both repos, per the usage protocol) so the record's
+own instruction — check the printed page rather than trusting the
+transcription — keeps working where the record lives; normax's local copy
+stays untouched.
+
+- The clause content is unchanged. What moved with the vantage point is
+  attribution: the buckling-length choice, the writeup pointers, and the
+  project-brief references are now explicitly normax's, named as the consumer
+  the record grew up beside — and the pointers to `tests/test_stability.py`
+  and the worked-example files became local again, because those tests live
+  beside the record now.
+- normax's seven code citations, `ROADMAP.md`'s read-this-first line and the
+  local `CLAUDE.md` layout tree point across to ec3x's copy; ec3x's eight test
+  files cite it locally again, and its README links it.
+
 ### The materials and the sections come home — phase 4, the seam proved
 
 `tests/test_second_sizer.py` fills `AbstractMemberSizer` with a design

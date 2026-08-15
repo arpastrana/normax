@@ -234,7 +234,7 @@ class StructuralDesignPipeline(eqx.Module):
         The clauses below take a buckling length as an argument and always
         will — EN 1993-1-1 Eq. 6.50 is written in `L_cr`, not in a member
         length. What is fixed is this composition's choice of what to pass, and
-        that choice is temporary; see `docs/clauses.md`.
+        that choice is temporary; see ec3x's `docs/clauses.md`.
         """
         shape = self.formfinder(params.force_densities, loads.formfinding)
         forces = self.analyzer(shape.xyz, params.diameters, loads.analysis)

@@ -39,7 +39,7 @@ multiplies that size by a length it already has. A gradient loses nothing by it,
 the cotangent reaching this stage through the diameter instead.
 
 Scope, and what is deliberately absent, is in `CLAUDE.md` §3. Clean-room from
-EN 1993-1-1 by way of `docs/clauses.md`.
+EN 1993-1-1 by way of ec3x's `docs/clauses.md`.
 """
 
 from typing import Any

@@ -573,7 +573,7 @@ class Stability(NamedTuple):
     one wherever that assumption is right.
 
     The clauses behind `utilization` and `adequate` are EN 1993-1-1 §5.2.1(3),
-    verified in `docs/clauses.md`.
+    verified in ec3x's `docs/clauses.md`.
     """
 
     factors: Float[Array, "modes"]

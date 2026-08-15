@@ -14,14 +14,14 @@
 """
 Which wall proportion is lighter: the Class 2 limit or the Class 3 limit.
 
-docs/clauses.md records the trade and declines to call it. A thinner wall buys
+ec3x's docs/clauses.md records the trade and declines to call it. A thinner wall buys
 more area for the same weight of steel, which is what the Class 3 limit offers;
 but Class 3 forfeits the shape factor of 1.326 in bending and reads the weaker
 column of Table B.1. Which wins depends on how much of the demand is bending,
 and that is a number rather than an argument.
 
 The sweep also reports the shear the excluded clause would have seen, which is
-what open item 0d of docs/clauses.md asks for: the exclusion of 6.2.6 is only
+what open item 0d of ec3x's docs/clauses.md asks for: the exclusion of 6.2.6 is only
 honest while the design shear stays under half the plastic shear resistance.
 
 Run with `uv run python experiments/05_class_ratio_sweep.py`.
@@ -387,7 +387,7 @@ def report_shear(report: Report, catalogue: TubeCatalogue) -> None:
         )
         rows.append(row)
 
-    heading = "Shear the excluded clause would have seen (docs/clauses.md open item 0d)"
+    heading = "Shear the excluded clause would have seen (clauses.md open item 0d)"
 
     report.write_heading(heading)
     report.write_table(columns, rows)
@@ -410,7 +410,7 @@ def report_readings(report: Report, catalogue: TubeCatalogue) -> None:
         The guide says 6.2.9.2 permits only a linear interaction of stresses;
         the ECCS says the stress is evaluated by an elastic stress analysis.
         Blueprints implements 6.42 with the stress as an input and so does not
-        settle it; Karamba implements no 6.2.9 at all. See docs/clauses.md.
+        settle it; Karamba implements no 6.2.9 at all. See ec3x's docs/clauses.md.
         """
     )
     columns = (
