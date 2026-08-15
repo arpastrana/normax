@@ -27,6 +27,7 @@ so a second standard added beside it inherits none of ours.
 import equinox as eqx
 import jax
 from ec3x.actions import MemberActions
+from ec3x.classification import ratio_at_class_limit
 from ec3x.classification import section_class_at_ratio
 from ec3x.material import Steel
 from ec3x.section import Tube
@@ -67,9 +68,9 @@ def design_steel(grade: SteelGrade) -> Steel:
     The certificate half crosses unchanged; what is added is what only this
     standard can add — the partial factors of §6.1 and the buckling curve of
     Table 6.2. The defaults are the UK National Annex factors and curve a,
-    the hot-finished hollow section. A design needing other factors, or the
-    cold-formed curve c, constructs its `ec3x.Steel` explicitly and hands the
-    sizer a catalogue built from it.
+    the hot-finished hollow section, and the sizer freezes them: other
+    factors, or the cold-formed curve c, are future work rather than an
+    argument.
     """
     return Steel(
         f_y=grade.f_y,
@@ -77,6 +78,41 @@ def design_steel(grade: SteelGrade) -> Steel:
         density=grade.density,
         f_u=grade.f_u,
     )
+
+
+def thinnest_family(grade: SteelGrade, section_class: int) -> TubeFamily:
+    """
+    The section family as thin as a given class allows, from a bare grade.
+
+    Parameters
+    ----------
+    grade :
+        The steel as a certificate states it, free of any standard.
+    section_class :
+        Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
+
+    Returns
+    -------
+    family :
+        The family whose ratio sits exactly on that class's limit.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 5.2 sheet 3. Sitting on the limit maximises the wall
+    slenderness, and so minimises material, while staying inside the class —
+    the way a family is ordinarily chosen here. The derivation is clause work,
+    so it lives with the sizer rather than on the neutral container it returns:
+    a driver names the standard by importing this, and the family it gets back
+    names nothing.
+    """
+    ratio = ratio_at_class_limit(grade.f_y, section_class)
+
+    return TubeFamily(ratio, grade)
 
 
 def neutral_sections(tubes: Tube) -> MemberSections:
@@ -172,35 +208,39 @@ class Ec3Sizer(AbstractMemberSizer):
     structure :
         The structure whose members are sized. Read for nothing.
     catalogue :
-        The section family every member is drawn from, which is also where the
-        grade and the class come from.
+        The section family in the standard's terms, derived from the neutral
+        family the block was configured by.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
     section_class :
-        Cross-section class, confirmed against the family rather than accepted
-        beside it.
+        Cross-section class, derived from the family's ratio rather than
+        accepted beside it.
 
     Notes
     -----
-    **A grade is not an argument here, because a section family already has
-    one.** The ratio that defines the family is a class limit read at a yield
-    strength, so a grade handed in beside it could be a different one; taking the
-    catalogue alone makes that unrepresentable.
+    **The block is configured by neutral containers and converts internally.**
+    A driver hands in a `TubeFamily` — a ratio and a certificate-level grade,
+    naming no EC3 vocabulary — and everything the standard adds is derived in
+    here at its defaults: the partial factors, the buckling curve, the class
+    the ratio falls in. That is the model a second standard's sizer replicates
+    beside this one; other factors or a cold-formed curve are future work.
 
-    **The cross-section class is confirmed and never taken on trust.** It selects
-    a clause rather than scaling a number, so it has to be static, and a class
-    named beside a ratio is free to contradict it — which would allow the plastic
-    clauses to be applied to a Class 3 wall. It is checked once when the block is
-    built, on the host, where the ratio and the yield strength are concrete
-    numbers and the Class 4 refusal can fire.
+    **A grade is not an argument here, because a section family already has
+    one.** The ratio only means something read at a yield strength, so a grade
+    handed in beside the family could be a different one; taking the family
+    alone makes that unrepresentable.
+
+    **The cross-section class is derived and never taken on trust.** It selects
+    a clause rather than scaling a number, so it has to be static, and it is
+    classified once when the block is built, on the host, where the ratio and
+    the yield strength are concrete numbers and the Class 4 refusal can fire.
 
     **The structure settles nothing, and that is the honest answer here.** A
     code check reads one member at a time and knows nothing of connectivity, so
     there is no view of one for this block to build. It is taken all the same,
-    because a block that needs no topology saying so is the point rather than an
-    omission: the three constructors are alike, and what differs between them is
-    how much each finds worth keeping.
+    because a block that needs no topology saying so is the point rather than
+    an omission.
 
     Every load case is sized for on its own. Reconciling several of them into
     one size per member is smoothing rather than a clause, and belongs above a
@@ -215,85 +255,11 @@ class Ec3Sizer(AbstractMemberSizer):
     def __init__(
         self,
         structure: Structure,
-        catalogue: TubeCatalogue,
+        family: TubeFamily,
         resultant: bool = True,
     ) -> None:
         """
-        Build a sizer, confirming its cross-section class against its family.
-
-        Parameters
-        ----------
-        structure :
-            The structure whose members are sized. Read for nothing.
-        catalogue :
-            The section family every member is drawn from, with the grade it is
-            rolled from and the class its wall falls in.
-        resultant :
-            Whether the two moments combine as a resultant in the cross-section
-            check, or as a linear sum.
-
-        Raises
-        ------
-        ValueError
-            If the family's ratio classifies as Class 4, or as a class other
-            than the one the family names.
-        """
-        self.structure = structure
-        self.catalogue = catalogue
-        self.resultant = resultant
-        self.section_class = catalogue.verified_class()
-
-    @classmethod
-    def at_class_limit(
-        cls,
-        structure: Structure,
-        grade: SteelGrade,
-        section_class: int,
-        resultant: bool = True,
-    ) -> "Ec3Sizer":
-        """
-        The sizer whose family sits at a class limit, from a bare grade.
-
-        Parameters
-        ----------
-        structure :
-            The structure whose members are sized. Read for nothing.
-        grade :
-            The steel as a certificate states it, free of any standard.
-        section_class :
-            Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
-        resultant :
-            Whether the two moments combine as a resultant in the cross-section
-            check, or as a linear sum.
-
-        Returns
-        -------
-        sizer :
-            A sizer over the family as thin as that class allows.
-
-        Notes
-        -----
-        The way a driver ordinarily builds this block: everything EC3-flavored
-        — the partial factors, the buckling curve, the class-limit ratio — is
-        derived in here, so the caller names the standard once, by choosing the
-        block, and imports nothing from its library. A design needing other
-        factors, a cold-formed curve, or a ratio that is not a class limit
-        builds a `TubeCatalogue` explicitly and takes the plain constructor.
-        """
-        steel = design_steel(grade)
-        catalogue = TubeCatalogue.at_class_limit(steel, section_class)
-
-        return cls(structure, catalogue, resultant)
-
-    @classmethod
-    def from_family(
-        cls,
-        structure: Structure,
-        family: TubeFamily,
-        resultant: bool = True,
-    ) -> "Ec3Sizer":
-        """
-        The sizer over a section family stated as bare geometry.
+        Build a sizer over a section family stated as bare geometry.
 
         Parameters
         ----------
@@ -306,30 +272,19 @@ class Ec3Sizer(AbstractMemberSizer):
             Whether the two moments combine as a resultant in the cross-section
             check, or as a linear sum.
 
-        Returns
-        -------
-        sizer :
-            A sizer over that family, classified by this standard.
-
         Raises
         ------
         ValueError
             If the family's ratio classifies as Class 4.
-
-        Notes
-        -----
-        The inverse of the `family` property, so a block configured by a
-        neutral family names no EC3 vocabulary. What the standard adds — the
-        partial factors, the buckling curve, the class the ratio falls in — is
-        derived in here at its defaults, exactly as `at_class_limit` derives
-        it from a bare grade. A design needing other factors builds a
-        `TubeCatalogue` explicitly and takes the plain constructor.
         """
         steel = design_steel(family.material)
         section_class = section_class_at_ratio(family.ratio, steel.f_y)
         catalogue = TubeCatalogue(family.ratio, section_class, steel)
 
-        return cls(structure, catalogue, resultant)
+        self.structure = structure
+        self.catalogue = catalogue
+        self.resultant = resultant
+        self.section_class = section_class
 
     @property
     def steel(self) -> Steel:

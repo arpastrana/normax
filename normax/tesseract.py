@@ -458,46 +458,7 @@ class TesseractSizer(AbstractMemberSizer):
             If the family's ratio classifies as Class 4.
         """
         self.client = client
-        self.local = Ec3Sizer.from_family(structure, family, resultant)
-
-    @classmethod
-    def at_class_limit(
-        cls,
-        structure: Structure,
-        client: Tesseract,
-        grade: SteelGrade,
-        section_class: int,
-    ) -> "TesseractSizer":
-        """
-        The sizer whose family sits at a class limit, from a bare grade.
-
-        Parameters
-        ----------
-        structure :
-            The structure whose members are sized. Read for nothing.
-        client :
-            The check's Tesseract.
-        grade :
-            The steel as a certificate states it, free of any standard.
-        section_class :
-            Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
-
-        Returns
-        -------
-        sizer :
-            A sizer over the family as thin as that class allows.
-
-        Notes
-        -----
-        The same constructor the in-process block offers, so a driver builds
-        either sizer from the same two arguments and imports nothing from the
-        standard's library. The moment-combination flag stays at its default
-        here; a caller selecting the linear sum names a family explicitly
-        and takes the plain constructor, the flag being clause configuration.
-        """
-        local = Ec3Sizer.at_class_limit(structure, grade, section_class)
-
-        return cls(structure, client, local.family)
+        self.local = Ec3Sizer(structure, family, resultant)
 
     @property
     def family(self) -> TubeFamily:
