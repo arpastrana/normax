@@ -34,7 +34,10 @@ from jaxtyping import Float
 from jaxtyping import Int
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
+from matplotlib.colors import LogNorm
 from matplotlib.figure import Figure
+
+from normax.optimization import Trajectory
 
 # Points of line width given to the thickest member of a drawing.
 WIDTH_MAX = 9.0
@@ -754,6 +757,92 @@ def figure_optimization(
     descent.legend(frameon=False, fontsize=8)
     descent.grid(alpha=0.3)
     figure.colorbar(scatter, ax=descent, label=r"envelope sharpness $\beta$")
+
+    return figure
+
+
+def figure_trajectory(
+    trajectories: Sequence[Trajectory],
+    *,
+    titles: Sequence[str] | None = None,
+    concatenated: bool = False,
+) -> Figure:
+    """
+    The objective at every iterate, for one search or several in a row.
+
+    Parameters
+    ----------
+    trajectories :
+        The runs to draw, each recorded by one search.
+    titles :
+        Name of each run, shown in the legend. Runs are numbered when no
+        names are given.
+    concatenated :
+        Whether to draw the runs end to end on one iteration axis, as a
+        single continued search, rather than overlaid from iteration zero.
+
+    Returns
+    -------
+    figure :
+        The descent of the objective, one curve per run.
+
+    Notes
+    -----
+    A concatenated seam repeats an iterate rather than hiding it: a search
+    records its starting point before it steps, so a warm-started run weighs
+    its predecessor's answer again, and the step in the objective across the
+    seam is a real change of measure rather than a plotting artifact.
+
+    The iterates are colored by their envelope sharpness only when every run
+    carries one. Zero is what a search stamps when its caller had no
+    sharpness to give, and a logarithmic color scale has no place for it.
+    """
+    masses = [np.asarray(walked.mass) for walked in trajectories]
+    sharpnesses = [np.asarray(walked.beta) for walked in trajectories]
+    if titles is None:
+        titles = tuple(f"run {index + 1}" for index in range(len(trajectories)))
+
+    figure, ax = plt.subplots(figsize=(7.0, 4.2), layout="constrained")
+
+    shades = ("#c0392b", "#35b779", "#31688e")
+    stamped = all(float(np.min(sharpness)) > 0.0 for sharpness in sharpnesses)
+
+    # One norm across every run, or the colors of two runs cannot be compared.
+    coloring = None
+    if stamped:
+        dimmest = min(float(np.min(sharpness)) for sharpness in sharpnesses)
+        sharpest = max(float(np.max(sharpness)) for sharpness in sharpnesses)
+        coloring = LogNorm(dimmest, sharpest)
+
+    offset = 0
+    scatter = None
+    for index, (mass, sharpness) in enumerate(zip(masses, sharpnesses, strict=True)):
+        steps = np.arange(len(mass)) + offset
+        ax.plot(
+            steps,
+            mass,
+            "-",
+            color=shades[index % len(shades)],
+            lw=1.4,
+            label=titles[index],
+        )
+        if coloring is not None:
+            scatter = ax.scatter(
+                steps, mass, c=sharpness, cmap="viridis", norm=coloring, s=14, zorder=2
+            )
+        if concatenated:
+            offset += len(mass)
+            if index < len(masses) - 1:
+                ax.axvline(offset - 0.5, color=GREY, ls=":", lw=1.0)
+
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("objective [t]")
+    final = float(masses[-1][-1])
+    ax.set_title(f"Descent, {final:.4f} t at the answer", fontsize=11)
+    ax.legend(frameon=False, fontsize=8)
+    ax.grid(alpha=0.3)
+    if scatter is not None:
+        figure.colorbar(scatter, ax=ax, label=r"envelope sharpness $\beta$")
 
     return figure
 
