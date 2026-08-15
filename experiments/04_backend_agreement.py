@@ -53,6 +53,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
@@ -64,8 +66,6 @@ from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases

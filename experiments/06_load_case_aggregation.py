@@ -34,15 +34,15 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from ec3x.actions import MemberActions
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import diameter_required
+from ec3x.sizing import mass_of_tubes
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.design import diameter_envelope
-from normax.ec3.actions import MemberActions
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import mass_of_tubes
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 

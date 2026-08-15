@@ -19,9 +19,9 @@ section is sized to carry an axial force over a buckling length, and the
 sensitivity of its diameter to both is computed four ways that share almost no
 code:
 
-    forward     the implicit tangent rule of normax.ec3.sizing
+    forward     the implicit tangent rule of ec3x.sizing
     reverse     that same rule, transposed by JAX into an adjoint
-    closed      normax.ec3.adjoint, derived on paper and written out in full
+    closed      ec3x.adjoint, derived on paper and written out in full
     numeric     a central difference of the forward solve
 
 Run with `uv run python experiments/01_single_strut_gradcheck.py`.
@@ -33,17 +33,17 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from ec3x.actions import MemberActions
+from ec3x.adjoint import derivative_force
+from ec3x.adjoint import derivative_force_tension
+from ec3x.adjoint import derivative_length
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import diameter_required
+from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.ec3.actions import MemberActions
-from normax.ec3.adjoint import derivative_force
-from normax.ec3.adjoint import derivative_force_tension
-from normax.ec3.adjoint import derivative_length
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import utilization_design
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
@@ -99,7 +99,7 @@ class DerivativeSet(NamedTuple):
     reverse :
         The same rule, transposed by JAX into an adjoint.
     closed :
-        Hand-derived closed form of `normax.ec3.adjoint`.
+        Hand-derived closed form of `ec3x.adjoint`.
     numeric :
         Central difference of the forward solve.
     """

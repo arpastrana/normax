@@ -30,22 +30,22 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from ec3x.actions import MemberActions
+from ec3x.classification import is_plastic
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import LIMIT_CROSS_SECTION
+from ec3x.sizing import LIMIT_MAJOR
+from ec3x.sizing import LIMIT_MINIMUM_SIZE
+from ec3x.sizing import LIMIT_MINOR
+from ec3x.sizing import LIMIT_TENSION
+from ec3x.sizing import diameter_required
+from ec3x.sizing import governing_limit_state
+from ec3x.sizing import mass_of_tubes
+from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.ec3.actions import MemberActions
-from normax.ec3.classification import is_plastic
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import LIMIT_CROSS_SECTION
-from normax.ec3.sizing import LIMIT_MAJOR
-from normax.ec3.sizing import LIMIT_MINIMUM_SIZE
-from normax.ec3.sizing import LIMIT_MINOR
-from normax.ec3.sizing import LIMIT_TENSION
-from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import governing_limit_state
-from normax.ec3.sizing import mass_of_tubes
-from normax.ec3.sizing import utilization_design
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck

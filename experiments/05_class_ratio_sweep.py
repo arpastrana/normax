@@ -31,18 +31,18 @@ from collections.abc import Sequence
 from typing import NamedTuple
 
 import jax.numpy as jnp
+from ec3x.actions import MemberActions
+from ec3x.classification import is_plastic
+from ec3x.material import Steel
+from ec3x.resistance import SHEAR_THRESHOLD
+from ec3x.resistance import area_shear
+from ec3x.resistance import resistance_shear
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import diameter_required
+from ec3x.sizing import mass_of_tubes
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.ec3.actions import MemberActions
-from normax.ec3.classification import is_plastic
-from normax.ec3.material import Steel
-from normax.ec3.resistance import SHEAR_THRESHOLD
-from normax.ec3.resistance import area_shear
-from normax.ec3.resistance import resistance_shear
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import mass_of_tubes
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 

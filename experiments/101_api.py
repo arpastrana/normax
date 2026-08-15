@@ -55,6 +55,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import yaml
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 from jaxtyping import Array
 from jaxtyping import Float
 
@@ -65,8 +67,6 @@ from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import settle_diameters
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases

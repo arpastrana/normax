@@ -56,6 +56,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
@@ -67,8 +69,6 @@ from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
@@ -128,6 +128,17 @@ TOLERANCE_MOMENT = 1e-11
 MOMENT_FIELDS = (
     "moment_major",
     "moment_minor",
+)
+
+# A size reads the moments, so it inherits their near-cancellation rather than
+# the axial force's precision, damped by the small share of utilization a
+# funicular moment claims. Measured at 1.17e-14 in class 2 and 1.35e-14 in
+# class 3; the check itself crosses exactly on identical forces, which the
+# parity test asserts stage-alone.
+TOLERANCE_SIZE = 1e-13
+SIZE_FIELDS = (
+    "diameter",
+    "thickness",
 )
 
 # Serializing across a socket costs a few more digits than importing the module
@@ -263,15 +274,19 @@ class ParityWorst(NamedTuple):
     Attributes
     ----------
     value :
-        Worst scaled difference on a quantity that is not an end moment.
+        Worst scaled difference on a quantity that is neither an end moment nor
+        a section size.
     moment :
-        Worst scaled difference on an end moment or a moment factor.
+        Worst scaled difference on an end moment.
+    size :
+        Worst scaled difference on a section diameter or thickness.
     gradient :
         Worst scaled difference on the gradient of the mass.
     """
 
     value: float
     moment: float
+    size: float
     gradient: float
 
     def worse_than(self, other: "ParityWorst") -> "ParityWorst":
@@ -280,8 +295,9 @@ class ParityWorst(NamedTuple):
         """
         value = max(self.value, other.value)
         moment = max(self.moment, other.moment)
+        size = max(self.size, other.size)
         gradient = max(self.gradient, other.gradient)
-        worst = ParityWorst(value, moment, gradient)
+        worst = ParityWorst(value, moment, size, gradient)
 
         return worst
 
@@ -399,6 +415,7 @@ def report_parity(
     rows = []
     worst_value = 0.0
     worst_moment = 0.0
+    worst_size = 0.0
     for (label, oracle_leaf), (_, composed_leaf) in zip(
         named_fields(oracle.result), named_fields(composed.result)
     ):
@@ -406,9 +423,13 @@ def report_parity(
         right = np.asarray(composed_leaf, dtype=np.float64)
         scaled = relative(left, right)
 
-        if label.rpartition(".")[2] in MOMENT_FIELDS:
+        leaf = label.rpartition(".")[2]
+        if leaf in MOMENT_FIELDS:
             limit = TOLERANCE_MOMENT
             worst_moment = max(worst_moment, scaled)
+        elif leaf in SIZE_FIELDS:
+            limit = TOLERANCE_SIZE
+            worst_size = max(worst_size, scaled)
         else:
             limit = TOLERANCE_PARITY
             worst_value = max(worst_value, scaled)
@@ -493,7 +514,7 @@ def report_parity(
     report.write_entries(entries)
 
     worst_gradient = max(row[3] for row in gradients)
-    worst = ParityWorst(worst_value, worst_moment, worst_gradient)
+    worst = ParityWorst(worst_value, worst_moment, worst_size, worst_gradient)
 
     return worst
 
@@ -667,7 +688,7 @@ def main(verbose: bool = True) -> None:
     report_schemas(report, chain)
 
     report.write_heading("The same design, taken twice")
-    worst = ParityWorst(0.0, 0.0, 0.0)
+    worst = ParityWorst(0.0, 0.0, 0.0, 0.0)
     for section_class in CLASSES:
         found = report_parity(report, setup, chain, section_class)
         worst = worst.worse_than(found)
@@ -686,6 +707,7 @@ def main(verbose: bool = True) -> None:
     checks = [
         ToleranceCheck("value error", worst.value, TOLERANCE_PARITY),
         ToleranceCheck("end moment error", worst.moment, TOLERANCE_MOMENT),
+        ToleranceCheck("size error", worst.size, TOLERANCE_SIZE),
         ToleranceCheck("gradient error", worst.gradient, TOLERANCE_DERIVATIVE),
         ToleranceCheck("forward against reverse", modes, TOLERANCE_DERIVATIVE),
     ]
