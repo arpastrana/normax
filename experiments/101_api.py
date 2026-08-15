@@ -74,7 +74,7 @@ from normax.loads import create_loads_by_name
 from normax.optimization import minimize_bounded
 from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
-from normax.sizing import Ec3Sizer
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 

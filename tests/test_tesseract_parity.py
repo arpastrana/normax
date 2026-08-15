@@ -20,7 +20,7 @@ from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_half_span
 from normax.loads import loads_point
 from normax.loads import loads_uniform
-from normax.sizing import Ec3Sizer
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import STAGES

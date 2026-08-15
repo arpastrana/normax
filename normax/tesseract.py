@@ -67,8 +67,8 @@ from normax.loads import count_load_cases
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
 from normax.sizing import AbstractMemberSizer
-from normax.sizing import Ec3Sizer
 from normax.sizing import MemberSizes
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import member_lengths
 

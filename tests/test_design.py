@@ -21,8 +21,8 @@ from normax.loads import loads_half_span
 from normax.loads import loads_uniform
 from normax.loads import select_load_case
 from normax.optimization import SearchResult
-from normax.sizing import Ec3Sizer
-from normax.sizing import design_actions
+from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import design_actions
 from normax.structures import build_arch_2d
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
