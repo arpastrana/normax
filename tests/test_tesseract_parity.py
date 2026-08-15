@@ -206,7 +206,7 @@ def both_pipelines(arch, section_class, resultant=True):
     composed = StructuralDesignPipeline(
         TesseractFormFinder(arch.structure, arch.chain.formfinding),
         TesseractAnalyzer(arch.structure, arch.chain.analysis, sizer.family, NORMAL),
-        TesseractSizer(arch.structure, arch.chain.ec3, catalogue, resultant),
+        TesseractSizer(arch.structure, arch.chain.ec3, sizer.family, resultant),
     )
 
     return eqx.filter_jit(in_process), composed
@@ -352,7 +352,7 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     analyzer = SmaxAnalyzer(arch.structure, local.family(SEED))
     forces = analyzer(shape.xyz, arch.params.diameters, one_case.analysis)
 
-    crossed = TesseractSizer(arch.structure, arch.chain.ec3, catalogue)
+    crossed = TesseractSizer(arch.structure, arch.chain.ec3, local.family)
 
     oracle = local(forces, buckling_length)
     composed = crossed(forces, buckling_length)

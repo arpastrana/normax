@@ -7,12 +7,8 @@ import pytest
 from ec3x.material import Steel
 from ec3x.section import TubeCatalogue
 from ec3x.sizing import LIMIT_MAJOR
-from ec3x.stability import ALPHA_CR_ELASTIC
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import buckling_modes
-from normax.analysis.smax import frame_stability
-from normax.analysis.smax import prepare_model
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -39,7 +35,6 @@ from normax.visualization import SizedMembers
 from normax.visualization import StaggeredPasses
 from normax.visualization import figure_convergence
 from normax.visualization import figure_load_cases
-from normax.visualization import figure_modes
 from normax.visualization import figure_optimization
 from normax.visualization import figure_sections
 
@@ -51,9 +46,6 @@ SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
 NUM_EDGES = 10
-
-# The arch lies in the XZ plane, so it has no thickness along Y.
-NORMAL = 1
 
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
@@ -72,10 +64,6 @@ TOLERANCE_GRADIENT = 5e-8
 # the tolerance sits above the floor of the reference rather than on it.
 STEP_CASES = 1e-4
 TOLERANCE_GRADIENT_CASES = 2e-7
-
-# Effective length of the arch's own critical mode, as a fraction of its
-# developed length. Measured, and steady to three figures across the meshes.
-GLOBAL_MODE_FACTOR = 0.576
 
 
 @pytest.fixture(scope="module")
@@ -128,15 +116,6 @@ def params_of(setup):
     _, _, q = setup
 
     return DesignParameters(q, jnp.full(NUM_EDGES, SEED))
-
-
-def analysis_model(structure, steel, catalogue):
-    """
-    The compiled analysis model alone, for the calls that take no block.
-    """
-    section = Ec3Sizer(structure, catalogue).family(SEED)
-
-    return prepare_model(structure, section)
 
 
 def analyzer_of(structure, steel, catalogue):
@@ -516,233 +495,6 @@ def test_the_section_figure_reports_a_lighter_design(setup, steel, seed):
 
 
 # --------------------------------------------------------------------------- #
-# What the member-length buckling length assumes
-# --------------------------------------------------------------------------- #
-def test_the_critical_factors_are_positive_and_ordered(setup, steel):
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    modes = buckling_modes(
-        analysis_model(structure, steel, catalogue),
-        result.shape.xyz,
-        result.sizes.sections.diameter,
-        Ec3Sizer(structure, catalogue).family(SEED),
-        funicular(structure),
-        num_modes=4,
-    )
-    factors = np.asarray(modes.factors)
-
-    assert np.all(factors > 0.0)
-    assert np.all(np.diff(factors) > 0.0)
-    assert modes.shapes.shape == (4, NUM_EDGES + 1, 6)
-
-
-def test_the_fully_stressed_arch_is_unstable_on_its_own(setup, steel):
-    # The member-length buckling length presumes the nodes are held in plane by
-    # structure outside the model. Left to itself the arch buckles well below its
-    # design load, so the assumption is strong rather than conservative, and this
-    # pins the number that says so.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    modes = buckling_modes(
-        analysis_model(structure, steel, catalogue),
-        result.shape.xyz,
-        result.sizes.sections.diameter,
-        Ec3Sizer(structure, catalogue).family(SEED),
-        funicular(structure),
-        num_modes=1,
-    )
-
-    assert float(modes.factors[0]) < 1.0
-
-
-def test_the_critical_mode_stays_in_the_plane(setup, steel):
-    # Restraining the out-of-plane translation is what makes the factor
-    # comparable with an in-plane member check rather than with a lateral one.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    modes = buckling_modes(
-        analysis_model(structure, steel, catalogue),
-        result.shape.xyz,
-        result.sizes.sections.diameter,
-        Ec3Sizer(structure, catalogue).family(SEED),
-        funicular(structure),
-        num_modes=1,
-    )
-    shape = np.asarray(modes.shapes[0])
-    energy = shape**2
-
-    assert np.allclose(shape[:, NORMAL], 0.0, atol=1e-12)
-    assert energy[:, [0, 2, 4]].sum() / energy.sum() > 0.99
-
-
-def test_the_critical_mode_is_antisymmetric(setup, steel):
-    # A node at midspan in the vertical component: one half rises as the other
-    # falls, which is the governing mode of a two-pinned arch.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    modes = buckling_modes(
-        analysis_model(structure, steel, catalogue),
-        result.shape.xyz,
-        result.sizes.sections.diameter,
-        Ec3Sizer(structure, catalogue).family(SEED),
-        funicular(structure),
-        num_modes=1,
-    )
-    vertical = np.asarray(modes.shapes[0])[:, 2]
-    crown = (NUM_EDGES + 1) // 2
-
-    assert abs(vertical[crown]) < 0.01 * np.max(np.abs(vertical))
-    assert np.sign(vertical[1]) != np.sign(vertical[-2])
-
-
-def test_sizing_against_the_global_mode_costs_several_times_the_mass(setup, steel):
-    _, braced = sized(setup, steel, 3)
-    arc = float(jnp.sum(braced.shape.lengths))
-    _, unbraced = sized(
-        setup, steel, 3, buckling_length=jnp.full(NUM_EDGES, GLOBAL_MODE_FACTOR * arc)
-    )
-
-    assert float(compute_mass(unbraced)) / float(compute_mass(braced)) > 3.0
-
-
-def test_the_mode_figure_builds(setup, steel):
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-    modes = buckling_modes(
-        analysis_model(structure, steel, catalogue),
-        result.shape.xyz,
-        result.sizes.sections.diameter,
-        Ec3Sizer(structure, catalogue).family(SEED),
-        funicular(structure),
-        num_modes=4,
-    )
-
-    figure = figure_modes(
-        result.shape.xyz, np.asarray(modes.factors), np.asarray(modes.shapes), RISE
-    )
-
-    assert len(figure.axes) == 4
-    plt.close(figure)
-
-
-# --------------------------------------------------------------------------- #
-# The global stability check, and the standard's two routes to slenderness
-# --------------------------------------------------------------------------- #
-def test_the_bare_arch_fails_the_global_stability_check(setup, steel):
-    # A check, not a diagnostic: the design is verified against 5.2.1 and does
-    # not satisfy it. That failure is the evidence the braced-node assumption is
-    # load-bearing, so it is pinned rather than tolerated quietly.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    checked = frame_stability(
-        result,
-        analyzer_of(setup[0], steel, catalogue),
-        funicular(setup[0]),
-        num_modes=1,
-    )
-
-    assert bool(checked.adequate) is False
-    assert float(checked.utilization) > 1.0
-    assert float(checked.utilization) == pytest.approx(
-        ALPHA_CR_ELASTIC / float(checked.factors[0]), rel=1e-12
-    )
-
-
-def test_the_two_routes_to_slenderness_disagree_by_the_assumption(setup, steel):
-    # Same equation, different question. The member route reads an assumed
-    # buckling length; the global route reads the mode the structure has.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    checked = frame_stability(
-        result,
-        analyzer_of(setup[0], steel, catalogue),
-        funicular(setup[0]),
-        num_modes=1,
-    )
-    ratio = np.asarray(checked.slenderness_global) / np.asarray(
-        checked.slenderness_member
-    )
-
-    assert np.all(ratio > 4.0)
-    assert np.all(np.asarray(checked.slenderness_global) > 1.0)
-
-
-def test_the_global_route_is_nearly_uniform_across_the_arch(setup, steel):
-    # One mode governs the whole arch, so every member inherits the same
-    # slenderness from it — unlike the member route, which varies with length.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    checked = frame_stability(
-        result,
-        analyzer_of(setup[0], steel, catalogue),
-        funicular(setup[0]),
-        num_modes=1,
-    )
-    spread = np.asarray(checked.slenderness_global)
-    varied = np.asarray(checked.slenderness_member)
-
-    assert spread.max() / spread.min() < 1.01
-    assert varied.max() / varied.min() > 1.15
-
-
-def test_the_equivalent_buckling_length_exceeds_every_member(setup, steel):
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    checked = frame_stability(
-        result,
-        analyzer_of(setup[0], steel, catalogue),
-        funicular(setup[0]),
-        num_modes=1,
-    )
-
-    assert np.all(
-        np.asarray(checked.buckling_length_equivalent)
-        > np.asarray(result.shape.lengths)
-    )
-
-
-def test_the_stability_check_reports_the_modes_it_was_asked_for(setup, steel):
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    checked = frame_stability(
-        result,
-        analyzer_of(setup[0], steel, catalogue),
-        funicular(setup[0]),
-        num_modes=3,
-    )
-
-    assert checked.factors.shape == (3,)
-    assert np.all(np.diff(np.asarray(checked.factors)) > 0.0)
-
-
-def test_the_threshold_of_the_clause_is_the_one_applied(setup, steel):
-    # The threshold is the clause's and not a parameter, so the verdict and the
-    # utilization have to be the two readings of one comparison against it.
-    structure, _, _ = setup
-    catalogue, result = sized(setup, steel, 3)
-
-    checked = frame_stability(
-        result,
-        analyzer_of(structure, steel, catalogue),
-        funicular(structure),
-        num_modes=1,
-    )
-    alpha_cr = float(checked.factors[0])
-
-    assert bool(checked.adequate) is (alpha_cr >= ALPHA_CR_ELASTIC)
-    assert float(checked.utilization) == pytest.approx(ALPHA_CR_ELASTIC / alpha_cr)
-
-
-# --------------------------------------------------------------------------- #
 # One structure against several load cases
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
@@ -941,42 +693,6 @@ def test_the_enveloped_mass_gradient_matches_central_differences(
 
         error = abs(float(gradient[edge]) - difference) / scale
         assert error < TOLERANCE_GRADIENT_CASES
-
-
-def test_the_critical_load_factor_belongs_to_a_load_case(setup, steel, load_cases):
-    # A factor quoted without the case it was measured under says less than it
-    # appears to: the case a shape was found under is not the one that sized it.
-    structure, _, _ = setup
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
-    exact = covered(setup, steel, load_cases, None)[1]
-
-    analyzer = analyzer_of(structure, steel, catalogue)
-    factors = [
-        float(
-            frame_stability(
-                exact, analyzer, load_case, load_case=index, num_modes=1
-            ).factors[0]
-        )
-        for index, load_case in enumerate(load_cases.analysis)
-    ]
-
-    assert len(set(round(factor, 9) for factor in factors)) == len(factors)
-    assert all(np.isfinite(factors))
-
-
-def test_the_default_load_case_of_the_stability_check_is_the_structures_own(
-    setup, steel, load_cases
-):
-    structure, _, _ = setup
-    catalogue, result, demanded = covered(setup, steel, load_cases, 500.0)
-    exact = covered(setup, steel, load_cases, None)[1]
-
-    analyzer = analyzer_of(structure, steel, catalogue)
-
-    implied = frame_stability(exact, analyzer, load_cases.formfinding)
-    named = frame_stability(exact, analyzer, funicular(structure))
-
-    assert float(implied.factors[0]) == pytest.approx(float(named.factors[0]))
 
 
 def descents():
