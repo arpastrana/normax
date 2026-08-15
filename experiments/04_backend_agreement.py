@@ -61,22 +61,23 @@ from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
 from normax.analysis.smax import prepare_model as prepare_smax
 from normax.design import DesignParameters
-from normax.design import DesignPipeline
-from normax.design import LoadCases
-from normax.design import calculate_mass
-from normax.design import load_cases
+from normax.design import StructuralDesignPipeline
+from normax.design import compute_mass
+from normax.design import design_envelope
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
+from normax.loads import LoadCases
+from normax.loads import assemble_load_cases
+from normax.loads import loads_uniform
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.structures import Structure
-from normax.structures import arch_2d
-from normax.structures import loads_uniform
+from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractFormFinder
 from normax.tesseract import TesseractSizer
@@ -120,6 +121,9 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
+
+# The tube the traced backend stands its frame up as, its sizes replaced per call.
+SECTION_SEED = CATALOGUE(SEED)
 
 BACKENDS = ("smax", "opensees")
 
@@ -177,7 +181,7 @@ class ArchSetup(NamedTuple):
         """
         applied = self.funicular
 
-        return load_cases(applied, [applied])
+        return assemble_load_cases([applied])
 
     @property
     def funicular(self) -> Float[Array, "nodes 3"]:
@@ -287,7 +291,7 @@ def arch_setup(num_edges: int) -> ArchSetup:
     """
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
-    structure = arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
+    structure = build_arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
     applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
@@ -317,16 +321,18 @@ def mass_objective(setup: ArchSetup, chain) -> Callable[[Float[Array, "edges"]],
     Force densities to a mass, through whichever backend is selected.
     """
     structure = setup.structure
-    pipeline = DesignPipeline(
-        TesseractFormFinder(chain.formfinding),
-        TesseractAnalyzer(chain.analysis, STEEL, CATALOGUE, NORMAL),
-        TesseractSizer(chain.ec3, STEEL, CATALOGUE),
-    ).compile(structure)
+    pipeline = StructuralDesignPipeline(
+        TesseractFormFinder(structure, chain.formfinding),
+        TesseractAnalyzer(structure, chain.analysis, CATALOGUE, NORMAL),
+        TesseractSizer(structure, chain.ec3, CATALOGUE),
+    )
 
     loads = setup.loads
 
     def total(q):
-        return calculate_mass(pipeline(DesignParameters(q, setup.seed), loads))
+        design = pipeline(DesignParameters(q, setup.seed), loads)
+
+        return compute_mass(design_envelope(design))
 
     return total
 
@@ -406,7 +412,7 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     prepared_ddm = backend_opensees.prepare_model(
         setup.structure, CATALOGUE, normal=NORMAL
     )
-    prepared_smax = prepare_smax(setup.structure, CATALOGUE, normal=NORMAL)
+    prepared_smax = prepare_smax(setup.structure, SECTION_SEED)
 
     def ddm():
         return backend_opensees.force_jacobian(
@@ -433,7 +439,7 @@ def traced_forces(prepared, applied) -> Callable[..., dict[str, Float[Array, "..
     """
 
     def run(coords, sizes):
-        member = forces_smax(prepared, coords, sizes, CATALOGUE, applied)
+        member = forces_smax(prepared, coords, sizes, SECTION_SEED, applied)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
@@ -456,12 +462,12 @@ def agreement(report: Report) -> float:
     prepared_ddm = backend_opensees.prepare_model(
         setup.structure, CATALOGUE, normal=NORMAL
     )
-    prepared_smax = prepare_smax(setup.structure, CATALOGUE, normal=NORMAL)
+    prepared_smax = prepare_smax(setup.structure, SECTION_SEED)
 
     mine = backend_opensees.member_forces(
         prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
     )
-    theirs = forces_smax(prepared_smax, xyz, diameters, CATALOGUE, setup.funicular)
+    theirs = forces_smax(prepared_smax, xyz, diameters, SECTION_SEED, setup.funicular)
 
     force_columns = (
         ReportColumn("force", align="<"),
@@ -546,10 +552,10 @@ def blind(report: Report) -> None:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    prepared = prepare_smax(setup.structure, CATALOGUE, normal=NORMAL)
+    prepared = prepare_smax(setup.structure, SECTION_SEED)
 
     def run(coords):
-        member = forces_smax(prepared, coords, diameters, CATALOGUE, setup.funicular)
+        member = forces_smax(prepared, coords, diameters, SECTION_SEED, setup.funicular)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,

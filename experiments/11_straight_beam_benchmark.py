@@ -84,13 +84,13 @@ from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state
 from normax.ec3.sizing import mass_of_tubes
 from normax.ec3.sizing import utilization_design
+from normax.loads import loads_uniform
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import Structure
-from normax.structures import arch_2d
-from normax.structures import loads_uniform
+from normax.structures import build_arch_2d
 from normax.visualization import BeamSizing
 from normax.visualization import BeamStatics
 from normax.visualization import SizedMembers
@@ -105,9 +105,6 @@ NUM_EDGES = 20
 # Rise of the arch the beam is projected from. It sets the node spacing along the
 # span and nothing else, every z coordinate being dropped.
 ARCH_RISE = 3_000.0
-
-# The beam lies in the XZ plane, so it has no thickness along Y.
-NORMAL = 1
 
 # The diameter the frame is analyzed with before the check has spoken. It cannot
 # reach the answer here, the structure being determinate, and the stagger says so.
@@ -145,6 +142,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 STEEL = Steel()
 SECTION_CLASS = 3
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL, SECTION_CLASS)
+SECTION_SEED = CATALOGUE(SEED)
 
 CLASSES = (2, 3)
 
@@ -311,9 +309,9 @@ def beam_problem() -> BeamProblem:
     flags in Python, which a tracer cannot follow.
     """
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
-    arch = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=ARCH_RISE)
+    arch = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=ARCH_RISE)
     structure = arch._replace(nodes=arch.nodes.at[:, 2].set(0.0))
-    model = prepare_model(structure, CATALOGUE, normal=NORMAL)
+    model = prepare_model(structure, SECTION_SEED)
     setup = BeamProblem(structure, model, loads_uniform(structure, spread))
 
     return setup
@@ -324,7 +322,6 @@ def build(
     setup: BeamProblem,
     diameters: Float[Array, "edges"],
     catalogue: TubeCatalogue,
-    section_class: int,
 ) -> BeamDesign:
     """
     Analyze the beam at one set of sizes, then size it to satisfy the standard.
@@ -332,11 +329,12 @@ def build(
     Compiled, which is what makes the staggered passes affordable: every caller
     here passes the same prepared model, so one trace serves all of them.
     """
+    section = catalogue(SEED)
     member = member_forces(
         setup.model,
         setup.structure.nodes,
         diameters,
-        catalogue,
+        section,
         setup.loads,
     )
     moment_major, factor_major = end_moments(
@@ -409,7 +407,6 @@ def beam_statics(setup: BeamProblem, catalogue: TubeCatalogue) -> BeamStatics:
         setup.model,
         setup.structure.nodes,
         setup.seed,
-        STEEL,
         catalogue,
         setup.loads,
     )
@@ -456,7 +453,7 @@ def run_stagger(
     masses = []
 
     for _ in range(PASSES):
-        result = build(setup, diameters, catalogue, section_class)
+        result = build(setup, diameters, catalogue)
         shift = jnp.abs(result.diameters - diameters) / result.diameters
         moves.append(float(jnp.max(shift)))
         masses.append(float(result.mass))
@@ -489,7 +486,6 @@ def report_design(
     report: Report,
     design: BeamDesign,
     catalogue: TubeCatalogue,
-    section_class: int,
 ) -> None:
     """
     Every member's actions, size, utilization and governing limit state.
@@ -498,9 +494,7 @@ def report_design(
         catalogue(design.diameters),
         design.actions,
         design.lengths,
-        STEEL,
         catalogue,
-        section_class=section_class,
     )
     limits = {LIMIT_NAMES[float(code)] for code in codes}
 
@@ -526,7 +520,7 @@ def report_design(
     )
     ratio = float(catalogue.ratio)
 
-    report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
+    report.write_heading(f"Class {catalogue.section_class}, d/t = {ratio:.3f}")
     report.write_table(columns, rows)
     report.write_entries(entries)
 
@@ -653,8 +647,8 @@ def main(verbose: bool = True) -> None:
     designs = {}
     for section_class in CLASSES:
         catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
-        design = build(setup, setup.seed, catalogue, section_class)
-        report_design(report, design, catalogue, section_class)
+        design = build(setup, setup.seed, catalogue)
+        report_design(report, design, catalogue)
         designs[section_class] = design
 
     # What both branches owe: every member sized to satisfy the standard exactly.

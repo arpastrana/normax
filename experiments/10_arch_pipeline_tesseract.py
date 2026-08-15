@@ -64,23 +64,24 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
-from normax.design import DesignPipeline
-from normax.design import LoadCases
-from normax.design import calculate_mass
-from normax.design import load_cases
+from normax.design import StructuralDesignPipeline
+from normax.design import compute_mass
+from normax.design import design_envelope
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
+from normax.loads import LoadCases
+from normax.loads import assemble_load_cases
+from normax.loads import loads_uniform
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing import Ec3Sizer
 from normax.structures import Structure
-from normax.structures import arch_2d
-from normax.structures import loads_uniform
+from normax.structures import build_arch_2d
 from normax.tesseract import Chain
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractFormFinder
@@ -196,7 +197,7 @@ class ArchSetup(NamedTuple):
         """
         applied = self.funicular
 
-        return load_cases(applied, [applied])
+        return assemble_load_cases([applied])
 
     @property
     def funicular(self) -> Float[Array, "nodes 3"]:
@@ -206,34 +207,39 @@ class ArchSetup(NamedTuple):
         return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
 
 
-def in_process_pipeline(setup: ArchSetup, catalogue: TubeCatalogue) -> DesignPipeline:
+def in_process_pipeline(
+    setup: ArchSetup,
+    catalogue: TubeCatalogue,
+) -> StructuralDesignPipeline:
     """
-    The three blocks that compute here, compiled against the arch.
+    The three blocks that compute here, built against the arch.
     """
-    blocks = DesignPipeline(
-        FdmFormFinder(),
-        SmaxAnalyzer(STEEL, catalogue, NORMAL),
-        Ec3Sizer(STEEL, catalogue),
+    structure = setup.structure
+    blocks = StructuralDesignPipeline(
+        FdmFormFinder(structure),
+        SmaxAnalyzer(structure, catalogue(SEED)),
+        Ec3Sizer(structure, catalogue),
     )
 
-    return blocks.compile(setup.structure)
+    return blocks
 
 
 def composed_pipeline(
     setup: ArchSetup,
     chain: Chain,
     catalogue: TubeCatalogue,
-) -> DesignPipeline:
+) -> StructuralDesignPipeline:
     """
     The same three blocks, each reached across a Tesseract boundary.
     """
-    blocks = DesignPipeline(
-        TesseractFormFinder(chain.formfinding),
-        TesseractAnalyzer(chain.analysis, STEEL, catalogue, NORMAL),
-        TesseractSizer(chain.ec3, STEEL, catalogue),
+    structure = setup.structure
+    blocks = StructuralDesignPipeline(
+        TesseractFormFinder(structure, chain.formfinding),
+        TesseractAnalyzer(structure, chain.analysis, catalogue, NORMAL),
+        TesseractSizer(structure, chain.ec3, catalogue),
     )
 
-    return blocks.compile(setup.structure)
+    return blocks
 
 
 class TimedCall(NamedTuple):
@@ -286,14 +292,13 @@ def arch_setup() -> ArchSetup:
     """
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
-    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
+    structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
     applied = loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(
-        trial, structure.nodes[graph.indices_fixed], graph, applied
-    )
+    xyz_fixed = structure.nodes[graph.indices_fixed]
+    state = equilibrium_state(trial, xyz_fixed, graph, applied)
     reached = jnp.max(state.xyz[:, 2])
     setup = ArchSetup(structure, graph, trial * reached / RISE)
 
@@ -302,18 +307,22 @@ def arch_setup() -> ArchSetup:
 
 def named_fields(container: NamedTuple) -> Iterator[tuple[str, Any]]:
     """
-    Every field of a result, with a nested container expanded one level.
+    Every array a design holds, named by the path that reaches it.
 
     A container holds quantities of different units, so comparing one as a
     single array scales a moment by an axial force and reports a ratio of no
-    physical meaning. Each leaf is measured against itself instead.
+    physical meaning. Each array is measured against itself instead, however
+    deeply the design nests it.
+
+    The grade and the class every section carries are left out. Both crossed as
+    inputs of the schema rather than as answers, so they can only agree.
     """
     for field in container._fields:
         value = getattr(container, field)
         if hasattr(value, "_fields"):
-            for inner in value._fields:
-                yield f"{field}.{inner}", getattr(value, inner)
-        else:
+            for path, leaf in named_fields(value):
+                yield f"{field}.{path}", leaf
+        elif isinstance(value, jax.Array | np.ndarray):
             yield field, value
 
 
@@ -421,18 +430,21 @@ def report_parity(
     report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
     report.write_table(columns, rows)
 
+    enveloped = design_envelope(oracle.result)
+    diameters = enveloped.sizes.sections.diameter
     codes = in_process.sizer.governing(
-        oracle.result.diameters, oracle.result.actions, oracle.result.buckling_length
+        diameters, enveloped.sizes.actions, enveloped.shape.lengths
     )
     limits = {LIMIT_NAMES[float(code)] for code in codes[0]}
-    departure = float(jnp.max(jnp.abs(composed.result.utilization - 1.0)))
+    departure = float(jnp.max(jnp.abs(composed.result.sizes.utilization - 1.0)))
     seconds = (
         f"{oracle.seconds:.4f} in process, {composed.seconds:.4f} composed,"
         " both compiled"
     )
+    crossed_mass = compute_mass(design_envelope(composed.result))
     entries = (
         ("governing", ", ".join(sorted(limits))),
-        ("mass", f"{float(calculate_mass(composed.result)):.12f} t"),
+        ("mass", f"{float(crossed_mass):.12f} t"),
         ("worst |u-1|", f"{departure:.2e}"),
         ("seconds", seconds),
     )
@@ -440,12 +452,16 @@ def report_parity(
     report.write_entries(entries)
 
     def exact_mass(q):
-        return calculate_mass(in_process(DesignParameters(q, setup.seed), setup.loads))
+        params = DesignParameters(q, setup.seed)
+        by_case = in_process(params, setup.loads)
+
+        return compute_mass(design_envelope(by_case))
 
     def composed_mass(q):
-        return calculate_mass(
-            composed_blocks(DesignParameters(q, setup.seed), setup.loads)
-        )
+        params = DesignParameters(q, setup.seed)
+        by_case = composed_blocks(params, setup.loads)
+
+        return compute_mass(design_envelope(by_case))
 
     exact_of = eqx.filter_jit(jax.grad(exact_mass))
     crossed_of = eqx.filter_jit(jax.grad(composed_mass))
@@ -493,9 +509,10 @@ def report_modes(report: Report, setup: ArchSetup, chain: Chain) -> float:
     composed_blocks = composed_pipeline(setup, chain, catalogue)
 
     def objective(q):
-        return calculate_mass(
-            composed_blocks(DesignParameters(q, setup.seed), setup.loads)
-        )
+        params = DesignParameters(q, setup.seed)
+        by_case = composed_blocks(params, setup.loads)
+
+        return compute_mass(design_envelope(by_case))
 
     def forward_derivative(q, tangent):
         _, derivative = jax.jvp(objective, (q,), (tangent,))
@@ -550,7 +567,6 @@ def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) ->
             "axial_force": axial_force,
             "end_moments_major": member["end_moments_major"],
             "end_moments_minor": member["end_moments_minor"],
-            "lengths": lengths,
             "buckling_length": lengths,
             "f_y": STEEL.f_y,
             "e_mod": STEEL.e_mod,
@@ -600,7 +616,10 @@ def report_served(
         blocks = composed_pipeline(setup, stages, catalogue)
 
         def total(q):
-            return calculate_mass(blocks(DesignParameters(q, setup.seed), setup.loads))
+            params = DesignParameters(q, setup.seed)
+            by_case = blocks(params, setup.loads)
+
+            return compute_mass(design_envelope(by_case))
 
         return total
 

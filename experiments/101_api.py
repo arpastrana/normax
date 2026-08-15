@@ -28,6 +28,14 @@ of freedom maps, a code check wants nothing at all — and it runs once, on the
 host. What is left is a function of design parameters and load cases, which is
 what the optimizer differentiates and what compiles.
 
+**The objective is a mass with a floor under the shortest member.** Nothing in a
+member check objects to a vanishing member, and two things reward one: its mass
+is an area times a length, and its buckling length is its own length, so as it
+shortens it becomes both free and unbucklable. Left alone the search collapses
+members rather than improving the form, and the mass it reports is the collapse.
+The floor is a multiplicative penalty reading a ratio of lengths, so it needs no
+mass scale, and a weight of zero in the file turns it off.
+
 **The three disagree about how they compute, and the pipeline never asks.** Form
 finding traces a linear solve, the frame analysis traces an assembly, and the
 code check carries a hand-derived tangent at the root of a residual. Replacing
@@ -64,6 +72,7 @@ from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
 from normax.optimization import minimize_bounded
+from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
 from normax.sizing import Ec3Sizer
 from normax.structures import Structure
@@ -71,10 +80,6 @@ from normax.structures import build_arch_2d
 
 # The arch and the search, unless another file is named on the command line.
 CONFIG = Path(__file__).with_name("arch.yaml")
-
-# The arch lies in the XZ plane, so it has no thickness along Y. A fact about
-# the structure this script builds rather than a choice made about it.
-NORMAL = 1
 
 COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
@@ -179,6 +184,34 @@ class BoundsConfig(NamedTuple):
     max: float
 
 
+class FloorConfig(NamedTuple):
+    """
+    The shortest member the design is allowed, and how hard it is held there.
+
+    Attributes
+    ----------
+    fraction :
+        Shortest member allowed, as a fraction of the nominal bay — the span
+        divided by the member count.
+    sharpness :
+        Sharpness of the smooth minimum the penalty reads the shortest member
+        with.
+    weight :
+        Size of the inflation at a member of zero length. Zero turns the floor
+        off.
+
+    Notes
+    -----
+    A fraction rather than a length, so the same file describes the same intent
+    at any span or any discretization. A design constraint, unlike the bounds
+    beside it, and the only one this run carries.
+    """
+
+    fraction: float
+    sharpness: float
+    weight: float
+
+
 class OptimizationConfig(NamedTuple):
     """
     What the descent is allowed to spend and where it may go.
@@ -195,6 +228,8 @@ class OptimizationConfig(NamedTuple):
         Sharpness of the envelope reconciling the load cases into one size.
     bounds :
         The box the force densities may move in.
+    length_floor :
+        The shortest member the design is allowed.
 
     Notes
     -----
@@ -216,6 +251,7 @@ class OptimizationConfig(NamedTuple):
     settling_tolerance: float
     envelope_sharpness: float
     bounds: BoundsConfig
+    length_floor: FloorConfig
 
 
 class TaskConfig(NamedTuple):
@@ -275,7 +311,10 @@ def read_config(path: Path) -> TaskConfig:
     searched = dict(document["optimization"])
 
     bounds = BoundsConfig(**searched.pop("bounds"))
-    optimization = OptimizationConfig(bounds=bounds, **searched)
+    length_floor = FloorConfig(**searched.pop("length_floor"))
+    optimization = OptimizationConfig(
+        bounds=bounds, length_floor=length_floor, **searched
+    )
     load_cases = tuple(LoadCaseConfig(**entry) for entry in document["load_cases"])
 
     config = TaskConfig(
@@ -383,36 +422,50 @@ def main(config_path: Path) -> None:
 
     material = Steel()
     catalogue = TubeCatalogue.at_class_limit(material, config.sizing.section_class)
+    # The analysis is configured with one tube; the check is what chooses between them.
+    section = catalogue(config.analysis.diameter)
 
     # Three swappable blocks
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalogue, NORMAL),
+        SmaxAnalyzer(structure, section),
         Ec3Sizer(structure, catalogue),
     )
 
     params = initialize_parameters(structure, config)
-    sharpness = jnp.asarray(config.optimization.envelope_sharpness)
+    searched = config.optimization
+    sharpness = jnp.asarray(searched.envelope_sharpness)
+
+    # The floor is stated as a fraction of the nominal bay, so it is a length here.
+    floor = searched.length_floor
+    floor_length = floor.fraction * config.structure.span / config.structure.num_edges
 
     # The objective hands back the design it weighed, so nothing is designed twice.
     def objective(params: DesignParameters) -> tuple[Float[Array, ""], Design]:
         design = pipeline(params, loads)
         sized = design_envelope(design, sharpness)
         mass = compute_mass(sized)
+        penalized = penalized_mass(
+            mass,
+            sized.shape.lengths,
+            floor_length,
+            beta=floor.sharpness,
+            weight=floor.weight,
+        )
 
-        return mass, sized
+        return penalized, sized
 
     # Gradient voodoo. Differentiating the container reaches both of its leaves,
     # and the force densities are the leaf a descent is allowed to move.
     objective_and_gradient = jax.jit(jax.value_and_grad(objective, has_aux=True))
-    (mass, _), gradient = objective_and_gradient(params)
+    (value, design), gradient = objective_and_gradient(params)
+    mass = compute_mass(design)
 
     # The force densities are the only thing the descent moves, so the diameters
     # the frame is analyzed with stay at the seed for the whole search.
     def weigh_shape(force_densities: Float[Array, "members"]):
         return objective(DesignParameters(force_densities, params.diameters))
 
-    searched = config.optimization
     bounds = searched.bounds
     found = minimize_bounded(
         weigh_shape,
@@ -424,9 +477,11 @@ def main(config_path: Path) -> None:
     )
 
     # The answer, and the design behind it, out of the search that already ran it.
-    mass_opt = found.value
+    # The search reads the penalized value; the mass is what the design weighs.
+    value_opt = found.value
     design_opt = found.aux
     answer = found.trajectory.q[-1]
+    mass_opt = compute_mass(design_opt)
 
     # What the shortcut costs, measured rather than assumed: the frame is analyzed
     # at the seed throughout, so the answer is re-analyzed once at the sections the
@@ -437,14 +492,24 @@ def main(config_path: Path) -> None:
         settling_passes=searched.settling_passes,
         settling_tolerance=searched.settling_tolerance,
     )
-    honest, _ = objective(DesignParameters(answer, settled))
+    _, settled_design = objective(DesignParameters(answer, settled))
+    honest = compute_mass(settled_design)
 
     slope = gradient.force_densities
+    lengths = design_opt.shape.lengths
+    shortest = float(jnp.min(lengths))
+    stubs = int(jnp.sum(lengths < floor_length))
 
     print(f"Mass at the start: {float(mass):.9f} t")
+    print(f"Objective at the start: {float(value):.9f} t")
     print(f"L1 norm of the initial gradient: {jnp.linalg.norm(slope, ord=1)}")
     print(f"Mass after the descent: {float(mass_opt):.9f} t")
+    print(f"Objective after the descent: {float(value_opt):.9f} t")
     print(f"Saved: {100.0 * (1.0 - mass_opt / mass):.3f} %")
+    print(
+        f"Shortest member: {shortest:.1f} mm against a floor of {floor_length:.1f} mm"
+    )
+    print(f"Members under the floor: {stubs} of {structure.num_edges}")
     print(f"The answer re-analyzed at its own sections: {float(honest):.9f} t")
     coupling_error = 100.0 * (honest / mass_opt - 1.0)
     print(f"Cost of analyzing at the seed throughout: {coupling_error:+.5f} %")

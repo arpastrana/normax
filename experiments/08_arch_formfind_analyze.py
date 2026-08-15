@@ -51,13 +51,13 @@ from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
+from normax.loads import loads_uniform
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.structures import Structure
-from normax.structures import arch_2d
-from normax.structures import loads_uniform
+from normax.structures import build_arch_2d
 from normax.visualization import GapScaling
 from normax.visualization import GradientCheck
 from normax.visualization import HandoffForces
@@ -69,10 +69,6 @@ SPAN = 10_000.0
 LOAD = 20_000.0
 NUM_EDGES = 10
 FORCE_DENSITY = -75.0
-
-# The arch lies in the XZ plane, so it has no thickness along Y. Without this
-# the frame is a mechanism and the solve returns nan.
-NORMAL = 1
 
 # Near the size EN 1993-1-1 asks for on this arch, and the size the recorded
 # tolerances belong to.
@@ -93,6 +89,9 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 STEEL = Steel()
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
+
+# The tube a frame is stood up as; every property of it is replaced per call.
+SECTION = CATALOGUE(DIAMETER)
 
 
 class FunicularArch(NamedTuple):
@@ -174,7 +173,7 @@ def funicular_arch(load: float, force_density: float) -> FunicularArch:
     """
     Form-find the arch, and report the state the analysis has to reproduce.
     """
-    structure = arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
+    structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
     applied = loads_uniform(structure, load)
     graph = equilibrium_graph(structure)
     q = jnp.full(NUM_EDGES, force_density)
@@ -195,9 +194,9 @@ def handoff_gap(
     Largest relative disagreement on axial force, and the bending behind it.
     """
     arch = funicular_arch(load, force_density)
-    prepared = prepare_model(arch.structure, CATALOGUE, normal=NORMAL)
+    prepared = prepare_model(arch.structure, SECTION)
     diameters = jnp.full(NUM_EDGES, diameter)
-    member = member_forces(prepared, arch.state.xyz, diameters, CATALOGUE, arch.loads)
+    member = member_forces(prepared, arch.state.xyz, diameters, SECTION, arch.loads)
 
     departure = jnp.abs(member.axial_force - arch.axial_force)
     axial = jnp.max(departure / jnp.abs(arch.axial_force))
@@ -343,12 +342,10 @@ def main(verbose: bool = True) -> None:
 
     arch = funicular_arch(LOAD, FORCE_DENSITY)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    prepared = prepare_model(arch.structure, CATALOGUE, normal=NORMAL)
-    member = member_forces(prepared, arch.state.xyz, diameters, CATALOGUE, arch.loads)
+    prepared = prepare_model(arch.structure, SECTION)
+    member = member_forces(prepared, arch.state.xyz, diameters, SECTION, arch.loads)
 
-    model = frame_model(
-        arch.structure, arch.state.xyz, diameters, CATALOGUE, normal=NORMAL
-    )
+    model = frame_model(arch.structure, arch.state.xyz, SECTION)
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
     report_shape(report, arch, mechanisms)
@@ -362,7 +359,7 @@ def main(verbose: bool = True) -> None:
             arch.graph,
             arch.loads,
         )
-        analyzed = member_forces(prepared, state.xyz, diameters, CATALOGUE, arch.loads)
+        analyzed = member_forces(prepared, state.xyz, diameters, SECTION, arch.loads)
 
         return jnp.sum(analyzed.axial_force**2)
 
