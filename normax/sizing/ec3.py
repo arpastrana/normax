@@ -28,6 +28,7 @@ import equinox as eqx
 import jax
 from ec3x.actions import MemberActions
 from ec3x.material import Steel
+from ec3x.section import Tube
 from ec3x.section import TubeCatalogue
 from ec3x.sizing import diameter_required
 from ec3x.sizing import end_moments
@@ -38,6 +39,7 @@ from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.materials import SteelGrade
+from normax.sections import MemberSections
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.structures import Structure
@@ -73,6 +75,41 @@ def design_steel(grade: SteelGrade) -> Steel:
         density=grade.density,
         f_u=grade.f_u,
     )
+
+
+def neutral_sections(tubes: Tube) -> MemberSections:
+    """
+    Restate the standard's tubes as the sections a design carries.
+
+    Parameters
+    ----------
+    tubes :
+        Tubes as this standard's catalogue generated them.
+
+    Returns
+    -------
+    sections :
+        The same geometry and the same steel, with everything a clause decided
+        left behind.
+
+    Notes
+    -----
+    The inverse crossing of `design_steel` and `design_actions`: those read
+    neutral records in the standard's terms on the way in, and this strips the
+    standard's terms on the way out. What is dropped is the class — a label
+    that selects clauses, meaningless to any other standard — and the partial
+    factors riding on the material. The geometry and the certificate half of
+    the steel cross unchanged, so nothing a mass or a re-analysis reads moves.
+    """
+    steel = tubes.material
+    grade = SteelGrade(
+        f_y=steel.f_y,
+        f_u=steel.f_u,
+        e_mod=steel.e_mod,
+        density=steel.density,
+    )
+
+    return MemberSections(tubes.diameter, tubes.thickness, grade)
 
 
 def design_actions(forces: MemberForces) -> MemberActions:
@@ -265,7 +302,7 @@ class Ec3Sizer(AbstractMemberSizer):
             return demanded, used
 
         demanded, used = jax.vmap(size_case)(forces)
-        sections = self.catalogue(demanded)
+        sections = neutral_sections(self.catalogue(demanded))
 
         return MemberSizes(sections, used)
 

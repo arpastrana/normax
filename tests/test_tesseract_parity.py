@@ -443,14 +443,9 @@ def test_the_boundary_does_not_downcast_to_single_precision(arch, one_case):
     _, composed_design = both(arch, one_case, 3)
     _, composed = objectives(arch, one_case, 3)
 
+    # No design carries a section class anymore — the label lives inside the
+    # sizer that reads it — so every leaf of a design is a float64 payload.
     for label, value in named_fields(composed_design):
-        if label.endswith("section_class"):
-            # A label rather than a payload. It crosses as a Python integer of no
-            # width at all, which is the stronger statement the others cannot make.
-            assert isinstance(value, int), label
-            assert jax.tree.leaves(value) == [], label
-            continue
-
         assert jnp.asarray(value).dtype == jnp.float64, label
 
     assert jax.grad(composed)(arch.params.force_densities).dtype == jnp.float64

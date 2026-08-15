@@ -26,11 +26,11 @@ import abc
 from typing import NamedTuple
 
 import equinox as eqx
-from ec3x.section import Tube
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
+from normax.sections import MemberSections
 
 
 class MemberSizes(NamedTuple):
@@ -76,7 +76,7 @@ class MemberSizes(NamedTuple):
     standard. `normax.design.design_envelope` is where it happens.
     """
 
-    sections: Tube
+    sections: MemberSections
     utilization: Float[Array, "load_cases members"]
 
 

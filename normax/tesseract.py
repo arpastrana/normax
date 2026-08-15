@@ -69,6 +69,7 @@ from normax.loads import stack_load_cases
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import neutral_sections
 from normax.structures import Structure
 from normax.structures import member_lengths
 
@@ -564,7 +565,7 @@ class TesseractSizer(AbstractMemberSizer):
 
         used = jax.vmap(used_case)(demanded, actions)
 
-        return MemberSizes(sections, used)
+        return MemberSizes(neutral_sections(sections), used)
 
     def governing(
         self,

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### The materials and the sections come home — phases 1–2 executed
+
+`normax/materials.py` carries `SteelGrade(f_y, f_u, e_mod, density)` — the
+certificate half of `ec3x.Steel`, verified field-for-field against it — and
+`normax/sections.py` carries `TubeFamily` and `MemberSections`, the tube
+geometry with the class removed. `MemberSizes.sections` is a `MemberSections`
+now: `Ec3Sizer` and the Tesseract sizer restate their tubes through
+`neutral_sections` on return (the inverse crossing of `design_steel` and
+`design_actions` — the standard's terms stripped on the way out), and
+`design_envelope` rebuilds the neutral container. `normax/design.py` and
+`normax/sizing/__init__.py` import nothing from `ec3x` anymore.
+
+- **Measured after the gate: nothing moved.** 315 pass (309 plus the six
+  bitwise-agreement tests of `tests/test_sections.py`), `101_api.py` bit for
+  bit, and experiment 10's summary identical to the digit — value 2.22e-15,
+  size 1.35e-14, gradient 7.24e-14 — because the seven annulus formulas are
+  stated identically in both libraries, which that test file now alarms on.
+- **No design carries an integer anymore.** The `section_class` leaf left the
+  contract with the retype, so the parity dtype walk lost its "crosses as a
+  Python integer" special case and the contract pytree is plain arrays plus a
+  four-float grade.
+
 ### The materials and the sections come home — planned
 
 `docs/sections_extraction.md` plans the deferred half of the ec3x extraction:

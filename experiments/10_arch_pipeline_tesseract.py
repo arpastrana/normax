@@ -328,8 +328,9 @@ def named_fields(container: NamedTuple) -> Iterator[tuple[str, Any]]:
     physical meaning. Each array is measured against itself instead, however
     deeply the design nests it.
 
-    The grade and the class every section carries are left out. Both crossed as
-    inputs of the schema rather than as answers, so they can only agree.
+    The grade every section carries is walked like any other field; the class
+    crossed as an input of the schema rather than as an answer, and since the
+    contract retype no design carries one at all.
     """
     for field in container._fields:
         value = getattr(container, field)

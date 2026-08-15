@@ -61,7 +61,6 @@ from typing import NamedTuple
 
 import equinox as eqx
 import jax.numpy as jnp
-from ec3x.section import Tube
 from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -78,6 +77,7 @@ from normax.optimization import SearchResult
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
+from normax.sections import MemberSections
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 
@@ -384,13 +384,13 @@ def design_envelope(
     adequate at every sharpness and annealing drives it onto the smallest
     adequate one from above.
 
-    **The geometry is enveloped and the grade and the class ride through
-    untouched.** The envelope is scale-equivariant — taken in the logarithm, a
-    constant factor passes straight through it — so enveloping a diameter and a
-    thickness that is that diameter over a fixed ratio preserves the ratio, and
-    no catalogue is needed to re-derive a wall. What a tube is made of has no
-    load case axis to reduce, which is why the two geometric fields are named
-    here rather than mapped over.
+    **The geometry is enveloped and the grade rides through untouched.** The
+    envelope is scale-equivariant — taken in the logarithm, a constant factor
+    passes straight through it — so enveloping a diameter and a thickness that
+    is that diameter over a fixed ratio preserves the ratio, and no family is
+    needed to re-derive a wall. What a tube is made of has no load case axis
+    to reduce, which is why the two geometric fields are named here rather
+    than mapped over.
 
     **Nothing here reads a standard, and nothing needs to.** `utilization`
     passes through untouched because it belongs to the per-case sections and
@@ -419,7 +419,7 @@ def design_envelope(
 
     diameters = cover_cases(demanded.diameter)
     thicknesses = cover_cases(demanded.thickness)
-    covering = Tube(diameters, thicknesses, demanded.material, demanded.section_class)
+    covering = MemberSections(diameters, thicknesses, demanded.material)
     sizes = MemberSizes(covering, design.sizes.utilization)
 
     return Design(design.shape, design.forces, sizes)
