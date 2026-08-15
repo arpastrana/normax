@@ -16,7 +16,7 @@ Aggregating several load cases into one differentiable size per member.
 
 A member must satisfy every load case, so its size is the largest any case
 demands. That largest is not differentiable, and a gradient taken through it
-sees one case per step and stalls. The smooth envelope of normax.ec3.sizing
+sees one case per step and stalls. The smooth envelope of normax.design
 replaces it, in the logarithm of the diameter so the sharpness is dimensionless.
 
 The envelope never understates the true largest, so annealing the sharpness
@@ -37,10 +37,10 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.design import diameter_envelope
 from normax.ec3.actions import MemberActions
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import mass_of_tubes
 from normax.reporting import Report

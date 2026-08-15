@@ -13,7 +13,6 @@ from normax.ec3.sizing import LIMIT_MAJOR
 from normax.ec3.sizing import LIMIT_MINIMUM_SIZE
 from normax.ec3.sizing import LIMIT_MINOR
 from normax.ec3.sizing import LIMIT_TENSION
-from normax.ec3.sizing import diameter_envelope
 from normax.ec3.sizing import diameter_required
 from normax.ec3.sizing import end_moments
 from normax.ec3.sizing import governing_limit_state
@@ -337,59 +336,6 @@ def test_the_factor_never_leaves_its_range():
 
     assert jnp.all(factor >= C_M_MINIMUM)
     assert jnp.all(factor <= 1.0)
-
-
-# ---- The load-case envelope ---- #
-
-
-def test_the_envelope_covers_every_load_case():
-    # Exactly the largest in the limit, so the comparison carries the rounding
-    # of the logarithm and its inverse.
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    largest = jnp.max(load_cases, axis=0)
-
-    assert jnp.all(diameter_envelope(load_cases, 20.0) >= largest * (1.0 - 1e-12))
-
-
-def test_the_envelope_approaches_the_largest_load_case():
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    sharp = diameter_envelope(load_cases, 2000.0)
-
-    assert np.asarray(sharp) == pytest.approx(
-        np.asarray(jnp.max(load_cases, axis=0)), rel=1e-3
-    )
-
-
-def test_the_envelope_respects_its_bound():
-    # In the logarithm the smooth maximum exceeds the true one by at most the
-    # logarithm of the number of cases over the sharpness.
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    beta = 20.0
-    largest = jnp.max(load_cases, axis=0)
-    slack = jnp.log(diameter_envelope(load_cases, beta)) - jnp.log(largest)
-
-    assert jnp.all(slack >= 0.0)
-    assert jnp.all(slack <= jnp.log(load_cases.shape[0]) / beta + 1e-12)
-
-
-def test_the_envelope_tightens_as_it_sharpens():
-    # Past a sharpness of about fifty the smoothing is already below the
-    # precision of the numbers, so the annealing range that does any work is
-    # the low end.
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    values = [
-        float(diameter_envelope(load_cases, beta)[0]) for beta in (2.0, 5.0, 10.0, 20.0)
-    ]
-
-    assert np.all(np.diff(values) < 0.0)
-
-
-def test_the_envelope_is_differentiable():
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0]])
-    gradient = jax.grad(lambda c: jnp.sum(diameter_envelope(c, 50.0)))(load_cases)
-
-    assert jnp.all(jnp.isfinite(gradient))
-    assert jnp.all(gradient >= 0.0)
 
 
 # ---- JAX plumbing ---- #

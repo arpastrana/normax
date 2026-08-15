@@ -38,7 +38,6 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
 
@@ -675,41 +674,3 @@ def end_moments(
     psi = jnp.where(bent, ratio / jnp.where(bent, larger, 1.0), 1.0)
 
     return larger, moment_factor_linear(psi)
-
-
-def diameter_envelope(
-    diameters: Float[Array, "load_cases members"],
-    beta: float | Float[Array, ""],
-) -> Float[Array, "members"]:
-    """
-    Smooth envelope of a member's size over several load cases.
-
-    Parameters
-    ----------
-    diameters :
-        Diameter required by each load case, one row per case.
-    beta :
-        Sharpness. The envelope approaches the true largest as it grows.
-
-    Returns
-    -------
-    diameter :
-        Diameter covering every load case.
-
-    Notes
-    -----
-    Not EN 1993-1-1. A member must satisfy every load case, so its size is the
-    largest any load case demands; that largest is not differentiable, and a
-    gradient taken through it sees one load case at a time and stalls.
-
-    The envelope is taken in the logarithm of the diameter, which makes the
-    sharpness dimensionless and so comparable between structures of different
-    size. It never understates the largest, and exceeds it by at most the
-    logarithm of the number of load cases over the sharpness, so annealing the
-    sharpness upward drives it onto the true largest from above. Being an upper
-    bound is the safe direction: the design stays adequate throughout.
-    """
-    logarithms = jnp.log(diameters)
-    smoothed = logsumexp(beta * logarithms, axis=0) / beta
-
-    return jnp.exp(smoothed)

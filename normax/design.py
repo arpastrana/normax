@@ -61,6 +61,7 @@ from typing import NamedTuple
 
 import equinox as eqx
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
@@ -68,7 +69,6 @@ from jaxtyping import Int
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.ec3.section import Tube
-from normax.ec3.sizing import diameter_envelope
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.loads import LoadCases
@@ -312,6 +312,46 @@ def compute_mass(design: Design) -> Float[Array, ""]:
     per_length = sections.material.density * sections.area
 
     return jnp.sum(per_length * design.shape.lengths)
+
+
+def diameter_envelope(
+    diameters: Float[Array, "load_cases members"],
+    beta: float | Float[Array, ""],
+) -> Float[Array, "members"]:
+    """
+    Smooth envelope of a member's size over several load cases.
+
+    Parameters
+    ----------
+    diameters :
+        Diameter required by each load case, one row per case.
+    beta :
+        Sharpness. The envelope approaches the true largest as it grows.
+
+    Returns
+    -------
+    diameter :
+        Diameter covering every load case.
+
+    Notes
+    -----
+    Not EN 1993-1-1, or any standard. A member must satisfy every load case, so
+    its size is the largest any load case demands; that largest is not
+    differentiable, and a gradient taken through it sees one load case at a
+    time and stalls. Reconciling the cases is smoothing rather than a clause,
+    which is why it lives here, above the blocks that implement standards.
+
+    The envelope is taken in the logarithm of the diameter, which makes the
+    sharpness dimensionless and so comparable between structures of different
+    size. It never understates the largest, and exceeds it by at most the
+    logarithm of the number of load cases over the sharpness, so annealing the
+    sharpness upward drives it onto the true largest from above. Being an upper
+    bound is the safe direction: the design stays adequate throughout.
+    """
+    logarithms = jnp.log(diameters)
+    smoothed = logsumexp(beta * logarithms, axis=0) / beta
+
+    return jnp.exp(smoothed)
 
 
 def design_envelope(
