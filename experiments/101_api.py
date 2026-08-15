@@ -76,9 +76,12 @@ from normax.optimization import value_and_gradient
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
+from normax.visualization import figure_trajectory
 
 # The arch and the search, unless another file is named on the command line.
 CONFIG = Path(__file__).with_name("arch.yaml")
+
+FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
@@ -520,6 +523,13 @@ def main(config_path: Path) -> None:
     # invariant the sizing map exists to hold.
     fully_stressed = float(jnp.min(design_opt.sizes.utilization))
     print(f"Utilization as sized: {fully_stressed:.12f}")
+
+    trajectories = (found.trajectory,)
+    titles = ("penalized descent",)
+    descent_figure = figure_trajectory(trajectories, titles=titles)
+    FIGURES.mkdir(exist_ok=True)
+    descent_figure.savefig(FIGURES / "101_trajectory.png", dpi=200)
+    print(f"Descent figure: {FIGURES / '101_trajectory.png'}")
 
     print("\nHasta la vista, baby!")
 
