@@ -324,11 +324,12 @@ correctness argument lives in another repository is an awkward thing to hand
 someone.
 
 > **Revisited and reversed, 2026-08-15, same day.** Rafael's call: the record
-> transfers to `ec3x/docs/clauses.md`, with `references/` copied beside it
-> (gitignored in both repos) so its check-the-printed-page instruction keeps
-> working where it lives. The eleven citations localized again; normax's code
-> and ROADMAP point across. The writeup quotes the record's findings, and can
-> quote them from the sibling repo.
+> transfers to `ec3x/docs/clauses.md`, with `references/` moved wholesale
+> beside it (gitignored there as it was here) so its check-the-printed-page
+> instruction keeps working where it lives; normax keeps no copy. The eleven
+> citations localized again; normax's code and ROADMAP point across. The
+> writeup quotes the record's findings, and can quote them from the sibling
+> repo.
 
 **`ec3x` on PyPI is unchecked.** It does not matter while `[tool.uv.sources]`
 carries a path, and nothing gets published before Aug 31.
