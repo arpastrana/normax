@@ -1275,6 +1275,10 @@ per-edge search honest, and it is a penalty rather than a guarantee.
 
 ## After the deadline — `normax.ec3` as a library, and a second sizer
 
+**Promoted 2026-08-15 to `docs/ec3x_extraction.md`**, which makes this an execution
+plan inside the deadline and corrects the `MemberActions` prescription below. This
+section is kept for the argument; the document is what gets done.
+
 **Not hackathon scope.** The shape is already in the code; this records the two
 moves that finish it and the one thing that is currently in the wrong module.
 

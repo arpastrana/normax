@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### The `ec3x` extraction is planned, and dated inside the deadline
+
+`docs/ec3x_extraction.md` promotes the `ROADMAP.md` sketch filed as after the
+deadline into an execution plan, reconciled against the code as it stands after
+P5d and P8. Nothing has moved yet; the document is what gets done.
+
+- **It happens before Aug 31, and what that buys is the claim.** A submission
+  arguing that a building code is a normative text rather than a solver is
+  stronger when the check is a library somebody could install without ever
+  form-finding anything, and weaker when it is a subdirectory of the demo that
+  consumes it.
+- **The seam was measured rather than assumed.** Every import inside
+  `normax/ec3/` resolves to `jax`, `jaxtyping`, the standard library or
+  `normax.ec3.*` — 30 internal lines and none reaching the rest of the package.
+  `ec3x` needs two dependencies against normax's six, and 1592 of the 1890 tests
+  go with it across 15 files, 473 of them the `blue-prints` oracle, which is the
+  only file importing it and so leaves the dev group entirely.
+- **The ROADMAP's `MemberActions` prescription is wrong, and the correction is
+  the one part of the plan a second sizer needs rather than merely benefits
+  from.** It cannot "move up": eight annotated parameters and both `custom_jvp`
+  tuples in `ec3/sizing.py` consume it, three more in `resistance.py` and one in
+  `interaction.py`, so a normax-owned copy makes the library import the
+  application. Duplicating a five-field container above the seam only relocates
+  the problem, because two of those fields are Table B.3 artifacts and no fixed
+  field list is neutral over standards. So the record leaves the contract:
+  `MemberSizes(sections, utilization)`, both round-trip methods reading the
+  `MemberForces` a design already carries, and `design_actions` moving down into
+  the adapter that owns the clause. The tree already said as much —
+  `frame_stability` reads the check's copy of an array the analysis produced.
+- **`Tube` staying in `sections` is a different case, and stays deferred.** A
+  tube is a shape, this project designs tubes, and a second sizer reading the
+  same members hands back the same tubes, so its trigger is a second
+  cross-section. A Table B.3 factor has no trigger to wait for, being already
+  wrong for a second standard today.
+- **The contract change is gated alone, before anything relocates**, so a failure
+  in it cannot be read as a broken rename. Every recorded tolerance holds at its
+  recorded value, and a loosened one is a failed phase rather than a new
+  measurement. The move's own gate leads with importing `ec3x` without normax
+  present and asserting `float64`: the package inherits x64 today from
+  `normax/__init__.py`, and standalone it would inherit nothing, which is the one
+  failure mode that changes every number silently.
+
 ### The plane is measured, and the analysis holds one tube
 
 Two arguments left the analysis stage. `SmaxAnalyzer(structure, section)` is the
