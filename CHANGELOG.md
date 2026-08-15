@@ -2,7 +2,49 @@
 
 ## Unreleased
 
-### A trajectory figure of its own
+### ec3x is the adapter's import alone
+
+Rafael asked for the ec3x imports to leave `normax/analysis/smax.py` and
+`normax/tesseract.py`; with this sweep `normax/sizing/ec3.py` is the only
+module in the package that names the standard's library (the Tesseract API
+modules under `tesseracts/` are the far side of the boundary and keep theirs).
+
+- **Buckling and stability leave normax entirely** — Rafael's call, in two
+  steps within one session: first `Stability` and `frame_stability` (the §5.2.1
+  verdict, its utilization, and the member-vs-global slenderness comparison)
+  were deleted rather than moved, then the deletion was widened to the whole
+  buckling surface — `buckling_modes`, the `Buckling` container, `figure_modes`
+  and every eigensolve call site. The clauses live on in `ec3x/stability.py`,
+  consumed by nothing here; **buckling and frame-stability checks are future
+  work, stated as such in the manuscript** (README `## Limitations` now says
+  so). This reverses the extraction doc's "`frame_stability` stays" ruling —
+  §2 of `docs/ec3x_extraction.md` carries the dated reversal.
+- **What the reports lose**: 09's §5.2.1 verdict block, two-slenderness table,
+  `α_cr` measurements, the member-vs-global buckling-length pricing (the x3.26
+  entry and the `09_modes.png` figure); 03's per-case `α_cr` table and the
+  weakest-factor rows. The member buckling check inside the sizing map (χ,
+  §6.3.1) is the submission's core and is untouched, `L_cr` staying an input.
+  Thirteen tests went in total (seven `frame_stability`, six buckling-mode and
+  mode-figure ones, including the global-mode sizing-cost test whose constant's
+  provenance was the deleted eigensolve); 09 keeps its refinement, stagger and
+  gradient studies, and the mesh-independent-`L_cr` refinement column stays,
+  being about discretization rather than stability.
+- **`TesseractSizer` speaks the normax standards** — Rafael: the annotations
+  must be superseded by the neutral containers. The plain constructor takes a
+  `TubeFamily` (paralleling `TesseractAnalyzer`), backed by the new
+  `Ec3Sizer.from_family`, which derives the class from the family's ratio via
+  `section_class_at_ratio` — the inverse of the `family` property, possible
+  because the class is a function of ratio and grade on the host. The dead
+  EC3-typed properties (`steel`, `catalogue`, `section_class`) are deleted;
+  nothing outside the module ever read them.
+- **The crossed-factor re-read is gone with the acrobatics.** `__call__` now
+  reads only the diameters off the boundary and re-checks them with
+  `Ec3Sizer.utilization` — the same clauses over the same forces, paired as
+  the diagonal (each case's size against that case alone; the first attempt
+  passed the whole stack and grew an axis, caught by the parity suite). The
+  boundary's own reduction is still compared directly in
+  `test_the_moment_factors_survive_the_boundary`. All 34 parity tests pass
+  unchanged, tolerances untouched.
 
 `figure_trajectory` draws the objective at every iterate straight from a
 sequence of `Trajectory` runs — the first figure to take the optimizer's own

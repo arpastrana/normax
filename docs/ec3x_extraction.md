@@ -145,6 +145,16 @@ it, and that is not a wart: a backend is allowed to know which standard it is
 reporting against. What the *contract* modules may not do is name a clause
 product.
 
+**Reversed 2026-08-15, on instruction.** `frame_stability` and its `Stability`
+record were deleted from normax outright rather than moved, and the deletion
+was then widened to the whole buckling surface: `buckling_modes`, the
+`Buckling` container and `figure_modes` are gone too, and no experiment
+computes a critical load factor. The clauses live on in `ec3x/stability.py`,
+consumed by nothing here; buckling and frame-stability checks are future work,
+stated as such in the manuscript. With that deletion and the neutralization of
+`TesseractSizer`'s surface, `normax/sizing/ec3.py` is the only module in the
+package importing `ec3x`.
+
 ---
 
 ## 3. Phases

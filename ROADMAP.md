@@ -466,12 +466,17 @@ Full write-up in `CHANGELOG.md` under `## P3 step 2`.
    steady to three figures across 32x of mesh density. Sizing against that
    instead costs **3.26x the mass** and still only reaches `α_cr = 1.41`, so the
    bare arch is not rescuable by sizing — the braced-rib reading is the honest one.
-   **It is a check, not a diagnostic** (changed on instruction): `α_cr` is
+   ~~**It is a check, not a diagnostic** (changed on instruction): `α_cr` is
    compared against §5.2.1's threshold and the arch **fails**, utilization 77.4,
    pinned by a test. It cannot enter the sizing bisection — that roots a local
    member check, while stability is a property of the whole frame — so
-   `pipeline.frame_stability` reads a finished `Design`. **Never differentiated**
-   (eigenvalue derivatives are undefined at mode crossings).
+   `pipeline.frame_stability` reads a finished `Design`.~~ **Deleted 2026-08-15,
+   on instruction**: the §5.2.1 check, the two-slenderness comparison, and then
+   the whole buckling surface (`buckling_modes`, `Buckling`, the modes figure)
+   left normax with the ec3x import sweep. No experiment computes `α_cr` now;
+   buckling and frame-stability verification is future work, stated as such in
+   the manuscript. The measured numbers in this item are history, reproducible
+   from git.
    ~~⚠️ §5.2 and §6.3.4 are UNVERIFIED~~ — **verified 2026-08-09**, open item 0f
    closed. Every threshold held, so no reported number moves. Two equation
    numbers did not: Eq. 5.1 is the threshold pair rather than the definition of

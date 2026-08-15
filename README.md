@@ -120,6 +120,12 @@ point `d = D(N(d), L)` — and backpropagating through it end to end, so a size'
 effect on the forces that sized it reaches `q`. That is the next piece of work,
 not a boundary of the approach.
 
+**Global stability is not checked.** Every member is verified over its own
+buckling length, which presumes every node is held in position by structure
+outside the model; nothing here computes a critical load factor of the whole
+frame or verifies a finished design against EN 1993-1-1 §5.2. Buckling and
+frame-stability checks are future work.
+
 ## Development
 
 ```bash
