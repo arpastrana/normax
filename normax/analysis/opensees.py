@@ -55,6 +55,7 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
+from normax.analysis import normal_axis
 from normax.analysis import support_fixities
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
@@ -184,8 +185,9 @@ def frame_plane(
     Raises
     ------
     ValueError
-        If no normal axis is given, if it is not 0, 1 or 2, or if the nodes do
-        not share one coordinate along it.
+        If no normal axis is given, if it is not 0, 1 or 2, if the nodes do not
+        share one coordinate along it, or if it is not the axis a
+        three-dimensional solve of the same structure would restrain.
 
     Notes
     -----
@@ -193,6 +195,13 @@ def frame_plane(
     wrongly: a three-dimensional frame flattened into a projection of itself. A
     backend that cannot represent something should say so rather than represent
     something else.
+
+    **The axis is declared here and measured everywhere else.** A planar solver
+    needs the plane named, since the two axes it keeps become its own; the
+    fixities it shares with the three-dimensional backend are decided from the
+    geometry. A straight structure is thin along two axes and only one of them is
+    restrained, so the two could name different ones — refused rather than
+    reconciled, the answers no longer being comparable.
 
     Loads are checked where they are applied rather than here, since a structure
     is analyzed under load cases other than its own and only the one reaching the
@@ -207,6 +216,10 @@ def frame_plane(
     if not np.allclose(offsets, offsets[0]):
         spread = float(np.ptp(offsets))
         raise ValueError(f"nodes are not planar along axis {normal}; spread {spread}")
+
+    measured = normal_axis(structure)
+    if measured != normal:
+        raise ValueError(f"the structure is restrained along axis {measured}")
 
     axes = tuple(axis for axis in range(3) if axis != normal)
 
@@ -326,7 +339,7 @@ def _build_model(
     coordinates = np.asarray(to_meters(xyz))[:, list(spanned.axes)]
     edges = np.asarray(structure.edges)
     applied = np.asarray(loads)[:, list(spanned.axes)]
-    flags = support_fixities(structure, spanned.normal)
+    flags = support_fixities(structure)
 
     outer = to_meters(diameters)
     areas = np.asarray(catalogue(outer).area)

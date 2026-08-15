@@ -44,6 +44,7 @@ from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
 from normax.ec3.classification import classify_section
 from normax.ec3.material import Steel
+from normax.ec3.section import Tube
 from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 
@@ -53,7 +54,7 @@ def _member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    section: Tube,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
@@ -67,9 +68,9 @@ def _member_forces(
         Position of every node.
     diameters :
         Outer diameter of every member.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness and whose grade
-        supplies the material.
+    section :
+        The tube the members are analyzed as, whose wall proportion walls the
+        diameters given and whose grade supplies the material.
     loads :
         Force applied at every node.
 
@@ -98,7 +99,129 @@ def _member_forces(
     Every array a derivative might be taken through arrives as an argument, the
     loads included, rather than as a constant folded into the program.
     """
-    return member_forces(model, xyz, diameters, catalogue, loads)
+    return member_forces(model, xyz, diameters, section, loads)
+
+
+def graded_section(inputs: dict[str, Any]) -> Tube:
+    """
+    The tube the frame is analyzed as, at the smallest size the family holds.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+
+    Returns
+    -------
+    section :
+        A placeholder geometry carrying the wall proportion and the grade.
+
+    Notes
+    -----
+    The size is a placeholder and the two properties beside it are not: the
+    diameters a caller sends replace the geometry, and what has to survive that
+    is the wall proportion the diameters are walled by and the material.
+
+    Yield strength and density reach the material but not the answer, a linear
+    elastic analysis under nodal loads having no use for either. They are carried
+    so that the schema still describes the frame when self-weight or a nonlinear
+    backend arrives.
+    """
+    steel = Steel(
+        f_y=inputs["f_y"],
+        e_mod=inputs["e_mod"],
+        density=inputs["density"],
+    )
+    # An analysis reads geometry alone, so the class is derived and never read.
+    section_class = int(classify_section(inputs["ratio"], inputs["f_y"]))
+    catalogue = TubeCatalogue(inputs["ratio"], section_class, steel)
+
+    return catalogue(catalogue.diameter_min)
+
+
+def prepare_assembly(inputs: dict[str, Any]) -> CompiledStructure:
+    """
+    Compile the assembly the inputs describe, on the host.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema, coordinates included.
+
+    Returns
+    -------
+    model :
+        The compiled assembly: parameter arrays and the degree of freedom maps.
+
+    Notes
+    -----
+    **Called with concrete coordinates, and never from inside a trace.** Compiling
+    reads support flags with a Python conditional, and works out whether the
+    structure is planar by measuring its geometry, so a tracer standing in for the
+    coordinates has no answer to give. A derivative endpoint prepares from the
+    primal inputs and closes over what comes back.
+
+    **The assembly is prepared per crossing and the solve is compiled once.** A
+    boundary crossing is stateless, so nothing a previous call prepared survives
+    into this one; what does survive is the compiled program behind
+    `_member_forces`, because its wrapper lives at module scope. Caching the
+    prepared model across crossings would need a key over the topology arriving in
+    the inputs, and is deliberately not done here.
+    """
+    structure = Structure(
+        nodes=jnp.asarray(inputs["xyz"]),
+        edges=jnp.asarray(inputs["edges"]),
+        supports=jnp.asarray(inputs["supports"]),
+    )
+
+    return prepare_model(structure, graded_section(inputs))
+
+
+def solve_assembled(
+    inputs: dict[str, Any],
+    model: CompiledStructure,
+) -> dict[str, jnp.ndarray]:
+    """
+    Internal forces of the frame the inputs describe, on a prepared assembly.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+    model :
+        The compiled assembly, from `prepare_assembly`.
+
+    Returns
+    -------
+    outputs :
+        Axial force and both end moments of every member.
+
+    Notes
+    -----
+    The coordinates and the diameters are injected into the assembly here, so both
+    are differentiable leaves rather than properties baked in when the model was
+    prepared. The reference state is unstressed: the nodes displace before any
+    internal force appears, and that elastic response is the whole of the gap
+    between these axial forces and the ones form finding predicted.
+
+    Everything read from the inputs here is read from the ones a derivative
+    endpoint hands in, so a traced field is differentiated rather than closed over.
+    The assembly alone comes from the primal values, being a function of the
+    topology and of nothing a caller varies.
+    """
+    member = _member_forces(
+        model,
+        jnp.asarray(inputs["xyz"]),
+        jnp.asarray(inputs["diameter"]),
+        graded_section(inputs),
+        jnp.asarray(inputs["loads"]),
+    )
+
+    return {
+        "axial_force": member.axial_force,
+        "end_moments_major": member.moment_major,
+        "end_moments_minor": member.moment_minor,
+    }
 
 
 def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
@@ -117,56 +240,10 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
 
     Notes
     -----
-    The coordinates and the diameters are injected into the assembly here, so both
-    are differentiable leaves rather than properties baked in when the model was
-    prepared. The reference state is unstressed: the nodes displace before any
-    internal force appears, and that elastic response is the whole of the gap
-    between these axial forces and the ones form finding predicted.
-
-    **The assembly is prepared per crossing and the solve is compiled once.** A
-    boundary crossing is stateless, so nothing a previous call prepared survives
-    into this one and `prepare` runs again; what does survive is the compiled
-    program behind `_member_forces`, because its wrapper lives at module scope.
-    Caching the prepared model across crossings would need a key over the topology
-    arriving in the inputs, and is deliberately not done here.
-
-    Yield strength and density reach the material but not the answer, a linear
-    elastic analysis under nodal loads having no use for either. They are carried
-    so that the schema still describes the frame when self-weight or a nonlinear
-    backend arrives.
+    The two halves of a crossing in order: the assembly compiled from the
+    topology, then the solve the design variables reach.
     """
-    xyz = jnp.asarray(inputs["xyz"])
-
-    structure = Structure(
-        nodes=xyz,
-        edges=jnp.asarray(inputs["edges"]),
-        supports=jnp.asarray(inputs["supports"]),
-    )
-
-    steel = Steel(
-        f_y=inputs["f_y"],
-        e_mod=inputs["e_mod"],
-        density=inputs["density"],
-    )
-    # An analysis reads geometry alone, so the class is derived and never read.
-    section_class = int(classify_section(inputs["ratio"], inputs["f_y"]))
-    catalogue = TubeCatalogue(inputs["ratio"], section_class, steel)
-
-    model = prepare_model(structure, catalogue, normal=inputs["normal"])
-
-    member = _member_forces(
-        model,
-        xyz,
-        jnp.asarray(inputs["diameter"]),
-        catalogue,
-        jnp.asarray(inputs["loads"]),
-    )
-
-    return {
-        "axial_force": member.axial_force,
-        "end_moments_major": member.moment_major,
-        "end_moments_minor": member.moment_minor,
-    }
+    return solve_assembled(inputs, prepare_assembly(inputs))
 
 
 def _restricted_solve(
@@ -196,12 +273,17 @@ def _restricted_solve(
     Everything not differentiated is closed over rather than passed, so JAX sees
     a function of the requested arguments alone and no static field has to be
     marked as such.
+
+    The assembly is one of the things closed over, and it has to be: it is
+    compiled from the primal coordinates, and a trace standing in for them cannot
+    say whether the structure is planar.
     """
     static = {name: value for name, value in inputs.items() if name not in wrt}
+    model = prepare_assembly(inputs)
 
     def restricted_solve(*values):
         merged = {**static, **dict(zip(wrt, values))}
-        computed = solve_forces(merged)
+        computed = solve_assembled(merged, model)
 
         return {name: computed[name] for name in outputs}
 

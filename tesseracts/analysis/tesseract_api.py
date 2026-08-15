@@ -95,9 +95,11 @@ class InputSchema(BaseModel):
     normal: int | None = None
     """Index of the global axis a planar frame has no thickness along.
 
-    None for a frame that occupies all three dimensions. Static. A planar frame
-    on pinned supports alone is a mechanism in a three-dimensional solver, since
-    rotating it about the line joining its supports strains nothing.
+    None for a frame that occupies all three dimensions. Static, and read by the
+    planar backend alone: the two axes it keeps become the solver's own, so it has
+    to be told which they are. The three-dimensional backend measures the plane
+    from the geometry, a planar frame on pinned supports alone being a mechanism
+    there since rotating it about the line joining its supports strains nothing.
     """
 
 

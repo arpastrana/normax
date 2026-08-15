@@ -84,6 +84,7 @@ from normax.design import Design
 from normax.ec3.material import Steel
 from normax.ec3.resistance import force_critical
 from normax.ec3.resistance import slenderness_from_force
+from normax.ec3.section import Tube
 from normax.ec3.section import TubeCatalogue
 from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.ec3.stability import amplifier_resistance
@@ -110,10 +111,7 @@ TORSION_FACTOR = 2.0
 def frame_model(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
-    diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
-    *,
-    normal: int | None,
+    section: Tube,
 ) -> Frame:
     """
     The frame model an analysis runs on, in coherent SI.
@@ -124,14 +122,9 @@ def frame_model(
         The structure supplying the connectivity and the supported nodes.
     xyz :
         Position of every node, from form finding.
-    diameters :
-        Outer diameter of every member.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness and whose grade
-        supplies the modulus and the density.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
+    section :
+        The tube every member is built as, and what it is made of. One section
+        or one per member.
 
     Returns
     -------
@@ -143,10 +136,21 @@ def frame_model(
     Every member is a beam with the full six degrees of freedom at each node,
     so bending and torsion are present by construction rather than released.
 
+    **A section rather than a family.** A frame is built out of the sections it
+    has, and choosing one for a member is the check's business downstream; a
+    family here would be an offer of sizes nothing in an analysis has any use
+    for. The two leaves a tube carries are the two a pipe section wants, so no
+    wall is derived on the way in.
+
+    The supports are what `support_fixities` makes of the structure's own, which
+    is more than it names wherever a planar structure would be a mechanism in
+    three dimensions. Nothing about the plane is passed in, here or anywhere
+    above: it is measured from the geometry.
+
     Poisson's ratio is not carried by the material container, since no clause
     implemented here needs it, and is supplied from EN 1993-1-1 3.2.6.
     """
-    steel = catalogue.material
+    steel = section.material
     material = Material(
         elasticity_modulus=to_pascals(steel.e_mod),
         yield_stress=to_pascals(steel.f_y),
@@ -157,8 +161,9 @@ def frame_model(
     positions = to_meters(xyz)
     nodes = [Node(index, xyz=positions[index]) for index in range(xyz.shape[0])]
 
-    outer = to_meters(diameters)
-    wall = outer / catalogue.ratio
+    members = (structure.num_edges,)
+    outer = to_meters(jnp.broadcast_to(jnp.asarray(section.diameter), members))
+    wall = to_meters(jnp.broadcast_to(jnp.asarray(section.thickness), members))
     edges = np.asarray(structure.edges)
     elements = [
         BeamElement(
@@ -173,7 +178,7 @@ def frame_model(
         for member in range(edges.shape[0])
     ]
 
-    flags = support_fixities(structure, normal)
+    flags = support_fixities(structure)
     supports = [
         Support(node, flags[node]) for node in range(xyz.shape[0]) if flags[node].any()
     ]
@@ -183,9 +188,7 @@ def frame_model(
 
 def prepare_model(
     structure: Structure,
-    catalogue: TubeCatalogue,
-    *,
-    normal: int | None,
+    section: Tube,
 ) -> CompiledStructure:
     """
     Compile everything a solve needs that no design variable reaches.
@@ -194,12 +197,9 @@ def prepare_model(
     ----------
     structure :
         The structure supplying the connectivity and the supported nodes.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness and whose grade
-        supplies the material. Placeholders only, replaced at every call.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
+    section :
+        The tube every member starts as, and what it is made of. A placeholder
+        geometry, replaced at every call, carrying the material that is not.
 
     Returns
     -------
@@ -213,20 +213,16 @@ def prepare_model(
     Python conditional, which a tracer cannot follow; running it once here is
     what leaves everything downstream jittable.
 
-    The starting geometry and the smallest tube in the family stand in for the
-    values that matter. Both are overwritten by `forces` before anything is
-    assembled, so what they are cannot reach a result — only their shapes can,
-    and those come from the structure.
+    The starting geometry and the section given stand in for the values that
+    matter. Both are overwritten by `member_forces` before anything is assembled,
+    so what they are cannot reach a result — only their shapes can, and those
+    come from the structure.
 
     **No load case is compiled here**, since the solver takes a dense nodal
     array and builds its own channels. What this settles is the assembly alone,
     and a load case is an argument of every call rather than a field of it.
     """
-    placeholder = jnp.full(structure.num_edges, catalogue.diameter_min)
-
-    frame = frame_model(
-        structure, structure.nodes, placeholder, catalogue, normal=normal
-    )
+    frame = frame_model(structure, structure.nodes, section)
 
     return compile_structure(frame)
 
@@ -235,7 +231,7 @@ def _injected_assembly(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    section: Tube,
 ) -> CompiledStructure:
     """
     A compiled assembly with every traced leaf replaced.
@@ -248,9 +244,9 @@ def _injected_assembly(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness and whose grade
-        supplies the material.
+    section :
+        The tube the members are built as, supplying the wall proportion the
+        diameters are walled by and the material.
 
     Returns
     -------
@@ -266,6 +262,12 @@ def _injected_assembly(
     `normax.ec3.section` rather than from the solver's own section class, so the
     two stages cannot disagree about what a tube is; they agree algebraically.
 
+    **The tube the block holds is restated at the diameters given rather than
+    consulted.** What survives of it is its wall proportion, its grade and its
+    class — everything but the geometry a caller replaces — and the restatement
+    goes through the family those three define, that being the one place a wall
+    is chosen for a diameter.
+
     Poisson's ratio is deliberately not replaced. It is a constant of this
     backend taken from EN 1993-1-1 rather than a field of the material container,
     so nothing upstream can vary it and the shear modulus follows the modulus
@@ -275,10 +277,11 @@ def _injected_assembly(
     indexed by the global member ids it holds. One group is the usual case here,
     every member being a beam.
     """
-    outer = to_meters(diameters)
-    steel = catalogue.material
-    gross = catalogue(outer).area
-    inertia = catalogue(outer).second_moment
+    family = TubeCatalogue(section.ratio, section.section_class, section.material)
+    sections = family(to_meters(diameters))
+    steel = sections.material
+    gross = sections.area
+    inertia = sections.second_moment
 
     e_mod = to_pascals(jnp.asarray(steel.e_mod))
     f_y = to_pascals(jnp.asarray(steel.f_y))
@@ -318,7 +321,7 @@ def member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    section: Tube,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
@@ -332,9 +335,9 @@ def member_forces(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness and whose grade
-        supplies the material.
+    section :
+        The tube the members are built as, supplying the wall proportion the
+        diameters are walled by and the material.
     loads :
         Force applied at every node.
 
@@ -360,7 +363,7 @@ def member_forces(
     not model, not an error, and they are the whole of the gap between these
     axial forces and the product of force density and length.
     """
-    compiled = _injected_assembly(model, xyz, diameters, catalogue)
+    compiled = _injected_assembly(model, xyz, diameters, section)
 
     response = solve(compiled, loads)
     field = element_forces(compiled, response, num_samples=2)
@@ -376,7 +379,7 @@ def buckling_modes(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    section: Tube,
     loads: Float[Array, "nodes 3"],
     *,
     num_modes: int = 1,
@@ -392,9 +395,9 @@ def buckling_modes(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness and whose grade
-        supplies the material.
+    section :
+        The tube the members are built as, supplying the wall proportion the
+        diameters are walled by and the material.
     loads :
         Load case the frame buckles under.
     num_modes :
@@ -428,7 +431,7 @@ def buckling_modes(
     plane, which is what makes the factor comparable with an in-plane member
     check rather than with a lateral one.
     """
-    compiled = _injected_assembly(model, xyz, diameters, catalogue)
+    compiled = _injected_assembly(model, xyz, diameters, section)
 
     response = solve_buckling(compiled, loads, num_modes=num_modes)
 
@@ -444,24 +447,30 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
 
     Attributes
     ----------
-    catalogue :
-        The section family the frame is analyzed with, whose ratio fixes the wall
-        thickness and whose grade supplies the material.
-    normal :
-        Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
+    section :
+        The tube the members are analyzed as, supplying the wall proportion the
+        diameters of a call are walled by and the material they are made of.
     model :
         The assembly, compiled when the block is built.
 
     Notes
     -----
+    **One section, not a family.** A solver is configured with the sections its
+    elements have, and choosing between sizes is what the check downstream does;
+    a family here would offer an analysis a choice it never makes. What the tube
+    is consulted for on a call is everything but its diameter, that being what
+    the call replaces.
+
     The material travels on the block rather than reaching it per call, since a
     solver is configured with a material in its own terms. It is injected into
     the assembly on every call all the same, which is what leaves a derivative
     with respect to a material property defined rather than silently zero.
 
-    The plane is static, selecting which degrees of freedom a support restrains
-    rather than scaling any number, so it never becomes a traced leaf.
+    **A structure is all the block is told.** Whether it is planar, and what a
+    three-dimensional solve of it therefore needs restrained beyond the supports
+    it names, is measured by `support_fixities` while the assembly is compiled.
+    That decision is static either way — it selects degrees of freedom rather
+    than scaling any number — so nothing about it becomes a traced leaf.
 
     Load cases are looped over rather than mapped, this solver not being
     traceable through `vmap`, so the cost is linear in their number. Each is
@@ -469,15 +478,13 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
     solve and nothing else: no case is compiled, and the block carries none.
     """
 
-    catalogue: TubeCatalogue
-    normal: int | None = eqx.field(static=True)
+    section: Tube
     model: CompiledStructure
 
     def __init__(
         self,
         structure: Structure,
-        catalogue: TubeCatalogue,
-        normal: int | None = None,
+        section: Tube,
     ) -> None:
         """
         Build an analyzer by compiling a structure's assembly.
@@ -486,23 +493,19 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         ----------
         structure :
             The structure supplying the connectivity and the supported nodes.
-        catalogue :
-            The section family the frame is analyzed with, whose ratio fixes the
-            wall thickness and whose grade supplies the material.
-        normal :
-            Index of the global axis a planar structure has no thickness along,
-            or None for a structure that occupies all three dimensions.
+        section :
+            The tube the frame is analyzed as, whose wall proportion walls the
+            diameters of a call and whose grade supplies the material.
         """
-        self.catalogue = catalogue
-        self.normal = normal
-        self.model = prepare_model(structure, catalogue, normal=normal)
+        self.section = section
+        self.model = prepare_model(structure, section)
 
     @property
     def steel(self) -> Steel:
         """
         The material the frame is analyzed with.
         """
-        return self.catalogue.material
+        return self.section.material
 
     def __call__(
         self,
@@ -533,7 +536,7 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
                 self.model,
                 xyz,
                 diameters,
-                self.catalogue,
+                self.section,
                 load_case,
             )
             analyzed.append(forces)
@@ -623,6 +626,11 @@ def frame_stability(
     derivative is undefined where two modes cross — and they do, since a
     symmetric structure has degenerate pairs.
 
+    The sections are restated at the designed diameters through the family the
+    block's tube belongs to rather than read off the design, so the wall stays
+    proportional to the diameter. An envelope over load cases smooths a diameter
+    and a wall independently and can leave the two barely out of proportion.
+
     Members carrying no axial force report nan for both slendernesses and for the
     equivalent buckling length, a factor scaling the whole load having nothing to
     say about a member the load never reaches.
@@ -631,14 +639,16 @@ def frame_stability(
         analyzer.model,
         design.shape.xyz,
         design.sizes.sections.diameter,
-        analyzer.catalogue,
+        analyzer.section,
         loads,
         num_modes=num_modes,
     )
     alpha_cr = modes.factors[0]
 
     steel = analyzer.steel
-    tubes = analyzer.catalogue(design.sizes.sections.diameter)
+    analyzed = analyzer.section
+    family = TubeCatalogue(analyzed.ratio, analyzed.section_class, steel)
+    tubes = family(design.sizes.sections.diameter)
     gross = tubes.area
     inertia = tubes.second_moment
     axial_force = design.sizes.actions.axial_force[load_case]
