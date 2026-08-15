@@ -97,6 +97,28 @@ measures it. See `experiments/` for the arch optimization, the two analysis
 backends against each other, and `experiments/101_api.py` for the whole API in one
 file.
 
+## Limitations
+
+**The gradient omits `∂d/∂q`.** The analysis is configured with a diameter per
+member, and through a search those diameters stay at their seed while the force
+densities move. So `jax.grad` returns the exact gradient of the mass *at a frozen
+seed*, not of the mass of a self-consistent design: the loop where a size changes
+the stiffness, the stiffness redistributes the member forces, and the forces
+change the size is a path the reverse pass never enters. The sizing map's own
+implicit derivative is unaffected — what is missing is the feedback from its
+answer back into the analysis that fed it.
+
+What the shortcut costs is measured rather than assumed.
+`experiments/101_api.py` re-analyzes its answer at the sections that answer
+requires and prints the gap: **+0.24867 %** on the mass. Both ends of the reported
+saving are weighed the same way, which is why the saving is quoted and the
+frozen-seed mass is not quoted alone.
+
+Closing it means making the design self-consistent inside the pipeline — a fixed
+point `d = D(N(d), L)` — and backpropagating through it end to end, so a size's
+effect on the forces that sized it reaches `q`. That is the next piece of work,
+not a boundary of the approach.
+
 ## Development
 
 ```bash

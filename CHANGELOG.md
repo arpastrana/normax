@@ -158,6 +158,11 @@ at a seed diameter and the two are coupled: `d = C(d)`. Two functions in
 - **`update_parameters` is deleted from `experiments/101_api.py`.** Nothing has to
   rebuild the container now, and the start-of-run gradient differentiates the
   container itself and reads its force-density leaf.
+- **The omission is stated in the README, under `## Limitations`.** It had been
+  measured and argued here without being said anywhere a reader of the submission
+  would see it: the gradient is exact for the mass at a frozen seed rather than for
+  the mass of a self-consistent design, and closing it means a fixed point
+  `d = D(N(d), L)` inside the pipeline, backpropagated end to end.
 
 ### A section family carries its grade and its class
 
