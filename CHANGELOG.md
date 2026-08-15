@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### A trajectory figure of its own
+
+`figure_trajectory` draws the objective at every iterate straight from a
+sequence of `Trajectory` runs — the first figure to take the optimizer's own
+record rather than a numpy spec, so a driver plots what its search returned
+with no adaptation. Rafael's calls: trajectories directly instead of
+`Descent`, concatenation as a flag on the figure, wired into
+`experiments/101_api.py`, and no tests — it is just viz.
+
+- **`concatenated=True` draws successive runs end to end** on one iteration
+  axis with a seam line between them, per-run colors and legend surviving.
+  Seam positions come from the known run lengths, not from the repeated-`q` or
+  `beta`-diff heuristics, neither of which is universal. The repeated
+  warm-start row is kept: the step in the objective across it is a real change
+  of measure (a sharper envelope or a refreshed seed weighing the same
+  design), which `figure_optimization`'s single concatenated curve hides.
+- **The sharpness colorbar appears only when every run carries a positive
+  `beta`.** Zero is what `minimize_bounded` stamps when the caller had no
+  sharpness to give, and it would break the logarithmic color scale —
+  `figure_optimization` has this latent hazard; the new figure guards it.
+  When drawn, one `LogNorm` spans all runs; per-scatter autoscaling colored
+  each run against itself, which a three-round render showed as identical
+  colors for betas 10, 70 and 500 under a colorbar describing only the last.
+- **`101_api.py` saves `figures/101_trajectory.png`** after its prints; the
+  printed contract reproduces bit for bit (`0.138951969 t | 16.114 % |
+  +0.24867 % | u 1.000000000000`). Its single unstamped run exercises the
+  zero-beta path on real data.
+
 ### The extraction's leftovers, swept
 
 A double-check of the two extractions found three real leftovers, all now
