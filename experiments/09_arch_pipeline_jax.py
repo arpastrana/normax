@@ -26,16 +26,12 @@ Three things are checked, and two more are measured rather than asserted.
     refinement   the mass converges, first order in the number of members
     coupling     the analysis needs sections and the check returns them, so the
                  pass is repeated until the diameters stop moving
-    stability    the critical load factor of the finished design, which is what
-                 the member-length buckling length assumes rather than proves
 
 **The buckling length is the member's own length, and that is a strong
 assumption.** It presumes every node is held in plane by structure outside the
-model, so a member can only buckle between its ends. The arch on its own does
-not satisfy it: the critical load factor of the fully-stressed design is far
-below one, in a mode that sways over the whole span rather than over one member,
-and sizing against that mode instead costs several times the mass. Both numbers
-are printed, so the assumption sits next to what it is worth.
+model, so a member can only buckle between its ends. Verifying that against the
+stability of the whole frame is future work: nothing in this package computes a
+critical load factor, and no experiment prices the assumption.
 
 **Refinement needs the shape held fixed, not the loads.** Leaving the nodal load
 and the force density alone changes the arch as the mesh changes, and the mass
@@ -64,15 +60,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ec3x.stability import ALPHA_CR_ELASTIC
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import Stability
-from normax.analysis.smax import buckling_modes
-from normax.analysis.smax import frame_stability
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -97,7 +89,6 @@ from normax.visualization import MeshRefinement
 from normax.visualization import SizedMembers
 from normax.visualization import StaggeredPasses
 from normax.visualization import figure_convergence
-from normax.visualization import figure_modes
 from normax.visualization import figure_sections
 
 # A 10 m arch rising 3 m, carrying 180 kN spread over its free nodes. Units are
@@ -119,12 +110,6 @@ MESHES = (5, 10, 20, 40, 80, 160)
 BUCKLING_LENGTH = 1_000.0
 
 PASSES = 6
-
-# Modes to report, and the effective length of the arch's own critical mode as a
-# fraction of its developed length. Measured, and steady to three figures across
-# a 32-fold range of mesh density.
-NUM_MODES = 4
-GLOBAL_MODE_FACTOR = 0.576
 
 # Relative step at which the central difference plateaus. Smaller is dominated
 # by cancellation, larger by truncation, and the experiment prints the sweep.
@@ -164,8 +149,6 @@ LIMIT_NAMES = {
 # an XLA compilation per primitive per shape, which is most of what this
 # experiment used to spend its time on.
 equilibrium_state_compiled = eqx.filter_jit(equilibrium_state)
-frame_stability_compiled = eqx.filter_jit(frame_stability)
-buckling_modes_compiled = eqx.filter_jit(buckling_modes)
 
 
 class ArchSetup(NamedTuple):
@@ -294,12 +277,11 @@ class RefinementStudy(NamedTuple):
 
 class ArchResults(NamedTuple):
     """
-    Refinement, stagger, and stability results for one design.
+    Refinement and stagger studies for one design.
     """
 
     refinement: RefinementStudy
     stagger: StaggerRun
-    stability: Stability
 
 
 def arch_setup(num_edges: int) -> ArchSetup:
@@ -638,80 +620,6 @@ def compare_mesh_refinement(report: Report, study: RefinementStudy) -> None:
     report.write_entries(entries)
 
 
-def check_frame_stability(report: Report, design: Design, checked: Stability) -> None:
-    """
-    Write the frame stability verdict and both slenderness routes.
-    """
-    verdict = "SATISFIED" if bool(checked.adequate) else "NOT SATISFIED"
-    entries = (
-        ("alpha_cr", f"{float(checked.factors[0]):.4f}"),
-        ("threshold", f"{ALPHA_CR_ELASTIC:.1f}"),
-        ("utilization", f"{float(checked.utilization):.3f}"),
-        ("verdict", verdict),
-    )
-
-    report.write_heading("The global stability check, EN 1993-1-1 5.2.1(3)")
-    report.write_entries(entries)
-
-    columns = (
-        ReportColumn("member"),
-        ReportColumn("6.50 from L_cr", ".4f"),
-        ReportColumn("6.3.4 from a_cr", ".4f"),
-        ReportColumn("ratio", ".2f"),
-        ReportColumn("L_cr,global [mm]", ".1f"),
-    )
-    rows = []
-    for member in range(design.shape.lengths.shape[0]):
-        from_length = float(checked.slenderness_member[member])
-        from_factor = float(checked.slenderness_global[member])
-        equivalent = float(checked.buckling_length_equivalent[member])
-        rows.append(
-            (member, from_length, from_factor, from_factor / from_length, equivalent)
-        )
-
-    report.write_heading("Both of the standard's routes to the same slenderness")
-    report.write_table(columns, rows)
-
-
-def compare_buckling_length_basis(
-    report: Report,
-    setup: ArchSetup,
-    design: Design,
-    pipeline: StructuralDesignPipeline,
-    checked: Stability,
-) -> None:
-    """
-    Compare mass under member-length L_cr versus the frame's own mode.
-    """
-    arc = float(jnp.sum(design.shape.lengths))
-    global_length = jnp.full(setup.num_edges, GLOBAL_MODE_FACTOR * arc)
-    unbraced = design_at_length_compiled(
-        pipeline, setup.params, setup.loads, global_length
-    )
-    mass_braced = float(compute_mass(design))
-    mass_unbraced = float(compute_mass(unbraced))
-    penalty = mass_unbraced / mass_braced
-
-    factors = np.array2string(np.asarray(checked.factors), precision=4)
-    against_global = f"sized against L_cr = {GLOBAL_MODE_FACTOR:.3f} arc"
-    entries = (
-        ("critical load factors", factors),
-        ("arc length", f"{arc:.1f} mm"),
-        ("sized against L_cr = L", f"{mass_braced:.6f} t"),
-        (against_global, f"{mass_unbraced:.6f} t, x{penalty:.2f}"),
-    )
-
-    report.write_heading("What the member-length assumption is worth")
-    report.write_entries(entries)
-    report.write_note(
-        """
-        The member-length basis presumes every node is held in plane by structure
-        outside the model. The bare model does not satisfy 5.2.1, which is what
-        makes that assumption load-bearing.
-        """
-    )
-
-
 def generate_figures(
     report: Report,
     setup: ArchSetup,
@@ -720,7 +628,7 @@ def generate_figures(
     results: ArchResults,
 ) -> None:
     """
-    Write the sections, convergence, and buckling-mode figures.
+    Write the sections and convergence figures.
     """
     study = results.refinement
     FIGURES.mkdir(exist_ok=True)
@@ -742,18 +650,6 @@ def generate_figures(
     staggered = StaggeredPasses(passes, results.stagger.moves)
     convergence = figure_convergence(refinement, staggered)
     convergence.savefig(FIGURES / "09_convergence.png", dpi=160, bbox_inches="tight")
-
-    modes = buckling_modes_compiled(
-        setup.analyzer.model,
-        xyz,
-        diameters,
-        pipeline.sizer.family(SEED),
-        setup.funicular,
-        num_modes=NUM_MODES,
-    )
-    factors = np.asarray(results.stability.factors)
-    shapes = figure_modes(xyz, factors, np.asarray(modes.shapes), RISE)
-    shapes.savefig(FIGURES / "09_modes.png", dpi=160, bbox_inches="tight")
     report.write_heading(f"figures written to {FIGURES}")
 
 
@@ -811,17 +707,11 @@ def main(verbose: bool = True) -> None:
     refinement = refinement_study(section_class)
     # The sizes fed back as the stiffness they were found with, until they hold.
     stagger = run_stagger(setup, pipeline, PASSES)
-    # What the finished frame does as a whole, which L_cr = L assumed rather than proved
-    stability = frame_stability_compiled(
-        design, setup.analyzer, setup.funicular, num_modes=NUM_MODES
-    )
     # One container, so a report and a figure read the same measurements.
-    results = ArchResults(refinement, stagger, stability)
+    results = ArchResults(refinement, stagger)
 
     compare_stagger_closure(report, results.stagger)
     compare_mesh_refinement(report, results.refinement)
-    check_frame_stability(report, design, results.stability)
-    compare_buckling_length_basis(report, setup, design, pipeline, results.stability)
 
     # The figures, which take the design and the measurements and nothing else.
     generate_figures(report, setup, design, pipeline, results)

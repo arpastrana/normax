@@ -41,8 +41,8 @@ minimum.
 finding rather than a defect.** Nothing in a member check penalises a shape for
 being a bad arch: every member is fully stressed and adequate, whatever the form
 does between them. What would penalise it is global stability, and that is
-deliberately outside the pipeline — reported here beside the answer, never
-inside it.
+deliberately outside the pipeline — verifying a finished design against it is
+future work.
 
 **Left to itself the search collapses members rather than improving the form.** A
 vanishing member is free, its mass being an area times a length, and it is also
@@ -82,7 +82,6 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import frame_stability
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -189,7 +188,6 @@ SECTION_CLASS = 3
 # The reads the reports make, compiled. Left eager each one costs an XLA
 # compilation per primitive, which is most of what reporting a design costs.
 governing_compiled = eqx.filter_jit(governing_load_case)
-stability_compiled = eqx.filter_jit(frame_stability)
 shortest_compiled = eqx.filter_jit(shortest_member)
 
 
@@ -296,8 +294,6 @@ class FinalReport(NamedTuple):
         Index of the load case that governs each member.
     stagger :
         Fraction of the mass one staggered re-analysis moves.
-    alpha_cr :
-        Weakest critical load factor over the load cases.
     lengths :
         Length of every member of the finished design.
     mirror :
@@ -308,7 +304,6 @@ class FinalReport(NamedTuple):
     sized: Design
     decided: Float[np.ndarray, "edges"]
     stagger: float
-    alpha_cr: float
     lengths: Float[np.ndarray, "edges"]
     mirror: float
 
@@ -696,29 +691,8 @@ def report_final(
 
     stagger = report_stagger(report, setup, q, result)
 
-    # A critical load factor belongs to a load case, and the case the shape was
-    # found under is not the one that sized it, so quoting only that one would
-    # flatter the design.
-    factors = []
-    for index, (name, loads) in enumerate(zip(CASE_NAMES, setup.loads.analysis)):
-        checked = stability_compiled(
-            sized, setup.analyzer, loads, load_case=index, num_modes=1
-        )
-        verdict = "adequate" if bool(checked.adequate) else "inadequate"
-        factors.append((name, float(checked.factors[0]), verdict))
-
-    columns = (
-        ReportColumn("load case", align="<"),
-        ReportColumn("alpha_cr", ".4f"),
-        ReportColumn("verdict", align="<"),
-    )
-
-    report.write_heading("Critical load factor by case")
-    report.write_table(columns, factors)
-
-    weakest = min(factor for _, factor, _ in factors)
     mirror = mirror_gap(np.asarray(diameters))
-    final = FinalReport(result, sized, decided, stagger, weakest, lengths, mirror)
+    final = FinalReport(result, sized, decided, stagger, lengths, mirror)
 
     return final
 
@@ -746,7 +720,6 @@ def report_floor(
         ("longest member [mm]", loose.lengths.max(), held.lengths.max()),
         ("length ratio", loose_ratio, held_ratio),
         ("members under floor", loose_stubs, held_stubs),
-        ("alpha_cr, weakest", loose.alpha_cr, held.alpha_cr),
     )
     columns = (
         ReportColumn("quantity", align="<"),
@@ -856,18 +829,15 @@ def main(verbose: bool = True) -> None:
 
     report_floor(report, loose, held, sweep.masses[funicular])
 
-    not_the_answer = (
-        ("one staggered pass costs", f"{loose.stagger:.2%} of the mass"),
-        ("critical load factor of the design", f"{loose.alpha_cr:.4f}"),
-    )
+    not_the_answer = (("one staggered pass costs", f"{loose.stagger:.2%} of the mass"),)
 
     report.write_heading("What the answer is not")
     report.write_entries(not_the_answer)
     report.write_note(
         """
-        The descent spent the stability margin the starting arch had, and nothing
-        in a member check was ever going to stop it. Global stability is outside
-        the pipeline by design; this is what that costs.
+        Nothing in a member check restrains the stability of the whole frame,
+        and nothing here measures it. Global stability is outside the pipeline
+        by design, and verifying a finished design against it is future work.
         """
     )
 
