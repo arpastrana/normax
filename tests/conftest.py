@@ -22,6 +22,7 @@ PIPELINE_TESTS = (
     "test_equilibrium_consistency.py",
     "test_pipeline.py",
     "test_design.py",
+    "test_second_sizer.py",
     "test_tesseract_parity.py",
 )
 

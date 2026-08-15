@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### The materials and the sections come home — phase 4, the seam proved
+
+`tests/test_second_sizer.py` fills `AbstractMemberSizer` with a design
+philosophy EN 1993-1-1 would not recognize: allowable-stress design, one
+safety factor on yield, no buckling, closed-form fully-stressed sizes. Six
+tests: the file's imports name no standard library (a self-scanning drift
+alarm), the pipeline composes and returns the same containers, the sizer is
+fully stressed to 1e-9, the re-read agrees, the mass gradient survives end to
+end, and the two philosophies disagree about a compressed arch's sizes —
+different standard, not a reimplementation. 321 pass.
+
+- **The Blueprints-backed stretch sizer is cut**, and the reason is recorded in
+  `docs/sections_extraction.md` §4: it would need `blue-prints` importable in
+  normax, and the ec3x extraction deliberately moved that LGPL dependency out
+  of this repository entirely. A redundant proof is not worth reopening a
+  settled licensing boundary.
+
 ### The materials and the sections come home — phase 3 executed
 
 The blocks take normax types, and the configuration layer stops speaking EC3.

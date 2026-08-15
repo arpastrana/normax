@@ -217,14 +217,17 @@ not a reimplementation: the point is that the contract is fillable without the
 standard's library, made a measured fact — the pipeline composes, the design
 envelopes, the mass differentiates, and `grep ec3x` on the test file is empty.
 
-**Stretch, cuttable: a Blueprints-backed sizer.** Blueprints implements the
-cross-section formulas (6.6, 6.7, 6.10, 6.13, 6.14, 6.41, 6.42) and 6.44, but
-nothing of Annex B, so it can never fill the full member check and full parity
-is not the goal. What it proves is the licensing seam Rafael named: a
-commercial-or-LGPL implementation consumed behind the contract, dev-only,
-imported and never copied, sized by bisection over its own verdicts on the
-arch's axially-dominated funicular case. If written, it lives in `tests/`
-beside the existing oracle discipline and ships nowhere.
+**Stretch, cut 2026-08-15: a Blueprints-backed sizer.** Blueprints implements
+the cross-section formulas (6.6, 6.7, 6.10, 6.13, 6.14, 6.41, 6.42) and 6.44,
+but nothing of Annex B, so it could never fill the full member check. The
+reason it is cut is sharper than scope: a Blueprints sizer in `tests/` needs
+`blue-prints` importable in normax, and the ec3x extraction deliberately moved
+that LGPL dev dependency out of this repository entirely, to the library whose
+clauses it oracles. Reintroducing it to demonstrate a seam the
+allowable-stress sizer already demonstrates would trade a settled licensing
+boundary for a redundant proof. Revisit only if a Blueprints-backed *pipeline*
+sizer becomes a goal in its own right, and then as its own decision about
+where the dependency lives.
 
 ---
 
