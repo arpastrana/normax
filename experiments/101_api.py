@@ -56,13 +56,15 @@ from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.design import optimize_staggered
+from normax.design import settle_diameters
 from normax.ec3.material import Steel
 from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
+from normax.optimization import minimize_bounded
+from normax.optimization import value_and_gradient
 from normax.sizing import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
@@ -185,6 +187,10 @@ class OptimizationConfig(NamedTuple):
     ----------
     iterations :
         Most iterations to spend.
+    settling_passes :
+        Most analyses to spend closing the analysis and the check at the answer.
+    settling_tolerance :
+        Largest fractional movement in any diameter that counts as settled.
     envelope_sharpness :
         Sharpness of the envelope reconciling the load cases into one size.
     bounds :
@@ -198,9 +204,16 @@ class OptimizationConfig(NamedTuple):
     continuation parameter — the envelope approaches the true largest size as it
     grows, so raising it across rounds drives the design onto the smallest adequate
     one from above, which is a property of the descent and sits beside its budget.
+
+    **The settling budget is not spent by the descent.** The frame is analyzed at
+    the seed diameters for the whole search, and the passes are what the answer is
+    re-analyzed with afterwards to measure what that shortcut cost. They buy a
+    number for the writeup rather than a better design.
     """
 
     iterations: int
+    settling_passes: int
+    settling_tolerance: float
     envelope_sharpness: float
     bounds: BoundsConfig
 
@@ -394,33 +407,47 @@ def main(config_path: Path) -> None:
     objective_and_gradient = jax.jit(jax.value_and_grad(objective, has_aux=True))
     (mass, _), gradient = objective_and_gradient(params)
 
-    # The same objective handed to a staggered descent, which never sees a block.
-    bounds = config.optimization.bounds
-    found = optimize_staggered(
-        objective,
-        params,
+    # The force densities are the only thing the descent moves, so the diameters
+    # the frame is analyzed with stay at the seed for the whole search.
+    def weigh_shape(force_densities: Float[Array, "members"]):
+        return objective(DesignParameters(force_densities, params.diameters))
+
+    searched = config.optimization
+    bounds = searched.bounds
+    found = minimize_bounded(
+        weigh_shape,
+        params.force_densities,
         bounds=(bounds.min, bounds.max),
-        iterations=config.optimization.iterations,
+        iterations=searched.iterations,
+        has_aux=True,
+        gradient=value_and_gradient(weigh_shape, has_aux=True),
     )
 
     # The answer, and the design behind it, out of the search that already ran it.
     mass_opt = found.value
     design_opt = found.aux
+    answer = found.trajectory.q[-1]
 
-    # What the answer weighs if the frame is never re-analyzed at the sections the
-    # check demanded, which is the error a staggered search exists to remove.
-    frozen = DesignParameters(found.trajectory.q[-1], params.diameters)
-    misreported, _ = objective(frozen)
+    # What the shortcut costs, measured rather than assumed: the frame is analyzed
+    # at the seed throughout, so the answer is re-analyzed once at the sections the
+    # check demanded of it. Forward passes only, and no gradient is spent here.
+    settled = settle_diameters(
+        objective,
+        DesignParameters(answer, params.diameters),
+        settling_passes=searched.settling_passes,
+        settling_tolerance=searched.settling_tolerance,
+    )
+    honest, _ = objective(DesignParameters(answer, settled))
 
     slope = gradient.force_densities
 
-    print(f"Mass at the start, analyzed at the seed: {float(mass):.9f} t")
+    print(f"Mass at the start: {float(mass):.9f} t")
     print(f"L1 norm of the initial gradient: {jnp.linalg.norm(slope, ord=1)}")
-    print(f"Mass after the descent, at its own sections: {float(mass_opt):.9f} t")
+    print(f"Mass after the descent: {float(mass_opt):.9f} t")
     print(f"Saved: {100.0 * (1.0 - mass_opt / mass):.3f} %")
-    print(f"The answer weighed at the seed instead: {float(misreported):.9f} t")
-    coupling_error = 100.0 * (misreported / mass_opt - 1.0)
-    print(f"Coupling error at the answer: {coupling_error:+.5f} %")
+    print(f"The answer re-analyzed at its own sections: {float(honest):.9f} t")
+    coupling_error = 100.0 * (honest / mass_opt - 1.0)
+    print(f"Cost of analyzing at the seed throughout: {coupling_error:+.5f} %")
     # Every load case exactly satisfied at the size it demanded, which is the
     # invariant the sizing map exists to hold.
     fully_stressed = float(jnp.min(design_opt.sizes.utilization))

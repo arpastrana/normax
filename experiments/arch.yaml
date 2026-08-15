@@ -20,7 +20,11 @@ load_cases:
 sizing:
   section_class: 3
 optimization:
+  # The settling passes are spent after the descent, re-analyzing the answer at
+  # the sections the check demanded, to measure what a frozen seed cost.
   iterations: 25
+  settling_passes: 400
+  settling_tolerance: 1.0e-6
   envelope_sharpness: 50.0
   bounds:
     min: -100.0
