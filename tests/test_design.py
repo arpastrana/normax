@@ -52,8 +52,8 @@ TOLERANCE_GRADIENT = 1e-7
 BOUNDS = (-500.0, -1.0)
 STAGGERED_ITERATIONS = 10
 
-# Largest fractional movement in a diameter a closed coupling may still show.
-TOLERANCE_COUPLING = 1e-6
+# Largest fractional movement in a diameter a settled coupling may still show.
+TOLERANCE_SETTLING = 1e-6
 
 # Below this, two masses of the same design disagree only by round-off.
 TOLERANCE_ROUNDOFF = 1e-9
@@ -375,7 +375,7 @@ def test_the_staggered_search_closes_its_coupling(staggered, pipeline, three_cas
     weighed = design_envelope(pipeline(answer, three_cases), SHARPNESS)
     demanded = weighed.sizes.sections.diameter
 
-    assert float(jnp.max(jnp.abs(demanded / settled - 1.0))) < TOLERANCE_COUPLING
+    assert float(jnp.max(jnp.abs(demanded / settled - 1.0))) < TOLERANCE_SETTLING
 
 
 def test_the_staggered_search_traces_the_objective_twice(staggered):
@@ -419,11 +419,10 @@ def test_the_staggered_search_refuses_a_coupling_that_has_not_settled(
     pipeline,
     params,
     three_cases,
-    monkeypatch,
 ):
     # A mass computed at diameters the design does not have is not returned, so
-    # a successful return is itself the evidence that the coupling closed.
-    monkeypatch.setattr("normax.design.STAGGERED_ROUNDS", 1)
+    # a successful return is itself the evidence that the coupling closed. One
+    # round cannot close it, the seed being the wrong sections by construction.
     weighed = mass_objective(pipeline, three_cases)
 
     with pytest.raises(ValueError, match="still moving"):
@@ -432,6 +431,22 @@ def test_the_staggered_search_refuses_a_coupling_that_has_not_settled(
             params,
             bounds=BOUNDS,
             iterations=STAGGERED_ITERATIONS,
+            rounds=1,
+        )
+
+
+def test_the_two_caps_are_refused_separately(pipeline, params, three_cases):
+    # The message says which loop stalled, a round of the search or a pass of the
+    # settling inside one, so a budget that ran out names the budget to raise.
+    weighed = mass_objective(pipeline, three_cases)
+
+    with pytest.raises(ValueError, match="passes at fixed force densities"):
+        optimize_staggered(
+            weighed,
+            params,
+            bounds=BOUNDS,
+            iterations=1,
+            settling_passes=1,
         )
 
 
