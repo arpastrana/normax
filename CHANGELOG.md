@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### The materials and the sections come home — planned
+
+`docs/sections_extraction.md` plans the deferred half of the ec3x extraction:
+`normax/materials.py` and `normax/sections.py`, so the pipeline contract and
+the configuration layer stop speaking EC3. Decided with Rafael 2026-08-15,
+same day as the extraction it completes.
+
+- **The trigger was misfiled.** The extraction doc parked `Tube` in the
+  contract with "a second cross-section" as its trigger; the real trigger is a
+  second *sizer*. A Blueprints- or SkyCiv-backed block behind
+  `AbstractMemberSizer` cannot be handed an `ec3x.TubeCatalogue` to fill, so
+  the contract as shipped is only fillable by the backend it was abstracted
+  from. Counted: `from ec3x.material import Steel` and
+  `from ec3x.section import TubeCatalogue` 17 times each across experiments
+  and tests, one `ec3x.Tube` each in `normax/design.py` and
+  `normax/sizing/__init__.py`.
+- **The split follows `ec3x.Steel`'s own seam**: `SteelGrade(f_y, e_mod,
+  density)` is the mill certificate, and the gammas and the imperfection
+  factor stay where clauses are selected. `TubeFamily(ratio, material)` and
+  `MemberSections(diameter, thickness, material)` are tube geometry with the
+  class removed — it was only ever in the analyzer's family rebuild because
+  `TubeCatalogue`'s constructor demands one.
+- **Deliberately not the shape-agnostic property bundle.** The envelope smooths
+  `diameter` and `thickness` and relies on their ratio surviving; enveloping
+  derived properties independently would let `area` and `second_moment` drift
+  off any tube. The bundle keeps its original trigger, a second cross-section.
+- `ec3x` itself does not change, and neither Tesseract schema moves a field.
+
 ### `normax/ec3/` is extracted into `ec3x` (extraction phases 3–6)
 
 The remaining phases of `docs/ec3x_extraction.md` are executed. The clause
