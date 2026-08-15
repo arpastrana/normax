@@ -8,6 +8,7 @@ authors = [{name = "Rafael Pastrana"}]
 license = "Apache-2.0"
 classifiers = []
 dependencies = [
+    "ec3x",
     "jax>=0.11.0",
     "jaxtyping>=0.3.11",
     "pyyaml>=6.0.3",
@@ -21,7 +22,6 @@ include = ["normax*"]
 
 [dependency-groups]
 dev = [
-    "blue-prints>=0.7.1",
     "pre-commit>=4.6.1",
     "pytest",
     "pytest-xdist>=3.8.0",
@@ -68,6 +68,7 @@ force-single-line = true
 
 [tool.uv.sources]
 smax = { path = "../smax", editable = true }
+ec3x = { path = "../ec3x", editable = true }
 
 
 [project.urls]

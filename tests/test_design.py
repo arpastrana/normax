@@ -5,6 +5,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
@@ -13,8 +15,6 @@ from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import diameter_envelope
 from normax.design import optimize_staggered
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state

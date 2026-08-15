@@ -1,4 +1,9 @@
 # Built by `uv build` at the repo root, and gitignored, so build the wheel
 # before `tesseract build`. The version is the one in pyproject.toml.
 ../../dist/normax-0.1-py3-none-any.whl
+
+# TODO(2026-08-15, deferred): normax now depends on ec3x, and a sibling repo's
+# dist/ is outside the build context, so this path does not resolve as written.
+# Either build ec3x's wheel into this repo's dist/, or name a published version.
+../../dist/ec3x-0.1-py3-none-any.whl
 jax-fdm>=0.14.0

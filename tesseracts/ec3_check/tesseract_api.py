@@ -23,7 +23,7 @@ monotone residual and it carries an adjoint, so the standard composes with an
 autodiff form-finder instead of terminating the chain.
 
 Differentiation strategy: an implicit tangent taken at the root of the residual,
-not autodiff through the bisection. `normax.ec3.sizing` wraps the solve in a
+not autodiff through the bisection. `ec3x.sizing` wraps the solve in a
 `custom_jvp`, so tracing this module reaches the hand-derived rule rather than
 fifty-five halvings of a `while_loop`.
 
@@ -46,18 +46,17 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+from ec3x.actions import MemberActions
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import diameter_required
+from ec3x.sizing import end_moments
+from ec3x.sizing import governing_limit_state as governing_limit
+from ec3x.sizing import utilization_design as utilization_of_tubes
 from pydantic import BaseModel
 from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
-
-from normax.ec3.actions import MemberActions
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import end_moments
-from normax.ec3.sizing import governing_limit_state as governing_limit
-from normax.ec3.sizing import utilization_design as utilization_of_tubes
 
 jax.config.update("jax_enable_x64", True)
 

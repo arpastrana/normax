@@ -51,13 +51,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import openseespy.opensees as ops
+from ec3x.section import TubeCatalogue
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.analysis import normal_axis
 from normax.analysis import support_fixities
-from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 from normax.units import MILLIMETER
 from normax.units import to_meters

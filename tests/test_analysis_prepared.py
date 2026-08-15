@@ -3,11 +3,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import loads_uniform

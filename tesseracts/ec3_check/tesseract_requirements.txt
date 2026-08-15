@@ -1,3 +1,5 @@
-# Built by `uv build` at the repo root, and gitignored, so build the wheel
-# before `tesseract build`. The version is the one in pyproject.toml.
-../../dist/normax-0.1-py3-none-any.whl
+# This stage depends on ec3x alone since the extraction — not on normax.
+# TODO(2026-08-15, deferred): a sibling repo's dist/ is outside the build
+# context, so this path does not resolve as written. Either build ec3x's wheel
+# into this repo's dist/ before `tesseract build`, or name a published version.
+../../dist/ec3x-0.1-py3-none-any.whl

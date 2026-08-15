@@ -26,11 +26,11 @@ import abc
 from typing import NamedTuple
 
 import equinox as eqx
+from ec3x.section import Tube
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.ec3.section import Tube
 
 
 class MemberSizes(NamedTuple):

@@ -134,7 +134,7 @@ def shortest_member(
 
     Notes
     -----
-    The envelope of `normax.ec3.sizing` with its sign reversed, and taken in the
+    The envelope of `ec3x.sizing` with its sign reversed, and taken in the
     logarithm of the length for the same reason: the sharpness is then
     dimensionless and comparable between structures of different size.
 

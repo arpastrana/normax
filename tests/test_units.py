@@ -1,9 +1,9 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ec3x.material import DENSITY
+from ec3x.material import E_MODULUS
 
-from normax.ec3.material import DENSITY
-from normax.ec3.material import E_MODULUS
 from normax.units import to_kilograms_per_cubic_meter
 from normax.units import to_meters
 from normax.units import to_millimeters

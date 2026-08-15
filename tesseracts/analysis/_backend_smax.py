@@ -35,6 +35,10 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from ec3x.classification import classify_section
+from ec3x.material import Steel
+from ec3x.section import Tube
+from ec3x.section import TubeCatalogue
 from jaxtyping import Array
 from jaxtyping import Float
 from smax import CompiledStructure
@@ -42,10 +46,6 @@ from smax import CompiledStructure
 from normax.analysis import MemberForces
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
-from normax.ec3.classification import classify_section
-from normax.ec3.material import Steel
-from normax.ec3.section import Tube
-from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 
 

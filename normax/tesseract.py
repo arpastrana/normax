@@ -49,6 +49,10 @@ from typing import NamedTuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from ec3x.actions import MemberActions
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
@@ -57,10 +61,6 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
-from normax.ec3.actions import MemberActions
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import utilization_design
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.loads import count_load_cases
@@ -588,7 +588,7 @@ class TesseractSizer(AbstractMemberSizer):
         Returns
         -------
         governing :
-            One of the limit-state codes of `normax.ec3.sizing`.
+            One of the limit-state codes of `ec3x.sizing`.
 
         Notes
         -----

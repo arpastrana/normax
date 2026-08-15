@@ -49,7 +49,7 @@ that can trace one can answer it; the OpenSees one cannot. It is soft
 validation — nothing it produces feeds a design or a mass, nothing crosses a
 Tesseract boundary, and nothing is differentiated, an eigenvalue derivative
 being undefined where two modes cross and a symmetric structure having
-degenerate pairs. `normax/ec3/stability.py` implements the clauses it reads.
+degenerate pairs. `ec3x/stability.py` implements the clauses it reads.
 
 The stage's own vocabulary — what a member force is, which degrees of freedom a
 support restrains — lives in `normax.analysis` and is shared with every backend.
@@ -61,6 +61,17 @@ from typing import NamedTuple
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
+from ec3x.material import Steel
+from ec3x.resistance import force_critical
+from ec3x.resistance import slenderness_from_force
+from ec3x.section import Tube
+from ec3x.section import TubeCatalogue
+from ec3x.stability import ALPHA_CR_ELASTIC
+from ec3x.stability import amplifier_resistance
+from ec3x.stability import buckling_length_global
+from ec3x.stability import is_adequate
+from ec3x.stability import slenderness_global
+from ec3x.stability import utilization_frame as utilization_stability
 from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
@@ -81,17 +92,6 @@ from normax.analysis import Buckling
 from normax.analysis import MemberForces
 from normax.analysis import support_fixities
 from normax.design import Design
-from normax.ec3.material import Steel
-from normax.ec3.resistance import force_critical
-from normax.ec3.resistance import slenderness_from_force
-from normax.ec3.section import Tube
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.stability import ALPHA_CR_ELASTIC
-from normax.ec3.stability import amplifier_resistance
-from normax.ec3.stability import buckling_length_global
-from normax.ec3.stability import is_adequate
-from normax.ec3.stability import slenderness_global
-from normax.ec3.stability import utilization_frame as utilization_stability
 from normax.loads import stack_load_cases
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_meter
@@ -259,7 +259,7 @@ def _injected_assembly(
     A leaf left alone keeps the placeholder `prepare` built it from, and since
     that placeholder is a constant the gradient with respect to it is silently
     zero rather than an error. The section properties come from
-    `normax.ec3.section` rather than from the solver's own section class, so the
+    `ec3x.section` rather than from the solver's own section class, so the
     two stages cannot disagree about what a tube is; they agree algebraically.
 
     **The tube the block holds is restated at the diameters given rather than

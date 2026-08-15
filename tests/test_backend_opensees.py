@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 
 from normax.analysis import opensees as backend_opensees
 from normax.analysis.smax import member_forces as forces_smax
@@ -32,8 +34,6 @@ from normax.analysis.smax import prepare_model as prepare_smax
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import assemble_load_cases as load_cases_of

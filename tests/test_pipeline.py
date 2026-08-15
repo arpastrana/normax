@@ -4,6 +4,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import LIMIT_MAJOR
+from ec3x.stability import ALPHA_CR_ELASTIC
 
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import buckling_modes
@@ -15,10 +19,6 @@ from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import governing_load_case
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import LIMIT_MAJOR
-from normax.ec3.stability import ALPHA_CR_ELASTIC
 from normax.form_finding.fdm import FdmFormFinder
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state

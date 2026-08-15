@@ -28,15 +28,15 @@ the parameter registration and the reasons.
 from typing import Any
 
 import jax.numpy as jnp
+from ec3x.classification import classify_section
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
 
 from normax.analysis.opensees import Jacobian
 from normax.analysis.opensees import Model
 from normax.analysis.opensees import force_jacobian
 from normax.analysis.opensees import member_forces
 from normax.analysis.opensees import prepare_model
-from normax.ec3.classification import classify_section
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.structures import Structure
 
 # Which block of the Jacobian carries each (output, input) pair. The minor-axis

@@ -14,29 +14,29 @@
 """
 EN 1993-1-1 as a block of the design pipeline.
 
-`normax.ec3` implements the standard: what a section is, what it resists, and
+`ec3x` implements the standard: what a section is, what it resists, and
 the diameter at which a member is exactly satisfied. This module is the adapter
 that lets a pipeline call it beside a form finder and a frame analysis, and it
 is deliberately thin — every clause it reaches lives there, and nothing about a
 clause is decided here.
 
-The separation is what keeps `normax.ec3` free of any opinion about pipelines,
+The separation is what keeps `ec3x` free of any opinion about pipelines,
 so a second standard added beside it inherits none of ours.
 """
 
 import equinox as eqx
 import jax
+from ec3x.actions import MemberActions
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+from ec3x.sizing import diameter_required
+from ec3x.sizing import end_moments
+from ec3x.sizing import governing_limit_state
+from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.ec3.actions import MemberActions
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
-from normax.ec3.sizing import diameter_required
-from normax.ec3.sizing import end_moments
-from normax.ec3.sizing import governing_limit_state
-from normax.ec3.sizing import utilization_design
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.structures import Structure
@@ -258,7 +258,7 @@ class Ec3Sizer(AbstractMemberSizer):
         Returns
         -------
         governing :
-            One of the limit-state codes of `normax.ec3.sizing`.
+            One of the limit-state codes of `ec3x.sizing`.
 
         Notes
         -----

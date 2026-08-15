@@ -61,6 +61,7 @@ from typing import NamedTuple
 
 import equinox as eqx
 import jax.numpy as jnp
+from ec3x.section import Tube
 from jax.scipy.special import logsumexp
 from jaxtyping import Array
 from jaxtyping import Float
@@ -68,7 +69,6 @@ from jaxtyping import Int
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
-from normax.ec3.section import Tube
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.loads import LoadCases

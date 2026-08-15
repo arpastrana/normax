@@ -15,7 +15,7 @@
 Conversions between the units EN 1993-1-1 is written in and coherent SI.
 
 The standard tabulates lengths in millimeters and strengths in newtons per
-square millimeter, and every module under `normax.ec3` follows it, carrying
+square millimeter, and every module under `ec3x` follows it, carrying
 masses in tonnes so that the density is a plain number. A general-purpose
 mechanics solver works in coherent SI instead. The two systems meet here, in
 one place, rather than at every call across the boundary.
