@@ -81,8 +81,10 @@ def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeFamily]:
         supports=jnp.asarray(inputs["supports"]),
     )
 
+    # The schema carries no ultimate strength; a zero is loud if anything reads it.
     grade = SteelGrade(
         f_y=inputs["f_y"],
+        f_u=0.0,
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )

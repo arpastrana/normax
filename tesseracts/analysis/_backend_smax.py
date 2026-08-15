@@ -127,8 +127,10 @@ def graded_section(inputs: dict[str, Any]) -> MemberSections:
     so that the schema still describes the frame when self-weight or a nonlinear
     backend arrives.
     """
+    # The schema carries no ultimate strength; a zero is loud if anything reads it.
     grade = SteelGrade(
         f_y=inputs["f_y"],
+        f_u=0.0,
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
