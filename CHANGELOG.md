@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### `normax/ec3/` is extracted into `ec3x` (extraction phases 3–6)
+
+The remaining phases of `docs/ec3x_extraction.md` are executed. The clause
+implementation lives at `../ec3x` — flat layout mirroring this repo's template,
+dependencies `jax` and `jaxtyping` alone, the same pinned ruff and pre-commit —
+and normax consumes it as a hard dependency through
+`[tool.uv.sources] ec3x = { path = "../ec3x", editable = true }`. Phase 3 first
+moved `diameter_envelope` up into `normax/design.py` beside `design_envelope`:
+a soft maximum over load cases is smoothing, not a clause, and the subtree only
+lifts cleanly once nothing above it reaches in for arithmetic no standard owns.
+
+- **The gate, measured.** `import ec3x` in its own environment yields `float64`
+  (`ec3x/__init__.py` sets `jax_enable_x64` itself — standalone it would inherit
+  nothing, and every clause would run silently in float32). `ec3x`: 1587 pass in
+  25 s. normax: 304 pass in 54 s against smax `main`, with `--extra spike`.
+  1587 + 304 = 1891 = the pre-extraction suite: the plan's 1592/298 split moved
+  by the five envelope tests phase 3 kept in normax, plus phase 2's new
+  moment-factor test on the staying side.
+- **The experiments reprint their recorded numbers.** `101_api.py`:
+  0.138951969 t, 16.114 % saved, +0.24867 %, utilization 1.000000000000, bit for
+  bit. `09`: the x3.26 penalty and `alpha_cr` 0.1291. `11`: PASS. `04`: mass gap
+  2.6e-07 against OpenSees.
+- **Experiment 10 was failing before the extraction, and the fix is the one the
+  test suite already carried.** Its parity walk held every non-moment field to
+  `TOLERANCE_PARITY` 1e-14, and the class-3 diameter sits at 1.35e-14 since the
+  measured-plane restructuring — the recorded size-holds-to-the-moments figure,
+  reproduced identically on a stashed pre-extraction tree. The walk now holds
+  `diameter` and `thickness` to `TOLERANCE_SIZE` 1e-13 like `field_by_field` in
+  `tests/test_tesseract_parity.py`, with its own summary line. PASS, worst size
+  1.35e-14, worst value 2.22e-15.
+- **`blue-prints` left normax's dev group with the oracle tests.**
+  `test_oracle_blueprints.py` was the only importer, so the LGPL dev dependency
+  is `ec3x`'s alone now, with its never-read-while-writing note beside it.
+- **The moved tests cite `docs/clauses.md` repo-qualified**; the verification
+  record stays here, being the writeup's evidence, and `ec3x`'s README says so.
+- **The ec3_check Tesseract stops depending on normax entirely** — its
+  requirements name the `ec3x` wheel alone. How the images obtain that wheel is
+  deferred and marked TODO in all three requirements files: a sibling repo's
+  `dist/` is outside the build context, so either `ec3x`'s wheel gets built into
+  this repo's `dist/`, or the requirement names a published version. The
+  `tesseract build` leg of the gate is deferred with it.
+- The `uv add`/`uv remove` exact syncs silently dropped the `pipeline` group and
+  the `spike` extra from the environment; the suite shrank to 124 collected
+  before `uv sync --group pipeline --extra spike` restored it. Worth knowing the
+  next time a dependency edit precedes a test count.
+
 ### The actions record leaves the contract (extraction phases 1–2)
 
 Phases 1 and 2 of `docs/ec3x_extraction.md` are executed. Phase 1 splits

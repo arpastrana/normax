@@ -121,7 +121,7 @@ does not hold the frame buckles in a mode spanning several members, the true
 `L_cr` exceeds the member length, and the design is unsafe rather than cautious.
 
 The clause layer is unaffected and stays general: `force_critical`,
-`slenderness_from_force` and every function in `normax.ec3.sizing` take `L_cr`
+`slenderness_from_force` and every function in `ec3x.sizing` take `L_cr`
 as an argument, because Eq. 6.50 is written in `L_cr` and not in a member
 length. What is fixed is one composition's choice of what to pass.
 

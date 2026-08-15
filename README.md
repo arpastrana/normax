@@ -35,17 +35,18 @@ uv sync --extra spike
 import jax
 import jax.numpy as jnp
 
+from ec3x.material import Steel
+from ec3x.section import TubeCatalogue
+
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.ec3.material import Steel
-from normax.ec3.section import TubeCatalogue
 from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
-from normax.sizing import Ec3Sizer
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
 steel = Steel()
