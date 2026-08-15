@@ -37,9 +37,42 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
+from normax.materials import SteelGrade
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.structures import Structure
+
+
+def design_steel(grade: SteelGrade) -> Steel:
+    """
+    Read a steel grade in the terms the standard states.
+
+    Parameters
+    ----------
+    grade :
+        The steel as a certificate states it, free of any standard.
+
+    Returns
+    -------
+    steel :
+        The same steel with EN 1993-1-1's partial factors and imperfection
+        factor beside it, at their defaults.
+
+    Notes
+    -----
+    The certificate half crosses unchanged; what is added is what only this
+    standard can add — the partial factors of §6.1 and the buckling curve of
+    Table 6.2. The defaults are the UK National Annex factors and curve a,
+    the hot-finished hollow section. A design needing other factors, or the
+    cold-formed curve c, constructs its `ec3x.Steel` explicitly and hands the
+    sizer a catalogue built from it.
+    """
+    return Steel(
+        f_y=grade.f_y,
+        e_mod=grade.e_mod,
+        density=grade.density,
+        f_u=grade.f_u,
+    )
 
 
 def design_actions(forces: MemberForces) -> MemberActions:

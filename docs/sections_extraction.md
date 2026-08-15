@@ -42,12 +42,12 @@ reports against. What it is not allowed to need the standard for is geometry.
 
 ### `normax/materials.py` — what a mill certificate states
 
-`ec3x.Steel` already splits itself: three fields are physics (`f_y`, `e_mod`,
-`density`) and three are the standard's (`gamma_m0`, `gamma_m1`, `alpha` — a
-safety format and a buckling-curve selection). The normax-owned record takes
-exactly the first half:
+`ec3x.Steel` already splits itself: four fields are physics (`f_y`, `f_u`,
+`e_mod`, `density`) and four are the standard's (`gamma_m0`, `gamma_m1`,
+`gamma_m2`, `alpha` — a safety format and a buckling-curve selection). The
+normax-owned record takes exactly the first half:
 
-    SteelGrade(f_y, e_mod, density)
+    SteelGrade(f_y, f_u, e_mod, density)
 
 The yield strength is a material fact, stated on the certificate, standard-free
 — it belongs here. The partial factors and the imperfection factor select
