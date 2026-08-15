@@ -55,8 +55,6 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import yaml
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 from jaxtyping import Array
 from jaxtyping import Float
 
@@ -71,6 +69,7 @@ from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
+from normax.materials import SteelGrade
 from normax.optimization import minimize_bounded
 from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
@@ -420,16 +419,20 @@ def main(config_path: Path) -> None:
     structure = build_arch(config.structure)
     loads = arch_load_cases(structure, config.load_cases)
 
-    material = Steel()
-    catalogue = TubeCatalogue.at_class_limit(material, config.sizing.section_class)
-    # The analysis is configured with one tube; the check is what chooses between them.
-    section = catalogue(config.analysis.diameter)
+    # The one place the standard is named. Everything EC3-flavored — the
+    # partial factors, the class-limit wall — is derived inside the block.
+    grade = SteelGrade()
+    sizer = Ec3Sizer.at_class_limit(structure, grade, config.sizing.section_class)
+
+    # The analysis is configured with one tube; the check is what chooses between
+    # them. The tube is drawn from the sizer's own family, read as bare geometry.
+    section = sizer.family(config.analysis.diameter)
 
     # Three swappable blocks
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
         SmaxAnalyzer(structure, section),
-        Ec3Sizer(structure, catalogue),
+        sizer,
     )
 
     params = initialize_parameters(structure, config)

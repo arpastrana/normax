@@ -196,15 +196,16 @@ def both_pipelines(arch, section_class, resultant=True):
     steel = arch.steel
     catalogue = TubeCatalogue.at_class_limit(steel, section_class)
 
+    sizer = Ec3Sizer(arch.structure, catalogue, resultant)
     in_process = StructuralDesignPipeline(
         FdmFormFinder(arch.structure),
-        SmaxAnalyzer(arch.structure, catalogue(SEED)),
-        Ec3Sizer(arch.structure, catalogue, resultant),
+        SmaxAnalyzer(arch.structure, sizer.family(SEED)),
+        sizer,
     )
 
     composed = StructuralDesignPipeline(
         TesseractFormFinder(arch.structure, arch.chain.formfinding),
-        TesseractAnalyzer(arch.structure, arch.chain.analysis, catalogue, NORMAL),
+        TesseractAnalyzer(arch.structure, arch.chain.analysis, sizer.family, NORMAL),
         TesseractSizer(arch.structure, arch.chain.ec3, catalogue, resultant),
     )
 
@@ -347,10 +348,10 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     shape = FdmFormFinder(arch.structure)(
         arch.params.force_densities, one_case.formfinding
     )
-    analyzer = SmaxAnalyzer(arch.structure, catalogue(SEED))
+    local = Ec3Sizer(arch.structure, catalogue)
+    analyzer = SmaxAnalyzer(arch.structure, local.family(SEED))
     forces = analyzer(shape.xyz, arch.params.diameters, one_case.analysis)
 
-    local = Ec3Sizer(arch.structure, catalogue)
     crossed = TesseractSizer(arch.structure, arch.chain.ec3, catalogue)
 
     oracle = local(forces, buckling_length)

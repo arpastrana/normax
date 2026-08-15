@@ -78,8 +78,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 from jaxtyping import Array
 from jaxtyping import Float
 
@@ -98,6 +96,7 @@ from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_half_span
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
 from normax.optimization import Trajectory
 from normax.optimization import annealing_schedule
 from normax.optimization import optimize_annealed
@@ -184,12 +183,8 @@ FLOOR_WEIGHT = 50.0
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
+GRADE = SteelGrade()
 SECTION_CLASS = 3
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL, SECTION_CLASS)
-
-# The analysis is configured with one tube; the check chooses within the family.
-SECTION_SEED = CATALOGUE(SEED)
 
 # The reads the reports make, compiled. Left eager each one costs an XLA
 # compilation per primitive, which is most of what reporting a design costs.
@@ -356,10 +351,13 @@ def arch_problem() -> ArchProblem:
     )
     reached = jnp.max(state.xyz[:, 2])
 
+    # The analysis is configured with one tube, drawn from the sizer's family;
+    # the check chooses within that family.
+    sizer = Ec3Sizer.at_class_limit(structure, GRADE, SECTION_CLASS)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, SECTION_SEED),
-        Ec3Sizer(structure, CATALOGUE),
+        SmaxAnalyzer(structure, sizer.family(SEED)),
+        sizer,
     )
     funicular = trial * reached / RISE
     setup = ArchProblem(structure, blocks, loads, funicular)

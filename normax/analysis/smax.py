@@ -64,8 +64,6 @@ import numpy as np
 from ec3x.material import Steel
 from ec3x.resistance import force_critical
 from ec3x.resistance import slenderness_from_force
-from ec3x.section import Tube
-from ec3x.section import TubeCatalogue
 from ec3x.stability import ALPHA_CR_ELASTIC
 from ec3x.stability import amplifier_resistance
 from ec3x.stability import buckling_length_global
@@ -93,6 +91,9 @@ from normax.analysis import MemberForces
 from normax.analysis import support_fixities
 from normax.design import Design
 from normax.loads import stack_load_cases
+from normax.materials import SteelGrade
+from normax.sections import MemberSections
+from normax.sections import TubeFamily
 from normax.structures import Structure
 from normax.units import to_kilograms_per_cubic_meter
 from normax.units import to_meters
@@ -111,7 +112,7 @@ TORSION_FACTOR = 2.0
 def frame_model(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
-    section: Tube,
+    section: MemberSections,
 ) -> Frame:
     """
     The frame model an analysis runs on, in coherent SI.
@@ -188,7 +189,7 @@ def frame_model(
 
 def prepare_model(
     structure: Structure,
-    section: Tube,
+    section: MemberSections,
 ) -> CompiledStructure:
     """
     Compile everything a solve needs that no design variable reaches.
@@ -231,7 +232,7 @@ def _injected_assembly(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    section: Tube,
+    section: MemberSections,
 ) -> CompiledStructure:
     """
     A compiled assembly with every traced leaf replaced.
@@ -277,7 +278,7 @@ def _injected_assembly(
     indexed by the global member ids it holds. One group is the usual case here,
     every member being a beam.
     """
-    family = TubeCatalogue(section.ratio, section.section_class, section.material)
+    family = TubeFamily(section.ratio, section.material)
     sections = family(to_meters(diameters))
     steel = sections.material
     gross = sections.area
@@ -321,7 +322,7 @@ def member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    section: Tube,
+    section: MemberSections,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
@@ -379,7 +380,7 @@ def buckling_modes(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    section: Tube,
+    section: MemberSections,
     loads: Float[Array, "nodes 3"],
     *,
     num_modes: int = 1,
@@ -478,13 +479,13 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
     solve and nothing else: no case is compiled, and the block carries none.
     """
 
-    section: Tube
+    section: MemberSections
     model: CompiledStructure
 
     def __init__(
         self,
         structure: Structure,
-        section: Tube,
+        section: MemberSections,
     ) -> None:
         """
         Build an analyzer by compiling a structure's assembly.
@@ -501,9 +502,9 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         self.model = prepare_model(structure, section)
 
     @property
-    def steel(self) -> Steel:
+    def steel(self) -> SteelGrade:
         """
-        The material the frame is analyzed with.
+        The material the frame is analyzed with, free of any standard.
         """
         return self.section.material
 
@@ -645,9 +646,17 @@ def frame_stability(
     )
     alpha_cr = modes.factors[0]
 
-    steel = analyzer.steel
+    # The clauses below are EN 1993-1-1's, so the grade is read in that
+    # standard's terms here, at the block that consults it.
+    grade = analyzer.steel
+    steel = Steel(
+        f_y=grade.f_y,
+        e_mod=grade.e_mod,
+        density=grade.density,
+        f_u=grade.f_u,
+    )
     analyzed = analyzer.section
-    family = TubeCatalogue(analyzed.ratio, analyzed.section_class, steel)
+    family = TubeFamily(analyzed.ratio, grade)
     tubes = family(design.sizes.sections.diameter)
     gross = tubes.area
     inertia = tubes.second_moment

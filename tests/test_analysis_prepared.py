@@ -3,14 +3,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
+from normax.sections import TubeFamily
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
 # A 10 m arch of ten members under a 20 kN load at every free node, in the XZ
@@ -54,12 +55,14 @@ def relative(actual, expected):
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")
-def catalogue(steel):
-    return TubeCatalogue.at_class_limit(steel, 3)
+def catalogue(steel, structure):
+    # The class-limit wall proportion, read off a configured sizer as bare
+    # geometry: the analysis needs a family and has no use for the class.
+    return Ec3Sizer.at_class_limit(structure, steel, 3).family
 
 
 @pytest.fixture(scope="module")
@@ -118,11 +121,9 @@ def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
 ):
     # An absurd placeholder: a unit modulus, a unit density and a tube whose
     # smallest size is larger than anything the arch uses.
-    absurd_family = TubeCatalogue(
+    absurd_family = TubeFamily(
         ratio=catalogue.ratio,
-        section_class=catalogue.section_class,
-        material=Steel(e_mod=1.0, density=1.0),
-        diameter_min=999.0,
+        material=SteelGrade(e_mod=1.0, density=1.0),
     )
     absurd = prepare_model(
         structure._replace(nodes=state.xyz * 3.0), absurd_family(999.0)
@@ -202,12 +203,7 @@ def test_the_modulus_is_a_live_leaf(
     applied = funicular(structure)
 
     def compliance(e_mod):
-        graded = TubeCatalogue(
-            catalogue.ratio,
-            catalogue.section_class,
-            steel._replace(e_mod=e_mod),
-            catalogue.diameter_min,
-        )
+        graded = TubeFamily(catalogue.ratio, steel._replace(e_mod=e_mod))
         member = member_forces(model, state.xyz, diameters, graded(DIAMETER), applied)
 
         return jnp.sum(member.moment_major**2) / e_mod

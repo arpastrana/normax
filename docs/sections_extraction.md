@@ -200,9 +200,13 @@ for bit. A loosened tolerance is a failed phase.
 `normax/analysis/smax.py` and the one `TubeCatalogue` import in
 `normax/analysis/opensees.py` switch to `TubeFamily`; the `tesseracts/`
 backends convert at their edges. Then the call-site sweep: the 17 + 17
-`Steel`/`TubeCatalogue` imports across experiments and tests, of which the
-pipeline drivers (02, 03, 04, 08, 09, 10, 101) end the sweep with no `ec3x`
-import at all. Same gate as phase 2.
+`Steel`/`TubeCatalogue` imports across experiments and tests. The pipeline
+drivers 03, 04, 08, 10 and 101 end the sweep with no `ec3x` import at all; 09
+keeps exactly one, `ALPHA_CR_ELASTIC`, because it reports the standard's
+frame-stability verdict and the threshold is the standard's number. 02 was
+misfiled as a pipeline driver in this document's first draft — it grad-checks
+the sizing stage directly, thirteen deep imports, and stays a standard study
+beside 01, 05, 06 and 11. Same gate as phase 2.
 
 ### 4. Prove the seam
 

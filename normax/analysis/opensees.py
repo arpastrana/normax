@@ -51,13 +51,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import openseespy.opensees as ops
-from ec3x.section import TubeCatalogue
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.analysis import normal_axis
 from normax.analysis import support_fixities
+from normax.sections import TubeFamily
 from normax.structures import Structure
 from normax.units import MILLIMETER
 from normax.units import to_meters
@@ -228,7 +228,7 @@ def frame_plane(
 
 def prepare_model(
     structure: Structure,
-    catalogue: TubeCatalogue,
+    catalogue: TubeFamily,
     *,
     normal: int | None,
 ) -> Model:
@@ -276,7 +276,7 @@ def _build_model(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    catalogue: TubeFamily,
     *,
     loads: Float[Array, "nodes 3"],
     parameters: bool,
@@ -481,7 +481,7 @@ def member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    catalogue: TubeFamily,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
@@ -528,7 +528,7 @@ def member_forces(
 
 def _section_slopes(
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    catalogue: TubeFamily,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     How a member's area and second moment move with its diameter.
@@ -602,7 +602,7 @@ def force_jacobian(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    catalogue: TubeFamily,
     loads: Float[Array, "nodes 3"],
 ) -> Jacobian:
     """
@@ -693,7 +693,7 @@ class ParameterSweep(NamedTuple):
 def _assemble_blocks(
     sweep: ParameterSweep,
     diameters: Float[Array, "members"],
-    catalogue: TubeCatalogue,
+    catalogue: TubeFamily,
     spanned: Plane,
 ) -> Jacobian:
     """

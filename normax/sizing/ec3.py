@@ -40,6 +40,7 @@ from jaxtyping import Float
 from normax.analysis import MemberForces
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
+from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.structures import Structure
@@ -241,12 +242,77 @@ class Ec3Sizer(AbstractMemberSizer):
         self.resultant = resultant
         self.section_class = catalogue.verified_class()
 
+    @classmethod
+    def at_class_limit(
+        cls,
+        structure: Structure,
+        grade: SteelGrade,
+        section_class: int,
+        resultant: bool = True,
+    ) -> "Ec3Sizer":
+        """
+        The sizer whose family sits at a class limit, from a bare grade.
+
+        Parameters
+        ----------
+        structure :
+            The structure whose members are sized. Read for nothing.
+        grade :
+            The steel as a certificate states it, free of any standard.
+        section_class :
+            Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
+        resultant :
+            Whether the two moments combine as a resultant in the cross-section
+            check, or as a linear sum.
+
+        Returns
+        -------
+        sizer :
+            A sizer over the family as thin as that class allows.
+
+        Notes
+        -----
+        The way a driver ordinarily builds this block: everything EC3-flavored
+        — the partial factors, the buckling curve, the class-limit ratio — is
+        derived in here, so the caller names the standard once, by choosing the
+        block, and imports nothing from its library. A design needing other
+        factors, a cold-formed curve, or a ratio that is not a class limit
+        builds a `TubeCatalogue` explicitly and takes the plain constructor.
+        """
+        steel = design_steel(grade)
+        catalogue = TubeCatalogue.at_class_limit(steel, section_class)
+
+        return cls(structure, catalogue, resultant)
+
     @property
     def steel(self) -> Steel:
         """
-        The steel every member is cut from.
+        The steel every member is cut from, in this standard's terms.
         """
         return self.catalogue.material
+
+    @property
+    def family(self) -> TubeFamily:
+        """
+        The section family this block sizes over, as bare geometry.
+
+        Notes
+        -----
+        What an analysis wants of the sizer's family — the wall proportion and
+        the grade, nothing a clause decided — so a driver that configured this
+        block can build the frame's sections off it without importing the
+        standard's library. Reading the ratio here rather than restating it is
+        what keeps one number from being derived twice.
+        """
+        steel = self.catalogue.material
+        grade = SteelGrade(
+            f_y=steel.f_y,
+            f_u=steel.f_u,
+            e_mod=steel.e_mod,
+            density=steel.density,
+        )
+
+        return TubeFamily(self.catalogue.ratio, grade)
 
     def __call__(
         self,

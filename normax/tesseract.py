@@ -66,6 +66,8 @@ from normax.form_finding import FormFoundShape
 from normax.loads import count_load_cases
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
+from normax.materials import SteelGrade
+from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.ec3 import Ec3Sizer
@@ -280,9 +282,10 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     ----------
     client :
         The analysis Tesseract.
-    catalogue :
+    family :
         The section family the frame is analyzed with, whose ratio fixes the wall
-        thickness and whose grade supplies the material.
+        thickness and whose grade supplies the material — bare geometry, free of
+        any standard.
     normal :
         Index of the global axis a planar structure has no thickness along, or
         None for a structure that occupies all three dimensions.
@@ -304,7 +307,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     """
 
     client: Tesseract
-    catalogue: TubeCatalogue
+    family: TubeFamily
     normal: int | None = eqx.field(static=True)
     edges: Int[Array, "members 2"]
     supports: Int[Array, "supports"]
@@ -313,7 +316,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         self,
         structure: Structure,
         client: Tesseract,
-        catalogue: TubeCatalogue,
+        family: TubeFamily,
         normal: int | None = None,
     ) -> None:
         """
@@ -325,7 +328,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
             The structure supplying the connectivity and the supported nodes.
         client :
             The analysis Tesseract.
-        catalogue :
+        family :
             The section family the frame is analyzed with, whose ratio fixes the
             wall thickness and whose grade supplies the material.
         normal :
@@ -333,17 +336,17 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
             or None for a structure that occupies all three dimensions.
         """
         self.client = client
-        self.catalogue = catalogue
+        self.family = family
         self.normal = normal
         self.edges = jnp.asarray(structure.edges, dtype=jnp.int64)
         self.supports = jnp.asarray(structure.supports, dtype=jnp.int64)
 
     @property
-    def steel(self) -> Steel:
+    def steel(self) -> SteelGrade:
         """
-        The material the frame is analyzed with.
+        The material the frame is analyzed with, free of any standard.
         """
-        return self.catalogue.material
+        return self.family.material
 
     def __call__(
         self,
@@ -380,7 +383,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
                     "f_y": self.steel.f_y,
                     "e_mod": self.steel.e_mod,
                     "density": self.steel.density,
-                    "ratio": self.catalogue.ratio,
+                    "ratio": self.family.ratio,
                     "normal": self.normal,
                 },
             )
@@ -463,12 +466,58 @@ class TesseractSizer(AbstractMemberSizer):
         self.client = client
         self.local = Ec3Sizer(structure, catalogue, resultant)
 
+    @classmethod
+    def at_class_limit(
+        cls,
+        structure: Structure,
+        client: Tesseract,
+        grade: SteelGrade,
+        section_class: int,
+    ) -> "TesseractSizer":
+        """
+        The sizer whose family sits at a class limit, from a bare grade.
+
+        Parameters
+        ----------
+        structure :
+            The structure whose members are sized. Read for nothing.
+        client :
+            The check's Tesseract.
+        grade :
+            The steel as a certificate states it, free of any standard.
+        section_class :
+            Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
+
+        Returns
+        -------
+        sizer :
+            A sizer over the family as thin as that class allows.
+
+        Notes
+        -----
+        The same constructor the in-process block offers, so a driver builds
+        either sizer from the same two arguments and imports nothing from the
+        standard's library. The moment-combination flag stays at its default
+        here; a caller selecting the linear sum builds a catalogue explicitly
+        and takes the plain constructor, the flag being clause configuration.
+        """
+        local = Ec3Sizer.at_class_limit(structure, grade, section_class)
+
+        return cls(structure, client, local.catalogue)
+
     @property
     def steel(self) -> Steel:
         """
         Material properties and partial factors.
         """
         return self.local.steel
+
+    @property
+    def family(self) -> TubeFamily:
+        """
+        The section family this block sizes over, as bare geometry.
+        """
+        return self.local.family
 
     @property
     def catalogue(self) -> TubeCatalogue:

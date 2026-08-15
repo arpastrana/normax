@@ -56,8 +56,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
@@ -75,6 +73,7 @@ from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
@@ -149,7 +148,7 @@ TOLERANCE_SERVED = 1e-11
 IMAGES = ("normax-formfinding", "normax-ec3-check")
 VERSION = "0.1.0"
 
-STEEL = Steel()
+GRADE = SteelGrade()
 
 LIMIT_NAMES = {
     0.0: "catalogue minimum",
@@ -218,16 +217,17 @@ class ArchSetup(NamedTuple):
 
 def in_process_pipeline(
     setup: ArchSetup,
-    catalogue: TubeCatalogue,
+    section_class: int,
 ) -> StructuralDesignPipeline:
     """
     The three blocks that compute here, built against the arch.
     """
     structure = setup.structure
+    sizer = Ec3Sizer.at_class_limit(structure, GRADE, section_class)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalogue(SEED)),
-        Ec3Sizer(structure, catalogue),
+        SmaxAnalyzer(structure, sizer.family(SEED)),
+        sizer,
     )
 
     return blocks
@@ -236,16 +236,17 @@ def in_process_pipeline(
 def composed_pipeline(
     setup: ArchSetup,
     chain: Chain,
-    catalogue: TubeCatalogue,
+    section_class: int,
 ) -> StructuralDesignPipeline:
     """
     The same three blocks, each reached across a Tesseract boundary.
     """
     structure = setup.structure
+    sizer = TesseractSizer.at_class_limit(structure, chain.ec3, GRADE, section_class)
     blocks = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
-        TesseractAnalyzer(structure, chain.analysis, catalogue, NORMAL),
-        TesseractSizer(structure, chain.ec3, catalogue),
+        TesseractAnalyzer(structure, chain.analysis, sizer.family, NORMAL),
+        sizer,
     )
 
     return blocks
@@ -399,9 +400,8 @@ def report_parity(
     """
     The design and the gradient, taken in process and taken across the boundary.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
-    in_process = in_process_pipeline(setup, catalogue)
-    composed_blocks = composed_pipeline(setup, chain, catalogue)
+    in_process = in_process_pipeline(setup, section_class)
+    composed_blocks = composed_pipeline(setup, chain, section_class)
 
     # The oracle is compiled, as experiment 09, the parity test and the README
     # all run it. The Tesseract stages compile internally, so an eager oracle
@@ -445,7 +445,7 @@ def report_parity(
         ReportColumn("scaled", ".2e"),
         ReportColumn("held to", ".0e"),
     )
-    ratio = float(catalogue.ratio)
+    ratio = float(in_process.sizer.catalogue.ratio)
 
     report.write_heading(f"Class {section_class}, d/t = {ratio:.3f}")
     report.write_table(columns, rows)
@@ -524,9 +524,7 @@ def report_modes(report: Report, setup: ArchSetup, chain: Chain) -> float:
     """
     Forward mode against reverse mode, through all three stages.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL, 3)
-
-    composed_blocks = composed_pipeline(setup, chain, catalogue)
+    composed_blocks = composed_pipeline(setup, chain, 3)
 
     def objective(q):
         params = DesignParameters(q, setup.seed)
@@ -559,10 +557,16 @@ def report_modes(report: Report, setup: ArchSetup, chain: Chain) -> float:
     return modes
 
 
-def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) -> str:
+def refusal_message(setup: ArchSetup, chain: Chain, sizer: Ec3Sizer) -> str:
     """
     What the check says when asked to differentiate its own diagnostic.
+
+    The raw schema dicts below are the EC3 block's own boundary, so its
+    vocabulary belongs on them; the numbers are read off the configured block
+    rather than imported from its library.
     """
+    steel = sizer.steel
+    catalogue = sizer.catalogue
     nodes = jnp.asarray(setup.structure.nodes)
     edges = np.asarray(setup.structure.edges, dtype=np.int64)
     analysis_inputs = {
@@ -571,9 +575,9 @@ def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) ->
         "edges": edges,
         "supports": np.asarray(setup.structure.supports, dtype=np.int64),
         "loads": np.asarray(setup.funicular, dtype=np.float64),
-        "f_y": STEEL.f_y,
-        "e_mod": STEEL.e_mod,
-        "density": STEEL.density,
+        "f_y": steel.f_y,
+        "e_mod": steel.e_mod,
+        "density": steel.density,
         "ratio": catalogue.ratio,
         "normal": NORMAL,
     }
@@ -588,13 +592,13 @@ def refusal_message(setup: ArchSetup, chain: Chain, catalogue: TubeCatalogue) ->
             "end_moments_major": member["end_moments_major"],
             "end_moments_minor": member["end_moments_minor"],
             "buckling_length": lengths,
-            "f_y": STEEL.f_y,
-            "e_mod": STEEL.e_mod,
-            "density": STEEL.density,
-            "gamma_m0": STEEL.gamma_m0,
-            "gamma_m1": STEEL.gamma_m1,
+            "f_y": steel.f_y,
+            "e_mod": steel.e_mod,
+            "density": steel.density,
+            "gamma_m0": steel.gamma_m0,
+            "gamma_m1": steel.gamma_m1,
             "ratio": catalogue.ratio,
-            "alpha": STEEL.alpha,
+            "alpha": steel.alpha,
             "diameter_min": catalogue.diameter_min,
             "section_class": 3,
             "resultant": True,
@@ -615,7 +619,6 @@ def report_served(
     report: Report,
     setup: ArchSetup,
     chain: Chain,
-    catalogue: TubeCatalogue,
 ) -> float | None:
     """
     The same mass and gradient with two stages in containers, if asked for.
@@ -633,7 +636,7 @@ def report_served(
         return None
 
     def objective(stages):
-        blocks = composed_pipeline(setup, stages, catalogue)
+        blocks = composed_pipeline(setup, stages, 3)
 
         def total(q):
             params = DesignParameters(q, setup.seed)
@@ -696,14 +699,14 @@ def main(verbose: bool = True) -> None:
 
     modes = report_modes(report, setup, chain)
 
-    catalogue = TubeCatalogue.at_class_limit(STEEL, 3)
-    refused = refusal_message(setup, chain, catalogue)
+    sizer = Ec3Sizer.at_class_limit(setup.structure, GRADE, 3)
+    refused = refusal_message(setup, chain, sizer)
     entries = (("refused", refused),)
 
     report.write_heading("A cotangent on a non-differentiable output is refused")
     report.write_entries(entries)
 
-    served = report_served(report, setup, chain, catalogue)
+    served = report_served(report, setup, chain)
 
     checks = [
         ToleranceCheck("value error", worst.value, TOLERANCE_PARITY),

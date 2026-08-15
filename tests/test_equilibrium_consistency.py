@@ -2,8 +2,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 from smax import PinnedSupport
 from smax import Structure as Frame
 from smax import compile_structure
@@ -19,6 +17,8 @@ from normax.analysis.smax import prepare_model
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 
@@ -58,12 +58,14 @@ def funicular(structure, load=LOAD):
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")
-def catalogue(steel):
-    return TubeCatalogue.at_class_limit(steel, 3)
+def catalogue(steel, structure):
+    # The class-limit wall proportion, read off a configured sizer as bare
+    # geometry: the analysis needs a family and has no use for the class.
+    return Ec3Sizer.at_class_limit(structure, steel, 3).family
 
 
 @pytest.fixture(scope="module")

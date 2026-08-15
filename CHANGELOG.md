@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### The materials and the sections come home — phase 3 executed
+
+The blocks take normax types, and the configuration layer stops speaking EC3.
+`Ec3Sizer.at_class_limit(structure, grade, section_class)` derives everything
+EC3-flavored — the partial factors, the class-limit wall — inside the block,
+and its `family` property hands back the wall proportion and the grade as bare
+geometry, so a driver builds the analyzer off the sizer it configured
+(`SmaxAnalyzer(structure, sizer.family(SEED))`) and one number is never derived
+twice. `TesseractSizer` mirrors both; `TesseractAnalyzer` takes a `TubeFamily`;
+the analysis backends and the Tesseract backends rebuild their families as
+`TubeFamily`, dropping the `classify_section` calls that existed only because
+`TubeCatalogue`'s constructor demands a class an analysis never reads.
+
+- **Measured after the gate: nothing moved.** 315 pass; `101_api.py` bit for
+  bit; experiment 10's summary identical to the digit; 04 at 2.605e-07; 09
+  reprints x3.26 and alpha_cr 0.1291; 02, 03, 08 and 11 PASS.
+- **Drivers 03, 04, 08, 10 and 101 import nothing from `ec3x`.** 09 keeps one
+  clause constant (`ALPHA_CR_ELASTIC`, the verdict threshold it reports); 01,
+  02, 05, 06 and 11 are studies of the standard and keep their deep imports by
+  nature. In 101 the whole EC3 surface is two lines: `SteelGrade()` and
+  `Ec3Sizer.at_class_limit(...)`.
+- **Experiment 08's modulus study was vacuous, and the sweep exposed it.** Its
+  `handoff_gap(diameter, steel)` never passed the steel to the solver — the
+  varied modulus died in the signature, so "free of the modulus" compared three
+  identical runs. The grade now threads through a `graded_section` built per
+  call; the three moduli produce gaps equal to eleven digits and different in
+  the last ones, which is what a real invariance looks like. The experiment's
+  conclusion was right; its probe was not.
+- `frame_stability` builds the `ec3x.Steel` it hands the clause functions at
+  the call site, from the analyzer's grade — the backend naming the standard it
+  reports against, without the analysis layer importing the sizing package.
+
 ### The materials and the sections come home — phases 1–2 executed
 
 `normax/materials.py` carries `SteelGrade(f_y, f_u, e_mod, density)` — the

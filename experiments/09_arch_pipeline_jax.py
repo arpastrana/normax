@@ -64,9 +64,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
-from ec3x.sizing import mass_of_tubes
 from ec3x.stability import ALPHA_CR_ELASTIC
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
@@ -87,6 +84,7 @@ from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
@@ -149,11 +147,7 @@ COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
-STEEL = Steel()
-
-# Standing a frame up needs a section, and every property of it is replaced per call.
-CATALOGUE_SEED = TubeCatalogue.at_class_limit(STEEL, 3)
-SECTION_SEED = CATALOGUE_SEED(SEED)
+GRADE = SteelGrade()
 
 CLASSES = (2, 3)
 
@@ -314,7 +308,10 @@ def arch_setup(num_edges: int) -> ArchSetup:
     """
     structure = build_arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
-    analyzer = SmaxAnalyzer(structure, SECTION_SEED)
+    # Standing a frame up needs a section, and every property of it is replaced
+    # per call; the seed tube is drawn from the class-3 family as bare geometry.
+    seeded = Ec3Sizer.at_class_limit(structure, GRADE, 3)
+    analyzer = SmaxAnalyzer(structure, seeded.family(SEED))
     applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
@@ -328,16 +325,17 @@ def arch_setup(num_edges: int) -> ArchSetup:
 
 
 def pipeline_from_setup(
-    setup: ArchSetup, catalogue: TubeCatalogue
+    setup: ArchSetup, section_class: int
 ) -> StructuralDesignPipeline:
     """
-    Bind a catalogue and this mesh into the three blocks.
+    Bind a section class and this mesh into the three blocks.
     """
     structure = setup.structure
+    sizer = Ec3Sizer.at_class_limit(structure, GRADE, section_class)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalogue(SEED)),
-        Ec3Sizer(structure, catalogue),
+        SmaxAnalyzer(structure, sizer.family(SEED)),
+        sizer,
     )
 
     return blocks
@@ -423,8 +421,7 @@ def design_at_class(
     """
     Fully-stressed design of the arch on one section class.
     """
-    catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
-    pipeline = pipeline_from_setup(setup, catalogue)
+    pipeline = pipeline_from_setup(setup, section_class)
     by_case = eqx.filter_jit(pipeline)(setup.params, setup.loads)
     design = design_envelope(by_case)
 
@@ -458,14 +455,14 @@ def run_stagger(
     return run
 
 
-def refinement_study(catalogue: TubeCatalogue, section_class: int) -> RefinementStudy:
+def refinement_study(section_class: int) -> RefinementStudy:
     """
     Mass on each mesh and the first-order convergence of that sequence.
     """
     rows = []
     for count in MESHES:
         refined = arch_setup(count)
-        blocks = pipeline_from_setup(refined, catalogue)
+        blocks = pipeline_from_setup(refined, section_class)
         pipeline = eqx.filter_jit(blocks)
         free = design_envelope(pipeline(refined.params, refined.loads))
         fixed_length = jnp.full(count, BUCKLING_LENGTH)
@@ -730,8 +727,8 @@ def generate_figures(
 
     diameters = design.sizes.sections.diameter
     xyz = design.shape.xyz
-    seed_tubes = pipeline.sizer.catalogue(setup.seed)
-    assumed = float(mass_of_tubes(seed_tubes, design.shape.lengths))
+    seed_tubes = pipeline.sizer.family(setup.seed)
+    assumed = float(GRADE.density * jnp.sum(seed_tubes.area * design.shape.lengths))
     seeded = SizedMembers(setup.seed, assumed)
     sized = SizedMembers(diameters, float(compute_mass(design)))
     sections = figure_sections(xyz, setup.structure.edges, seeded, sized)
@@ -750,7 +747,7 @@ def generate_figures(
         setup.analyzer.model,
         xyz,
         diameters,
-        pipeline.sizer.catalogue,
+        pipeline.sizer.family(SEED),
         setup.funicular,
         num_modes=NUM_MODES,
     )
@@ -811,7 +808,7 @@ def main(verbose: bool = True) -> None:
     worst_gradient = compare_gradient_autodiff(report, rows)
 
     # The same design on six meshes, doubling, so the mass can be seen to settle.
-    refinement = refinement_study(pipeline.sizer.catalogue, section_class)
+    refinement = refinement_study(section_class)
     # The sizes fed back as the stiffness they were found with, until they hold.
     stagger = run_stagger(setup, pipeline, PASSES)
     # What the finished frame does as a whole, which L_cr = L assumed rather than proved

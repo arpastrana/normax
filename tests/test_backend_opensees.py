@@ -25,7 +25,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.material import Steel
 from ec3x.section import TubeCatalogue
 
 from normax.analysis import opensees as backend_opensees
@@ -38,6 +37,9 @@ from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import assemble_load_cases as load_cases_of
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
+from normax.sections import TubeFamily
+from normax.sizing.ec3 import design_steel
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractFormFinder
@@ -70,12 +72,16 @@ TOLERANCE_GRADIENT = 1e-9
 
 @pytest.fixture(scope="module")
 def steel():
-    return Steel()
+    return SteelGrade()
 
 
 @pytest.fixture(scope="module")
 def catalogue(steel):
-    return TubeCatalogue.at_class_limit(steel, 3)
+    # The class-limit wall proportion, as bare geometry: both backends read the
+    # ratio and the grade, and neither has any use for the class.
+    limit = TubeCatalogue.at_class_limit(design_steel(steel), 3)
+
+    return TubeFamily(limit.ratio, steel)
 
 
 @pytest.fixture(scope="module")
@@ -149,7 +155,7 @@ def test_the_two_solvers_agree_on_the_axial_force(
     mine = backend_opensees.member_forces(
         ops, xyz, diameters, catalogue, funicular(structure)
     )
-    theirs = forces_smax(smax, xyz, diameters, catalogue, funicular(structure))
+    theirs = forces_smax(smax, xyz, diameters, catalogue(SEED), funicular(structure))
 
     assert relative(mine.axial_force, theirs.axial_force) < TOLERANCE_PRIMAL
 
@@ -163,7 +169,7 @@ def test_the_two_solvers_agree_on_both_end_moments(
     mine = backend_opensees.member_forces(
         ops, xyz, diameters, catalogue, funicular(structure)
     )
-    theirs = forces_smax(smax, xyz, diameters, catalogue, funicular(structure))
+    theirs = forces_smax(smax, xyz, diameters, catalogue(SEED), funicular(structure))
 
     assert relative(mine.moment_major, theirs.moment_major) < TOLERANCE_PRIMAL
 
@@ -200,7 +206,7 @@ def traced(prepared, geometry, diameters, steel, catalogue):
     _, smax = prepared
 
     def run(coords, sizes):
-        member = forces_smax(smax, coords, sizes, catalogue, funicular(structure))
+        member = forces_smax(smax, coords, sizes, catalogue(SEED), funicular(structure))
 
         return {
             "axial_force": member.axial_force,
@@ -259,7 +265,9 @@ def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
     model = prepare_smax(structure, catalogue(SEED))
 
     def run(coords):
-        member = forces_smax(model, coords, diameters, catalogue, funicular(structure))
+        member = forces_smax(
+            model, coords, diameters, catalogue(SEED), funicular(structure)
+        )
 
         return {
             "axial_force": member.axial_force,
@@ -283,7 +291,7 @@ def test_the_one_block_the_plane_cannot_reach_is_the_minor_axis_moment(
 
     def run(coords):
         return forces_smax(
-            model, coords, diameters, catalogue, funicular(structure)
+            model, coords, diameters, catalogue(SEED), funicular(structure)
         ).moment_minor
 
     jacobian = np.asarray(jax.jacfwd(run)(xyz))
@@ -331,7 +339,7 @@ def objective(setup, diameters, steel, catalogue, chain):
     pipeline = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
         TesseractAnalyzer(structure, chain.analysis, catalogue, NORMAL),
-        TesseractSizer(structure, chain.ec3, catalogue),
+        TesseractSizer.at_class_limit(structure, chain.ec3, steel, 3),
     )
 
     applied = funicular(structure)

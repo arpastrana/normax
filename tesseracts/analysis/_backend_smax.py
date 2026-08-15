@@ -35,10 +35,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from ec3x.classification import classify_section
-from ec3x.material import Steel
-from ec3x.section import Tube
-from ec3x.section import TubeCatalogue
+from ec3x.section import DIAMETER_MINIMUM
 from jaxtyping import Array
 from jaxtyping import Float
 from smax import CompiledStructure
@@ -46,6 +43,9 @@ from smax import CompiledStructure
 from normax.analysis import MemberForces
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
+from normax.materials import SteelGrade
+from normax.sections import MemberSections
+from normax.sections import TubeFamily
 from normax.structures import Structure
 
 
@@ -54,7 +54,7 @@ def _member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    section: Tube,
+    section: MemberSections,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
@@ -102,7 +102,7 @@ def _member_forces(
     return member_forces(model, xyz, diameters, section, loads)
 
 
-def graded_section(inputs: dict[str, Any]) -> Tube:
+def graded_section(inputs: dict[str, Any]) -> MemberSections:
     """
     The tube the frame is analyzed as, at the smallest size the family holds.
 
@@ -127,16 +127,15 @@ def graded_section(inputs: dict[str, Any]) -> Tube:
     so that the schema still describes the frame when self-weight or a nonlinear
     backend arrives.
     """
-    steel = Steel(
+    grade = SteelGrade(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
-    # An analysis reads geometry alone, so the class is derived and never read.
-    section_class = int(classify_section(inputs["ratio"], inputs["f_y"]))
-    catalogue = TubeCatalogue(inputs["ratio"], section_class, steel)
+    # An analysis reads geometry alone, so no class is derived and none is read.
+    catalogue = TubeFamily(inputs["ratio"], grade)
 
-    return catalogue(catalogue.diameter_min)
+    return catalogue(DIAMETER_MINIMUM)
 
 
 def prepare_assembly(inputs: dict[str, Any]) -> CompiledStructure:

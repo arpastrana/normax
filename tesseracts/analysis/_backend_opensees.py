@@ -28,15 +28,14 @@ the parameter registration and the reasons.
 from typing import Any
 
 import jax.numpy as jnp
-from ec3x.classification import classify_section
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 
 from normax.analysis.opensees import Jacobian
 from normax.analysis.opensees import Model
 from normax.analysis.opensees import force_jacobian
 from normax.analysis.opensees import member_forces
 from normax.analysis.opensees import prepare_model
+from normax.materials import SteelGrade
+from normax.sections import TubeFamily
 from normax.structures import Structure
 
 # Which block of the Jacobian carries each (output, input) pair. The minor-axis
@@ -54,7 +53,7 @@ BLOCKS = {
 OUTPUT_RANK = {"axial_force": 1, "end_moments_major": 2, "end_moments_minor": 2}
 
 
-def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeCatalogue]:
+def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeFamily]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -82,14 +81,13 @@ def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeCatalogue]:
         supports=jnp.asarray(inputs["supports"]),
     )
 
-    steel = Steel(
+    grade = SteelGrade(
         f_y=inputs["f_y"],
         e_mod=inputs["e_mod"],
         density=inputs["density"],
     )
-    # An analysis reads geometry alone, so the class is derived and never read.
-    section_class = int(classify_section(inputs["ratio"], inputs["f_y"]))
-    catalogue = TubeCatalogue(inputs["ratio"], section_class, steel)
+    # An analysis reads geometry alone, so no class is derived and none is read.
+    catalogue = TubeFamily(inputs["ratio"], grade)
 
     return (
         prepare_model(structure, catalogue, normal=inputs["normal"]),

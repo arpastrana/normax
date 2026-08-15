@@ -37,8 +37,6 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 from jax_fdm.equilibrium import EquilibriumState
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
@@ -52,10 +50,13 @@ from normax.design import MemberForces
 from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import equilibrium_state
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.sections import MemberSections
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import GapScaling
@@ -87,11 +88,22 @@ TOLERANCE_GRADIENT = 1e-7
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
+GRADE = SteelGrade()
+SECTION_CLASS = 3
 
 # The tube a frame is stood up as; every property of it is replaced per call.
-SECTION = CATALOGUE(DIAMETER)
+
+
+def graded_section(structure: Structure, grade: SteelGrade) -> MemberSections:
+    """
+    The tube the frame stands up as, cut from a given grade.
+
+    The wall proportion is the class limit, which is the sizer's clause work;
+    the driver reads the family off a configured block rather than deriving it.
+    """
+    sizer = Ec3Sizer.at_class_limit(structure, grade, SECTION_CLASS)
+
+    return sizer.family(DIAMETER)
 
 
 class FunicularArch(NamedTuple):
@@ -186,7 +198,7 @@ def funicular_arch(load: float, force_density: float) -> FunicularArch:
 
 def handoff_gap(
     diameter: float,
-    steel: Steel,
+    grade: SteelGrade,
     load: float = LOAD,
     force_density: float = FORCE_DENSITY,
 ) -> HandoffGap:
@@ -194,9 +206,10 @@ def handoff_gap(
     Largest relative disagreement on axial force, and the bending behind it.
     """
     arch = funicular_arch(load, force_density)
-    prepared = prepare_model(arch.structure, SECTION)
+    section = graded_section(arch.structure, grade)
+    prepared = prepare_model(arch.structure, section)
     diameters = jnp.full(NUM_EDGES, diameter)
-    member = member_forces(prepared, arch.state.xyz, diameters, SECTION, arch.loads)
+    member = member_forces(prepared, arch.state.xyz, diameters, section, arch.loads)
 
     departure = jnp.abs(member.axial_force - arch.axial_force)
     axial = jnp.max(departure / jnp.abs(arch.axial_force))
@@ -275,7 +288,7 @@ def report_scaling(report: Report) -> list[HandoffGap]:
 
     Returns the gap at every diameter, which the figure draws as well.
     """
-    by_diameter = [handoff_gap(diameter, STEEL) for diameter in DIAMETERS]
+    by_diameter = [handoff_gap(diameter, GRADE) for diameter in DIAMETERS]
     diameter_columns = (
         ReportColumn("d [mm]", ".1f"),
         ReportColumn("gap", ".2e"),
@@ -293,8 +306,8 @@ def report_scaling(report: Report) -> list[HandoffGap]:
     gap_columns = (ReportColumn("E [N/mm2]", ".0f"), ReportColumn("gap", ".12e"))
     modulus_rows = []
     for e_mod in MODULI:
-        steel = STEEL._replace(e_mod=e_mod)
-        modulus_rows.append((e_mod, handoff_gap(DIAMETER, steel).axial))
+        graded = GRADE._replace(e_mod=e_mod)
+        modulus_rows.append((e_mod, handoff_gap(DIAMETER, graded).axial))
 
     heading = "And free of the modulus, which cancels between bending and axial"
     report.write_heading(heading)
@@ -306,7 +319,7 @@ def report_scaling(report: Report) -> list[HandoffGap]:
     )
     scale_rows = []
     for scale in SCALES:
-        found = handoff_gap(DIAMETER, STEEL, LOAD * scale, FORCE_DENSITY * scale)
+        found = handoff_gap(DIAMETER, GRADE, LOAD * scale, FORCE_DENSITY * scale)
         scale_rows.append((scale, found.axial))
 
     heading = "And free of the scale of the loading, which leaves the shape alone"
@@ -341,11 +354,12 @@ def main(verbose: bool = True) -> None:
     report = Report(verbose)
 
     arch = funicular_arch(LOAD, FORCE_DENSITY)
+    section = graded_section(arch.structure, GRADE)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
-    prepared = prepare_model(arch.structure, SECTION)
-    member = member_forces(prepared, arch.state.xyz, diameters, SECTION, arch.loads)
+    prepared = prepare_model(arch.structure, section)
+    member = member_forces(prepared, arch.state.xyz, diameters, section, arch.loads)
 
-    model = frame_model(arch.structure, arch.state.xyz, SECTION)
+    model = frame_model(arch.structure, arch.state.xyz, section)
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
     report_shape(report, arch, mechanisms)
@@ -359,7 +373,7 @@ def main(verbose: bool = True) -> None:
             arch.graph,
             arch.loads,
         )
-        analyzed = member_forces(prepared, state.xyz, diameters, SECTION, arch.loads)
+        analyzed = member_forces(prepared, state.xyz, diameters, section, arch.loads)
 
         return jnp.sum(analyzed.axial_force**2)
 
@@ -371,7 +385,7 @@ def main(verbose: bool = True) -> None:
         rows.append(GradientRow(edge, float(gradient[edge]), numeric))
 
     worst_gradient = report_gradient(report, rows)
-    found = handoff_gap(DIAMETER, STEEL)
+    found = handoff_gap(DIAMETER, GRADE)
 
     peaks = jnp.max(jnp.abs(member.moment_major), axis=1)
     forces = HandoffForces(arch.lengths, arch.axial_force, member.axial_force, peaks)

@@ -96,7 +96,7 @@ def force_densities(structure):
 def pipeline(structure, steel, catalogue):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalogue(SEED)),
+        SmaxAnalyzer(structure, Ec3Sizer(structure, catalogue).family(SEED)),
         Ec3Sizer(structure, catalogue),
     )
 

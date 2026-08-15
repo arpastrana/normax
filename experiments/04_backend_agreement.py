@@ -53,8 +53,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
@@ -71,11 +69,14 @@ from normax.form_finding.fdm import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
+from normax.materials import SteelGrade
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
 from normax.reporting import Report
 from normax.reporting import ReportColumn
+from normax.sections import TubeFamily
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
@@ -119,11 +120,8 @@ ITERATIONS = 60
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
-STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
-
-# The tube the traced backend stands its frame up as, its sizes replaced per call.
-SECTION_SEED = CATALOGUE(SEED)
+GRADE = SteelGrade()
+SECTION_CLASS = 3
 
 BACKENDS = ("smax", "opensees")
 
@@ -316,15 +314,23 @@ def relative(actual, expected) -> float:
     return float(np.max(np.abs(actual - expected))) / (scale if scale > 0.0 else 1.0)
 
 
+def tube_family(structure: Structure) -> TubeFamily:
+    """
+    The class-limit family the frames run on, read off a configured sizer.
+    """
+    return Ec3Sizer.at_class_limit(structure, GRADE, SECTION_CLASS).family
+
+
 def mass_objective(setup: ArchSetup, chain) -> Callable[[Float[Array, "edges"]], Any]:
     """
     Force densities to a mass, through whichever backend is selected.
     """
     structure = setup.structure
+    sizer = TesseractSizer.at_class_limit(structure, chain.ec3, GRADE, SECTION_CLASS)
     pipeline = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
-        TesseractAnalyzer(structure, chain.analysis, CATALOGUE, NORMAL),
-        TesseractSizer(structure, chain.ec3, CATALOGUE),
+        TesseractAnalyzer(structure, chain.analysis, sizer.family, NORMAL),
+        sizer,
     )
 
     loads = setup.loads
@@ -409,17 +415,18 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     """
     xyz = setup.xyz
     diameters = setup.seed
+    family = tube_family(setup.structure)
     prepared_ddm = backend_opensees.prepare_model(
-        setup.structure, CATALOGUE, normal=NORMAL
+        setup.structure, family, normal=NORMAL
     )
-    prepared_smax = prepare_smax(setup.structure, SECTION_SEED)
+    prepared_smax = prepare_smax(setup.structure, family(SEED))
 
     def ddm():
         return backend_opensees.force_jacobian(
-            prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
+            prepared_ddm, xyz, diameters, family, setup.funicular
         )
 
-    run = traced_forces(prepared_smax, setup.funicular)
+    run = traced_forces(prepared_smax, family(SEED), setup.funicular)
     coordinates = eqx.filter_jit(jax.jacfwd(run, argnums=0))
     sections = eqx.filter_jit(jax.jacfwd(run, argnums=1))
 
@@ -433,13 +440,15 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     return seconds
 
 
-def traced_forces(prepared, applied) -> Callable[..., dict[str, Float[Array, "..."]]]:
+def traced_forces(
+    prepared, section, applied
+) -> Callable[..., dict[str, Float[Array, "..."]]]:
     """
     The two member forces the composition consumes, as a differentiable map.
     """
 
     def run(coords, sizes):
-        member = forces_smax(prepared, coords, sizes, SECTION_SEED, applied)
+        member = forces_smax(prepared, coords, sizes, section, applied)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
@@ -459,15 +468,16 @@ def agreement(report: Report) -> float:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
+    family = tube_family(setup.structure)
     prepared_ddm = backend_opensees.prepare_model(
-        setup.structure, CATALOGUE, normal=NORMAL
+        setup.structure, family, normal=NORMAL
     )
-    prepared_smax = prepare_smax(setup.structure, SECTION_SEED)
+    prepared_smax = prepare_smax(setup.structure, family(SEED))
 
     mine = backend_opensees.member_forces(
-        prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
+        prepared_ddm, xyz, diameters, family, setup.funicular
     )
-    theirs = forces_smax(prepared_smax, xyz, diameters, SECTION_SEED, setup.funicular)
+    theirs = forces_smax(prepared_smax, xyz, diameters, family(SEED), setup.funicular)
 
     force_columns = (
         ReportColumn("force", align="<"),
@@ -485,9 +495,9 @@ def agreement(report: Report) -> float:
     report.write_table(force_columns, force_rows)
 
     blocks = backend_opensees.force_jacobian(
-        prepared_ddm, xyz, diameters, CATALOGUE, setup.funicular
+        prepared_ddm, xyz, diameters, family, setup.funicular
     )
-    run = traced_forces(prepared_smax, setup.funicular)
+    run = traced_forces(prepared_smax, family(SEED), setup.funicular)
     by_coordinate = jax.jacfwd(run, argnums=0)(xyz, diameters)
     by_diameter = jax.jacfwd(run, argnums=1)(xyz, diameters)
 
@@ -552,10 +562,11 @@ def blind(report: Report) -> None:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    prepared = prepare_smax(setup.structure, SECTION_SEED)
+    family = tube_family(setup.structure)
+    prepared = prepare_smax(setup.structure, family(SEED))
 
     def run(coords):
-        member = forces_smax(prepared, coords, diameters, SECTION_SEED, setup.funicular)
+        member = forces_smax(prepared, coords, diameters, family(SEED), setup.funicular)
         forces = {
             "axial_force": member.axial_force,
             "end_moments_major": member.moment_major,
