@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### A grade is named, never defaulted
+
+`SteelGrade` no longer defaults its strengths to S355 — a default strength is
+a grade chosen silently. `Steel355` and `Steel235` are subclasses in
+`normax.materials` carrying the EN 10025 nominal certificate values (355/490
+and 235/360); the modulus and density stay defaults on the base because they
+are the same for every structural steel, so `SteelGrade(f_y=460.0, f_u=540.0)`
+still works while a bare `SteelGrade()` is refused with a `TypeError`.
+
+- The subclasses keep the full four-field constructor rather than pinning
+  their values, because a pytree round trip under `jit` rebuilds a namedtuple
+  positionally as `type(x)(*leaves)` — pinned constructors would break every
+  compiled pipeline. `tests/test_materials.py` guards the round trip.
+- Every former `SteelGrade()` site now reads `Steel355()` (experiments 03, 04,
+  08, 09, 10, 101; eight test files; the README quickstart), so no measured
+  number moved: 101 reproduces bit-for-bit and the suite is 310 pass (307 plus
+  three new grade tests).
+- The two Tesseract analysis backends built their grade without `f_u`,
+  silently inheriting 490 they never read. Their schema carries no ultimate
+  strength, so they now state `f_u=0.0` — loud if anything ever reads it —
+  and `tests/test_analysis_prepared.py`'s absurd placeholder states unit
+  strengths for the same reason.
+
+### The sizer's conventions freeze at `__init__`
+
+Rafael's call: this is a hackathon and specificity wins, so the alternate
+constructors go and their generality is deferred rather than carried.
+`Ec3Sizer.at_class_limit`, `Ec3Sizer.from_family` and
+`TesseractSizer.at_class_limit` are deleted; the one way to build a sizer is
+`Ec3Sizer(structure, family, resultant)`, taking the neutral `TubeFamily` and
+converting internally to what ec3x needs (steel via `design_steel`, class via
+`section_class_at_ratio`, then the `TubeCatalogue`). The Class 4 refusal
+survives inside the classification call. This is the model a SkyCiv or a
+Blueprints sizer replicates later: neutral containers in at `__init__`, the
+standard's vocabulary derived inside, nothing EC3-flavored accepted as an
+argument.
+
+- What `at_class_limit` served — "a bare grade and a class number" — becomes
+  the free function `thinnest_family(grade, section_class)` in the same
+  module, wrapping Table 5.2's `ratio_at_class_limit` and returning a neutral
+  `TubeFamily`. Drivers still import nothing from ec3x; they now name the
+  standard twice (family function + block) instead of once.
+- The escape hatch the plain catalogue-taking constructor provided —
+  non-default partial factors, the cold-formed curve c — is gone with it.
+  Supporting general factors and families is explicitly future work.
+- Callers swept: `tesseract.py`, experiments 03/04/08/09/101/10, seven test
+  files, and the README quickstart, which loses its two ec3x imports outright.
+  `tests/test_pipeline.py` now threads a `TubeFamily` as its oracle — its
+  `area` arithmetic is stated identically to `ec3x`'s by design, with
+  `tests/test_sections.py` as the drift alarm. Full suite: 307 passed, the
+  pre-sweep count.
+
 ### ec3x is the adapter's import alone
 
 Rafael asked for the ec3x imports to leave `normax/analysis/smax.py` and

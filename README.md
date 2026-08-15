@@ -35,9 +35,6 @@ uv sync --extra spike
 import jax
 import jax.numpy as jnp
 
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
-
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -46,11 +43,13 @@ from normax.design import design_envelope
 from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import loads_uniform
+from normax.materials import Steel355
 from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import thinnest_family
 from normax.structures import build_arch_2d
 
-steel = Steel()
-catalogue = TubeCatalogue.at_class_limit(steel, 3)
+grade = Steel355()
+family = thinnest_family(grade, 3)
 
 structure = build_arch_2d(num_edges=20, span=10_000.0, rise=3_000.0)
 uniform = loads_uniform(structure, 9_474.0)
@@ -58,8 +57,8 @@ loads = assemble_load_cases([uniform])
 
 pipeline = StructuralDesignPipeline(
     FdmFormFinder(structure),
-    SmaxAnalyzer(structure, catalogue(100.0)),
-    Ec3Sizer(structure, catalogue),
+    SmaxAnalyzer(structure, family(100.0)),
+    Ec3Sizer(structure, family),
 )
 
 seed = jnp.full(20, 100.0)
