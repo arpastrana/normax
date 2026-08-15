@@ -5,7 +5,7 @@
 # TODO(2026-08-15, deferred): normax now depends on ec3x, and a sibling repo's
 # dist/ is outside the build context, so this path does not resolve as written.
 # Either build ec3x's wheel into this repo's dist/, or name a published version.
-../../dist/ec3x-0.1-py3-none-any.whl
+../../dist/ec3x-0.1.0-py3-none-any.whl
 
 # smax is not on PyPI yet, so this image does not build. Nothing else about the
 # stage waits on it: the composition imports this module in process instead.

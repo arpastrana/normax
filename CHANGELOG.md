@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### The extraction's leftovers, swept
+
+A double-check of the two extractions found three real leftovers, all now
+closed.
+
+- **`ec3x` moves from the hard dependencies to the `pipeline` group.** The
+  extraction doc ruled it "cannot be optional" because `normax/design.py`
+  imported `Tube` and `normax/sizing/__init__.py` would keep importing it —
+  both premises the sections extraction removed. Only the backends touch ec3x
+  now (`sizing/ec3.py`, `analysis/smax.py`, `tesseract.py`), which is exactly
+  smax's situation, so it takes smax's placement: a path dependency in the
+  `pipeline` group behind the conftest guards (`ec3x` joins
+  `PIPELINE_PACKAGES`; `test_materials.py` and `test_sections.py` get their own
+  `EC3X_TESTS` guard, needing ec3x but no frame solver). This also unbreaks CI,
+  which would have failed its next push resolving `ec3x` from PyPI, where it
+  does not exist. Measured: a plain `uv sync` environment — the CI environment —
+  collects and passes 124; the full environment passes 321; experiment 11
+  passes.
+- **`equinox` is declared.** The extraction doc's §6 flagged it as arriving
+  transitively; with the pipeline group gone from CI the transit closed, and
+  `normax.design` — an `eqx.Module` — failed to import in a dev-only
+  environment while every test that would have noticed sat behind a guard.
+  It is a core dependency and now says so.
+- **Experiment 11 stopped duck-typing the analysis boundary.** It handed
+  `ec3x.Tube` seeds to `prepare_model`/`member_forces`, which annotate
+  `MemberSections` — same field names, so no test could catch it. The seeds go
+  through `neutral_sections` now. This is the standing hazard the sections
+  extraction left: the old and new types duck-type, so the annotations are the
+  only guard, and only honesty enforces them.
+- The three `tesseract_requirements.txt` TODOs now name the
+  `ec3x-0.1.0` wheel, tracking ec3x's version bump.
+- Flagged, not changed: the Tesseract image names keep their `normax-` prefix
+  (they are the pipeline's stage images, and renaming is tangled with the
+  deferred wheel TODO); ec3x has no `publish.yml`, per the extraction plan,
+  and needs one only if it ever publishes.
+
 ### The verification record follows the clauses out
 
 `docs/clauses.md` transfers to `ec3x/docs/clauses.md`, reversing the extraction

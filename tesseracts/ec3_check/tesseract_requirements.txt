@@ -2,4 +2,4 @@
 # TODO(2026-08-15, deferred): a sibling repo's dist/ is outside the build
 # context, so this path does not resolve as written. Either build ec3x's wheel
 # into this repo's dist/ before `tesseract build`, or name a published version.
-../../dist/ec3x-0.1-py3-none-any.whl
+../../dist/ec3x-0.1.0-py3-none-any.whl

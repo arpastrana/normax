@@ -89,6 +89,7 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.sizing.ec3 import neutral_sections
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import BeamSizing
@@ -142,7 +143,9 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 STEEL = Steel()
 SECTION_CLASS = 3
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL, SECTION_CLASS)
-SECTION_SEED = CATALOGUE(SEED)
+# The analysis takes normax's neutral sections, so the standard's tube is
+# restated at the boundary rather than duck-typed through it.
+SECTION_SEED = neutral_sections(CATALOGUE(SEED))
 
 CLASSES = (2, 3)
 
@@ -329,7 +332,7 @@ def build(
     Compiled, which is what makes the staggered passes affordable: every caller
     here passes the same prepared model, so one trace serves all of them.
     """
-    section = catalogue(SEED)
+    section = neutral_sections(catalogue(SEED))
     member = member_forces(
         setup.model,
         setup.structure.nodes,
