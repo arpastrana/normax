@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### The designs are inspected in vix, where the analysis lives
+
+`101_api.py` now ends in a `vix.Viewer` holding the initial and the optimized
+designs, each with a response per checked load case (deformed shape, `nx` and
+`my` diagrams), and returns when the window closes. The gathering goes through
+the analysis block's own vocabulary: `frame_model` builds the `smax.Structure`
+vix's recipes dispatch on — the same builder the block compiled its assembly
+from, at the design's form-found geometry and reconciled sections — and the
+new `SmaxAnalyzer.solve_response(xyz, diameters, loads)` reruns the same
+injected assembly and solve `member_forces` reads, returning the whole
+`smax.Response` instead of the reduced forces. What the viewer draws is the
+analysis, not a retelling.
+
+- vix rides in the `viz` dependency group as an editable path dep, **not** in
+  `dev` as first asked: CI installs the dev group with bare `pip install .
+  --group dev`, which ignores `[tool.uv.sources]` and would look for `vix` on
+  PyPI. Same pattern as smax/ec3x in `pipeline`, and as vix's own pyproject
+  keeping smax out of its CI group. 101's run line gains `--group viz`.
+- The optimized design shown is the settled one — the answer analyzed at the
+  sections it demanded of itself — since an inspector wants a self-consistent
+  artifact; the reported optimum differs by the measured 0.25% coupling cost.
+
+### The search is recorded, replayed and rendered
+
+The optimization history is now something you can watch. `101_api.py` writes
+its trajectory into `artifacts/101_trajectory.npz` with the yaml text of the
+run embedded, and the new `experiments/102_animation.py` rebuilds the
+pipeline from the artifact alone, replays every iterate through it, and
+renders one polyscope frame per iterate under `figures/102_frames/<field>/` —
+members drawn as tubes at their reconciled outer diameter (8x exaggeration,
+world units, per-edge radii) and colored by worst axial force, utilization at
+the reconciled section, governing load case, or diameter, each on one color
+scale for the whole animation. It also prints a per-member table at the
+answer: diameter, thickness, worst axial force, utilization, governing case.
+
+- **vix was evaluated and rejected for this.** Its dispatch registry accepts
+  only smax types, it exposes no generic color-these-edges-by-this-array
+  path, and both of its animation modules are docstring-only stubs. Polyscope
+  (2.6.1) is used directly, in a new `viz` dependency group — zero coupling
+  to the private package.
+- `normax/replay.py` (pure JAX, no renderer) holds the artifact roundtrip and
+  the replay: a host loop over one `eqx.filter_jit`ted step, exact because
+  the search analyzed every iterate at the frozen seed diameters the replay
+  hands back in. Measured: the recomputed penalized objective agrees with the
+  recorded trajectory to 2.2e-16 relative over all 16 steps of the 101 run.
+  The utilization in the history is `AbstractMemberSizer.utilization` re-read
+  at the reconciled section, not the fully-stressed diagonal.
+- `normax/rendering.py` is "polyscope and nothing else", numpy-only, the
+  mirror of `visualization.py`'s matplotlib charter. Camera and scene extents
+  are fixed once over the union of every step, so frames do not jitter — and
+  the camera must be placed *after* the first structure registers: polyscope
+  renders blank if `look_at`/`set_bounding_box` run against an empty scene,
+  which is why `frame_camera` is separate from `initialize_scene`. The
+  axial-force scale is symmetric about zero only when the sign actually
+  changes; an all-compression arch would otherwise waste half the colormap.
+- Bug fixed on the way: 101 never passed `sharpness=` to `minimize_bounded`,
+  so `Trajectory.beta` recorded 0.0 while the envelope ran at 50 — an
+  artifact would have misdescribed its own run and replayed under the hard
+  max. The replay refuses mixed zero/positive beta columns loudly.
+- 101 refactored minimally for reuse: `read_config` became
+  `parse_config(text)` so the exact bytes get embedded, and the block
+  construction moved into `build_pipeline(structure, config)` so 102 rebuilds
+  what 101 ran instead of copying it. The printed numbers are unchanged.
+- Tests: `tests/test_replay.py` (5 tests, in `PIPELINE_TESTS`) covers the
+  artifact roundtrip, replay-matches-record under both the smooth and the
+  hard envelope, the mixed-beta refusal, and history invariants. Rendering is
+  deliberately untested in CI — it needs a GL context runners do not have.
+
 ### A grade is named, never defaulted
 
 `SteelGrade` no longer defaults its strengths to S355 — a default strength is
