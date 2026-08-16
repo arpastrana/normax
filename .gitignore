@@ -27,3 +27,8 @@ CLAUDE.md
 *.webp
 *.pdf
 *.mp4
+artifacts/
+
+# Viewer state polyscope writes beside wherever it ran.
+.polyscope.ini
+imgui.ini

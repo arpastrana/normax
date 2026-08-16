@@ -45,7 +45,9 @@ nothing else:
 `normax.tesseract` holds three such blocks and
 `tests/test_tesseract_parity.py` measures that the swap changes no number.
 
-Run with `uv run --group pipeline python experiments/101_api.py [arch.yaml]`.
+Run with `uv run --group pipeline --group viz python experiments/101_api.py
+[arch.yaml]`. The run ends in a viewer holding the initial and the optimized
+designs, and returns when its window closes.
 """
 
 import sys
@@ -54,11 +56,13 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import vix
 import yaml
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis.smax import frame_model
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -73,6 +77,7 @@ from normax.materials import Steel355
 from normax.optimization import minimize_bounded
 from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
+from normax.replay import save_trajectory
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
@@ -83,6 +88,8 @@ from normax.visualization import figure_trajectory
 CONFIG = Path(__file__).with_name("arch.yaml")
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
+
+ARTIFACTS = Path(__file__).resolve().parent.parent / "artifacts"
 
 COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
@@ -285,14 +292,15 @@ class TaskConfig(NamedTuple):
     load_cases: tuple[LoadCaseConfig, ...]
 
 
-def read_config(path: Path) -> TaskConfig:
+def parse_config(text: str) -> TaskConfig:
     """
     The arch, the load cases and the search a run is described by.
 
     Parameters
     ----------
-    path :
-        File to read.
+    text :
+        Text of the file describing the run, taken verbatim so the same bytes
+        can ride inside a trajectory artifact.
 
     Returns
     -------
@@ -302,7 +310,7 @@ def read_config(path: Path) -> TaskConfig:
     Raises
     ------
     TypeError
-        If the file names a field that does not exist, or omits one that does.
+        If the text names a field that does not exist, or omits one that does.
 
     Notes
     -----
@@ -310,7 +318,7 @@ def read_config(path: Path) -> TaskConfig:
     than quietly completed. The file is the description of the run, and half a
     description is not one.
     """
-    document = yaml.safe_load(path.read_text())
+    document = yaml.safe_load(text)
     searched = dict(document["optimization"])
 
     bounds = BoundsConfig(**searched.pop("bounds"))
@@ -383,6 +391,45 @@ def arch_load_cases(
     return assemble_load_cases(applied)
 
 
+def build_pipeline(
+    structure: Structure,
+    config: TaskConfig,
+) -> StructuralDesignPipeline:
+    """
+    The three blocks the search composes, built on one structure.
+
+    Parameters
+    ----------
+    structure :
+        The structure every block is built from.
+    config :
+        The settings the standard is read at and the frame is analyzed with.
+
+    Returns
+    -------
+    pipeline :
+        A form finder, a frame analysis and a code check, composed.
+    """
+    # The one place the standard is named. Everything EC3-flavored — the
+    # partial factors, the class-limit wall — is derived inside the block.
+    grade = Steel355()
+    family = thinnest_family(grade, config.sizing.section_class)
+    sizer = Ec3Sizer(structure, family)
+
+    # The analysis is configured with one tube; the check is what chooses between
+    # them. The tube is drawn from the same family, read as bare geometry.
+    section = family(config.analysis.diameter)
+
+    # Three swappable blocks
+    pipeline = StructuralDesignPipeline(
+        FdmFormFinder(structure),
+        SmaxAnalyzer(structure, section),
+        sizer,
+    )
+
+    return pipeline
+
+
 def initialize_parameters(
     structure: Structure,
     config: TaskConfig,
@@ -409,6 +456,64 @@ def initialize_parameters(
     return DesignParameters(force_densities, diameters)
 
 
+def view_designs(
+    structure: Structure,
+    analyzer: SmaxAnalyzer,
+    loads: LoadCases,
+    designs: dict[str, Design],
+    case_names: tuple[str, ...],
+) -> None:
+    """
+    Inspect designs interactively, in the frame solver's own terms.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity and the supported nodes.
+    analyzer :
+        The analysis block, whose model builder and solve the viewer reads.
+    loads :
+        The checked load cases, each solved and drawn for every design.
+    designs :
+        The designs to draw, keyed by the name each appears under.
+    case_names :
+        Name of every checked case, naming its response in the viewer.
+
+    Notes
+    -----
+    Every design is gathered through `frame_model` — the same builder the
+    analysis block compiled its assembly from — at its own form-found
+    geometry and reconciled sections, so what the viewer draws is the frame
+    the analysis saw. Each response comes from `SmaxAnalyzer.solve_response`,
+    the same injected assembly and solve the member forces were read from,
+    so the deformations and the diagrams are the analysis, not a retelling.
+
+    Blocks until the window closes.
+    """
+    viewer = vix.Viewer()
+
+    for name, design in designs.items():
+        sections = design.sizes.sections
+        frame = frame_model(structure, design.shape.xyz, sections)
+        viewer.add(frame, name=name)
+
+        for index, case_name in enumerate(case_names):
+            response = analyzer.solve_response(
+                design.shape.xyz,
+                sections.diameter,
+                loads.analysis[index],
+            )
+            viewer.add(
+                response,
+                name=f"{name}-{case_name}",
+                structure=name,
+                show_deformation=True,
+                show_forces=("nx", "my"),
+            )
+
+    viewer.show()
+
+
 def main(config_path: Path) -> None:
     """
     Design the arch a file describes, and report what the descent bought.
@@ -419,26 +524,11 @@ def main(config_path: Path) -> None:
         File naming the arch and the settings a design of it is searched for
         under.
     """
-    config = read_config(config_path)
+    config_text = config_path.read_text()
+    config = parse_config(config_text)
     structure = build_arch(config.structure)
     loads = arch_load_cases(structure, config.load_cases)
-
-    # The one place the standard is named. Everything EC3-flavored — the
-    # partial factors, the class-limit wall — is derived inside the block.
-    grade = Steel355()
-    family = thinnest_family(grade, config.sizing.section_class)
-    sizer = Ec3Sizer(structure, family)
-
-    # The analysis is configured with one tube; the check is what chooses between
-    # them. The tube is drawn from the same family, read as bare geometry.
-    section = family(config.analysis.diameter)
-
-    # Three swappable blocks
-    pipeline = StructuralDesignPipeline(
-        FdmFormFinder(structure),
-        SmaxAnalyzer(structure, section),
-        sizer,
-    )
+    pipeline = build_pipeline(structure, config)
 
     params = initialize_parameters(structure, config)
     searched = config.optimization
@@ -480,9 +570,17 @@ def main(config_path: Path) -> None:
         params.force_densities,
         bounds=(bounds.min, bounds.max),
         iterations=searched.iterations,
+        sharpness=searched.envelope_sharpness,
         has_aux=True,
         gradient=value_and_gradient(weigh_shape, has_aux=True),
     )
+
+    # The record a replay reconstructs every intermediate design from, with the
+    # file that described the run embedded so the artifact is self-contained.
+    ARTIFACTS.mkdir(exist_ok=True)
+    artifact_path = ARTIFACTS / "101_trajectory.npz"
+    save_trajectory(artifact_path, found.trajectory, config_text)
+    print(f"Trajectory artifact: {artifact_path}")
 
     # The answer, and the design behind it, out of the search that already ran it.
     # The search reads the penalized value; the mass is what the design weighs.
@@ -532,6 +630,13 @@ def main(config_path: Path) -> None:
     FIGURES.mkdir(exist_ok=True)
     descent_figure.savefig(FIGURES / "101_trajectory.png", dpi=200)
     print(f"Descent figure: {FIGURES / '101_trajectory.png'}")
+
+    # The two designs, inspected where the analysis lives. The initial one is
+    # the seed the descent left, the optimized one the answer analyzed at the
+    # sections it demanded of itself.
+    designs = {"initial": design, "optimized": settled_design}
+    case_names = tuple(load_case.name for load_case in config.load_cases)
+    view_designs(structure, pipeline.analyzer, loads, designs, case_names)
 
     print("\nHasta la vista, baby!")
 
