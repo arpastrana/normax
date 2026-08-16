@@ -33,6 +33,10 @@ pipeline = [
     "matplotlib>=3.11.1",
     "smax",
 ]
+viz = [
+    "polyscope>=2.6.1",
+    "vix",
+]
 
 [build-system]
 requires = ["setuptools"]
@@ -68,8 +72,9 @@ force-single-line = true
 "tests/*" = ["E712", "E501"]  # JAX bool comparisons; relaxed line length
 
 [tool.uv.sources]
-smax = { path = "../smax", editable = true }
 ec3x = { path = "../ec3x", editable = true }
+smax = { git = "file:///Users/arpj/code/libraries/smax", rev = "main" }
+vix = { path = "../vix", editable = true }
 
 
 [project.urls]
