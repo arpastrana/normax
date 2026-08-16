@@ -58,6 +58,7 @@ from smax import CompiledStructure
 from smax import Material
 from smax import Node
 from smax import PipeSection
+from smax import Response
 from smax import Structure as Frame
 from smax import Support
 from smax import compile_structure
@@ -418,6 +419,40 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         The material the frame is analyzed with, free of any standard.
         """
         return self.section.material
+
+    def solve_response(
+        self,
+        xyz: Float[Array, "nodes 3"],
+        diameters: Float[Array, "members"],
+        loads: Float[Array, "nodes 3"],
+    ) -> Response:
+        """
+        The solver's whole response under one load case, for inspection.
+
+        Parameters
+        ----------
+        xyz :
+            Position of every node, from a form finder.
+        diameters :
+            Outer diameter of every member, setting the stiffness.
+        loads :
+            Force applied at every node.
+
+        Returns
+        -------
+        response :
+            Displacements and reactions, in the solver's own terms and units.
+
+        Notes
+        -----
+        The same injected assembly and the same solve `member_forces` reads
+        its forces from, returned whole rather than reduced, so a viewer can
+        draw deformations and internal-force diagrams from it. Nothing here
+        is differentiated, and no pipeline stage consumes it.
+        """
+        compiled = _injected_assembly(self.model, xyz, diameters, self.section)
+
+        return solve(compiled, loads)
 
     def __call__(
         self,
