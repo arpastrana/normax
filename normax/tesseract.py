@@ -535,7 +535,8 @@ class TesseractSizer(AbstractMemberSizer):
         per_case = []
         for diameter, acting in zip(demanded, carried):
             single = stack_load_cases([acting])
-            per_case.append(local.utilization(diameter, single, buckling_length)[0])
+            reread = local.compute_utilization(diameter, single, buckling_length)
+            per_case.append(reread[0])
         used = jnp.stack(per_case)
 
         return MemberSizes(neutral_sections(sections), used)
@@ -572,14 +573,14 @@ class TesseractSizer(AbstractMemberSizer):
         """
         return self.local.governing(diameters, forces, buckling_length)
 
-    def utilization(
+    def compute_utilization(
         self,
         diameters: Float[Array, "members"],
         forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
-        Re-read a finished design against the standard that sized it.
+        Check sizes the caller owns against EN 1993-1-1.
 
         Parameters
         ----------
@@ -602,7 +603,7 @@ class TesseractSizer(AbstractMemberSizer):
         rather than solving for one. It is the same clauses either way, which is
         why the answer is the one the boundary would have given.
         """
-        return self.local.utilization(diameters, forces, buckling_length)
+        return self.local.compute_utilization(diameters, forces, buckling_length)
 
 
 def blueprint_tesseract(root: Path = TESSERACTS) -> Tesseract:
@@ -748,14 +749,14 @@ class BlueprintClient(AbstractMemberSizer):
 
         return MemberSizes(sections, used)
 
-    def utilization(
+    def compute_utilization(
         self,
         diameters: Float[Array, "members"],
         forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
-        Re-read a finished design against the check that sized it.
+        Check sizes the caller owns against Blueprints' cross-section check.
 
         Parameters
         ----------
@@ -771,4 +772,4 @@ class BlueprintClient(AbstractMemberSizer):
         utilization :
             Demand over resistance of every member under every load case.
         """
-        return self.local.utilization(diameters, forces, buckling_length)
+        return self.local.compute_utilization(diameters, forces, buckling_length)

@@ -424,14 +424,14 @@ class Ec3Sizer(AbstractMemberSizer):
 
         return jax.vmap(governing_case)(forces)
 
-    def utilization(
+    def compute_utilization(
         self,
         diameters: Float[Array, "members"],
         forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
-        Re-read a finished design against the standard that sized it.
+        Check sizes the caller owns against EN 1993-1-1.
 
         Parameters
         ----------
@@ -450,10 +450,11 @@ class Ec3Sizer(AbstractMemberSizer):
 
         Notes
         -----
-        Asked of a design after several load cases have been reconciled, so the
-        sizes are not the ones any single case demanded and the answer is at
-        most one rather than exactly one. It is exactly one for whichever case
-        governs each member.
+        Asked of a design after several load cases have been reconciled — at
+        most one, and exactly one for whichever case governs each member — or
+        of an optimizer's own diameters, where it is the differentiable
+        constraint held at or under one, member buckling included since the
+        whole check traces.
         """
         tubes = self.catalogue(diameters)
 

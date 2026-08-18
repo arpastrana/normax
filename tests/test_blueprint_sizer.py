@@ -166,7 +166,7 @@ def test_the_blueprint_sizer_is_fully_stressed_too(pipeline, params, one_case):
 
 def test_the_reread_agrees_with_the_sizes(pipeline, params, one_case):
     design = pipeline(params, one_case)
-    reread = pipeline.sizer.utilization(
+    reread = pipeline.sizer.compute_utilization(
         design.sizes.sections.diameter[0], design.forces, design.shape.lengths
     )
     free = np.asarray(design.sizes.sections.diameter[0]) > DIAMETER_MINIMUM
@@ -504,7 +504,7 @@ def test_the_simultaneous_optimum_is_fully_stressed(pipeline, params, one_case):
 
     def slack(diameters):
         forces = pipeline.analyzer(shape.xyz, diameters, one_case.analysis)
-        used = sizer.utilization(diameters, forces, shape.lengths)
+        used = sizer.compute_utilization(diameters, forces, shape.lengths)
 
         return 1.0 - used.ravel()
 
@@ -539,7 +539,7 @@ def test_the_simultaneous_optimum_is_fully_stressed(pipeline, params, one_case):
     assert found.success
     answered = jnp.asarray(found.x)
     forces = pipeline.analyzer(shape.xyz, answered, one_case.analysis)
-    used = sizer.utilization(answered, forces, shape.lengths)
+    used = sizer.compute_utilization(answered, forces, shape.lengths)
     worked = np.max(np.asarray(used), axis=0)
     unbound = np.asarray(answered) > DIAMETER_MINIMUM + 1e-9
 
@@ -563,7 +563,7 @@ def test_the_constraint_jacobian_matches_the_checker_partials(
     trial = jnp.full(NUM_EDGES, 80.0)
 
     def used_at(diameters):
-        reread = pipeline.sizer.utilization(
+        reread = pipeline.sizer.compute_utilization(
             diameters, design.forces, design.shape.lengths
         )
 

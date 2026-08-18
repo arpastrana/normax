@@ -612,7 +612,7 @@ def test_the_governing_load_case_is_the_one_working_a_member_hardest(
     # at the section the envelope settled on.
     family, result, demanded = covered(setup, steel, load_cases, 500.0)
     sizer = Ec3Sizer(setup[0], family)
-    reread = sizer.utilization(
+    reread = sizer.compute_utilization(
         result.sizes.sections.diameter, result.forces, result.shape.lengths
     )
 

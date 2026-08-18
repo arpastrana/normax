@@ -101,7 +101,7 @@ class DesignHistory(NamedTuple):
     Notes
     -----
     **The utilization here is the reconciled section re-read against its
-    standard**, `AbstractMemberSizer.utilization` — at most one, and exactly
+    standard**, `AbstractMemberSizer.compute_utilization` — at most one, and exactly
     one for the case that governs. It is not the fully-stressed diagonal a
     design carries, which is one by construction and says nothing a color
     could show.
@@ -216,7 +216,7 @@ def replay_step(
 
     sized = design_envelope(design, sharpness)
     covering = sized.sizes.sections
-    worked = pipeline.sizer.utilization(
+    worked = pipeline.sizer.compute_utilization(
         covering.diameter,
         design.forces,
         design.shape.lengths,

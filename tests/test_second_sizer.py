@@ -109,14 +109,14 @@ class AllowableStressSizer(AbstractMemberSizer):
 
         return MemberSizes(sections, used)
 
-    def utilization(
+    def compute_utilization(
         self,
         diameters: Float[Array, "members"],
         forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
-        Re-read a finished design against the stress that sized it.
+        Check sizes the caller owns against the allowable stress.
         """
         sections = self.family(diameters)
 
@@ -193,7 +193,7 @@ def test_the_second_sizer_is_fully_stressed_too(pipeline, params, one_case):
 
 def test_the_reread_agrees_with_the_sizes(pipeline, params, one_case):
     design = pipeline(params, one_case)
-    reread = pipeline.sizer.utilization(
+    reread = pipeline.sizer.compute_utilization(
         design.sizes.sections.diameter[0], design.forces, design.shape.lengths
     )
 

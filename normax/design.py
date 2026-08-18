@@ -395,7 +395,7 @@ def design_envelope(
     **Nothing here reads a standard, and nothing needs to.** `utilization`
     passes through untouched because it belongs to the per-case sections and
     still describes them; what the reconciled section is worth is a different
-    question, and `AbstractMemberSizer.utilization` is what answers it for a
+    question, and `AbstractMemberSizer.compute_utilization` is what answers it for a
     report. Which case governs each member needs neither — see
     `governing_load_case`.
 

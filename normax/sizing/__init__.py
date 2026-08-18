@@ -65,10 +65,12 @@ class MemberSizes(NamedTuple):
 
     **It survives `normax.design.design_envelope` unchanged, and still refers to
     the per-case sizes.** Reconciling the cases collapses the sections and needs
-    no standard; re-reading the reconciled section would, and is a separate
-    question for a report to ask. Which case governs each member does *not*
-    need it — that is an `argmax` over the sections demanded, since capacity is
-    strictly increasing in the diameter.
+    no standard; re-reading the reconciled section would, and that separate
+    question is what `AbstractMemberSizer.compute_utilization` answers — this
+    field is the stored invariant, that method the function of whatever sizes a
+    caller owns. Which case governs each member needs neither — that is an
+    `argmax` over the sections demanded, since capacity is strictly increasing
+    in the diameter.
 
     **Every load case is sized for separately, and nothing is combined here.** A
     member has one size and has to satisfy all of them, but reconciling that is
@@ -94,8 +96,9 @@ class AbstractMemberSizer(eqx.Module):
 
     The two methods are the two questions a standard can be asked, and both are
     clause work. What a set of actions demands is the first; how hard a size
-    that the block did not choose is working is the second, and a design is
-    re-read through it after several load cases have been reconciled.
+    the block did not choose is working is the second — asked of a design after
+    its load cases have been reconciled, or of an optimizer's own diameters,
+    where the answer is the differentiable constraint `U <= 1`.
 
     Built from a structure like the other two, and that is the one place where
     the shared contract costs something rather than buying something: a code
@@ -128,19 +131,20 @@ class AbstractMemberSizer(eqx.Module):
         """
 
     @abc.abstractmethod
-    def utilization(
+    def compute_utilization(
         self,
         diameters: Float[Array, "members"],
         forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
-        Re-read a finished design against the standard that sized it.
+        Check sizes the caller owns against this standard.
 
         Parameters
         ----------
         diameters :
-            Outer diameter every member was given.
+            Outer diameter every member was given — by an envelope, by a
+            settle, or by an optimizer; never by this call.
         forces :
             What every member carries under every load case, which the sizer
             reduces to its own standard's terms before checking.
@@ -151,4 +155,13 @@ class AbstractMemberSizer(eqx.Module):
         -------
         utilization :
             Demand over resistance of every member under every load case.
+
+        Notes
+        -----
+        The computed counterpart of the stored diagonal on `MemberSizes`: that
+        field records the invariant of the sizing map and is one by
+        construction, while this is a function of whatever sizes arrive. Two
+        readers rely on it — a report re-checking a reconciled design, and a
+        simultaneous optimization holding it at or under one as a constraint,
+        which is why every implementation keeps it differentiable.
         """

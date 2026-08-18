@@ -606,9 +606,9 @@ class BlueprintSizer(AbstractMemberSizer):
     sensitivity flows — unlike the EC3 sizer.
 
     **One block, two usage modes.** Called, it is a nested fully-stressed
-    sizer like any other. Its `utilization` is the same differentiable check
-    read at a size the caller owns — the constraint function a simultaneous
-    optimization over diameters imposes as `U <= 1`.
+    sizer like any other. Its `compute_utilization` is the same differentiable
+    check read at a size the caller owns — the constraint function a
+    simultaneous optimization over diameters imposes as `U <= 1`.
 
     Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
     """
@@ -676,14 +676,14 @@ class BlueprintSizer(AbstractMemberSizer):
 
         return MemberSizes(sections, used)
 
-    def utilization(
+    def compute_utilization(
         self,
         diameters: Float[Array, "members"],
         forces: MemberForces,
         buckling_length: Float[Array, "members"],
     ) -> Float[Array, "load_cases members"]:
         """
-        Re-read a finished design against the check that sized it.
+        Check sizes the caller owns against Blueprints' cross-section check.
 
         Parameters
         ----------
