@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### The blueprint boundary carries the held-size question
+
+The `blueprint_check` schema answered one question — what size these actions
+demand — so `BlueprintClient.compute_utilization` stayed home, and a
+simultaneous search on the client never actually crossed. The schema now
+carries both: a `diameter_held` input comes back as `utilization_held`, the
+check at sizes the caller owns. The new adjoint is the cheap one — explicit
+partials, no root find, no implicit function theorem — added to the same
+hand-written NumPy `vector_jacobian_product` and `jacobian_vector_product`,
+still with no `import jax` anywhere in the module. The client's re-read now
+crosses per load case, `__call__` sends a placeholder the solve never reads,
+and both Tesseract clients pass `vmap_method="sequential"` so a `jacrev`
+through the boundary becomes one crossing per Jacobian row instead of a
+refusal. `sizing.backend` grew a third value, `blueprint_tesseract`, so the
+constrained search of experiment 103 runs with every constraint evaluation a
+boundary crossing and every constraint Jacobian pulled row by row through
+the hand-written adjoint.
+
+- Parity, crossed against in-process: the held check is pinned bit-identical
+  to `checked_utilization`, its adjoint matches `jax.vjp` of the traced rule
+  per input, and the client's re-read reproduces `BlueprintSizer`'s values
+  at `array_equal` with the diameter gradient to 1e-12
+  (`tests/test_blueprint_sizer.py`, suite at 25).
+- Experiment 103 on `blueprint_tesseract` lands on the in-process blueprint
+  answer to the last printed digit (0.157469285 t) in 37 s against 1.0 s —
+  the cost is ~30 sequential VJP crossings per SLSQP iteration, one HTTP
+  round trip each when served (tesseract upstream issue #244), plain
+  function calls in process.
+
+### The analysis solver picks from the file
+
+`arch.yaml` grew `analysis.backend: smax | opensees` beside the sizing
+switch, dispatched in `101_api.py`'s `build_pipeline`: `smax` is the
+in-process block as before, `opensees` sets the stage's environment variable
+and builds a `TesseractAnalyzer` over the local chain with the measured
+normal axis — the frame solve becomes a boundary crossing into the host
+solver carrying DDM sensitivities. The planar demo only, per the spike
+ruling. The viewer falls back to an in-process re-solve when handed a
+crossed analyzer, since the schema carries no response — a retelling the
+backend-agreement suite bounds.
+
+- Experiment 103 with `opensees` + `ec3` reproduces the smax answer to all
+  printed digits (0.157469285 t, violations 1.3e-13) in 28 s.
+- The jit-plus-Tesseract-plus-openseespy file-descriptor failure did not
+  fire: it is a same-process pytest interaction, and an experiment owns its
+  process.
+
+### The direct search's geometry went hard
+
+Experiment 103 no longer penalizes: the length floor is now SLSQP inequality
+constraints on the member lengths, and a new `fixed_rise` equality pins the
+crown at the seed design's form-found rise (3125.0 mm at the seed force
+density — form finding overshoots the drawn 3000), each with its own
+compiled Jacobian and each switchable from the `simultaneous` section. The
+force densities are switchable too: `independent` moves one per member,
+`shared` broadcasts a single value — a rise-only search. The report grew the
+drawn seed's unsized mass with savings against both baselines, and a
+per-member table of diameters and worst-case utilizations, seed against
+answer. The viewer path was repaired on the way: each case's loads register
+under their own name (a same-named add replaces, so the loads were silently
+tearing down the response diagrams), and a case-name typo that tupled the
+characters of "uniform" is gone.
+
+- All-free reproduces the penalty-free answer exactly (0.157469285 t): the
+  floor never bound, so hardening it changed nothing. Shared with the rise
+  fixed pins the single force density and the search reduces to sizes
+  (0.165493 t). Independent with both constraints: 0.146853 t, 11.26 % under
+  the sized seed, the crown held at 3125.0 mm exactly, violations ~1e-13.
+- The ec3 and blueprint backends coincide on this arch's optimum, and that
+  is physics rather than a bug: members of roughly a meter at 170–190 mm
+  have negligible slenderness, the reduction factor caps at one, and the
+  member check collapses onto the cross-section check. The philosophy gap
+  reappears where members are slender.
+
 ### The re-read is a verb: `compute_utilization`
 
 `AbstractMemberSizer.utilization` was a misnomer beside the field of the same

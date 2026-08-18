@@ -50,6 +50,7 @@ Run with `uv run --group pipeline --group viz python experiments/101_api.py
 designs, and returns when its window closes.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -60,7 +61,9 @@ import vix
 import yaml
 from jaxtyping import Array
 from jaxtyping import Float
+from smax import LoadCase
 
+from normax.analysis import normal_axis
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import frame_model
 from normax.design import Design
@@ -83,6 +86,11 @@ from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
+from normax.tesseract import BACKEND_VARIABLE
+from normax.tesseract import BlueprintClient
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import blueprint_tesseract
+from normax.tesseract import local_chain
 from normax.visualization import figure_trajectory
 
 # The arch and the search, unless another file is named on the command line.
@@ -138,9 +146,14 @@ class AnalysisConfig(NamedTuple):
     ----------
     diameter :
         Outer diameter every member is analyzed at.
+    backend :
+        Which solver fills the analysis slot: `smax` traces the frame in this
+        process, `opensees` crosses a Tesseract boundary to a host solver
+        carrying DDM sensitivities — the planar demo, so the arch alone.
     """
 
     diameter: float
+    backend: str
 
 
 class SizingConfig(NamedTuple):
@@ -153,7 +166,9 @@ class SizingConfig(NamedTuple):
         Cross-section class the wall thickness is set to sit at the limit of.
     backend :
         Which sizer fills the check's slot: `ec3` for the full member check,
-        `blueprint` for the cross-section-only check hosted from Blueprints.
+        `blueprint` for the cross-section-only check hosted from Blueprints,
+        `blueprint_tesseract` for that same check reached across a Tesseract
+        boundary.
 
     Notes
     -----
@@ -432,17 +447,35 @@ def build_pipeline(
         sizer = Ec3Sizer(structure, family)
     elif backend == "blueprint":
         sizer = BlueprintSizer(structure, family)
+    elif backend == "blueprint_tesseract":
+        sizer = BlueprintClient(structure, blueprint_tesseract(), family)
     else:
-        raise ValueError(f"unknown sizing backend {backend!r}: ec3 or blueprint")
+        raise ValueError(
+            f"unknown sizing backend {backend!r}: ec3, blueprint or blueprint_tesseract"
+        )
 
     # The analysis is configured with one tube; the check is what chooses between
     # them. The tube is drawn from the same family, read as bare geometry.
     section = family(config.analysis.diameter)
 
+    solver = config.analysis.backend
+    if solver == "smax":
+        analyzer = SmaxAnalyzer(structure, section)
+    elif solver == "opensees":
+        # The stage reads its solver from the environment; an experiment picks
+        # once for the whole process rather than per block.
+        os.environ[BACKEND_VARIABLE] = "opensees"
+        chain = local_chain()
+        analyzer = TesseractAnalyzer(
+            structure, chain.analysis, family, normal_axis(structure)
+        )
+    else:
+        raise ValueError(f"unknown analysis backend {solver!r}: smax or opensees")
+
     # Three swappable blocks
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, section),
+        analyzer,
         sizer,
     )
 
@@ -477,7 +510,7 @@ def initialize_parameters(
 
 def view_designs(
     structure: Structure,
-    analyzer: SmaxAnalyzer,
+    analyzer: SmaxAnalyzer | TesseractAnalyzer,
     loads: LoadCases,
     designs: dict[str, Design],
     case_names: tuple[str, ...],
@@ -507,20 +540,32 @@ def view_designs(
     the same injected assembly and solve the member forces were read from,
     so the deformations and the diagrams are the analysis, not a retelling.
 
+    Each case's loads are registered under their own name: the viewer's
+    `add` replaces a same-named registration, so a loads group sharing the
+    response's name would tear the response down instead of joining it.
+
+    A crossed analyzer carries no response solver, so its designs are
+    re-solved in process at their own geometry and sections — a retelling,
+    and one the backend-agreement suite bounds tightly.
+
     Blocks until the window closes.
     """
+    if isinstance(analyzer, TesseractAnalyzer):
+        analyzer = SmaxAnalyzer(structure, analyzer.family(100.0))
+
     viewer = vix.Viewer()
 
     for name, design in designs.items():
         sections = design.sizes.sections
         frame = frame_model(structure, design.shape.xyz, sections)
-        viewer.add(frame, show_loads=True, name=name)
+        viewer.add(frame, name=name)
 
         for index, case_name in enumerate(case_names):
+            load_case = loads.analysis[index]
             response = analyzer.solve_response(
                 design.shape.xyz,
                 sections.diameter,
-                loads.analysis[index],
+                load_case,
             )
             viewer.add(
                 response,
@@ -528,6 +573,12 @@ def view_designs(
                 structure=name,
                 show_deformation=False,
                 show_forces=("nx", "my"),
+            )
+
+            viewer.add(
+                LoadCase.from_array(load_case, frame),
+                name=f"{name}-{case_name}-loads",
+                structure=name,
             )
 
     viewer.show()
@@ -549,6 +600,7 @@ def main(config_path: Path) -> None:
     loads = arch_load_cases(structure, config.load_cases)
     pipeline = build_pipeline(structure, config)
     print(f"Sizing backend: {config.sizing.backend}")
+    print(f"Analysis backend: {config.analysis.backend}")
 
     params = initialize_parameters(structure, config)
     searched = config.optimization
