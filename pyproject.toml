@@ -76,7 +76,7 @@ force-single-line = true
 [tool.uv.sources]
 ec3x = { path = "../ec3x", editable = true }
 smax = { git = "file:///Users/arpj/code/libraries/smax", rev = "main" }
-vix = { path = "../vix", editable = true }
+vix = { git = "file:///Users/arpj/code/libraries/vix", rev = "main" }
 
 
 [project.urls]
