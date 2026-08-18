@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+### A non-differentiable code library carries an exact adjoint, two ways
+
+`normax/sizing/blueprint.py` is a new sizer backed by the Blueprints library
+(LGPL-2.1, experiment-only, waived 2026-08-15 — it rides in the `pipeline`
+dependency group while the prototype lasts). Blueprints' formula classes
+subclass `float` and cannot be traced, so the block hosts them behind
+`jax.pure_callback` and carries the derivative itself: a hand-derived
+`custom_jvp` whose implicit-function-theorem quotient is taken at the root a
+host bisection finds. The check is cross-section resistance alone — eq. (6.2)
+with the (6.10) and (6.14) resistances, `Form6Dot10`/`Form6Dot14` constructed
+per evaluation — because Blueprints implements no §6.3 member buckling and no
+classification. A second route crosses a boundary instead:
+`tesseracts/blueprint_check/` has no `import jax` anywhere; its
+`vector_jacobian_product` endpoint is literal NumPy arithmetic, unlike
+`ec3_check`, which delegates to `jax.vjp`. `BlueprintClient` reads both the
+diameter and the diagonal utilization off the wire.
+
+- Measured (experiment 12): the four derivative routes (forward, reverse,
+  closed-form cubic, central differences) agree to 6.7e-9; routes A and B are
+  bit-identical on the sizes and 2.3e-14 apart on the arch mass gradient;
+  the EC3 sizer prices the missing buckling at 5.6–7.9% of diameter on the
+  funicular arch.
+- Measured (experiment 13, the simultaneous mode): with the diameters as
+  decision variables and `U <= 1` as SLSQP constraints, the optimizer lands
+  on the nested route's settled sizes to 2.9e-9 and holds the constraints to
+  9.4e-14; the active constraints are the fully-stressed condition as a KKT
+  condition, and the multipliers match the implicit rule's diagonal quotient
+  to the 2.1e-2 the analyzer's force redistribution accounts for. Jointly
+  over shape and sizes, SLSQP finds 0.020517 t against the frozen-seed
+  descent's settled 0.021716 t — the `∂d/∂q` coupling the nested gradient
+  omits, priced.
+- Measured (experiment 14, the stress test): drive the EC3 sizer's buckling
+  length to zero with `resultant=False`, and the two libraries agree exactly
+  in tension and to a first-order-in-slenderness residual in compression —
+  the class-3 `k_yy = C_m(1 + 0.6 λ n)` leaves `0.6 λ n m`, and the sweep
+  measures gap/length constant at 1.63e-5 per mm over nine decades. All
+  disagreement between the implementations is §6.3.
+- The zero-moment boundary needs a one-sided stencil: a demand moment lives
+  on `[0, ∞)`, the host solver now refuses a signed one loudly, and the
+  gradcheck probes the boundary with the second-order one-sided difference
+  at a widened step (the bisection returns the root to ~2 ulp, which a unit
+  step would amplify past the 1e-8 target).
+- At an exact end-moment tie the two routes pick different, equally valid
+  subgradients: JAX splits across `jnp.max` ties with `abs'(0) = 1`, the hand
+  rule routes to `argmax` with `sign(0) = 0`. Measure-zero, documented, and
+  kept out of the parity fixtures.
+- `tests/test_blueprint_sizer.py` (22 tests) transposes the second-sizer
+  template and adds the derivative oracles, the route-B parity, the mode-B
+  optimum and the silenced-buckling parity. `BlueprintClient` and
+  `blueprint_tesseract` live in `normax/tesseract.py` beside the chain
+  (decided 2026-08-15, lax while prototyping), which makes blueprints an
+  import of the composition module — it rides in the `pipeline` dependency
+  group, and conftest gates only the three test files that import it
+  (`BLUEPRINT_TESTS`), so a blueprints-less environment still runs the rest
+  of the pipeline suite rather than silently skipping it.
+- A review pass hardened the seams: the hand-derived partials are stated
+  once per module (`_traced_partials` serving both custom rules;
+  `_solved_state`/`_adjoint_state` serving the tesseract's value and both
+  derivative endpoints, so they cannot linearize at a different root than
+  they solve), the boundary twin enforces the same ratio refusal as the
+  local block plus a positive-floor one, the annulus coefficients mirror
+  `MemberSections`' own expressions and two new drift alarms pin the floor
+  to the EC3 catalogue and the coefficients to the neutral container.
+
 ### The designs are inspected in vix, where the analysis lives
 
 `101_api.py` now ends in a `vix.Viewer` holding the initial and the optimized
