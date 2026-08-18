@@ -1210,6 +1210,33 @@ deadline — staff engage substantively there.
 
 ---
 
+## Stretch — The Blueprints backend and parallel finite differences (decide by Aug 22)
+
+**The full case is `docs/parallel_gradients.md` (decided 2026-08-15).** Hard
+constraint 1 was revised the same day: normax may import Blueprints at runtime
+as an unmodified pip package — the prohibition is on ingesting its source, and
+ec3x keeps the stricter oracle-only posture under its own rules.
+
+**The pitch is a third backend differentiated a third way** — traced (`smax`),
+implicit adjoint (OpenSees), numerical (Blueprints) — one contract, three
+currencies for a gradient, all measured on the backend-agreement plot.
+
+- **Blueprints checker, serial FD endpoints first.** Tesseract Core's
+  experimental `finite_difference_*` helpers are a serial `for` loop over
+  `apply` calls (verified against their source — no multiprocessing, no MPI).
+- **Then the executor.** Central-difference VJP is `2n` independent applies —
+  embarrassingly parallel over a `ProcessPoolExecutor` (processes, not
+  threads: pure-Python checks under the GIL), and
+  `mpi4py.futures.MPIPoolExecutor` runs the same code on a cluster. The
+  parallelization is for Blueprints alone.
+- **OpenSees gets the implicit function theorem instead.** `K(x) u = f(x)` is
+  an implicit function: JVP from `K du = df − dK u`, VJP from the adjoint
+  `Kᵀ λ = cotangent`, querying the assembled global stiffness matrix — one
+  solve per direction, nothing left to parallelize. The DDM sweep stays as
+  the oracle it once had in central differences (7.4e-9, `CHANGELOG.md`).
+
+---
+
 ## After the deadline — `jax_tna`, and why the plan needs it
 
 **Not hackathon scope.** Recorded here because P4 proved the gap and named the
