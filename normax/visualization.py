@@ -1297,3 +1297,158 @@ def figure_beam_profile(
     )
 
     return figure
+
+
+class RouteTrace(NamedTuple):
+    """
+    One route's descent, and how funicular its iterates stayed.
+
+    Attributes
+    ----------
+    title :
+        Name of the route, shown in the legend.
+    mass :
+        Objective at every iterate.
+    bending :
+        Largest bending-to-axial ratio of any member at every iterate, under
+        the load case the shape answers to.
+    """
+
+    title: str
+    mass: Float[np.ndarray, "steps"]
+    bending: Float[np.ndarray, "steps"]
+
+
+class StartSpread(NamedTuple):
+    """
+    The mass each route reaches from every matched start.
+
+    Attributes
+    ----------
+    labels :
+        Name of every start, in the order the masses are given.
+    mass_density :
+        Mass the single force density reaches from each start.
+    mass_heights :
+        Mass the free heights reach from each start.
+
+    Notes
+    -----
+    A start only one route can take carries NaN in the other route's slot,
+    and the figure draws no marker there.
+    """
+
+    labels: tuple[str, ...]
+    mass_density: Float[np.ndarray, "starts"]
+    mass_heights: Float[np.ndarray, "starts"]
+
+
+def figure_parametrization(
+    traces: Sequence[RouteTrace],
+    spread: StartSpread,
+    closed: StartSpread | None = None,
+    constrained: float | None = None,
+) -> Figure:
+    """
+    A physics-informed parametrization against free coordinates, side by side.
+
+    Parameters
+    ----------
+    traces :
+        The matched-start descent of every route, in the order they are drawn.
+    spread :
+        The mass each route reaches from every start.
+    closed :
+        The same masses with the coupling closed, or None where no staggered
+        runs were made. Shares the spread's start order.
+    constrained :
+        Mass the simultaneous density-and-diameters search reaches, or None
+        where none ran. One level rather than one mass per start, because
+        that search lands on the same answer from every start — which is
+        exactly what a horizontal line says and a row of markers would not.
+
+    Returns
+    -------
+    figure :
+        The descents, the bending ratio along them, and the start dependence.
+
+    Notes
+    -----
+    Three panels because the comparison makes three claims. The descent panel
+    shows where each route ends; the bending panel shows what its iterates
+    passed through on the way, on a logarithmic axis because the routes differ
+    by orders of magnitude; the spread panel shows what each start bought,
+    which is where a larger design space pays for itself or does not.
+
+    One color per route across all three panels, so a route reads as one
+    entity wherever it appears, and the spread panel's markers differ in shape
+    so it survives being printed without color. The closed-coupling masses
+    wear the same marks hollow: filled against open is the frozen seed
+    against the settled sections, per route, without a third color.
+    """
+    figure, axes = plt.subplots(1, 3, figsize=(12.5, 4.0), layout="constrained")
+    descent, quality, robustness = axes
+    shades = ("#31688e", "#c0392b")
+    markers = ("o", "s")
+
+    for index, trace in enumerate(traces):
+        steps = np.arange(len(trace.mass))
+        color = shades[index % len(shades)]
+        descent.plot(steps, trace.mass, "-", color=color, lw=1.4, label=trace.title)
+        quality.plot(steps, trace.bending, "-", color=color, lw=1.4)
+
+    descent.set_xlabel("iteration")
+    descent.set_ylabel("objective [t]")
+    descent.set_title("The two descents, matched start", fontsize=11)
+    descent.legend(frameon=False, fontsize=8)
+    descent.grid(alpha=0.3)
+
+    quality.set_yscale("log")
+    quality.set_xlabel("iteration")
+    quality.set_ylabel(r"$\max_k \, |M| \, / \, (|N| \, L)$")
+    quality.set_title("How funicular the iterates stayed", fontsize=11)
+    quality.grid(alpha=0.3, which="both")
+
+    positions = np.arange(len(spread.labels))
+    reaches = (spread.mass_density, spread.mass_heights)
+    for index, trace in enumerate(traces):
+        robustness.plot(
+            positions,
+            reaches[index],
+            markers[index % len(markers)],
+            color=shades[index % len(shades)],
+            markersize=8,
+            label=trace.title,
+        )
+    if closed is not None:
+        settled = (closed.mass_density, closed.mass_heights)
+        for index, trace in enumerate(traces):
+            # Dodged sideways: a coupling shift of a tenth of a percent would
+            # otherwise sit exactly under its own frozen marker.
+            robustness.plot(
+                positions + 0.18,
+                settled[index],
+                markers[index % len(markers)],
+                color=shades[index % len(shades)],
+                markersize=8,
+                markerfacecolor="none",
+                label=f"{trace.title}, staggered",
+            )
+    if constrained is not None:
+        robustness.axhline(
+            constrained,
+            color=shades[0],
+            ls="--",
+            lw=1.4,
+            label="density and diameters, constrained",
+        )
+    robustness.set_xticks(positions)
+    robustness.set_xticklabels(spread.labels)
+    robustness.set_xlim(-0.5, len(spread.labels) - 0.5)
+    robustness.set_xlabel("starting shape")
+    robustness.set_ylabel("mass at the answer [t]")
+    robustness.set_title("What each start bought", fontsize=11)
+    robustness.legend(frameon=False, fontsize=8)
+    robustness.grid(alpha=0.3)
+
+    return figure
