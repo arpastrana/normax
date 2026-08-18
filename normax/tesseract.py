@@ -65,6 +65,9 @@ from normax.materials import SteelGrade
 from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
+from normax.sizing.blueprint import DIAMETER_MINIMUM
+from normax.sizing.blueprint import GAMMA_M0
+from normax.sizing.blueprint import BlueprintSizer
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import neutral_sections
 from normax.structures import Structure
@@ -598,5 +601,174 @@ class TesseractSizer(AbstractMemberSizer):
         Answered in process, the schema having no endpoint that checks at a size
         rather than solving for one. It is the same clauses either way, which is
         why the answer is the one the boundary would have given.
+        """
+        return self.local.utilization(diameters, forces, buckling_length)
+
+
+def blueprint_tesseract(root: Path = TESSERACTS) -> Tesseract:
+    """
+    A client that imports the blueprint check's API module into this process.
+
+    Parameters
+    ----------
+    root :
+        Directory holding one subdirectory per stage.
+
+    Returns
+    -------
+    client :
+        The check, behind the same client a served container answers.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no API module sits under that directory.
+
+    Notes
+    -----
+    Beside `local_chain` in role, and outside `Chain` on purpose: the chain is
+    the submission's three stages, and this one is an experiment riding along.
+    Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
+    """
+    module = root / "blueprint_check" / "tesseract_api.py"
+    if not module.is_file():
+        raise FileNotFoundError(f"no API module for the blueprint check at {module}")
+
+    return Tesseract.from_tesseract_api(module)
+
+
+class BlueprintClient(AbstractMemberSizer):
+    """
+    Blueprints' cross-section check, reached across a Tesseract boundary.
+
+    Attributes
+    ----------
+    client :
+        The check's Tesseract.
+    local :
+        The same check in this process, answering the re-read at a size the
+        boundary did not choose, which the schema has no endpoint for.
+
+    Notes
+    -----
+    **Both the sizes and their diagonal cross the boundary.** Unlike the EC3
+    client, which recomputes the diagonal in process, this block reads
+    `utilization` off the boundary's answer: the schema reports the check at
+    the size it just chose, which is exactly the diagonal, and reading it
+    exercises the hand-written adjoint's second output. Only the re-read at a
+    reconciled size stays home, answered by `local`.
+
+    Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
+    """
+
+    client: Tesseract
+    local: BlueprintSizer
+
+    def __init__(
+        self,
+        structure: Structure,
+        client: Tesseract,
+        family: TubeFamily,
+    ) -> None:
+        """
+        Build a sizer that crosses a boundary to size and stays home to re-read.
+
+        Parameters
+        ----------
+        structure :
+            The structure whose members are sized. Read for nothing.
+        client :
+            The check's Tesseract.
+        family :
+            The section family every member is drawn from, whose ratio fixes
+            the wall proportion and whose grade supplies the material.
+
+        Raises
+        ------
+        ValueError
+            If the family's ratio leaves no wall at all.
+        """
+        self.client = client
+        self.local = BlueprintSizer(structure, family)
+
+    @property
+    def family(self) -> TubeFamily:
+        """
+        The section family this block sizes over, as bare geometry.
+        """
+        return self.local.family
+
+    def __call__(
+        self,
+        forces: MemberForces,
+        buckling_length: Float[Array, "members"],
+    ) -> MemberSizes:
+        """
+        Size every member for every load case, each on its own.
+
+        Parameters
+        ----------
+        forces :
+            What every member carries under every load case.
+        buckling_length :
+            Accepted, ignored, and never serialized: the check's schema
+            carries no length, which is the philosophy's statement on the
+            wire rather than only in a docstring.
+
+        Returns
+        -------
+        sizes :
+            The diameter each load case demands, and how hard it is worked.
+        """
+        local = self.local
+        carried = [
+            select_load_case(forces, load_case)
+            for load_case in range(count_load_cases(forces))
+        ]
+
+        crossed = [
+            apply_tesseract(
+                self.client,
+                {
+                    "axial_force": acting.axial_force,
+                    "end_moments_major": acting.moment_major,
+                    "end_moments_minor": acting.moment_minor,
+                    "f_y": jnp.asarray(local.f_y),
+                    "gamma_m0": jnp.asarray(GAMMA_M0),
+                    "ratio": jnp.asarray(local.ratio),
+                    "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
+                },
+            )
+            for acting in carried
+        ]
+
+        demanded = jnp.stack([sized["diameter"] for sized in crossed])
+        used = jnp.stack([sized["utilization"] for sized in crossed])
+        sections = local.family(demanded)
+
+        return MemberSizes(sections, used)
+
+    def utilization(
+        self,
+        diameters: Float[Array, "members"],
+        forces: MemberForces,
+        buckling_length: Float[Array, "members"],
+    ) -> Float[Array, "load_cases members"]:
+        """
+        Re-read a finished design against the check that sized it.
+
+        Parameters
+        ----------
+        diameters :
+            Outer diameter every member was given.
+        forces :
+            What every member carries under every load case.
+        buckling_length :
+            Accepted and ignored: a cross-section check reads no length.
+
+        Returns
+        -------
+        utilization :
+            Demand over resistance of every member under every load case.
         """
         return self.local.utilization(diameters, forces, buckling_length)

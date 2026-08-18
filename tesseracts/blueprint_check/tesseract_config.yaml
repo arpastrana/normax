@@ -1,0 +1,8 @@
+name: "normax-blueprint-check"
+version: "0.1.0"
+description: "Member actions to the sizes Blueprints' cross-section check requires"
+
+build_config:
+  # normax needs 3.12, which the base image does not carry.
+  python_version: "3.12"
+  target_platform: "native"

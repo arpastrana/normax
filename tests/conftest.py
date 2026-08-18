@@ -45,14 +45,28 @@ OPENSEES_PACKAGES = ("openseespy",)
 
 OPENSEES_TESTS = ("test_backend_opensees.py",)
 
+# blue-prints (LGPL-2.1, experiment-only) is imported by normax.tesseract while
+# the blueprint sizer is prototyped, so every test importing that module — or
+# the sizer itself — is skipped without it, and no other pipeline test is.
+BLUEPRINT_PACKAGES = ("blueprints",)
+
+BLUEPRINT_TESTS = (
+    "test_backend_opensees.py",
+    "test_blueprint_sizer.py",
+    "test_tesseract_parity.py",
+)
+
 collect_ignore = []
 if any(importlib.util.find_spec(name) is None for name in PIPELINE_PACKAGES):
     collect_ignore.extend(PIPELINE_TESTS)
     collect_ignore.extend(OPENSEES_TESTS)
+    collect_ignore.extend(BLUEPRINT_TESTS)
 if any(importlib.util.find_spec(name) is None for name in OPENSEES_PACKAGES):
     collect_ignore.extend(OPENSEES_TESTS)
 if any(importlib.util.find_spec(name) is None for name in EC3X_PACKAGES):
     collect_ignore.extend(EC3X_TESTS)
+if any(importlib.util.find_spec(name) is None for name in BLUEPRINT_PACKAGES):
+    collect_ignore.extend(BLUEPRINT_TESTS)
 
 
 def load_tesseract_api(name):
