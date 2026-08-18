@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+### A form finder as a shape generator, priced against free coordinates
+
+Experiment 15 descends the same arch through two parametrizations of a held
+plan: the height of every free node — nineteen variables straight into the
+analysis, no form finder — against one uniform force density, which is the
+entire funicular subspace of that plan on a chain. The starts are matched
+exactly (the same geometry entering both routes, gap 2.7e-12 mm, by the
+linearity of the force density system) at 0.25x, 1x and 2x the funicular
+rise; two more starts — a flat line and random heights — lie off the
+funicular manifold where no force density can begin, so the height route
+descends them alone. The direct route's new differentiation path checks
+against a directional central difference at 4.0e-8.
+`figure_parametrization` joined `normax.visualization` to draw the three
+claims side by side.
+
+- **The one-variable route is start-proof and the nineteen-variable route is
+  not.** One density lands on 0.12227 t within 1.8e-4 relative from every
+  start; the free heights spread 3x over their five. From the shallow
+  start they find 0.121085 t — the only run to beat the density optimum,
+  by 0.95%, which realizes the superset argument. From the matched start
+  they end +2.33% heavier and leave the rise at 3000 mm: the descent stalls
+  on the plateau instead of reshaping. From the tall start they stop at
+  0.1626 t, barely below the 0.1648 t they started at.
+- **The no-prior starts are the argument for the prior.** From the flat
+  line the height route never leaves the ground: five iterates, rise 0.0,
+  0.478 t — 3.9x the optimum — every member carrying the shaping case in
+  pure bending on the box's own floor. From random heights the gradient
+  does real work, smoothing the jagged profile into an arch of rise
+  4532 mm, but still lands at 0.1416 t, 17% above the best answer, with a
+  2.9e-3 mirror gap the symmetric problem never justifies.
+- **The prior is visible in the iterates, not only the answers.** The
+  density route's worst `|M|/(|N| L)` under the shaping case stays at
+  6.1e-3 across all three descents (elastic bending at the seed stiffness,
+  largest on the shallow start); the height route's reaches 6.8e-2 — 11x
+  more — the moment it leaves the funicular curve.
+- Neither route needs the length floor of experiment 03: the plan never
+  moves, so no member can shorten past its own projection and the collapse
+  mode does not exist. The height box floors at zero instead, which keeps
+  the search out of the hanging tension half-space — a cable, not an arch.
+- Utilization at every answer holds the fully-stressed invariant to 8.1e-15
+  — including the stuck flat line and the random start. Fully stressed is
+  every design's condition here, so no answer is "more utilized" than
+  another; what a worse shape pays is a fatter section reaching the same
+  utilization through bending, and the mass is where that shows.
+- The bending measure walls its denominator at one newton-millimeter: a
+  straight beam's axial force is identically zero, so the flat start's
+  pure-bending ratio would otherwise divide by zero. The wall binds nowhere
+  else, and the flat run reports 2.4e8 rather than infinity.
+- **The staggered driver closes the `∂N/∂d` feedback and prices it at a
+  tenth of a percent.** `optimize_staggered` — in `normax.design` since P8,
+  called by nothing until now — reruns every descent with the analysis
+  re-sectioned between rounds, each answer re-read at the sections its last
+  settling pass demanded. The density route's answers move +0.07% to
+  +0.10%, most height runs +0.10% to +0.29%, and the flat line does not
+  move at all: closing the coupling rescues nothing the landscape traps.
+  The one exception runs the other way — the shallow-start height run rides
+  its refreshed sections off the plateau to 0.120275 t, −0.67% below its
+  frozen answer and the best design in the experiment. All eight couplings
+  closed within the driver's default rounds, the utilization invariant
+  holding at the settled sections too. The spread panel draws the settled
+  masses as hollow markers dodged beside their frozen pairs — same color,
+  same shape, open against filled — so the near-coincidence is the visible
+  finding rather than a hidden one.
+- **The third formulation makes the diameters variables outright, and it is
+  start-proof for free.** SLSQP over the one density and all twenty
+  diameters under hard `U <= 1` per member and case — no sizing solve, no
+  envelope, the `∂N/∂d` feedback inside the gradient — lands on
+  0.122337979 t at rise 1946 mm from all three matched starts, identical to
+  nine digits, in 68–97 iterations. Utilization at the answer is exactly
+  1.000000000 (violation 5.5e-12): fully stressed as a KKT condition rather
+  than by construction. It beats the staggered answers by 0.001–0.045%,
+  which prices carrying the coupling inside the gradient against closing it
+  between rounds — hundredths of a percent, on top of the tenth the frozen
+  seed cost. The spread panel draws it as one dashed level rather than a
+  row of markers, a start-independent answer being exactly what a
+  horizontal line says.
+- The run description moved to `experiments/parametrization.yaml` — the
+  arch, the load, the annealing schedule, the boxes, the starts and the
+  constrained budgets — parsed strictly with no defaults, the 101 pattern.
+  The verdict's tolerances stay in the script, being the experiment's
+  assertions rather than its settings. Reading `arch.yaml` instead was
+  rejected: that file is 101/102/103's contract (seed 250, blueprint
+  sizing), and sharing it would move every number this experiment pins.
+
 ### The blueprint boundary carries the held-size question
 
 The `blueprint_check` schema answered one question — what size these actions

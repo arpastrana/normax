@@ -1,0 +1,29 @@
+# The arch experiment 15 runs on, and every budget its searches spend.
+structure:
+  num_edges: 20
+  span: 10000.0
+  rise: 3000.0
+
+loads:
+  total: 180000.0
+  half_factor: 0.5
+
+analysis:
+  diameter: 100.0
+
+search:
+  beta_start: 10.0
+  beta_stop: 500.0
+  rounds: 5
+  iterations: 80
+  density_decades: 10.0
+
+starts:
+  rise_fractions: [1.0, 0.25, 2.0]
+  random_seed: 2026
+  ceiling_fraction: 2.0
+
+simultaneous:
+  iterations: 300
+  tolerance: 1.0e-9
+  diameter_floor: 21.3
