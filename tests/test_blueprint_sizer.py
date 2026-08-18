@@ -360,6 +360,7 @@ def crossing(boundary):
         axial_force=axial,
         end_moments_major=end_major,
         end_moments_minor=end_minor,
+        diameter_held=np.asarray([150.0, 80.0, 200.0, 30.0]),
         f_y=YIELD_SAMPLE,
         gamma_m0=GAMMA_SAMPLE,
         ratio=RATIO,
@@ -438,6 +439,90 @@ def test_a_cotangent_on_the_clamp_mask_is_refused(boundary, crossing):
         boundary.vector_jacobian_product(
             crossing, ["axial_force"], ["clamped"], {"clamped": np.ones(4)}
         )
+
+
+def test_the_held_check_matches_the_local_block(boundary, crossing):
+    # The second drift alarm: the held-size question through the boundary,
+    # pinned to route A's explicit check at bit-identical.
+    crossed = boundary.apply(crossing)
+    axial = jnp.asarray(crossing.axial_force)
+    end_major = jnp.asarray(crossing.end_moments_major)
+    end_minor = jnp.asarray(crossing.end_moments_minor)
+    forces = MemberForces(axial, end_major, end_minor)
+    moment = demand_moment(forces)
+    held = jnp.asarray(crossing.diameter_held)
+    local_used = checked_utilization(RATIO, YIELD_SAMPLE, held, axial, moment)
+
+    assert np.array_equal(
+        np.asarray(crossed["utilization_held"]), np.asarray(local_used)
+    )
+
+
+def test_the_held_adjoint_matches_the_traced_rule(boundary, crossing):
+    # The held check's literal NumPy VJP against jax.vjp of route A's explicit
+    # rule, per input, the held diameter included.
+    fields = ["diameter_held", "axial_force", "end_moments_major", "end_moments_minor"]
+    axial = jnp.asarray(crossing.axial_force)
+    end_major = jnp.asarray(crossing.end_moments_major)
+    end_minor = jnp.asarray(crossing.end_moments_minor)
+    held = jnp.asarray(crossing.diameter_held)
+    seed = np.asarray([1.0, -2.0, 0.5, 3.0])
+
+    def traced_held(diameter, axial_force, major, minor):
+        forces = MemberForces(axial_force, major, minor)
+        moment = demand_moment(forces)
+
+        return checked_utilization(RATIO, YIELD_SAMPLE, diameter, axial_force, moment)
+
+    _, pull_held = jax.vjp(traced_held, held, axial, end_major, end_minor)
+    traced = pull_held(jnp.asarray(seed))
+    handmade = boundary.vector_jacobian_product(
+        crossing, fields, ["utilization_held"], {"utilization_held": seed}
+    )
+    for name, expected in zip(fields, traced, strict=True):
+        assert np.allclose(handmade[name], np.asarray(expected), rtol=1e-12, atol=1e-18)
+
+
+def test_the_crossed_utilization_matches_the_local_sizer(
+    structure, pipeline, params, one_case
+):
+    # Mode B parity for the client: the constraint answer a simultaneous
+    # search reads is the local sizer's, values at bit-level and the
+    # diameter gradient to the derivative tolerance.
+    grade = Steel355()
+    family = TubeFamily(RATIO, grade)
+    remote = BlueprintClient(structure, blueprint_tesseract(), family)
+    local = pipeline.sizer
+    shape = pipeline.formfinder(params.force_densities, one_case.formfinding)
+    forces = pipeline.analyzer(shape.xyz, params.diameters, one_case.analysis)
+
+    used_local = local.compute_utilization(params.diameters, forces, shape.lengths)
+    used_crossed = remote.compute_utilization(params.diameters, forces, shape.lengths)
+
+    assert np.array_equal(np.asarray(used_crossed), np.asarray(used_local))
+
+    weights = jnp.arange(1.0, 1.0 + used_local.size).reshape(used_local.shape)
+
+    def local_total(diameters):
+        used = local.compute_utilization(diameters, forces, shape.lengths)
+
+        return jnp.sum(weights * used)
+
+    def crossed_total(diameters):
+        used = remote.compute_utilization(diameters, forces, shape.lengths)
+
+        return jnp.sum(weights * used)
+
+    oracle = jax.grad(local_total)(params.diameters)
+    carried = jax.grad(crossed_total)(params.diameters)
+    largest = float(jnp.max(jnp.abs(oracle)))
+
+    assert np.allclose(
+        np.asarray(oracle) / largest,
+        np.asarray(carried) / largest,
+        rtol=0.0,
+        atol=TOLERANCE_DERIVATIVE,
+    )
 
 
 def test_the_client_composes_into_the_pipeline(structure, pipeline, params, one_case):

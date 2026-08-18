@@ -368,6 +368,12 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         -------
         forces :
             Axial force and both end moments, per load case and member.
+
+        Notes
+        -----
+        A Jacobian of a map through this block batches its cotangents, and
+        the sequential vmap method turns that batch into one boundary
+        crossing per row rather than a refusal.
         """
         analyzed = [
             apply_tesseract(
@@ -384,6 +390,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
                     "ratio": self.family.ratio,
                     "normal": self.normal,
                 },
+                vmap_method="sequential",
             )
             for load_case in loads
         ]
@@ -647,17 +654,18 @@ class BlueprintClient(AbstractMemberSizer):
     client :
         The check's Tesseract.
     local :
-        The same check in this process, answering the re-read at a size the
-        boundary did not choose, which the schema has no endpoint for.
+        The same check in this process, supplying the family and the static
+        snapshots the schema's flat fields are read from.
 
     Notes
     -----
-    **Both the sizes and their diagonal cross the boundary.** Unlike the EC3
-    client, which recomputes the diagonal in process, this block reads
-    `utilization` off the boundary's answer: the schema reports the check at
-    the size it just chose, which is exactly the diagonal, and reading it
-    exercises the hand-written adjoint's second output. Only the re-read at a
-    reconciled size stays home, answered by `local`.
+    **Every question crosses the boundary.** Unlike the EC3 client, which
+    answers the re-read in process, this block serializes both: the sizes
+    and their diagonal come off the solve's outputs, and a size the caller
+    owns goes over as `diameter_held` and comes back as `utilization_held`.
+    A simultaneous optimization constrained on this block therefore crosses
+    the boundary on every constraint evaluation, and its Jacobian pulls one
+    cotangent per constraint row through the hand-written NumPy adjoint.
 
     Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
     """
@@ -727,6 +735,7 @@ class BlueprintClient(AbstractMemberSizer):
             for load_case in range(count_load_cases(forces))
         ]
 
+        # A positive placeholder: the solve never reads the held size.
         crossed = [
             apply_tesseract(
                 self.client,
@@ -734,6 +743,9 @@ class BlueprintClient(AbstractMemberSizer):
                     "axial_force": acting.axial_force,
                     "end_moments_major": acting.moment_major,
                     "end_moments_minor": acting.moment_minor,
+                    "diameter_held": jnp.full_like(
+                        acting.axial_force, DIAMETER_MINIMUM
+                    ),
                     "f_y": jnp.asarray(local.f_y),
                     "gamma_m0": jnp.asarray(GAMMA_M0),
                     "ratio": jnp.asarray(local.ratio),
@@ -765,11 +777,49 @@ class BlueprintClient(AbstractMemberSizer):
         forces :
             What every member carries under every load case.
         buckling_length :
-            Accepted and ignored: a cross-section check reads no length.
+            Accepted, ignored, and never serialized: the check's schema
+            carries no length.
 
         Returns
         -------
         utilization :
-            Demand over resistance of every member under every load case.
+            Demand over resistance of every member under every load case —
+            the differentiable constraint a simultaneous optimization holds
+            at or under one, crossing the boundary on every evaluation.
+
+        Notes
+        -----
+        Answered by the boundary's held-size check, so a constrained search
+        over the diameters exercises the hand-written adjoint on every
+        constraint evaluation and every Jacobian row. The in-process block
+        would give the same bits, and a parity test holds it to that.
+        A Jacobian of this map batches its cotangents, and the sequential
+        vmap method turns that batch into one boundary crossing per row.
         """
-        return self.local.compute_utilization(diameters, forces, buckling_length)
+        local = self.local
+        carried = [
+            select_load_case(forces, load_case)
+            for load_case in range(count_load_cases(forces))
+        ]
+
+        crossed = [
+            apply_tesseract(
+                self.client,
+                {
+                    "axial_force": acting.axial_force,
+                    "end_moments_major": acting.moment_major,
+                    "end_moments_minor": acting.moment_minor,
+                    "diameter_held": diameters,
+                    "f_y": jnp.asarray(local.f_y),
+                    "gamma_m0": jnp.asarray(GAMMA_M0),
+                    "ratio": jnp.asarray(local.ratio),
+                    "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
+                },
+                vmap_method="sequential",
+            )
+            for acting in carried
+        ]
+
+        used = jnp.stack([answer["utilization_held"] for answer in crossed])
+
+        return used

@@ -28,6 +28,13 @@ The check is cross-section resistance alone: EN 1993-1-1 eq. (6.2) with the
 and no classification, so no buckling length crosses this schema — a schema
 field the check would ignore invites the belief that it participates.
 
+The schema carries both questions the pipeline asks of a check: what size
+these actions demand (`diameter`, `utilization`), and how hard they work the
+sizes the caller already owns (`diameter_held` in, `utilization_held` out).
+The second is explicit arithmetic with no root find, so its adjoint is the
+check's bare partials — the constraint field a simultaneous optimization
+holds at or under one, crossing the boundary on every evaluation.
+
 The host arithmetic restates `normax/sizing/blueprint.py`, which is this
 module's drift alarm: a value-parity test pins the two at bit-identical.
 
@@ -71,6 +78,13 @@ class InputSchema(BaseModel):
     end_moments_minor: Differentiable[Array[(None, 2), Float64]]
     """Minor-axis moment at each end of every member, in newton-millimeters."""
 
+    diameter_held: Differentiable[Array[(None,), Float64]]
+    """Outer diameter every member is checked at, in millimeters.
+
+    Read only by the held check: the solve never consults it, so its pull
+    through `diameter` and `utilization` is exactly zero.
+    """
+
     f_y: Float64
     """Yield strength, in newtons per square millimeter.
 
@@ -102,6 +116,12 @@ class OutputSchema(BaseModel):
 
     One to machine precision wherever the check decided the size, and below
     one wherever the catalogue minimum did.
+    """
+
+    utilization_held: Differentiable[Array[(None,), Float64]]
+    """Demand over resistance of every member, at the held size that crossed.
+
+    The constraint a simultaneous optimization holds at or under one.
     """
 
     clamped: Array[(None,), Float64]
@@ -149,6 +169,13 @@ class HandPartials(NamedTuple):
         where the check decided the size, since the utilization sits pinned at one.
     check_moment :
         Derivative of the reported utilization in the demand moment.
+    held_slope :
+        Derivative of the held check in the held diameter, strictly negative
+        wherever that size is positive.
+    held_axial :
+        Derivative of the held check in the axial force.
+    held_moment :
+        Derivative of the held check in the demand moment.
     winner_major :
         Index of the larger major-axis end moment of every member.
     winner_minor :
@@ -163,6 +190,9 @@ class HandPartials(NamedTuple):
     size_moment: Float[np.ndarray, "members"]
     check_axial: Float[np.ndarray, "members"]
     check_moment: Float[np.ndarray, "members"]
+    held_slope: Float[np.ndarray, "members"]
+    held_axial: Float[np.ndarray, "members"]
+    held_moment: Float[np.ndarray, "members"]
     winner_major: Int[np.ndarray, "members"]
     winner_minor: Int[np.ndarray, "members"]
     sign_major: Float[np.ndarray, "members"]
@@ -416,7 +446,19 @@ def _forward_pass(
     ]
     utilization = np.asarray(used, dtype=np.float64)
 
-    outputs = {"diameter": state.diameter, "utilization": utilization}
+    held = np.asarray(inputs["diameter_held"], dtype=np.float64)
+    held_tripled = zip(held, state.axial, state.moment, strict=True)
+    checked = [
+        _check_scalar(size, force, bent, state.family)
+        for size, force, bent in held_tripled
+    ]
+    utilization_held = np.asarray(checked, dtype=np.float64)
+
+    outputs = {
+        "diameter": state.diameter,
+        "utilization": utilization,
+        "utilization_held": utilization_held,
+    }
     if diagnostics:
         outputs["clamped"] = (state.unclamped < state.floor).astype(np.float64)
 
@@ -459,6 +501,7 @@ def abstract_eval(abstract_inputs):
     return {
         "diameter": {"shape": (members,), "dtype": "float64"},
         "utilization": {"shape": (members,), "dtype": "float64"},
+        "utilization_held": {"shape": (members,), "dtype": "float64"},
         "clamped": {"shape": (members,), "dtype": "float64"},
     }
 
@@ -515,6 +558,15 @@ def _hand_partials(inputs: dict[str, Any]) -> HandPartials:
     check_axial = np.where(bound, np.sign(axial) * scale_axial / floor**2, 0.0)
     check_moment = np.where(bound, scale_moment / floor**3, 0.0)
 
+    # The held check's partials, at the size that crossed rather than a root.
+    held = np.asarray(inputs["diameter_held"], dtype=np.float64)
+    positive = held > 0.0
+    steady = np.where(positive, held, 1.0)
+    held_pull = 2.0 * demand_axial / steady**3 + 3.0 * demand_moment / steady**4
+    held_slope = np.where(positive, -held_pull, 0.0)
+    held_axial = np.where(positive, np.sign(axial) * scale_axial / steady**2, 0.0)
+    held_moment = np.where(positive, scale_moment / steady**3, 0.0)
+
     winner_major = np.argmax(np.abs(end_major), axis=1)
     winner_minor = np.argmax(np.abs(end_minor), axis=1)
     rows = np.arange(axial.shape[0])
@@ -526,6 +578,9 @@ def _hand_partials(inputs: dict[str, Any]) -> HandPartials:
         size_moment,
         check_axial,
         check_moment,
+        held_slope,
+        held_axial,
+        held_moment,
         winner_major,
         winner_minor,
         sign_major,
@@ -567,12 +622,16 @@ class AdjointState(NamedTuple):
         Each differentiable output's partial in the axial force, by name.
     moment_pulls :
         Each differentiable output's partial in the demand moment, by name.
+    held_pulls :
+        Each differentiable output's partial in the held diameter, by name —
+        zero for both solve outputs, since the solve never reads it.
     """
 
     partials: HandPartials
     rows: Int[np.ndarray, "members"]
     axial_pulls: dict[str, Float[np.ndarray, "members"]]
     moment_pulls: dict[str, Float[np.ndarray, "members"]]
+    held_pulls: dict[str, Float[np.ndarray, "members"]]
 
 
 def _adjoint_state(inputs: InputSchema, outputs: list[str]) -> AdjointState:
@@ -604,13 +663,21 @@ def _adjoint_state(inputs: InputSchema, outputs: list[str]) -> AdjointState:
     axial_pulls = {
         "diameter": partials.size_axial,
         "utilization": partials.check_axial,
+        "utilization_held": partials.held_axial,
     }
     moment_pulls = {
         "diameter": partials.size_moment,
         "utilization": partials.check_moment,
+        "utilization_held": partials.held_moment,
+    }
+    unread = np.zeros(rows.shape[0])
+    held_pulls = {
+        "diameter": unread,
+        "utilization": unread,
+        "utilization_held": partials.held_slope,
     }
 
-    return AdjointState(partials, rows, axial_pulls, moment_pulls)
+    return AdjointState(partials, rows, axial_pulls, moment_pulls, held_pulls)
 
 
 def vector_jacobian_product(
@@ -660,6 +727,12 @@ def vector_jacobian_product(
             for output in vjp_outputs:
                 pulled = np.asarray(cotangent_vector[output], dtype=np.float64)
                 gathered = gathered + axial_pulls[output] * pulled
+            cotangents[name] = gathered
+        elif name == "diameter_held":
+            gathered = np.zeros(members)
+            for output in vjp_outputs:
+                pulled = np.asarray(cotangent_vector[output], dtype=np.float64)
+                gathered = gathered + state.held_pulls[output] * pulled
             cotangents[name] = gathered
         elif name == "end_moments_major":
             gathered = np.zeros((members, 2))
@@ -734,6 +807,9 @@ def jacobian_vector_product(
         if "axial_force" in jvp_inputs:
             seeded = np.asarray(tangent_vector["axial_force"], dtype=np.float64)
             pushed = pushed + axial_pulls[output] * seeded
+        if "diameter_held" in jvp_inputs:
+            seeded = np.asarray(tangent_vector["diameter_held"], dtype=np.float64)
+            pushed = pushed + state.held_pulls[output] * seeded
         tangents[output] = pushed
 
     return tangents
