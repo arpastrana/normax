@@ -260,7 +260,7 @@ def simultaneous_fixed(problem: ArchProblem) -> tuple[RouteAnswer, SolverState]:
 
     def slack(diameters):
         forces = pipeline.analyzer(shape.xyz, diameters, problem.loads.analysis)
-        used = sizer.utilization(diameters, forces, shape.lengths)
+        used = sizer.compute_utilization(diameters, forces, shape.lengths)
 
         return 1.0 - used.ravel()
 
@@ -423,7 +423,7 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
         force_densities, diameters = split(x)
         shape = pipeline.formfinder(force_densities, problem.loads.formfinding)
         forces = pipeline.analyzer(shape.xyz, diameters, problem.loads.analysis)
-        used = sizer.utilization(diameters, forces, shape.lengths)
+        used = sizer.compute_utilization(diameters, forces, shape.lengths)
 
         return 1.0 - used.ravel()
 

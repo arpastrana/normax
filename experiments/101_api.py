@@ -78,6 +78,7 @@ from normax.optimization import minimize_bounded
 from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
 from normax.replay import save_trajectory
+from normax.sizing.blueprint import BlueprintSizer
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
@@ -144,15 +145,26 @@ class AnalysisConfig(NamedTuple):
 
 class SizingConfig(NamedTuple):
     """
-    What the standard is read at.
+    What the standard is read at, and which implementation reads it.
 
     Attributes
     ----------
     section_class :
         Cross-section class the wall thickness is set to sit at the limit of.
+    backend :
+        Which sizer fills the check's slot: `ec3` for the full member check,
+        `blueprint` for the cross-section-only check hosted from Blueprints.
+
+    Notes
+    -----
+    The two backends implement different physics — Blueprints has no member
+    buckling — so they are two design philosophies behind one workflow, not
+    two routes to one answer. The tubes are drawn from the same class-limit
+    family either way, so whatever differs in the designs is the check.
     """
 
     section_class: int
+    backend: str
 
 
 class LoadCaseConfig(NamedTuple):
@@ -410,11 +422,18 @@ def build_pipeline(
     pipeline :
         A form finder, a frame analysis and a code check, composed.
     """
-    # The one place the standard is named. Everything EC3-flavored — the
-    # partial factors, the class-limit wall — is derived inside the block.
+    # The one place the standard is named, and now the one place it is picked.
+    # Both backends draw tubes from the same class-limit family, so whatever
+    # differs downstream is the check itself, not the geometry.
     grade = Steel355()
     family = thinnest_family(grade, config.sizing.section_class)
-    sizer = Ec3Sizer(structure, family)
+    backend = config.sizing.backend
+    if backend == "ec3":
+        sizer = Ec3Sizer(structure, family)
+    elif backend == "blueprint":
+        sizer = BlueprintSizer(structure, family)
+    else:
+        raise ValueError(f"unknown sizing backend {backend!r}: ec3 or blueprint")
 
     # The analysis is configured with one tube; the check is what chooses between
     # them. The tube is drawn from the same family, read as bare geometry.
@@ -495,7 +514,7 @@ def view_designs(
     for name, design in designs.items():
         sections = design.sizes.sections
         frame = frame_model(structure, design.shape.xyz, sections)
-        viewer.add(frame, name=name)
+        viewer.add(frame, show_loads=True, name=name)
 
         for index, case_name in enumerate(case_names):
             response = analyzer.solve_response(
@@ -507,7 +526,7 @@ def view_designs(
                 response,
                 name=f"{name}-{case_name}",
                 structure=name,
-                show_deformation=True,
+                show_deformation=False,
                 show_forces=("nx", "my"),
             )
 
@@ -529,6 +548,7 @@ def main(config_path: Path) -> None:
     structure = build_arch(config.structure)
     loads = arch_load_cases(structure, config.load_cases)
     pipeline = build_pipeline(structure, config)
+    print(f"Sizing backend: {config.sizing.backend}")
 
     params = initialize_parameters(structure, config)
     searched = config.optimization

@@ -19,6 +19,14 @@ load_cases:
     magnitude: 90000.0
 sizing:
   section_class: 3
+  # ec3 is the full member check; blueprint is the cross-section-only check
+  # hosted from the Blueprints library, which implements no member buckling.
+  backend: ec3
+# The direct search of experiment 103: force densities and diameters together,
+# the check held as inequality constraints. Experiment 101 never reads this.
+simultaneous:
+  iterations: 200
+  tolerance: 1.0e-12
 optimization:
   # The settling passes are spent after the descent, re-analyzing the answer at
   # the sections the check demanded, to measure what a frozen seed cost.

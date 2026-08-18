@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+### The re-read is a verb: `compute_utilization`
+
+`AbstractMemberSizer.utilization` was a misnomer beside the field of the same
+spelling: `MemberSizes.utilization` is the stored diagonal — the sizing map's
+invariant, one by construction — while the method computes demand over
+resistance at whatever sizes the caller owns. The method is now
+`compute_utilization` on the abstract block and every implementation
+(`Ec3Sizer`, `BlueprintSizer`, `TesseractSizer`, `BlueprintClient`, the ASD
+seam proof), matching `compute_mass`'s verb. Docstrings were tightened with
+it: the shared summary is mode-neutral ("check sizes the caller owns"), the
+container's docstring names the method as the computed counterpart of its
+stored field, and both backends state the constraint reading a simultaneous
+optimization gives it. The field keeps its name — a record is a noun.
+
+### The showcase problem, with the sizes as the optimizer's own variables
+
+`experiments/103_simultaneous_api.py` redesigns 101's arch the other way
+around: the diameters join the force densities as decision variables, the
+check enters as the inequality constraints `U <= 1` read off
+`AbstractMemberSizer.compute_utilization`, and SLSQP with analytic JAX Jacobians
+finds the fully-stressed state as active constraints. No envelope (one size
+per member, one constraint per case) and nothing to settle (the analysis
+runs at the answer's own sections on every iterate). The scaffolding —
+config, arch, loads, pipeline with its backend switch, viewer — is imported
+from `101_api.py` the way experiment 102 imports it, not copied; `arch.yaml`
+grew a `simultaneous: {iterations, tolerance}` section 101 never reads.
+
+- Measured against the same sized-seed baseline (0.165643794 t), the direct
+  search beats the nested descent's settled answer under both backends:
+  ec3 0.138496697 t (16.389 % vs the nested 0.139297503 t settled) with the
+  full traced buckling check in the constraints; blueprint 0.135972798 t
+  (17.913 % vs the nested 0.137475215 t settled) through the pure_callback
+  rule. The margin is the `∂d/∂q` coupling the frozen-seed gradient omits,
+  now priced on every iteration rather than settled at the end.
+- Constraints held to 1.9e-12 (ec3) and 1.6e-13 (blueprint); all ten members
+  worked to one under their governing case; solves of 83–91 SLSQP iterations
+  in 1–2.4 s, compilation excluded.
+
+### The showcase picks its sizer from the file
+
+`arch.yaml` grew `sizing.backend: ec3 | blueprint` and `101_api.py`'s
+`build_pipeline` dispatches on it — the one place the standard was named is
+now the one place it is picked, both backends drawing tubes from the same
+class-limit family. Everything downstream is sizer-blind, including the
+trajectory artifact: experiment 102 replays through 101's own `parse_config`
+and `build_pipeline`, so a blueprint-recorded search replays through a
+blueprint pipeline with no second schema. `Ec3Sizer` keeps `resultant=True`:
+on the 2D arch the minor axis is zero so the flag changes nothing, and the
+default is the standard as designed rather than the parity distortion.
+
+- Measured, same file, same seed, one key flipped: ec3 reproduces
+  0.138951969 t / 16.114 % / +0.24867 % bit for bit; blueprint lands at
+  0.137445496 t / 17.023 % / +0.02162 %, lighter because nothing prices
+  buckling and cheaper to settle because no buckling length feeds back.
+- The two backends START from the same mass (0.165643794 t, identical to
+  print precision), and that is a finding rather than a bug: at the seed the
+  envelope is governed by the half-span cases, which EC3 sizes on its
+  cross-section check — the same eq. (6.2) arithmetic as Blueprints in 2D
+  (governing codes [3,3,...] under the funicular case, [2,2,...] under
+  both half-span cases). The descent then drives the design into
+  compression, buckling takes over, and the standards part ways.
+
 ### A non-differentiable code library carries an exact adjoint, two ways
 
 `normax/sizing/blueprint.py` is a new sizer backed by the Blueprints library
@@ -111,7 +173,7 @@ answer: diameter, thickness, worst axial force, utilization, governing case.
   the search analyzed every iterate at the frozen seed diameters the replay
   hands back in. Measured: the recomputed penalized objective agrees with the
   recorded trajectory to 2.2e-16 relative over all 16 steps of the 101 run.
-  The utilization in the history is `AbstractMemberSizer.utilization` re-read
+  The utilization in the history is `AbstractMemberSizer.compute_utilization` re-read
   at the reconciled section, not the fully-stressed diagonal.
 - `normax/rendering.py` is "polyscope and nothing else", numpy-only, the
   mirror of `visualization.py`'s matplotlib charter. Camera and scene extents
