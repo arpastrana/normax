@@ -1316,15 +1316,18 @@ class UtilizationForm(NamedTuple):
         Outer diameter of every member.
     utilization :
         Worst utilization of every member over the load cases.
-    governing :
-        Index of the load case working each member hardest.
+    governed :
+        How many members each load case governs, in case order. The caller
+        owns the counting, tie policy included — mirror-paired cases tie to
+        solver precision on symmetric designs, and an argmax here would
+        split those ties by index order.
     """
 
     title: str
     xyz: Float[Array, "nodes 3"]
     diameters: Float[Array, "members"]
     utilization: Float[Array, "members"]
-    governing: Int[Array, "members"]
+    governed: Int[np.ndarray, "cases"]
 
 
 def figure_utilization(
@@ -1366,7 +1369,9 @@ def figure_utilization(
 
     The counts underneath answer the question the coloring no longer can:
     which case put each member at its ceiling. They share one scale, so a
-    bar is read against its neighbours across the designs.
+    bar is read against its neighbors across the designs, and they arrive
+    counted rather than labeled — a member tied between cases may appear
+    under each of them, so a panel's bars can sum past the member count.
     """
     widest = max(float(np.max(np.asarray(form.diameters))) for form in forms)
     lowest = min(float(np.min(np.asarray(form.utilization))) for form in forms)
@@ -1417,8 +1422,7 @@ def figure_utilization(
     bar.set_label("envelope utilization", fontsize=9)
 
     for ax, form in zip(axes[1], forms):
-        decided = np.asarray(form.governing)
-        counts = [int(np.sum(decided == load_case)) for load_case in range(load_cases)]
+        counts = [int(count) for count in np.asarray(form.governed)]
         ax.bar(np.arange(load_cases), counts, 0.6, color="#31688e")
         ax.set_xticks(np.arange(load_cases))
         ax.set_xticklabels(names, fontsize=8, rotation=15)
