@@ -1302,6 +1302,187 @@ def figure_beam_profile(
     return figure
 
 
+class UtilizationForm(NamedTuple):
+    """
+    One design to draw, and how hard the check works each of its members.
+
+    Attributes
+    ----------
+    title :
+        Name of the design, shown above its drawing.
+    xyz :
+        Position of every node.
+    diameters :
+        Outer diameter of every member.
+    utilization :
+        Worst utilization of every member over the load cases.
+    governing :
+        Index of the load case working each member hardest.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    diameters: Float[Array, "members"]
+    utilization: Float[Array, "members"]
+    governing: Int[Array, "members"]
+
+
+def figure_utilization(
+    edges: Int[Array, "members 2"],
+    forms: Sequence[UtilizationForm],
+    names: tuple[str, ...],
+    reference: Float[Array, "nodes 3"] | None = None,
+) -> Figure:
+    """
+    Designs colored by envelope utilization, above who governs each of them.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    forms :
+        The designs to compare, in the order they are to be drawn.
+    names :
+        Name of every load case, in index order.
+    reference :
+        Shape to outline behind every form, or None to draw none.
+
+    Returns
+    -------
+    figure :
+        One drawing per design, sharing one width scale, one pair of axis
+        limits and one utilization colorbar, above a count of which load
+        case governs how many members.
+
+    Notes
+    -----
+    The colorbar is capped at one — the feasible ceiling, which fully
+    stressed members sit exactly on — and floored just under the least
+    worked member across all the designs, so the color range is spent on
+    the diversity that exists rather than on the empty run down to zero.
+    A member at the cap is at a binding constraint; a visibly colder one is
+    either resting on the diameter floor or buying force relief for its
+    fully stressed neighbors, which only an indeterminate structure can do.
+
+    The counts underneath answer the question the coloring no longer can:
+    which case put each member at its ceiling. They share one scale, so a
+    bar is read against its neighbours across the designs.
+    """
+    widest = max(float(np.max(np.asarray(form.diameters))) for form in forms)
+    lowest = min(float(np.min(np.asarray(form.utilization))) for form in forms)
+    floor = np.floor(lowest * 20.0) / 20.0
+    load_cases = len(names)
+    columns = len(forms)
+
+    figure, axes = plt.subplots(
+        2,
+        columns,
+        figsize=(4.6 * columns, 7.0),
+        height_ratios=[2.0, 1.0],
+        squeeze=False,
+        layout="constrained",
+    )
+    for ax in axes[1, 1:]:
+        ax.sharey(axes[1, 0])
+
+    shapes = [np.asarray(form.xyz) for form in forms]
+    if reference is not None:
+        shapes.append(np.asarray(reference))
+    both = np.concatenate(shapes)
+    margin = 0.05 * float(np.ptp(both[:, 0]))
+
+    for ax, form in zip(axes[0], forms):
+        if reference is not None:
+            outline = draw_outline(ax, reference, edges)
+            outline.set_label("starting shape")
+        members = draw_members(
+            ax,
+            DrawnStructure(form.xyz, edges, form.diameters, widest),
+            ColorRange(form.utilization, floor, 1.0),
+        )
+        ax.set_xlim(float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
+        ax.set_ylim(float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
+        ax.set_title(form.title, fontsize=11)
+
+    if reference is not None:
+        axes[0][0].legend(loc="lower center", fontsize=8, frameon=False)
+
+    bar = figure.colorbar(
+        members,
+        ax=axes[0].tolist(),
+        shrink=0.85,
+        aspect=14,
+        pad=0.02,
+    )
+    bar.set_label("envelope utilization", fontsize=9)
+
+    for ax, form in zip(axes[1], forms):
+        decided = np.asarray(form.governing)
+        counts = [int(np.sum(decided == load_case)) for load_case in range(load_cases)]
+        ax.bar(np.arange(load_cases), counts, 0.6, color="#31688e")
+        ax.set_xticks(np.arange(load_cases))
+        ax.set_xticklabels(names, fontsize=8, rotation=15)
+        ax.set_ylabel("members governed")
+        ax.set_title(form.title, fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
+
+    return figure
+
+
+class DescentTrace(NamedTuple):
+    """
+    One constrained descent, read as the objective at every iterate.
+
+    Attributes
+    ----------
+    title :
+        Name of the route, shown in the legend.
+    mass :
+        Objective at every iterate, the start included.
+    """
+
+    title: str
+    mass: Float[np.ndarray, "steps"]
+
+
+def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
+    """
+    Constrained descents side by side, one line of objective per route.
+
+    Parameters
+    ----------
+    traces :
+        The descents to compare, in the order they are drawn.
+
+    Returns
+    -------
+    figure :
+        One panel of mass against iteration.
+
+    Notes
+    -----
+    A single shared panel rather than one per route: the comparison is where
+    each line flattens, and separately scaled axes would hide the gap the
+    figure exists to show. The first and last shades match the palette of
+    `figure_parametrization` so a route reads the same across experiments.
+    """
+    figure, descent = plt.subplots(figsize=(6.0, 4.0), layout="constrained")
+    shades = ("#31688e", "#35b779", "#c0392b")
+
+    for index, trace in enumerate(traces):
+        steps = np.arange(len(trace.mass))
+        color = shades[index % len(shades)]
+        descent.plot(steps, trace.mass, "-", color=color, lw=1.4, label=trace.title)
+
+    descent.set_xlabel("iteration")
+    descent.set_ylabel("mass [t]")
+    descent.set_title("The constrained descents", fontsize=11)
+    descent.legend(frameon=False, fontsize=9)
+    descent.grid(alpha=0.3)
+
+    return figure
+
+
 class RouteTrace(NamedTuple):
     """
     One route's descent, and how funicular its iterates stayed.

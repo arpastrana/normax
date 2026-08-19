@@ -156,20 +156,16 @@ def positions_vertical(
     shorten past its own projection**, which is what makes this a hard bound on
     member length rather than a penalty on one.
 
-    **It is not a design space, and the reason is algebraic rather than
-    numerical.** Only vertical equilibrium is imposed here. Horizontal
-    equilibrium of the axial forces at a node reads
-    `q_before (x_before - x) + q_after (x_after - x) = 0`, so on an evenly spaced
-    plan it collapses to `q_after = q_before`: **the only force densities that
-    leave such a shape funicular are uniform ones.** Every other choice buys its
+    **Only vertical equilibrium is imposed here**, so an arbitrary `q` buys its
     fixed plan by handing the horizontal thrust to structure that is not being
     designed, and the shape then carries the design load in bending rather than
-    axially.
-
-    So this holds the plan exactly, and a member can never shorten past its own
-    projection, but the funicular part of what it can reach is a single
-    parameter — the scale of a uniform force density. Use it to hold a plan while
-    sweeping that one parameter, not to give an optimizer twenty.
+    axially. On a chain the funicular part of what this reaches is a single
+    parameter: horizontal balance at a two-edge node reads
+    `q_before (x_before - x) + q_after (x_after - x) = 0`, which on an evenly
+    spaced plan collapses to `q_after = q_before`. How wide the funicular part
+    is on any other topology is a counting question, and `density_basis`
+    answers it — a `q` in its span puts this solve in full equilibrium,
+    horizontal included, and that subspace is a legitimate design space.
     """
     xyz = jnp.asarray(xyz)
 
