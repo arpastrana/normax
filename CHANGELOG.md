@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### The Vierendeel truss, where funicularity gets scarce
+
+Experiment 17 removes the Warren's diagonals and the counting flips back
+against the geometry. Verticals project to nothing in the plan balance, so
+the horizontal equations split into two full-rank chord chains: the eight-bay
+Vierendeel's 23 members hold a **nine-wide held-plan subspace** — one uniform
+density family per chord plus seven free verticals — against fourteen free
+heights. Funicular shapes are the exception rather than the rule, which is
+the strongest form-finding case in the repo: the truss as drawn misses axial
+balance by **0.500 of its load** (exactly half — least squares splits the
+untransferable hanger load evenly between the chords' residuals), where the
+Warren lens missed by 1e-14 of it. `build_vierendeel_2d` joined the
+generators, and `fit_densities` grew an optional `basis` to fit inside a
+held-plan subspace.
+
+- **Four supports, decided and demonstrated.** Both chords spring at pinned
+  corner nodes. The two-support variant with a floating top chord is built in
+  the experiment and its basis measured: eight independent edges, and the top
+  chord's density is identically zero across all of them — the chain balance
+  forces it, so the topology was corrected rather than argued. There are no
+  end posts: they would join two supports and carry nothing in any model
+  here. T2 will model every member as a rigid-jointed beam, since a
+  pin-jointed Vierendeel is a mechanism.
+- **The reachable sketches are the simultaneous funiculars.** A parabolic
+  lens fits exactly (1.9e-9 N under 140 kN) because both chords are
+  funiculars of one hanger-load split; so does the flat deck (3.2e-10 N),
+  whose level bottom chord carries nothing vertical. A quartic-top bulge is
+  reachable by no split — and the free least squares hides that: it abandons
+  the chord, zeroing hangers and top densities (3.3e-13 N/mm left), reports a
+  deceptively near-zero gap, and hands back a vertical stiffness with
+  condition 1.8e16 whose solve drops the top chord 1603 mm from the sketch.
+  The fit gap alone does not certify a sketch reachable; the re-solve does.
+  Hence the `basis` parameter: fitting inside the subspace keeps the plan
+  balance exact by construction.
+- **The self-stress is the load-path split.** The curved Vierendeel carries
+  exactly one state of self-stress (Maxwell: m + r − 2n = −1, so s = k − 1),
+  and it is the trade between hanging deck and arching top chord — the
+  Vierendeel's analogue of the Warren's thrust-vs-tie split. On the lens the
+  minimum-norm fit takes both paths (bottom +96.1, top −127.9 N/mm, hangers
+  +5.3 to +7.9); on the flat deck it puts everything in the arch and leaves
+  the tie at zero, and the sign shift of −226.9 along the self-stress is
+  literally the tie tension. The height Jacobian confirms the split: 5 moving
+  directions of 6 symmetric (8 of 9 full), blind direction aligned with the
+  fitted self-stress to |cos| = 1.0.
+- **Symmetry shrinks nine to six** — the two chord families, symmetric
+  already, plus four symmetric vertical patterns — under the same
+  `symmetric` YAML switch as experiment 16. QR pivoting elects one member
+  per chord and every vertical as the independents (vertical columns are
+  zero in the balance, so they can never be dependents), largest transfer
+  coefficient 1.00.
+- The mixed-sign vertical stiffness at the signed lens densities is
+  indefinite but comfortable: 7 of 14 negative eigenvalues, condition 33.
+- Both flag states of experiment 17 PASS; `tests/test_plan_basis.py` pins
+  the widths, the floating-top zero, the exact lens fit, the load-path
+  split, the degenerate free fit, and the pivoted election, and
+  `tests/test_structures.py` pins the generator's family-ordering contract.
+
 ### The Warren truss, and the held plan's independent edges
 
 Experiment 15 proved the held plan degenerate on a chain — one funicular

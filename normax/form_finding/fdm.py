@@ -447,6 +447,7 @@ def fit_densities(
     structure: Structure,
     xyz: Float[np.ndarray, "nodes 3"],
     loads: Float[np.ndarray, "nodes 3"],
+    basis: Float[np.ndarray, "edges independents"] | None = None,
 ) -> DensityFit:
     """
     Fit force densities to a drawn geometry, the balance being linear in them.
@@ -459,6 +460,10 @@ def fit_densities(
         The drawn geometry to be equilibrated.
     loads :
         Force applied at every node.
+    basis :
+        Columns to restrict the fit to, or None to fit every density freely.
+        Hand a held-plan basis here and the fit is the nearest funicular
+        member of that subspace, plan balance kept exactly by construction.
 
     Returns
     -------
@@ -473,7 +478,8 @@ def fit_densities(
     reachable is reported by the gap rather than assumed. A topology with more
     members than balance rows reaches every sketch, and the surplus returns as
     states of self-stress — directions to trade member signs along without
-    moving a node.
+    moving a node. Under a basis the self-stress columns are combinations of
+    its columns, orthonormal only when the basis is.
     """
     nodes = np.asarray(xyz)
     edges = np.asarray(structure.edges)
@@ -483,9 +489,13 @@ def fit_densities(
     columns = [np.asarray(loads)[nodes_free, axis] for axis in (0, 1, 2)]
     applied = np.concatenate(columns)
 
-    q, _, rank, _ = np.linalg.lstsq(balance, applied, rcond=None)
-    _, _, rows = np.linalg.svd(balance)
-    self_stresses = rows[rank:].T
+    span = np.eye(edges.shape[0]) if basis is None else np.asarray(basis)
+    restricted = balance @ span
+
+    coordinates, _, rank, _ = np.linalg.lstsq(restricted, applied, rcond=None)
+    _, _, rows = np.linalg.svd(restricted)
+    q = span @ coordinates
+    self_stresses = span @ rows[rank:].T
     gap = float(np.abs(balance @ q - applied).max())
 
     return DensityFit(q, self_stresses, gap)

@@ -12,6 +12,8 @@ from normax.form_finding.fdm import positions_vertical
 from normax.loads import loads_uniform
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
+from normax.structures import build_structure
+from normax.structures import build_vierendeel_2d
 from normax.structures import build_warren_2d
 
 NUM_BAYS = 8
@@ -176,3 +178,108 @@ def test_the_pivoted_gridshell_has_twenty_five():
     pivot = pivoted_basis(build_gridshell_3d())
 
     assert pivot.basis.shape[1] == 25
+
+
+@pytest.fixture(scope="module")
+def vierendeel():
+    return build_vierendeel_2d(num_bays=NUM_BAYS, span=SPAN, depth=DEPTH)
+
+
+@pytest.fixture(scope="module")
+def vierendeel_lens(vierendeel):
+    xyz = np.asarray(vierendeel.nodes).copy()
+    shape = 4.0 * (xyz[:, 0] / SPAN) * (1.0 - xyz[:, 0] / SPAN)
+    xyz[: NUM_BAYS + 1, 2] -= 0.06 * SPAN * shape[: NUM_BAYS + 1]
+    xyz[NUM_BAYS + 1 :, 2] += 0.08 * SPAN * shape[NUM_BAYS + 1 :]
+    return xyz
+
+
+def _deck_loads(structure):
+    loads = np.zeros((structure.num_nodes, 3))
+    loads[1:NUM_BAYS, 2] = -LOAD
+    return loads
+
+
+def _vierendeel_mirror():
+    bottom = NUM_BAYS - np.arange(NUM_BAYS + 1)
+    top = 2 * NUM_BAYS + 1 - np.arange(NUM_BAYS + 1)
+    return np.concatenate([bottom, top])
+
+
+def test_the_vierendeel_has_nine(vierendeel):
+    assert density_basis(vierendeel).shape[1] == 9
+
+
+def test_the_symmetric_vierendeel_has_six(vierendeel):
+    assert density_basis(vierendeel, _vierendeel_mirror()).shape[1] == 6
+
+
+def test_the_verticals_escape_the_plan_balance(vierendeel):
+    balance = plan_equilibrium(vierendeel)
+
+    assert np.abs(balance[:, 2 * NUM_BAYS :]).max() == 0.0
+
+
+def test_a_floating_top_chord_is_forced_to_zero(vierendeel):
+    nodes = np.asarray(vierendeel.nodes)
+    edges = np.asarray(vierendeel.edges)
+    floating = build_structure(nodes, edges, np.array([0, NUM_BAYS]))
+
+    basis = density_basis(floating)
+
+    assert basis.shape[1] == 8
+    assert np.abs(basis[NUM_BAYS : 2 * NUM_BAYS]).max() < 1e-12
+
+
+def test_the_subspace_fit_reaches_the_vierendeel_lens(vierendeel, vierendeel_lens):
+    loads = _deck_loads(vierendeel)
+    basis = density_basis(vierendeel)
+    fit = fit_densities(vierendeel, vierendeel_lens, loads, basis)
+
+    assert fit.gap < 1e-12
+    assert fit.self_stresses.shape == (23, 1)
+    assert np.abs(plan_equilibrium(vierendeel) @ fit.q).max() < 1e-12
+
+
+def test_the_vertical_solve_reproduces_the_vierendeel_lens(vierendeel, vierendeel_lens):
+    loads = _deck_loads(vierendeel)
+    basis = density_basis(vierendeel)
+    fit = fit_densities(vierendeel, vierendeel_lens, loads, basis)
+
+    graph = equilibrium_graph(vierendeel)
+    solved = positions_vertical(
+        jnp.asarray(fit.q), vierendeel.nodes, graph, jnp.asarray(loads)
+    )
+
+    assert np.abs(np.asarray(solved) - vierendeel_lens).max() < 1e-10
+
+
+def test_the_load_path_split_leaves_the_lens_balanced(vierendeel, vierendeel_lens):
+    loads = _deck_loads(vierendeel)
+    basis = density_basis(vierendeel)
+    fit = fit_densities(vierendeel, vierendeel_lens, loads, basis)
+    shifted = fit.q + 10.0 * fit.self_stresses[:, 0]
+
+    assert equilibrium_gap(vierendeel, vierendeel_lens, shifted, loads) < 1e-12
+
+
+def test_the_free_fit_abandons_an_unreachable_chord(vierendeel):
+    xyz = np.asarray(vierendeel.nodes).copy()
+    along = xyz[:, 0] / SPAN
+    parabola = 4.0 * along * (1.0 - along)
+    quartic = 16.0 * (along * (1.0 - along)) ** 2
+    xyz[: NUM_BAYS + 1, 2] -= 0.06 * SPAN * parabola[: NUM_BAYS + 1]
+    xyz[NUM_BAYS + 1 :, 2] += 0.08 * SPAN * quartic[NUM_BAYS + 1 :]
+
+    fit = fit_densities(vierendeel, xyz, _deck_loads(vierendeel))
+
+    assert fit.gap < 1e-12
+    assert np.abs(fit.q[NUM_BAYS : 2 * NUM_BAYS]).max() < 1e-9
+
+
+def test_the_pivoted_vierendeel_elects_the_verticals(vierendeel):
+    pivot = pivoted_basis(vierendeel)
+    verticals = set(range(2 * NUM_BAYS, 3 * NUM_BAYS - 1))
+
+    assert pivot.basis.shape[1] == 9
+    assert verticals.issubset(set(pivot.independents.tolist()))
