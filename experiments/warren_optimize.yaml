@@ -26,5 +26,6 @@ descent:
   rounds: 5
   tolerance: 1.0e-10
   diameter_floor: 21.3
+  length_floor: 500.0
   limit_rise: true
   rise_factor: 2.0
