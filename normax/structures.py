@@ -127,6 +127,70 @@ def build_arch_2d(
     return build_structure(nodes, edges, supports)
 
 
+def build_warren_2d(
+    num_bays: int = 8,
+    span: float = 10.0,
+    depth: float = 1.0,
+) -> Structure:
+    """
+    A 2D Warren truss spanning between two pinned supports, in the XZ plane.
+
+    The bottom chord runs along the span at height zero; the top chord floats
+    one depth above it, offset by half a bay. Edges come in families, in this
+    order: the `num_bays` bottom-chord members, the `num_bays - 1` top-chord
+    members, the `num_bays` rising diagonals, and the `num_bays` falling ones.
+
+    Parameters
+    ----------
+    num_bays :
+        Number of bottom-chord segments the span is divided into.
+    span :
+        Horizontal distance between the two supports.
+    depth :
+        Height of the top chord above the bottom chord.
+
+    Returns
+    -------
+    structure :
+        The truss.
+
+    Notes
+    -----
+    Both bottom-chord ends are supported, matching the pinned-support policy
+    of the pipeline. The family ordering is part of the contract: a consumer
+    that constrains the chords by sign slices them off the front.
+    """
+    if num_bays < 2:
+        raise ValueError(f"num_bays must be at least 2, got {num_bays}")
+    if span <= 0.0:
+        raise ValueError(f"span must be positive, got {span}")
+    if depth <= 0.0:
+        raise ValueError(f"depth must be positive, got {depth}")
+
+    bay = span / num_bays
+
+    xs_bottom = bay * np.arange(num_bays + 1)
+    xs_top = bay / 2.0 + bay * np.arange(num_bays)
+    zeros_bottom = np.zeros(num_bays + 1)
+    bottom = np.stack([xs_bottom, zeros_bottom, zeros_bottom], axis=1)
+    top = np.stack([xs_top, np.zeros(num_bays), np.full(num_bays, depth)], axis=1)
+    nodes = np.concatenate([bottom, top], axis=0)
+
+    lower = np.arange(num_bays + 1)
+    upper = num_bays + 1 + np.arange(num_bays)
+
+    edges_bottom = np.stack([lower[:-1], lower[1:]], axis=1)
+    edges_top = np.stack([upper[:-1], upper[1:]], axis=1)
+    edges_rising = np.stack([lower[:-1], upper], axis=1)
+    edges_falling = np.stack([upper, lower[1:]], axis=1)
+    families = [edges_bottom, edges_top, edges_rising, edges_falling]
+    edges = np.concatenate(families, axis=0)
+
+    supports = np.array([0, num_bays])
+
+    return build_structure(nodes, edges, supports)
+
+
 def build_gridshell_3d(
     num_rings: int = 4,
     num_spokes: int = 12,
