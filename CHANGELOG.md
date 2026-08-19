@@ -2,6 +2,108 @@
 
 ## Unreleased
 
+### The subspace is a form finder now
+
+`SubspaceFormFinder` in `normax/form_finding/fdm.py` wraps any form finder
+in a held-plan density basis, so the design space itself is the block's
+first argument: a call takes basis coordinates, expands them through
+`member_densities`, and hands the densities to the wrapped finder. The two
+coordinate read-back conventions — projections `Bᵀ q` for the orthonormal
+basis, `q[independents]` for the pivoted one, never `Bᵀ q` there — now live
+in one place, `read_coordinates`, instead of being re-derived per
+experiment. The truss experiments build their pipelines with it as the
+first block; the searched width is read off `basis.shape[1]`, the
+chord-sign guard reads densities through the block, and both experiments
+reproduce their numbers (experiment 18 bit for bit). Four tests in
+`test_plan_basis.py` pin the expansion, both read-backs, and the chain rule
+`∂/∂ξ = Bᵀ ∂/∂q` through the wrapped solve.
+
+### The Vierendeel truss optimized end to end, on machinery both trusses share
+
+Experiment 19 reruns experiment 18's three-route race on the truss where
+funicularity is scarce, after the route machinery — the configuration and
+its YAML parsing, the four load cases, the compiled maps of all three
+routes, the restarted SLSQP, the report tables, the checks and the
+figures — moved into `experiments/truss_routes.py`, shared by both
+experiments. Experiment 18, slimmed to what is Warren about it, reproduces
+its committed numbers bit for bit. The Vierendeel defaults race the full
+(never symmetric) svd basis — nine independent edges, two uniform chord
+families plus seven free verticals — against fourteen free heights, each
+with all 23 diameters, under the 2000 mm rise ceiling, hard `U <= 1` per
+member and load case. **The geometry bought 77.0%**: 0.098845 t end to end
+against 0.430474 t sizing only, every state PASS, constraint violations
+orders under the 1e-6 headroom.
+
+- **Funicular discipline pays double where the joints are rigid.** The
+  drawn Vierendeel carries the deck through joint bending alone, and
+  sizing it without moving it costs 0.430474 t — diameters to 274 mm,
+  verticals idling at U 0.41 while the envelope holds their neighbors at
+  one. Bending the chords into simultaneous funiculars starves those
+  moments: the end-to-end answer is 4.4x lighter, against 1.8x on the
+  axially-competent Warren.
+- **The reach argument reverses, and under the ceiling the form finder
+  still wins.** On the Warren both shaped routes spanned the same
+  geometries, so the +10-15% free-heights gap was pure landscape. Here the
+  counting flips — every held-plan geometry is drawable by heights,
+  funicular ones are a strict 9-of-14 submanifold — the heights route is
+  the superset for the first time, and it *still* lands +40.5% heavier
+  (0.138896 t) from the same matched lens start, mirror symmetry visibly
+  broken (1.5e-2 against 5.2e-8). Basin caveat: on the symmetric basis the
+  two shaped routes nearly tie (+2.11%) in a far heavier basin, and with
+  the ceiling lifted the verdict inverts outright (next bullets) — the gap
+  is landscape-dependent; treat it as configuration-specific, never as a
+  constant of the truss.
+- **The optimizer leans on the funicular-existence boundary.** The
+  end-to-end route needs the chord-sign rows (`ChordSigns`, linear in the
+  coordinates since `q = B ξ`) to keep the search off the degenerate
+  chord-off states of experiment 17, where the vertical stiffness turns
+  singular and the frame solve returns non-finite — without them the
+  descent crashes mid-line-search. At the answer the rows BIND at their
+  14.4 N/mm margin; halving the margin buys only 0.85% (0.098010 t) and
+  binds again. The watched vertical stiffness stays regular: cond 33 at
+  the start, 1.7e2 at the answer, 7 negative eigenvalues of 14 throughout.
+- **The heights route has its own degeneracy, and its own wall.** A
+  Vierendeel vertical joins two nodes of equal plan position, so a height
+  crossing collapses it and hands T2 a singular frame — the Warren never
+  could, its plan keeps every member at least 625 mm long. The length
+  floor (`length_floor`) enters the heights slack as inequality rows
+  emitted only for members whose held plan projection is under the floor,
+  so the Warren emits none and reproduces unchanged. The floor is half the
+  drawn depth — 500 mm, and `parse_config` refuses less — so a vertical
+  stays a member rather than a near-hinge; every full-basis heights answer
+  rests exactly on it. A third guard sits in the driver: a trial frame
+  that cannot be factorized is answered with a uniform 1e3 violation
+  (`RECOIL_SLACK`) instead of a raise — infeasible is the truthful reading
+  of a structure that cannot stand — and the line search recoils.
+- **The rise ceiling decides which parametrization wins.** Under the lid
+  the funicular route wins by 40.5%. Lifting it, the end-to-end descent
+  lands *heavier* (0.120785 t against 0.098845 t capped) on a wildly
+  asymmetric design (diameter mirror gap 0.498, depth 3554 mm), while the
+  free-heights route drops to **0.076276 t — the lightest design of the
+  whole study**, 23% under the capped end-to-end best. On the Warren the
+  free rise saved the end-to-end route a further 6.6%; on the Vierendeel
+  the lid regularizes the funicular landscape and starves the heights
+  route, and without it their verdict inverts. The lid is active in every
+  capped shaped answer (rise exactly 2000).
+- **Coordinates pick the basin, louder than on the Warren.** The pivoted
+  basis lands within 0.35% of svd end to end (0.099191 t; its heights
+  route 0.144950 t), but the mirror-symmetric basis lands 47% heavier
+  (0.145473 t) even though the full-basis answer is itself
+  mirror-symmetric to 5.2e-8 — the symmetric subspace contains the good
+  answer's neighborhood and the descent still cannot reach it. The Warren
+  priced the same switchings at ~1.3%.
+- **LC1 never governs, again.** Zero members on every route in every
+  state; the default end-to-end envelope splits 13/10/0 over LC2/LC3/LC4.
+  The elastic axial forces sit 5.1% from the funicular `q L` at the lens
+  (the Warren's split was 22.6%), and the frozen-seed envelopes are
+  infeasible re-analyzed at their own sections: 14.8% at the lens, 15.5%
+  as drawn.
+- **The start is fitted inside the basis, never free** — experiment 17's
+  degeneracy is the reason — with the fit gap at 1.4e-15 of the total
+  load, the projection gap at 2.9e-16, and the sign shift along the one
+  self-stress, the load-path split. End-to-end and free-heights gradients
+  agree with central differences to 2.7e-10 and 3.5e-12.
+
 ### The Warren truss optimized end to end, against two routes without T1
 
 Experiment 18 puts the held-plan subspace to work: simultaneous SLSQP over
