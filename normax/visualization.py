@@ -81,6 +81,8 @@ class ColorRange(NamedTuple):
         Lower end of the range. If None, taken from the data.
     vmax :
         Upper end of the range. If None, taken from the data.
+    cmap :
+        Name of the colormap the range is rendered through.
 
     Notes
     -----
@@ -91,6 +93,7 @@ class ColorRange(NamedTuple):
     values: Float[Array, "members"] | None = None
     vmin: float | None = None
     vmax: float | None = None
+    cmap: str = "viridis"
 
 
 def draw_members(
@@ -129,7 +132,7 @@ def draw_members(
         segments,
         linewidths=WIDTH_MAX * sizes / drawn.widest,
         array=values,
-        cmap="viridis",
+        cmap=coloring.cmap,
         capstyle="round",
     )
     members.set_clim(
@@ -1450,5 +1453,214 @@ def figure_parametrization(
     robustness.set_title("What each start bought", fontsize=11)
     robustness.legend(frameon=False, fontsize=8)
     robustness.grid(alpha=0.3)
+
+    return figure
+
+
+class TrussForm(NamedTuple):
+    """
+    One truss shape to draw, and the axial force its members carry.
+
+    Attributes
+    ----------
+    title :
+        Name of the form, shown above its drawing.
+    xyz :
+        Position of every node.
+    forces :
+        Axial force of every member, negative in compression.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    forces: Float[Array, "members"]
+
+
+def figure_truss_forms(
+    edges: Int[Array, "members 2"],
+    forms: Sequence[TrussForm],
+    reference: Float[Array, "nodes 3"],
+    reference_label: str = "drawn truss",
+) -> Figure:
+    """
+    Truss shapes side by side, members as wide as the force they carry.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    forms :
+        The shapes to compare, in the order they are to be drawn.
+    reference :
+        Shape to outline behind every form.
+    reference_label :
+        What the outline is called in the legend.
+
+    Returns
+    -------
+    figure :
+        One drawing per form, four to a row, sharing one force scale and one
+        pair of axis limits.
+
+    Notes
+    -----
+    Forces sit on one diverging scale, compression on the red side and tension
+    on the blue, so a chord that swaps role between panels swaps color rather
+    than merely shade. Width carries magnitude, floored so that a member
+    carrying nothing stays visible as a thin line instead of vanishing.
+    """
+    peak = max(float(np.max(np.abs(np.asarray(form.forces)))) for form in forms)
+    columns = min(4, len(forms))
+    rows = -(-len(forms) // columns)
+
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(4.8 * columns, (3.2 if rows == 1 else 2.1) * rows),
+        squeeze=False,
+        layout="constrained",
+    )
+
+    flat = axes.ravel()
+    for ax in flat[len(forms) :]:
+        ax.set_axis_off()
+
+    shapes = [np.asarray(form.xyz) for form in forms]
+    shapes.append(np.asarray(reference))
+    every = np.concatenate(shapes)
+    margin = 0.05 * float(np.ptp(every[:, 0]))
+    across = (float(every[:, 0].min()) - margin, float(every[:, 0].max()) + margin)
+    upward = (float(every[:, 2].min()) - margin, float(every[:, 2].max()) + margin)
+
+    for index, (ax, form) in enumerate(zip(flat, forms)):
+        outline = draw_outline(ax, reference, edges)
+        if index == 0:
+            outline.set_label(reference_label)
+        magnitudes = np.abs(np.asarray(form.forces))
+        widths = np.maximum(magnitudes, 0.05 * peak)
+        members = draw_members(
+            ax,
+            DrawnStructure(form.xyz, edges, widths, peak),
+            ColorRange(form.forces, -peak, peak, "RdBu"),
+        )
+        ax.set_xlim(across)
+        ax.set_ylim(upward)
+        ax.set_title(form.title, fontsize=10)
+        if index % columns:
+            ax.set_ylabel("")
+        if index < len(forms) - columns:
+            ax.set_xlabel("")
+
+    flat[0].legend(loc="upper right", fontsize=8, frameon=False)
+
+    bar = figure.colorbar(
+        members,
+        ax=flat.tolist(),
+        shrink=0.85 if rows == 1 else 0.6,
+        aspect=14 if rows == 1 else 25,
+        pad=0.02,
+    )
+    bar.set_label("axial force [N]")
+
+    return figure
+
+
+class SubspaceMode(NamedTuple):
+    """
+    One direction of the held-plan density subspace, made visible.
+
+    Attributes
+    ----------
+    title :
+        Name of the mode, shown above its drawing.
+    xyz :
+        Geometry displaced along the mode, exaggerated for the eye.
+    densities :
+        The density direction itself, one component per member.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    densities: Float[Array, "members"]
+
+
+def figure_density_modes(
+    edges: Int[Array, "members 2"],
+    reference: Float[Array, "nodes 3"],
+    modes: Sequence[SubspaceMode],
+) -> Figure:
+    """
+    Every independent direction of the held-plan subspace, one panel each.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    reference :
+        The undisplaced shape, outlined behind every mode.
+    modes :
+        The directions to draw, in the order they are to be drawn.
+
+    Returns
+    -------
+    figure :
+        A grid of drawings, four to a row, sharing one color scale.
+
+    Notes
+    -----
+    Each panel shows one direction twice over: the solid shape is the geometry
+    displaced along the mode, and its coloring is the density change driving
+    it. A panel that changes color without moving the shape is a state of
+    self-stress — force redistribution the geometry cannot see.
+    """
+    peak = max(float(np.max(np.abs(np.asarray(mode.densities)))) for mode in modes)
+    columns = 4
+    rows = -(-len(modes) // columns)
+
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(3.9 * columns, 1.9 * rows),
+        squeeze=False,
+        layout="constrained",
+    )
+
+    flat = axes.ravel()
+    for ax in flat[len(modes) :]:
+        ax.set_axis_off()
+
+    shapes = [np.asarray(mode.xyz) for mode in modes]
+    shapes.append(np.asarray(reference))
+    every = np.concatenate(shapes)
+    margin = 0.05 * float(np.ptp(every[:, 0]))
+    across = (float(every[:, 0].min()) - margin, float(every[:, 0].max()) + margin)
+    upward = (float(every[:, 2].min()) - margin, float(every[:, 2].max()) + margin)
+
+    num_members = np.asarray(edges).shape[0]
+    widths = np.ones(num_members)
+
+    for index, (ax, mode) in enumerate(zip(flat, modes)):
+        draw_outline(ax, reference, edges)
+        members = draw_members(
+            ax,
+            DrawnStructure(mode.xyz, edges, widths, 3.0),
+            ColorRange(mode.densities, -peak, peak, "RdBu"),
+        )
+        ax.set_xlim(across)
+        ax.set_ylim(upward)
+        ax.set_title(mode.title, fontsize=9)
+        if index % columns:
+            ax.set_ylabel("")
+        if index < len(modes) - columns:
+            ax.set_xlabel("")
+
+    bar = figure.colorbar(
+        members,
+        ax=flat.tolist(),
+        shrink=0.6,
+        aspect=25,
+        pad=0.01,
+    )
+    bar.set_label("density direction")
 
     return figure

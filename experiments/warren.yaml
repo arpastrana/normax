@@ -1,0 +1,18 @@
+# The truss experiment 16 eyeballs, and the subspace study it runs.
+structure:
+  num_bays: 8
+  span: 10000.0
+  depth: 1000.0
+
+loads:
+  deck: 20000.0
+
+sketch:
+  sag_lens: 600.0
+  rise_lens: 800.0
+  rise_deck: 800.0
+
+subspace:
+  symmetric: true
+  margin_fraction: 0.1
+  amplitude: 400.0

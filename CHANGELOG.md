@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+### The Warren truss, and the held plan's independent edges
+
+Experiment 15 proved the held plan degenerate on a chain — one funicular
+parameter, `q_after = q_before`. Experiment 16 runs the same counting on an
+eight-bay Warren truss and gets the opposite verdict: 31 members against 15
+horizontal balance rows leave a **sixteen-wide held-plan subspace**, and the
+count is exact bookkeeping — fifteen free heights plus one state of
+self-stress, the pin-pin truss's thrust-vs-tie split. Every bay stays even
+and every diagonal aligned by construction, because the plan never enters
+the solve. The machinery lives in `normax.form_finding.fdm`:
+`plan_equilibrium` (the balance, a constant of the topology),
+`density_basis` (its null space by SVD, mirror-symmetric on request),
+`fit_densities` (exact densities for any drawn geometry, self-stresses
+included), `equilibrium_gap`, and `pivoted_basis` (the same subspace in
+member coordinates). `build_warren_2d` joined the generators, and
+`figure_truss_forms` and `figure_density_modes` joined the figures.
+
+- **Every held-plan sketch is exactly reachable.** The balance is linear in
+  the densities at a fixed geometry — 30 equations, 31 unknowns, full rank —
+  so a drawn lens and a drawn flat-deck truss fit to gaps of 1.1e-10 and
+  9.5e-11 N under 140 kN of deck load, and the vertical solve reproduces the
+  lens from the flat truss to 7.3e-12 mm. The raw fit signs its chords
+  wrong; the shift along the one self-stress that fixes them is an interval
+  ([-679, -21] for the lens), intersected exactly and taken nearest zero.
+- **Mixed signs make the vertical stiffness indefinite, not singular.** At
+  the signed lens densities: 8 of 15 eigenvalues negative, condition 52.
+  The solve stands; the spectrum is printed rather than assumed.
+- **The free plan is the cautionary picture.** One density per family, at
+  the scale of the signed fit, handed to the unrestrained solver: bay widths
+  drift from 156 to 2052 mm on a 1250 mm nominal, nodes land outside the
+  span, and the truss hangs inverted below its supports. Right signs and
+  right scale do not protect the shape; membership in the subspace does.
+- **Mirror symmetry shrinks sixteen to nine** — eight symmetric height
+  motions plus the self-stress, itself symmetric — imposed as extra rows on
+  the same null-space solve. It costs the start nothing: the lens densities
+  rebuild in the symmetric basis to 7.9e-14 of their norm. The
+  `symmetric` switch in `warren.yaml` selects which basis the mode split,
+  the variations and the checks operate on.
+- **The height Jacobian splits the subspace for the eye.** Its SVD orders
+  the directions by gain — 425 mm of motion per unit density step down to
+  11 — and its null direction matches the algebraic self-stress to
+  |cos| = 1.0 at machine precision. Three figures step every direction: the
+  linearized modes, the re-form-found variations, and the pivoted
+  variations, which nudge one named member at a time.
+- **QR with column pivoting elects the independent edges the TNA way.** On
+  the Warren it claims the large-coefficient chord columns for the dependent
+  block and leaves eight diagonals plus one bottom chord as the named
+  variables; the largest transfer coefficient is 1.00, so no independent
+  density is amplified into a dependent one. The lens start reads back by
+  pure slicing to 3.8e-14 of |q|.
+- **The symmetric gridshell has 25 independent edges, not the formula's
+  22.** `edges - 2 x free nodes` assumes full rank, and the polar cap's
+  balance is rank-deficient by exactly its three free rings; the SVD count
+  is the measurement and the formula is a lower bound.
+
 ### A form finder as a shape generator, priced against free coordinates
 
 Experiment 15 descends the same arch through two parametrizations of a held
