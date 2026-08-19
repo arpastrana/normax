@@ -2,6 +2,99 @@
 
 ## Unreleased
 
+### The Warren truss optimized end to end, against two routes without T1
+
+Experiment 18 puts the held-plan subspace to work: simultaneous SLSQP over
+the nine symmetric basis coordinates and all 31 diameters, under hard
+`U <= 1` per member and load case, against two searches without the form
+finder — one moving the fifteen free heights and the diameters through T2
+and T3 alone, one holding the truss as drawn and moving the diameters only.
+Four load cases, all on the bottom chord — a shared 180 kN total for the
+uniform deck and the two half-span cases, and `point_factor` of it (0.5)
+concentrated at the midspan deck node. The point case is the one knob
+exempt from the shared total: at the full 180 kN it governed 22–23 of 31
+members and every design was essentially its funicular, so it was halved
+to make the envelope an actual contest — governing now splits 11/12/8
+across LC2/LC3/LC4, and LC1, the case the shape is form-found under,
+governs zero members on every route. With the rise left free, **the
+geometry bought 48.0%**: 0.058185 t end to end against 0.111808 t sizing
+only, every answer feasible to 1.4e-11.
+
+- **The answer is the funicular of the governing cases, not of the shaping
+  case.** At the full-total point case the truss left the lens for the
+  pitched triangle a midspan point load wants; at the halved default it
+  settles into a rounder profile answering the half-span pair — rise
+  3042 mm, sag −264 mm, on a 1000 mm drawn truss, free rise. Which case
+  writes the shape is a load-model decision, never the form finder's.
+- **The truss is once statically indeterminate, and it shows twice.** The
+  elastic axial forces disagree with the funicular `q L` by 22.6% of the
+  largest force under the shaping case — the thrust-vs-tie split is
+  stiffness-dependent, so T1 handing T2 geometry only is not a formality
+  here. And the frozen-seed envelope that seeds each search is measurably
+  infeasible re-analyzed at its own sections: 5.8% on the lens, 11.5% on
+  the drawn truss (14.1% and 23.7% at the full-total point case), where the
+  arch priced the same coupling at a tenth of a percent — the sizing-only
+  descent spends its opening iterations *gaining* mass to purge it. At the
+  full-total point case the indeterminacy also kept six sizing-only members
+  strictly under-utilized (U 0.80–0.88 at diameters far above the floor):
+  the classical fully-stressed-design-is-not-minimum-weight result, their
+  stiffness buying force relief for governing neighbors. At the halved
+  default every sizing-only member ends exactly fully stressed.
+- **Free heights lose 14.9% with the reach excuse removed.** On the arch of
+  experiment 15 the heights were a strict superset of the funicular family;
+  on the Warren, experiment 16 counted every held-plan geometry
+  funicular-reachable, so the two shaped routes span the same designs and
+  any gap is landscape, never reach. From the same matched lens start, the
+  same solver and the same constraints, the free-heights route (46
+  variables) lands on 0.066848 t against the density route's 0.058185 t —
+  +14.9% with the rise free, +10.2% under the ceiling — thousands of
+  millimeters away in shape and with mirror symmetry visibly broken
+  (diameter mirror gap 2.8e-2 against 3.4e-13). The physics prior wins on
+  conditioning alone, and by more the harder the problem gets.
+- **A rise ceiling is the YAML's `limit_rise` switch** (on by default,
+  `rise_factor` 2.0 — no vertex above twice the drawn depth, 2000 mm; the
+  sag stays free). Each route carries the same wall as it naturally can:
+  a box bound on the free-heights variables, one normalized inequality row
+  per free node for the end-to-end route, whose heights are outputs of the
+  form finder. The lid is active at the optimum, not merely satisfied:
+  both shaped routes press two nodes onto it at max z = 2000.000000000
+  (the constraint rows bind to 9e-11 mm, the box exactly), where the free
+  optimum rises to 3042. It costs end to end 6.6% — 0.062026 t capped,
+  still 44.5% under sizing only — and free heights land at 0.068324 t,
+  +10.2% behind.
+- **The answers are symmetric whichever basis runs, but the coordinates
+  pick the basin.** The subspace can be spanned two ways — the YAML's
+  `basis` switch chooses the orthonormal `svd` columns or the member-named
+  `pivoted` ones (QR's independent edges, coordinates read back as
+  `q[independents]` rather than projected) — and both, plus the full
+  16-wide basis, reach the identical design space (projection gaps
+  4e-14). Under the ceiling the svd run lands on 0.062026 t while the
+  pivoted run lands on 0.061244 t and the full basis on 0.061253 t —
+  the same 1.3%-lighter basin twice, all three answers symmetric to
+  6e-4 or better. The reachable designs never changed; the coordinates
+  scaled SLSQP's steps differently and rolled it into a different local
+  optimum. Not a case for asymmetry, and not for either basis outright:
+  a case for treating the answer as basin-dependent on this landscape.
+- The end-to-end gradient — form finder, frame analysis and code check in
+  one derivative — and the free-heights gradient — coordinates straight
+  into the analysis — agree with central differences to 1.4e-09 and
+  2.6e-11 along random mixed directions of geometry and diameters. The
+  signed lens start projects into the basis to 8.0e-14 of `|q|`; the
+  restricted fit is not used for the start because its self-stress
+  direction rides at the least-squares rank cutoff (measured 1.4x above
+  it), while the free fit's sits orders below.
+- Two diagonals rest on the 21.3 mm floor in the end-to-end answer (eight
+  at the full-total point case); SLSQP is restarted from its own answer until a round stops
+  moving (three to five rounds), which is what gets it off the slow tail
+  of a single long run. `figure_mass_descent` and `figure_utilization`
+  joined the figures — the designs figure colors every member by its
+  envelope utilization, capped at one and floored just under the least
+  worked member, so the sizing-only panel shows its under-utilized bottom
+  chords and middle diagonals as visibly cold, with the governed-member
+  counts per load case kept as bar panels underneath;
+  `positions_vertical`'s "not a design space" warning is now scoped to the
+  chain it was measured on, deferring to `density_basis` elsewhere.
+
 ### The Vierendeel truss, where funicularity gets scarce
 
 Experiment 17 removes the Warren's diagonals and the counting flips back
