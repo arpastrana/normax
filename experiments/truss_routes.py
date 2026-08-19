@@ -96,6 +96,11 @@ FLOOR_SLACK = 1e-6
 # enormous against the order-one slack rows, so the line search recoils.
 RECOIL_SLACK = 1e3
 
+# A member is governed by every case within this distance of its worst:
+# mirror-paired cases tie exactly on self-mirrored members, and splitting a
+# tie by index order would misreport a symmetric design as lopsided.
+TIE_MARGIN = 1e-9
+
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 # Both routes compile a gradient and a Jacobian program; the persistent cache
@@ -150,11 +155,18 @@ class LoadConfig(NamedTuple):
         Fraction of the total the midspan point case concentrates. The one
         case exempt from the shared total: a lone wheel is not the whole
         deck, and at the full total it governs nearly every member.
+    mirrored_case :
+        Whether the mirrored half-span case is built. On a fully folded
+        problem its constraint rows duplicate the other half-span case's
+        through the mirror, so deleting it buys a quarter of every analysis
+        without moving the optimum; on an unfolded problem it is what keeps
+        the unloaded half honest, and the parse refuses to drop it.
     """
 
     total: float
     half_factor: float
     point_factor: float
+    mirrored_case: bool
 
 
 class SketchConfig(NamedTuple):
@@ -233,8 +245,13 @@ class DescentConfig(NamedTuple):
     limit_rise :
         Whether any vertex is kept under the rise ceiling.
     rise_factor :
-        The ceiling, as a multiple of the drawn depth. The sag stays free:
-        this is a lid on how tall the truss may grow, not a box around it.
+        The ceiling, as a multiple of the drawn depth.
+    limit_sag :
+        Whether any vertex is kept above the sag floor.
+    sag_factor :
+        The floor, as a multiple of the drawn depth below zero: at 1.0 on a
+        1000 mm truss no vertex may hang under -1000 mm — the mirror of the
+        ceiling on the other side of the supports.
     """
 
     iterations: int
@@ -244,6 +261,8 @@ class DescentConfig(NamedTuple):
     length_floor: float
     limit_rise: bool
     rise_factor: float
+    limit_sag: bool
+    sag_factor: float
 
 
 class TaskConfig(NamedTuple):
@@ -316,8 +335,39 @@ def parse_config(text: str) -> TaskConfig:
             f"length_floor must be at least half the depth, {shallowest}, "
             f"got {config.descent.length_floor}"
         )
+    if not config.loads.mirrored_case and not config.subspace.symmetric:
+        raise ValueError(
+            "the mirrored half-span case can only be deleted from a symmetric"
+            " problem — set symmetric: true, or keep mirrored_case: true"
+        )
 
     return config
+
+
+class MirrorFolding(NamedTuple):
+    """
+    Pattern matrices folding the mirror into the searched variables.
+
+    Attributes
+    ----------
+    diameters :
+        One column per mirror orbit of members, or None to size every member
+        independently.
+    heights :
+        One column per mirror orbit of free nodes, or None to move every
+        height independently.
+
+    Notes
+    -----
+    The symmetric switch folds the whole problem, not just the density
+    basis: a pattern variable is the shared value of its orbit, expanding is
+    one matmul, and every route then searches a mirror-symmetric design
+    space. With the switch off both matrices are None and the routes run on
+    the full variables, untouched.
+    """
+
+    diameters: Float[Array, "edges patterns_diameter"] | None
+    heights: Float[Array, "nodes_free patterns_height"] | None
 
 
 class RouteProblem(NamedTuple):
@@ -336,6 +386,11 @@ class RouteProblem(NamedTuple):
     loads :
         The case the shape answers to, and the cases every route is checked
         against.
+    case_names :
+        Name of every built load case, in build order.
+    folding :
+        Pattern matrices folding the mirror into every route's variables,
+        None-valued when the search is not symmetric.
     edges_mirrored :
         The member the midspan mirror carries each member onto.
     nodes_free :
@@ -347,6 +402,8 @@ class RouteProblem(NamedTuple):
     structure: Structure
     pipeline: StructuralDesignPipeline
     loads: LoadCases
+    case_names: tuple[str, ...]
+    folding: MirrorFolding
     edges_mirrored: Int[np.ndarray, "edges"]
     nodes_free: Int[Array, "nodes_free"]
     diameters_seed: Float[Array, "edges"]
@@ -426,6 +483,113 @@ class ChordSigns(NamedTuple):
     chords: Int[np.ndarray, "chords"]
     margin: float
     scale: float
+
+
+def folding_matrix(
+    mirrors: Int[np.ndarray, "items"],
+) -> Float[np.ndarray, "items patterns"]:
+    """
+    One column per mirror orbit, carrying each of its members at one.
+
+    Parameters
+    ----------
+    mirrors :
+        The item the mirror carries each item onto.
+
+    Returns
+    -------
+    spread :
+        Matrix expanding one value per orbit into a full, symmetric vector.
+    """
+    columns = []
+    seen = set()
+    for index, partner in enumerate(mirrors.tolist()):
+        if index in seen:
+            continue
+        column = np.zeros(mirrors.size)
+        column[index] = 1.0
+        column[partner] = 1.0
+        columns.append(column)
+        seen.add(index)
+        seen.add(partner)
+
+    return np.stack(columns, axis=1)
+
+
+def folded_seed(
+    values: Float[np.ndarray, "items"],
+    spread: Float[Array, "items patterns"] | None,
+) -> Float[np.ndarray, "patterns"]:
+    """
+    Fold a full seed vector into one value per mirror orbit.
+
+    Parameters
+    ----------
+    values :
+        The full seed, one value per item.
+    spread :
+        The orbit columns, or None to keep the seed as it is.
+
+    Returns
+    -------
+    seed :
+        The largest value of each orbit — an envelope, so a folded diameter
+        seed still covers both members it now sizes at once.
+    """
+    if spread is None:
+        return values
+
+    columns = np.asarray(spread).T
+    folded = [float(values[column > 0.0].max()) for column in columns]
+
+    return np.asarray(folded)
+
+
+def unfolded_values(
+    values: Float[np.ndarray, "patterns"],
+    spread: Float[Array, "items patterns"] | None,
+) -> Float[np.ndarray, "items"]:
+    """
+    Expand pattern values back into one value per item.
+
+    Parameters
+    ----------
+    values :
+        One value per mirror orbit.
+    spread :
+        The orbit columns, or None when the values are already full.
+
+    Returns
+    -------
+    expanded :
+        The full vector, orbit members carrying their shared value.
+    """
+    if spread is None:
+        return values
+
+    return np.asarray(spread) @ values
+
+
+def pattern_count(spread: Float[Array, "items patterns"] | None, full: int) -> int:
+    """
+    How many variables a folded block searches.
+
+    Parameters
+    ----------
+    spread :
+        The orbit columns, or None when the block is not folded.
+    full :
+        The unfolded count.
+
+    Returns
+    -------
+    count :
+        One per orbit when folded, the full count otherwise.
+    """
+    if spread is None:
+        return full
+
+    return int(spread.shape[1])
 
 
 class StartMeasures(NamedTuple):
@@ -510,8 +674,9 @@ class RouteRead(NamedTuple):
         Outer diameter of every member.
     utilization :
         Worst utilization of every member over the load cases.
-    governing :
-        Index of the load case working each member hardest.
+    utilization_cases :
+        Utilization of every member under every load case, the table every
+        governing count is read from.
     active :
         Count of members whose envelope utilization sits at one.
     floored :
@@ -526,7 +691,7 @@ class RouteRead(NamedTuple):
     sag: float
     diameters: Float[np.ndarray, "edges"]
     utilization: Float[np.ndarray, "edges"]
-    governing: Int[np.ndarray, "edges"]
+    utilization_cases: Float[np.ndarray, "cases edges"]
     active: int
     floored: int
     mirror: float
@@ -581,12 +746,34 @@ def build_load_cases(
 
     uniform = deck_case(np.ones(interior.size))
     near = deck_case(np.where(along <= middle, 1.0, weight.half_factor))
-    far = deck_case(np.where(along >= middle, 1.0, weight.half_factor))
     concentrated = weight.total * weight.point_factor
     point = loads_point(structure, concentrated, node=num_bays // 2)
-    cases = [uniform, near, far, point]
+    cases = [uniform, near, point]
+    if weight.mirrored_case:
+        far = deck_case(np.where(along >= middle, 1.0, weight.half_factor))
+        cases.insert(2, far)
 
     return assemble_load_cases(cases)
+
+
+def load_names(weight: LoadConfig) -> tuple[str, ...]:
+    """
+    Name of every load case built, in build order.
+
+    Parameters
+    ----------
+    weight :
+        The load description, read for whether the mirrored case is built.
+
+    Returns
+    -------
+    names :
+        The case names, keeping their identities when one is deleted.
+    """
+    if weight.mirrored_case:
+        return CASE_NAMES
+
+    return (CASE_NAMES[0], CASE_NAMES[1], CASE_NAMES[3])
 
 
 def lens_geometry(
@@ -763,12 +950,25 @@ def prepare_problem(
     frees = np.setdiff1d(everyone, np.asarray(structure.supports))
     nodes_free = jnp.asarray(frees)
 
+    if config.subspace.symmetric:
+        positions = {int(node): place for place, node in enumerate(frees.tolist())}
+        partners = [positions[int(nodes_mirrored[node])] for node in frees.tolist()]
+        spread_diameters = folding_matrix(edges_mirrored)
+        spread_heights = folding_matrix(np.asarray(partners))
+        folding = MirrorFolding(
+            jnp.asarray(spread_diameters), jnp.asarray(spread_heights)
+        )
+    else:
+        folding = MirrorFolding(None, None)
+
     diameters_seed = jnp.full(structure.num_edges, config.analysis.diameter)
 
     problem = RouteProblem(
         structure,
         blocks,
         loads,
+        load_names(config.loads),
+        folding,
         edges_mirrored,
         nodes_free,
         diameters_seed,
@@ -777,48 +977,77 @@ def prepare_problem(
     return problem
 
 
-def rise_ceiling(budget: DescentConfig, depth: float) -> float | None:
+class HeightTruss(NamedTuple):
     """
-    The height no vertex may rise above, or None when the rise stays free.
+    The ceiling and the floor the shaped routes keep their heights inside.
+
+    Attributes
+    ----------
+    ceiling :
+        Height no vertex may rise above, or None to leave the rise free.
+    floor :
+        Height no vertex may hang under, or None to leave the sag free.
+
+    Notes
+    -----
+    Each limit travels the way a route can carry it: a box bound where the
+    heights are variables, one normalized inequality row per free node where
+    they are outputs of the form finder. Neither is a box around the truss —
+    either side may be off on its own.
+    """
+
+    ceiling: float | None
+    floor: float | None
+
+
+def height_truss(budget: DescentConfig, depth: float) -> HeightTruss:
+    """
+    The height limits a run keeps its trusses inside, read from the budgets.
 
     Parameters
     ----------
     budget :
-        The budgets, read for the switch and the factor.
+        The budgets, read for the switches and the factors.
     depth :
-        The drawn depth the ceiling is a multiple of.
+        The drawn depth both limits are multiples of.
 
     Returns
     -------
-    ceiling :
-        The lid on the truss's height, or None with the switch off.
+    limits :
+        The ceiling above and the floor below, None where a side is off.
     """
     if budget.limit_rise:
-        return budget.rise_factor * depth
+        ceiling = budget.rise_factor * depth
+    else:
+        ceiling = None
+    if budget.limit_sag:
+        floor = -budget.sag_factor * depth
+    else:
+        floor = None
 
-    return None
+    return HeightTruss(ceiling, floor)
 
 
-def ceiling_label(ceiling: float | None, factor: float) -> str:
+def limit_label(limit: float | None, factor: float) -> str:
     """
-    The rise ceiling spelled for a report entry.
+    One height limit spelled for a report entry.
 
     Parameters
     ----------
-    ceiling :
-        The lid on the truss's height, or None when the rise stays free.
+    limit :
+        The limit's height, or None when that side is free.
     factor :
-        The ceiling as a multiple of the drawn depth.
+        The limit as a multiple of the drawn depth.
 
     Returns
     -------
     label :
-        The ceiling in millimeters and as its multiple, or `off`.
+        The limit in millimeters and as its multiple, or `off`.
     """
-    if ceiling is None:
+    if limit is None:
         return "off"
 
-    return f"{ceiling:.0f} mm, {factor:g}x the drawn depth"
+    return f"{limit:.0f} mm, {factor:g}x the drawn depth"
 
 
 def envelope_diameters(
@@ -864,7 +1093,8 @@ def envelope_diameters(
 
 def formfound_maps(
     problem: RouteProblem,
-    ceiling: float | None,
+    limits: HeightTruss,
+    length_floor: float,
     chord_signs: ChordSigns | None,
 ) -> RouteMaps:
     """
@@ -874,8 +1104,11 @@ def formfound_maps(
     ----------
     problem :
         The prepared truss.
-    ceiling :
-        Height no vertex may rise above, or None to leave the rise free.
+    limits :
+        The ceiling and the floor no vertex may leave.
+    length_floor :
+        Smallest length any member may keep, entering as inequality rows for
+        the members whose held plan projection is under it.
     chord_signs :
         Signs the chord densities must keep, or None when the subspace has
         no degenerate states worth guarding.
@@ -895,33 +1128,53 @@ def formfound_maps(
     bound on funicularity.
 
     Here a height is an output of the form finder rather than a variable, so
-    the rise ceiling enters as one inequality row per free node — normalized
-    by the ceiling, so it sits at the utilization rows' scale — where the
-    free-heights route can carry the same wall as a plain box bound. The
-    chord signs enter the same way, one linear row per chord member.
+    both height limits enter as one inequality row per free node — normalized
+    by the limit, so they sit at the utilization rows' scale — where the
+    free-heights route carries the same limits as plain box bounds. The
+    chord signs enter the same way, one linear row per chord member, and so
+    does the length floor: the signed funicular tends to keep members long
+    on its own, but that is a tendency, and the floor makes it a constraint
+    on the same members the free-heights route guards.
     """
     formfinder = problem.pipeline.formfinder
     analyzer = problem.pipeline.analyzer
     sizer = problem.pipeline.sizer
     family = sizer.family
     width = int(formfinder.basis.shape[1])
+    spread = problem.folding.diameters
+
+    plan = np.asarray(problem.structure.nodes)[:, :2]
+    edges = np.asarray(problem.structure.edges)
+    spans_plan = np.linalg.norm(plan[edges[:, 1]] - plan[edges[:, 0]], axis=1)
+    collapsible = np.flatnonzero(spans_plan < length_floor)
+
+    def sized_members(x: Float[Array, "variables"]) -> Float[Array, "edges"]:
+        if spread is None:
+            return x[width:]
+        return spread @ x[width:]
 
     def weigh(x: Float[Array, "variables"]) -> Float[Array, ""]:
         shape = formfinder(x[:width], problem.loads.formfinding)
-        sections = family(x[width:])
+        sections = family(sized_members(x))
         mass = jnp.sum(sections.area * shape.lengths) * family.material.density
 
         return mass
 
     def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
-        diameters = x[width:]
+        diameters = sized_members(x)
         shape = formfinder(x[:width], problem.loads.formfinding)
         forces = analyzer(shape.xyz, diameters, problem.loads.analysis)
         used = sizer.compute_utilization(diameters, forces, shape.lengths)
         rows = [1.0 - used.ravel()]
-        if ceiling is not None:
+        if limits.ceiling is not None:
             heights = shape.xyz[problem.nodes_free, 2]
-            rows.append((ceiling - heights) / ceiling)
+            rows.append((limits.ceiling - heights) / limits.ceiling)
+        if limits.floor is not None:
+            heights = shape.xyz[problem.nodes_free, 2]
+            rows.append((heights - limits.floor) / -limits.floor)
+        if collapsible.size:
+            exposed = shape.lengths[collapsible]
+            rows.append((exposed - length_floor) / length_floor)
         if chord_signs is not None:
             q = formfinder.member_densities(x[:width])
             signed = chord_signs.signs * q[chord_signs.chords]
@@ -974,12 +1227,24 @@ def heights_maps(problem: RouteProblem, length_floor: float) -> RouteMaps:
     analyzer = problem.pipeline.analyzer
     sizer = problem.pipeline.sizer
     family = sizer.family
-    count = int(problem.nodes_free.shape[0])
+    spread_heights = problem.folding.heights
+    spread_diameters = problem.folding.diameters
+    count = pattern_count(spread_heights, int(problem.nodes_free.shape[0]))
 
     plan = np.asarray(problem.structure.nodes)[:, :2]
     edges = np.asarray(problem.structure.edges)
     spans_plan = np.linalg.norm(plan[edges[:, 1]] - plan[edges[:, 0]], axis=1)
     collapsible = np.flatnonzero(spans_plan < length_floor)
+
+    def free_heights(x: Float[Array, "variables"]) -> Float[Array, "nodes_free"]:
+        if spread_heights is None:
+            return x[:count]
+        return spread_heights @ x[:count]
+
+    def sized_members(x: Float[Array, "variables"]) -> Float[Array, "edges"]:
+        if spread_diameters is None:
+            return x[count:]
+        return spread_diameters @ x[count:]
 
     def written_shape(heights: Float[Array, "nodes_free"]) -> FormFoundShape:
         xyz = problem.structure.nodes.at[problem.nodes_free, 2].set(heights)
@@ -988,14 +1253,14 @@ def heights_maps(problem: RouteProblem, length_floor: float) -> RouteMaps:
         return FormFoundShape(xyz, lengths)
 
     def weigh(x: Float[Array, "variables"]) -> Float[Array, ""]:
-        shape = written_shape(x[:count])
-        sections = family(x[count:])
+        shape = written_shape(free_heights(x))
+        sections = family(sized_members(x))
 
         return jnp.sum(sections.area * shape.lengths) * family.material.density
 
     def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
-        shape = written_shape(x[:count])
-        diameters = x[count:]
+        shape = written_shape(free_heights(x))
+        diameters = sized_members(x)
         forces = analyzer(shape.xyz, diameters, problem.loads.analysis)
         used = sizer.compute_utilization(diameters, forces, shape.lengths)
         rows = [1.0 - used.ravel()]
@@ -1033,13 +1298,20 @@ def drawn_maps(problem: RouteProblem) -> RouteMaps:
     family = sizer.family
     xyz = problem.structure.nodes
     lengths = member_lengths(xyz, problem.structure.edges)
+    spread = problem.folding.diameters
 
-    def weigh(diameters: Float[Array, "edges"]) -> Float[Array, ""]:
-        sections = family(diameters)
+    def sized_members(x: Float[Array, "variables"]) -> Float[Array, "edges"]:
+        if spread is None:
+            return x
+        return spread @ x
+
+    def weigh(x: Float[Array, "variables"]) -> Float[Array, ""]:
+        sections = family(sized_members(x))
 
         return jnp.sum(sections.area * lengths) * family.material.density
 
-    def slack(diameters: Float[Array, "edges"]) -> Float[Array, "constraints"]:
+    def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
+        diameters = sized_members(x)
         forces = analyzer(xyz, diameters, problem.loads.analysis)
         used = sizer.compute_utilization(diameters, forces, lengths)
 
@@ -1056,7 +1328,7 @@ def drawn_maps(problem: RouteProblem) -> RouteMaps:
 
 def route_maps(
     problem: RouteProblem,
-    ceiling: float | None,
+    limits: HeightTruss,
     length_floor: float,
     chord_signs: ChordSigns | None = None,
 ) -> dict[str, RouteMaps]:
@@ -1067,10 +1339,10 @@ def route_maps(
     ----------
     problem :
         The prepared truss.
-    ceiling :
-        Height no vertex may rise above, or None to leave the rise free.
+    limits :
+        The ceiling and the floor no vertex may leave.
     length_floor :
-        Smallest length the free-heights route may draw any member at.
+        Smallest length the shaped routes may draw any member at.
     chord_signs :
         Signs the end-to-end chord densities must keep, or None for none.
 
@@ -1080,7 +1352,7 @@ def route_maps(
         The three routes' maps, in the shared route names.
     """
     maps = {
-        ROUTE_FORMFOUND: formfound_maps(problem, ceiling, chord_signs),
+        ROUTE_FORMFOUND: formfound_maps(problem, limits, length_floor, chord_signs),
         ROUTE_HEIGHTS: heights_maps(problem, length_floor),
         ROUTE_DRAWN: drawn_maps(problem),
     }
@@ -1113,11 +1385,17 @@ def route_starts(
     starts :
         The variable vectors, the two shaped routes matched to one geometry.
     """
-    d_found = envelope_diameters(problem, shape_xyz, floor)
-    d_drawn = envelope_diameters(problem, problem.structure.nodes, floor)
+    spread_diameters = problem.folding.diameters
+    spread_heights = problem.folding.heights
+
+    sized_found = envelope_diameters(problem, shape_xyz, floor)
+    sized_drawn = envelope_diameters(problem, problem.structure.nodes, floor)
+    d_found = folded_seed(sized_found, spread_diameters)
+    d_drawn = folded_seed(sized_drawn, spread_diameters)
 
     x_found = np.concatenate([start.xi, d_found])
-    z_start = np.asarray(start.lens)[np.asarray(problem.nodes_free), 2]
+    z_full = np.asarray(start.lens)[np.asarray(problem.nodes_free), 2]
+    z_start = folded_seed(z_full, spread_heights)
     x_heights = np.concatenate([z_start, d_found])
 
     starts = {
@@ -1132,7 +1410,7 @@ def route_starts(
 def route_boxes(
     problem: RouteProblem,
     floor: float,
-    ceiling: float | None,
+    limits: HeightTruss,
 ) -> dict[str, list[tuple[float | None, float | None]]]:
     """
     Every route's bound pairs, keyed by route.
@@ -1143,8 +1421,8 @@ def route_boxes(
         The prepared truss, supplying the variable counts.
     floor :
         Smallest diameter any member may take.
-    ceiling :
-        Height no free node may rise above, or None to leave the rise free.
+    limits :
+        The ceiling and the floor boxing the free-heights variables.
 
     Returns
     -------
@@ -1152,12 +1430,13 @@ def route_boxes(
         One bound pair per variable, per route.
     """
     width = int(problem.pipeline.formfinder.basis.shape[1])
-    count = int(problem.nodes_free.shape[0])
-    members = problem.structure.num_edges
+    count = pattern_count(problem.folding.heights, int(problem.nodes_free.shape[0]))
+    members = pattern_count(problem.folding.diameters, problem.structure.num_edges)
 
     boxes = {
         ROUTE_FORMFOUND: [(None, None)] * width + [(floor, None)] * members,
-        ROUTE_HEIGHTS: [(None, ceiling)] * count + [(floor, None)] * members,
+        ROUTE_HEIGHTS: [(limits.floor, limits.ceiling)] * count
+        + [(floor, None)] * members,
         ROUTE_DRAWN: [(floor, None)] * members,
     }
 
@@ -1179,8 +1458,8 @@ def route_variables(problem: RouteProblem) -> dict[str, int]:
         Geometry variables plus diameters, per route.
     """
     width = int(problem.pipeline.formfinder.basis.shape[1])
-    count = int(problem.nodes_free.shape[0])
-    members = problem.structure.num_edges
+    count = pattern_count(problem.folding.heights, int(problem.nodes_free.shape[0]))
+    members = pattern_count(problem.folding.diameters, problem.structure.num_edges)
 
     variables = {
         ROUTE_FORMFOUND: width + members,
@@ -1387,7 +1666,7 @@ def read_answer(
     mass = float(jnp.sum(sections.area * lengths) * family.material.density)
 
     utilization = np.asarray(jnp.max(used, axis=0))
-    governing = np.asarray(jnp.argmax(used, axis=0))
+    utilization_cases = np.asarray(used)
     active = int(np.sum(utilization > ACTIVE_UTILIZATION))
     floored = int(np.sum(diameters < budget.diameter_floor + FLOOR_SLACK))
 
@@ -1401,7 +1680,7 @@ def read_answer(
         float(jnp.min(jnp.asarray(xyz)[:, 2])),
         diameters,
         utilization,
-        governing,
+        utilization_cases,
         active,
         floored,
         mirror,
@@ -1433,23 +1712,29 @@ def route_reads(
         Every answer at its own geometry and sections.
     """
     width = int(problem.pipeline.formfinder.basis.shape[1])
-    count = int(problem.nodes_free.shape[0])
+    spread_heights = problem.folding.heights
+    spread_diameters = problem.folding.diameters
+    count = pattern_count(spread_heights, int(problem.nodes_free.shape[0]))
 
     xi_final = jnp.asarray(answers[ROUTE_FORMFOUND].variables[:width])
     shape_final = problem.pipeline.formfinder(xi_final, problem.loads.formfinding)
 
-    z_final = jnp.asarray(answers[ROUTE_HEIGHTS].variables[:count])
-    xyz_heights = problem.structure.nodes.at[problem.nodes_free, 2].set(z_final)
+    z_final = unfolded_values(answers[ROUTE_HEIGHTS].variables[:count], spread_heights)
+    xyz_heights = problem.structure.nodes.at[problem.nodes_free, 2].set(
+        jnp.asarray(z_final)
+    )
 
-    read_found = read_answer(
-        problem, shape_final.xyz, answers[ROUTE_FORMFOUND].variables[width:], budget
+    d_found = unfolded_values(
+        answers[ROUTE_FORMFOUND].variables[width:], spread_diameters
     )
-    read_heights = read_answer(
-        problem, xyz_heights, answers[ROUTE_HEIGHTS].variables[count:], budget
+    d_heights = unfolded_values(
+        answers[ROUTE_HEIGHTS].variables[count:], spread_diameters
     )
-    read_drawn = read_answer(
-        problem, problem.structure.nodes, answers[ROUTE_DRAWN].variables, budget
-    )
+    d_drawn = unfolded_values(answers[ROUTE_DRAWN].variables, spread_diameters)
+
+    read_found = read_answer(problem, shape_final.xyz, d_found, budget)
+    read_heights = read_answer(problem, xyz_heights, d_heights, budget)
+    read_drawn = read_answer(problem, problem.structure.nodes, d_drawn, budget)
 
     reads = {
         ROUTE_FORMFOUND: read_found,
@@ -1506,10 +1791,10 @@ def start_entries(
     problem: RouteProblem,
     start: StartPoint,
     measures: StartMeasures,
-    ceiling: float | None,
+    limits: HeightTruss,
 ) -> list[tuple[str, str]]:
     """
-    The start block's entries: the basis, the ceiling, and the seed numbers.
+    The start block's entries: the basis, the limits, and the seed numbers.
 
     Parameters
     ----------
@@ -1521,8 +1806,8 @@ def start_entries(
         The signed lens fit, read for the projection gap.
     measures :
         The seed numbers, measured before any descent has moved.
-    ceiling :
-        The lid on the truss's height, or None when the rise stays free.
+    limits :
+        The ceiling and the floor no vertex may leave.
 
     Returns
     -------
@@ -1530,14 +1815,16 @@ def start_entries(
         Label-and-value pairs, for the experiment to extend and write.
     """
     width = int(problem.pipeline.formfinder.basis.shape[1])
-    count = int(problem.nodes_free.shape[0])
+    count = pattern_count(problem.folding.heights, int(problem.nodes_free.shape[0]))
     searched = "symmetric" if config.subspace.symmetric else "full"
-    lidded = ceiling_label(ceiling, config.descent.rise_factor)
+    lidded = limit_label(limits.ceiling, config.descent.rise_factor)
+    grounded = limit_label(limits.floor, config.descent.sag_factor)
     elastic = f"{measures.disagreement:.1%} of the largest force"
 
     entries = [
         ("searched basis", f"{searched} {config.subspace.basis}"),
         ("rise ceiling", lidded),
+        ("sag floor", grounded),
         ("geometry variables, end to end", f"{width}"),
         ("geometry variables, free heights", f"{count}"),
         ("projection gap", f"{start.projection:.2e} of |q|"),
@@ -1716,7 +2003,41 @@ def report_families(
     report.write_table(columns, rows)
 
 
-def report_governing(report: Report, reads: dict[str, RouteRead]) -> None:
+def governed_counts(read: RouteRead) -> Int[np.ndarray, "cases"]:
+    """
+    How many members each load case governs, ties counted toward each case.
+
+    Parameters
+    ----------
+    read :
+        One route's answer read back, supplying the utilization table.
+
+    Returns
+    -------
+    counts :
+        Members per case, a tied member appearing under each of its cases.
+
+    Notes
+    -----
+    A member counts toward every case within the tie margin of its worst,
+    so the counts may sum past the member count. Splitting ties by index
+    order instead misreports a symmetric design: the mirror pairs the two
+    half-span cases exactly on self-mirrored members and to solver
+    precision everywhere else, and the first index would collect every
+    such coin flip.
+    """
+    table = read.utilization_cases
+    worst = table.max(axis=0)
+    tied = table >= worst[None, :] - TIE_MARGIN
+
+    return tied.sum(axis=1)
+
+
+def report_governing(
+    report: Report,
+    reads: dict[str, RouteRead],
+    names: tuple[str, ...],
+) -> None:
     """
     How many members each load case governs, per route.
 
@@ -1726,14 +2047,16 @@ def report_governing(report: Report, reads: dict[str, RouteRead]) -> None:
         Where the table is written.
     reads :
         Each route's answer read back, keyed by route.
+    names :
+        Name of every built load case, in build order.
     """
     columns = [ReportColumn("route", align="<")]
-    for name in CASE_NAMES:
+    for name in names:
         columns.append(ReportColumn(name))
 
     rows = []
     for route in ROUTE_ORDER:
-        counts = np.bincount(reads[route].governing, minlength=len(CASE_NAMES))
+        counts = governed_counts(reads[route])
         rows.append((route, *[int(count) for count in counts]))
 
     report.write_heading("Members governed, case by case")
@@ -1744,7 +2067,7 @@ def report_summary(
     report: Report,
     reads: dict[str, RouteRead],
     config: TaskConfig,
-    ceiling: float | None,
+    limits: HeightTruss,
 ) -> None:
     """
     The masses, the gaps between the routes, and the shape extremes.
@@ -1756,9 +2079,9 @@ def report_summary(
     reads :
         Each route's answer read back, keyed by route.
     config :
-        The run description, read for the drawn depth and the ceiling factor.
-    ceiling :
-        The lid on the truss's height, or None when the rise stays free.
+        The run description, read for the drawn depth and the limit factors.
+    limits :
+        The ceiling and the floor no vertex may leave.
     """
     read_found = reads[ROUTE_FORMFOUND]
     read_heights = reads[ROUTE_HEIGHTS]
@@ -1768,7 +2091,8 @@ def report_summary(
     depth_found = read_found.rise - read_found.sag
     routes_gap = read_heights.mass / read_found.mass - 1.0
     shapes_gap = float(np.abs(read_found.xyz[:, 2] - read_heights.xyz[:, 2]).max())
-    lidded = ceiling_label(ceiling, config.descent.rise_factor)
+    lidded = limit_label(limits.ceiling, config.descent.rise_factor)
+    grounded = limit_label(limits.floor, config.descent.sag_factor)
 
     entries = (
         ("mass, end to end", f"{read_found.mass:.6f} t"),
@@ -1782,6 +2106,7 @@ def report_summary(
             f"{depth_found:.0f}, drawn at {config.structure.depth:.0f}",
         ),
         ("rise ceiling", lidded),
+        ("sag floor", grounded),
         ("diameter mirror gap, end to end", f"{read_found.mirror:.2e}"),
         ("diameter mirror gap, free heights", f"{read_heights.mirror:.2e}"),
         ("diameter mirror gap, sizing only", f"{read_drawn.mirror:.2e}"),
@@ -1793,7 +2118,7 @@ def report_summary(
 def route_checks(
     reads: dict[str, RouteRead],
     answers: dict[str, RouteAnswer],
-    ceiling: float | None,
+    limits: HeightTruss,
 ) -> tuple[list[ToleranceCheck], bool]:
     """
     Every route's feasibility checks, and the converged-and-lighter verdict.
@@ -1804,13 +2129,13 @@ def route_checks(
         Each route's answer read back, keyed by route.
     answers :
         Each route's descent record, keyed by route.
-    ceiling :
-        The lid on the truss's height, or None when the rise stays free.
+    limits :
+        The ceiling and the floor no vertex may leave.
 
     Returns
     -------
     checks :
-        Constraint and rise violations, one check per route.
+        Constraint, rise and sag violations, one check per route.
     sound :
         Whether every route converged and both shaped routes beat sizing.
     """
@@ -1822,13 +2147,19 @@ def route_checks(
                 f"{route} constraint violation", violation, TOLERANCE_FEASIBILITY
             )
         )
-    if ceiling is not None:
+    if limits.ceiling is not None:
         for route in (ROUTE_FORMFOUND, ROUTE_HEIGHTS):
-            overrise = max(0.0, (reads[route].rise - ceiling) / ceiling)
+            overrise = max(0.0, (reads[route].rise - limits.ceiling) / limits.ceiling)
             checks.append(
                 ToleranceCheck(
                     f"{route} rise violation", overrise, TOLERANCE_FEASIBILITY
                 )
+            )
+    if limits.floor is not None:
+        for route in (ROUTE_FORMFOUND, ROUTE_HEIGHTS):
+            oversag = max(0.0, (limits.floor - reads[route].sag) / -limits.floor)
+            checks.append(
+                ToleranceCheck(f"{route} sag violation", oversag, TOLERANCE_FEASIBILITY)
             )
 
     converged = all(answers[route].converged for route in ROUTE_ORDER)
@@ -1865,12 +2196,16 @@ def write_figures(
     for route in ROUTE_ORDER:
         read = reads[route]
         title = f"{route} — {read.mass:.4f} t"
+        counts = governed_counts(read)
         drawn = UtilizationForm(
-            title, read.xyz, read.diameters, read.utilization, read.governing
+            title, read.xyz, read.diameters, read.utilization, counts
         )
         forms.append(drawn)
     designs = figure_utilization(
-        problem.structure.edges, forms, CASE_NAMES, reference=problem.structure.nodes
+        problem.structure.edges,
+        forms,
+        problem.case_names,
+        reference=problem.structure.nodes,
     )
     designs.savefig(FIGURES / f"{prefix}_designs.png", dpi=200, bbox_inches="tight")
 

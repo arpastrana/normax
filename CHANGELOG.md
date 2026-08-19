@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+### A sag floor mirrors the rise ceiling, and the Vierendeel defaults fold
+
+The `limit_sag`/`sag_factor` switches put a floor under every vertex at
+`sag_factor` times the drawn depth below zero — at 1.0 on a 1000 mm truss,
+nothing hangs under -1000 mm — mirroring the ceiling's mechanics exactly:
+a box bound where heights are variables, one normalized inequality row per
+free node where they are the form finder's outputs. Both limits travel as
+one `HeightTruss` container, and each shaped route carries rise and sag
+violation checks. `vierendeel_optimize.yaml` now defaults to the folded
+configuration: `symmetric: true`, `basis: pivoted`, `mirrored_case: false`.
+
+The Vierendeel's length floor also rose to the drawn vertical length —
+`length_floor: 1000.0`, so no vertical shrinks under what was drawn.
+Measured at those defaults, the end-to-end answer presses four constraint
+families at once — rise exactly 2000, sag exactly -1000, verticals exactly
+1000, chord sign margin 14.4 N/mm — landing **0.122263 t in 339
+iterations**, free heights 0.145248 t, sizing only 0.430474 t, the
+geometry buying 71.6%. The floor's price falls almost entirely on the
+funicular route: at 500 mm it landed 0.108187 t while free heights was
+already at 0.145310 t with verticals of its own choosing near 1000, so
+the drawn-length floor costs end to end a further 13.0%, costs free
+heights nothing measurable, and narrows the routes gap from +34.3% to
++18.8%. The sag floor alone had cost 1.7% (0.106355 t unfloored). The
+Warren at its defaults — 3 cases, floors and limits identical, but no
+member with a plan projection under its 500 mm floor — re-measures to
+0.062123 / 0.067785 / 0.111808 t, the geometry buying 44.4%.
+
+### The mirrored half-span case can be deleted, behind a parse gate
+
+On a fully folded problem the mirrored half-span case's constraint rows
+duplicate the other half-span case's through the mirror —
+`U_LC3(m) = U_LC2(mirror m)` to 1.6e-12 — so `loads.mirrored_case: false`
+now deletes it and buys a quarter of every analysis and Jacobian.
+`parse_config` refuses the deletion on an unfolded problem, where the case
+is what keeps the unloaded half honest. Measured on the symmetric pivoted
+Vierendeel: the end-to-end mass is identical to the last printed digit
+(0.106355 t, in 449 iterations against 530) and sizing-only is identical
+outright; free heights lands within 0.2%, a path effect of the smaller row
+count. The per-member readout is knowingly half-blind without the case —
+far-half members report their worst among the remaining cases, so
+attribution and fully-stressed counts shift while the design does not; the
+gate is the only guard, by decision.
+
+### The length floor reaches the end-to-end route, and it was not a formality
+
+The member-length floor used to guard the free-heights route alone, on the
+assumption that a signed funicular keeps its members long by itself. It
+does not: the Vierendeel's end-to-end answers were resting on verticals
+shorter than half the depth, buying mass from members the floor exists to
+forbid. The same inequality rows — emitted only for members whose held plan
+projection is under the floor — now enter the end-to-end slack, and they
+BIND: the default answer rises from 0.098845 t to **0.106362 t** with its
+shortest vertical at exactly 500 mm, the geometry now buying 75.3% instead
+of 77.0%. The Warren emits no rows on either route and reproduces
+unchanged. Both shaped routes report their shortest member beside the
+floor, and both carry a length-violation check.
+
+### The symmetric flag folds every variable now, and ties are counted fairly
+
+The `symmetric` switch used to symmetrize the density basis alone, so the
+free-heights route and every route's diameters searched unsymmetrized
+variables and their answers broke mirror symmetry at will. It now folds the
+whole problem: `MirrorFolding` in `truss_routes` carries one pattern matrix
+for the diameters (one column per mirror orbit of members) and one for the
+free heights, a pattern variable is the shared value of its orbit, and all
+three routes expand through one matmul. With the switch off both matrices
+are None and the routes reproduce their committed numbers bit for bit.
+
+- **Folding the diameters rescued the symmetric Vierendeel search.** With
+  the basis alone symmetrized, the symmetric end-to-end descent settled at
+  0.145473 t (measured before the end-to-end length floor), far above a
+  full-basis answer that is itself mirror-symmetric. Fully folded
+  (6 coordinates + 12 diameter patterns, 18 variables) and under every
+  constraint, it lands at **0.106355 t — within 7e-6 t of the full-basis
+  0.106362 t — in 530 iterations against 1478**: the symmetric and full
+  searches now agree on the design. Free heights folds to 8 + 12 = 20
+  variables and lands 0.144851 t; every mirror gap is exactly zero by
+  construction.
+- **The Warren improves too**: at its symmetric default the end-to-end
+  route lands 0.061965 t (25 variables, was 0.062026 at 40), free heights
+  0.067392 t (24, was 0.068324 at 46), and the sizing-only optimum is the
+  same 0.111808 t at 16 patterns as at 31 free diameters — the unfolded
+  answer was already symmetric to 4e-9. The earlier numbers remain
+  reproducible at their commit.
+- **The governing table counts ties toward every tied case.** The mirror
+  pairs LC2 and LC3 exactly: `U_LC2(m) = U_LC3(mirror m)` holds to 1.6e-12,
+  and a self-mirrored member — the Vierendeel's midspan vertical — ties the
+  two cases to 1.4e-12, so an argmax split by index order guaranteed odd,
+  lopsided counts (10/9 where the physics says even). A member now counts
+  toward every case within `TIE_MARGIN` of its worst, a row may sum past
+  the member count, and symmetric designs report paired columns: 12/12,
+  10/10, 11/11 on the Warren, 13/13 and 8/8 on the Vierendeel. The figure
+  follows: `UtilizationForm` now carries the counted bars (`governed`)
+  instead of per-member argmax labels, `governed_counts` feeds the table
+  and the drawing from one rule, and no argmax attribution survives
+  anywhere in the truss experiments.
+
 ### The subspace is a form finder now
 
 `SubspaceFormFinder` in `normax/form_finding/fdm.py` wraps any form finder

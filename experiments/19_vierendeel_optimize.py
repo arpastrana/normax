@@ -77,6 +77,7 @@ from truss_routes import StartPoint
 from truss_routes import TaskConfig
 from truss_routes import descend_all
 from truss_routes import force_agreement
+from truss_routes import height_truss
 from truss_routes import lens_geometry
 from truss_routes import mirrored_edges
 from truss_routes import parse_config
@@ -86,7 +87,6 @@ from truss_routes import report_governing
 from truss_routes import report_gradient
 from truss_routes import report_routes
 from truss_routes import report_summary
-from truss_routes import rise_ceiling
 from truss_routes import route_boxes
 from truss_routes import route_checks
 from truss_routes import route_maps
@@ -277,12 +277,12 @@ def main(path: Path) -> None:
     reproduction = float(jnp.max(jnp.abs(shape.xyz - jnp.asarray(start.lens))))
     disagreement = force_agreement(problem, start, shape.xyz)
 
-    ceiling = rise_ceiling(budget, config.structure.depth)
+    limits = height_truss(budget, config.structure.depth)
     signs = np.concatenate([np.ones(bays), -np.ones(bays)])
     chords = np.arange(2 * bays)
     scale = float(np.median(np.abs(start.q[chords])))
     guard = ChordSigns(signs, chords, config.subspace.margin_fraction * scale, scale)
-    maps = route_maps(problem, ceiling, budget.length_floor, guard)
+    maps = route_maps(problem, limits, budget.length_floor, guard)
     starts = route_starts(problem, start, shape.xyz, budget.diameter_floor)
     opening_found, opening_drawn = seed_openings(maps, starts)
     measures = StartMeasures(reproduction, disagreement, opening_found, opening_drawn)
@@ -291,7 +291,7 @@ def main(path: Path) -> None:
     opening = stiffness_spectrum(graph, start.q)
 
     report.write_heading("The start, and what the scarcity does to it")
-    entries = start_entries(config, problem, start, measures, ceiling)
+    entries = start_entries(config, problem, start, measures, limits)
     entries.append(("lens fit gap / total load", f"{fit_scaled:.2e}"))
     entries.append(
         (
@@ -310,22 +310,26 @@ def main(path: Path) -> None:
     best_error = max(best_found, best_heights)
 
     report.write_heading("Descending the three routes")
-    boxes = route_boxes(problem, budget.diameter_floor, ceiling)
+    boxes = route_boxes(problem, budget.diameter_floor, limits)
     answers = descend_all(report, maps, starts, boxes, budget)
 
     reads = route_reads(problem, answers, budget)
     report_routes(report, reads, answers, route_variables(problem))
     report_families(report, reads, member_families(bays))
-    report_governing(report, reads)
+    report_governing(report, reads, problem.case_names)
 
     width = int(finder.basis.shape[1])
     q_final = np.asarray(finder.basis) @ answers[ROUTE_FORMFOUND].variables[:width]
     landing = stiffness_spectrum(graph, q_final)
     signed_final = float(np.min(signs * q_final[chords]))
 
+    xyz_found = jnp.asarray(reads[ROUTE_FORMFOUND].xyz)
+    lengths_found = member_lengths(xyz_found, problem.structure.edges)
+    shortest_found = float(jnp.min(lengths_found))
+
     xyz_heights = jnp.asarray(reads[ROUTE_HEIGHTS].xyz)
     lengths_heights = member_lengths(xyz_heights, problem.structure.edges)
-    shortest = float(jnp.min(lengths_heights))
+    shortest_heights = float(jnp.min(lengths_heights))
 
     report.write_heading("The degeneracies, watched at the answers")
     entries = (
@@ -344,13 +348,17 @@ def main(path: Path) -> None:
             f"{signed_final:.1f} against the {guard.margin:.1f} margin",
         ),
         (
+            "shortest member, end to end [mm]",
+            f"{shortest_found:.0f} against the {budget.length_floor:.0f} floor",
+        ),
+        (
             "shortest member, free heights [mm]",
-            f"{shortest:.0f} against the {budget.length_floor:.0f} floor",
+            f"{shortest_heights:.0f} against the {budget.length_floor:.0f} floor",
         ),
     )
     report.write_entries(entries)
 
-    report_summary(report, reads, config, ceiling)
+    report_summary(report, reads, config, limits)
 
     write_figures(problem, reads, answers, "19_vierendeel")
     report.write_heading(f"figures written to {FIGURES}")
@@ -365,13 +373,20 @@ def main(path: Path) -> None:
     checks.append(
         ToleranceCheck("chord sign violation", undersign, TOLERANCE_FEASIBILITY)
     )
-    undershort = max(0.0, (budget.length_floor - shortest) / budget.length_floor)
+    floor = budget.length_floor
+    undershort_found = max(0.0, (floor - shortest_found) / floor)
     checks.append(
         ToleranceCheck(
-            "free heights length violation", undershort, TOLERANCE_FEASIBILITY
+            "end to end length violation", undershort_found, TOLERANCE_FEASIBILITY
         )
     )
-    routed, sound = route_checks(reads, answers, ceiling)
+    undershort_heights = max(0.0, (floor - shortest_heights) / floor)
+    checks.append(
+        ToleranceCheck(
+            "free heights length violation", undershort_heights, TOLERANCE_FEASIBILITY
+        )
+    )
+    routed, sound = route_checks(reads, answers, limits)
     checks.extend(routed)
     passed = checks_passed(tuple(checks)) and sound
 

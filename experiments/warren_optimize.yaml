@@ -8,6 +8,7 @@ loads:
   total: 180000.0
   half_factor: 0.5
   point_factor: 0.5
+  mirrored_case: false
 
 sketch:
   sag_lens: 600.0
@@ -29,3 +30,5 @@ descent:
   length_floor: 500.0
   limit_rise: true
   rise_factor: 2.0
+  limit_sag: true
+  sag_factor: 1.0

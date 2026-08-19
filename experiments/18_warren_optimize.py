@@ -54,11 +54,12 @@ the simultaneous formulation holds the coupling inside the gradient, so
 neither survives to the answers.
 
 The YAML's `limit_rise` switch puts a lid on how tall either shaped route may
-grow: no vertex above `rise_factor` times the drawn depth. The free-heights
-route carries the lid as a box bound on its own variables; the end-to-end
-route, whose heights are outputs of the form finder, carries it as one
-normalized inequality row per free node. The sag stays free either way — it
-is a ceiling, not a box — and the sizing-only route never notices it.
+grow — no vertex above `rise_factor` times the drawn depth — and `limit_sag`
+mirrors it below: no vertex under `sag_factor` times the depth. The
+free-heights route carries both as box bounds on its own variables; the
+end-to-end route, whose heights are outputs of the form finder, carries each
+as one normalized inequality row per free node. The sizing-only route never
+notices either.
 
 The descents restart until quiet: SLSQP is rerun from its own answer until a
 round no longer moves, each restart refreshing the quadratic model. The two
@@ -89,6 +90,7 @@ from truss_routes import StartPoint
 from truss_routes import TaskConfig
 from truss_routes import descend_all
 from truss_routes import force_agreement
+from truss_routes import height_truss
 from truss_routes import lens_geometry
 from truss_routes import mirrored_edges
 from truss_routes import parse_config
@@ -98,7 +100,6 @@ from truss_routes import report_governing
 from truss_routes import report_gradient
 from truss_routes import report_routes
 from truss_routes import report_summary
-from truss_routes import rise_ceiling
 from truss_routes import route_boxes
 from truss_routes import route_checks
 from truss_routes import route_maps
@@ -229,14 +230,14 @@ def main(path: Path) -> None:
     reproduction = float(jnp.max(jnp.abs(shape.xyz - jnp.asarray(start.lens))))
     disagreement = force_agreement(problem, start, shape.xyz)
 
-    ceiling = rise_ceiling(budget, config.structure.depth)
-    maps = route_maps(problem, ceiling, budget.length_floor)
+    limits = height_truss(budget, config.structure.depth)
+    maps = route_maps(problem, limits, budget.length_floor)
     starts = route_starts(problem, start, shape.xyz, budget.diameter_floor)
     opening_found, opening_drawn = seed_openings(maps, starts)
     measures = StartMeasures(reproduction, disagreement, opening_found, opening_drawn)
 
     report.write_heading("The start, and what the indeterminacy does to it")
-    entries = start_entries(config, problem, start, measures, ceiling)
+    entries = start_entries(config, problem, start, measures, limits)
     report.write_entries(tuple(entries))
 
     best_found = report_gradient(
@@ -248,14 +249,14 @@ def main(path: Path) -> None:
     best_error = max(best_found, best_heights)
 
     report.write_heading("Descending the three routes")
-    boxes = route_boxes(problem, budget.diameter_floor, ceiling)
+    boxes = route_boxes(problem, budget.diameter_floor, limits)
     answers = descend_all(report, maps, starts, boxes, budget)
 
     reads = route_reads(problem, answers, budget)
     report_routes(report, reads, answers, route_variables(problem))
     report_families(report, reads, member_families(bays))
-    report_governing(report, reads)
-    report_summary(report, reads, config, ceiling)
+    report_governing(report, reads, problem.case_names)
+    report_summary(report, reads, config, limits)
 
     write_figures(problem, reads, answers, "18_warren")
     report.write_heading(f"figures written to {FIGURES}")
@@ -265,7 +266,7 @@ def main(path: Path) -> None:
         ToleranceCheck("projection gap", start.projection, TOLERANCE_PROJECTION),
         ToleranceCheck("lens reproduction [mm]", reproduction, TOLERANCE_SHAPE),
     ]
-    routed, sound = route_checks(reads, answers, ceiling)
+    routed, sound = route_checks(reads, answers, limits)
     checks.extend(routed)
     passed = checks_passed(tuple(checks)) and sound
 
