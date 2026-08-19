@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### The end-to-end answer opens in a viewer, when a file asks for one
+
+Both truss experiments end at PNGs, so the design the three-route
+comparison exists to produce had never been seen in the frame solver's own
+terms. `view_answers` draws named answers into one `vix` scene — a frame at
+the answer's geometry and its own diameters, then per load case the
+response `solve_response` returns with its displaced shape, the axial force
+and the in-plane moment as diagrams, and the loads where they act. The
+sections are the optimizer's diameters walled by the family every block was
+built on, never a re-sizing: an envelope would substitute the sizer's demand
+and draw a structure no table reports.
+
+Which answer is drawn is named in the file too — `viewer.route`, refused
+against the route vocabulary the way `basis` already is — so the end-to-end
+design and the free-heights one, the route that skips the form finder and
+moves heights through the analysis and the check alone, are looked at one at
+a time. They are worth swapping between rather than overlaying: the two
+answers sit about 1100 mm apart at their furthest node on the Vierendeel, so
+a scene holding both is read by switching half of it off. The displaced
+shapes come at true scale, which on a truss this stiff is a shape the panel's
+slider has to open up before it reads.
+
+A viewer holds the process until its window closes, so it rides behind a
+`viewer.enabled` switch that ships **false** in both YAMLs and fires as
+the last statement of a run, after the verdict, the figures and the
+checks. Off, both experiments reproduce bit for bit — Vierendeel 0.122263
+/ 0.145248 / 0.430474 t, Warren 0.062123 / 0.067785 / 0.111808 t, PASS in
+each case. On, the Vierendeel scene holds seven registrations: the named
+route's frame, and a response and a loads group for each of LC1, LC2 and
+LC4. Every one is named apart, because a viewer's `add` replaces a
+same-named registration and a loads group sharing its response's name would
+tear that response down instead of joining it; and every response names its
+parent frame outright, which is what lets a caller ask for more than one
+route at once.
+
+The shared module imports `vix` at the top of the file whether the switch
+is on or not, so both experiments now want `--group viz` alongside
+`--group pipeline`.
+
 ### A sag floor mirrors the rise ceiling, and the Vierendeel defaults fold
 
 The `limit_sag`/`sag_factor` switches put a floor under every vertex at

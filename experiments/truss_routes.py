@@ -29,19 +29,24 @@ signed. Everything here is topology-blind — it reads the truss through a
 `RouteProblem` and the run description through a `TaskConfig`.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import vix
 import yaml
+from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
 from scipy.optimize import minimize
+from smax import LoadCase
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis.smax import frame_model
 from normax.design import Design
 from normax.design import StructuralDesignPipeline
 from normax.design import design_envelope
@@ -49,6 +54,7 @@ from normax.form_finding import FormFoundShape
 from normax.form_finding.fdm import FdmFormFinder
 from normax.form_finding.fdm import SubspaceFormFinder
 from normax.form_finding.fdm import density_basis
+from normax.form_finding.fdm import equilibrium_graph
 from normax.form_finding.fdm import pivoted_basis
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
@@ -57,6 +63,7 @@ from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
+from normax.reporting import checks_passed
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
@@ -86,6 +93,9 @@ TOLERANCE_FEASIBILITY = 1e-6
 # exactly the full form-finding solve reproduces the drawn lens from them.
 TOLERANCE_PROJECTION = 1e-9
 TOLERANCE_SHAPE = 1e-8
+
+# How exactly the start's density fit balances the lens, scaled by the load.
+TOLERANCE_FIT = 1e-11
 
 # A member is counted fully stressed above this envelope utilization, and
 # counted at the floor within this distance of the bound.
@@ -118,6 +128,10 @@ ROUTE_FORMFOUND = "end to end"
 ROUTE_HEIGHTS = "free heights"
 ROUTE_DRAWN = "sizing only"
 ROUTE_ORDER = (ROUTE_FORMFOUND, ROUTE_HEIGHTS, ROUTE_DRAWN)
+
+# The truss is planar in XZ, so the axial force and the moment about y are
+# the whole of what a member carries.
+FORCE_DIAGRAMS = ("nx", "my")
 
 
 class TrussConfig(NamedTuple):
@@ -265,6 +279,31 @@ class DescentConfig(NamedTuple):
     sag_factor: float
 
 
+class ViewerConfig(NamedTuple):
+    """
+    Whether the run ends in a viewer, and which answer it draws there.
+
+    Attributes
+    ----------
+    enabled :
+        Whether an answer is opened in a viewer once the report is written.
+    route :
+        Which route's answer to draw, named as the routes are named.
+
+    Notes
+    -----
+    Off by every shipped file, because a viewer blocks until its window closes
+    and a run that stalls is one a sweep cannot make.
+
+    One route rather than a set of them: two answers occupy nearly the same
+    space, so a scene holding both is read by switching halves of it off, and
+    naming the one wanted is the shorter way to the same look.
+    """
+
+    enabled: bool
+    route: str
+
+
 class TaskConfig(NamedTuple):
     """
     Everything a run is described by.
@@ -283,6 +322,8 @@ class TaskConfig(NamedTuple):
         What the frame is seeded with.
     descent :
         The budgets the searches share.
+    viewer :
+        Whether the run ends in a viewer.
     """
 
     structure: TrussConfig
@@ -291,6 +332,7 @@ class TaskConfig(NamedTuple):
     subspace: SubspaceConfig
     analysis: AnalysisConfig
     descent: DescentConfig
+    viewer: ViewerConfig
 
 
 def parse_config(text: str) -> TaskConfig:
@@ -326,9 +368,15 @@ def parse_config(text: str) -> TaskConfig:
         subspace=SubspaceConfig(**document["subspace"]),
         analysis=AnalysisConfig(**document["analysis"]),
         descent=DescentConfig(**document["descent"]),
+        viewer=ViewerConfig(**document["viewer"]),
     )
     if config.subspace.basis not in ("svd", "pivoted"):
         raise ValueError(f"basis must be svd or pivoted, got {config.subspace.basis}")
+    if config.viewer.route not in ROUTE_ORDER:
+        named = ", ".join(ROUTE_ORDER)
+        raise ValueError(
+            f"viewer route must be one of {named}, got {config.viewer.route}"
+        )
     shallowest = 0.5 * config.structure.depth
     if config.descent.length_floor < shallowest:
         raise ValueError(
@@ -2216,3 +2264,336 @@ def write_figures(
     )
     descents = figure_mass_descent(traces)
     descents.savefig(FIGURES / f"{prefix}_descent.png", dpi=200, bbox_inches="tight")
+
+
+def view_answers(
+    problem: RouteProblem,
+    reads: dict[str, RouteRead],
+    routes: tuple[str, ...],
+) -> None:
+    """
+    Open named answers in a viewer, in the frame solver's own terms.
+
+    Parameters
+    ----------
+    problem :
+        The prepared truss, supplying the connectivity, the blocks and the
+        load cases every answer is drawn under.
+    reads :
+        Each route's answer read back, keyed by route.
+    routes :
+        Which routes to draw, each appearing under its own name.
+
+    Notes
+    -----
+    The sections are the answer's own diameters walled by the family every
+    block was built on, not a re-sizing: an envelope would replace them with
+    the sizer's demand and draw a structure the report never mentioned.
+
+    Each response comes from `SmaxAnalyzer.solve_response`, the same injected
+    assembly and solve the member forces were read from, so the diagrams are
+    the analysis rather than a retelling.
+
+    Each response carries its displaced shape at true scale, which on a stiff
+    truss is a shape a slider has to open up rather than one that reads off the
+    screen unaided.
+
+    Every registration is named apart. A viewer's `add` replaces a same-named
+    one, so a loads group sharing its response's name would tear that response
+    down instead of joining it. Each response also names its parent outright,
+    which is required rather than tidy: the routes share a scene, so the frame
+    a response belongs to is ambiguous otherwise.
+
+    The caller names the routes, one or several. Several share a scene and
+    nearly a location, so they are told apart by switching frames off from the
+    panel rather than by looking.
+
+    Support reactions are asked for by name and refused, so a design is read
+    by what its members carry rather than by what its supports push back. The
+    viewer registers the glyphs whatever it is told and only draws them when
+    asked, so this pins the answer rather than skipping the work.
+
+    Blocks until the window closes.
+    """
+    viewer = vix.Viewer(show_reactions=False)
+
+    for route in routes:
+        read = reads[route]
+        xyz = jnp.asarray(read.xyz)
+        sections = problem.pipeline.sizer.family(jnp.asarray(read.diameters))
+        frame = frame_model(problem.structure, xyz, sections)
+        viewer.add(frame, name=route)
+
+        for index, case_name in enumerate(problem.case_names):
+            load_case = problem.loads.analysis[index]
+            response = problem.pipeline.analyzer.solve_response(
+                xyz,
+                sections.diameter,
+                load_case,
+            )
+            viewer.add(
+                response,
+                name=f"{route} — {case_name}",
+                structure=route,
+                show_deformation=True,
+                show_forces=FORCE_DIAGRAMS,
+            )
+
+            applied = LoadCase.from_array(load_case, frame)
+            viewer.add(
+                applied,
+                name=f"{route} — {case_name} — loads",
+                structure=route,
+            )
+
+    viewer.show()
+
+
+class StiffnessSpectrum(NamedTuple):
+    """
+    The vertical stiffness the form finder solves, read at one density vector.
+
+    Attributes
+    ----------
+    negatives :
+        Count of negative eigenvalues — mixed member signs, not a defect.
+    size :
+        Count of eigenvalues, one per free node.
+    condition :
+        Ratio of the largest eigenvalue magnitude to the smallest. Explodes
+        when the densities approach a degenerate state.
+    """
+
+    negatives: int
+    size: int
+    condition: float
+
+
+def stiffness_spectrum(
+    graph: EquilibriumStructure,
+    q: Float[np.ndarray, "edges"],
+) -> StiffnessSpectrum:
+    """
+    Sign count and conditioning of the vertical stiffness at one density.
+
+    Parameters
+    ----------
+    graph :
+        The form-finding connectivity.
+    q :
+        Force density of every edge.
+
+    Returns
+    -------
+    spectrum :
+        The negative-eigenvalue count and the condition number.
+    """
+    connectivity = np.asarray(graph.connectivity_free)
+    stiffness = connectivity.T @ (q[:, None] * connectivity)
+    eigen = np.linalg.eigvalsh(stiffness)
+
+    negatives = int(np.sum(eigen < 0.0))
+    condition = float(np.abs(eigen).max() / np.abs(eigen).min())
+
+    return StiffnessSpectrum(negatives, eigen.size, condition)
+
+
+class TrussProfile(NamedTuple):
+    """
+    What one truss family contributes to the shared three-route flow.
+
+    Attributes
+    ----------
+    banner :
+        Title the run's report opens with.
+    prefix :
+        Stem the run's figure files are named under.
+    start_heading :
+        Heading of the report's start block, carrying the truss's story.
+    build_structure :
+        The generator, taking the bay count, the span and the depth.
+    mirrored_nodes :
+        The node the midspan mirror carries each node onto, from the bays.
+    member_families :
+        Name and member slice of every family, from the bays.
+    signed_start :
+        The truss's start recipe — how the lens densities are fitted and
+        signed differs per truss, and each recipe is a measured decision.
+    chord_guard :
+        Builder of the chord-sign rows, or None where the subspace has no
+        degenerate states worth guarding.
+
+    Notes
+    -----
+    Everything else is topology-blind and lives in `run_routes`: an
+    experiment is this record, a module docstring telling the truss's
+    story, and a YAML naming the run.
+    """
+
+    banner: str
+    prefix: str
+    start_heading: str
+    build_structure: Callable[[int, float, float], Structure]
+    mirrored_nodes: Callable[[int], Int[np.ndarray, "nodes"]]
+    member_families: Callable[[int], tuple[tuple[str, slice], ...]]
+    signed_start: Callable[[RouteProblem, TaskConfig], StartPoint]
+    chord_guard: Callable[[TaskConfig, StartPoint], ChordSigns] | None
+
+
+def run_routes(profile: TrussProfile, path: Path) -> None:
+    """
+    Run one truss's three routes, write the report, and save the figures.
+
+    Parameters
+    ----------
+    profile :
+        The truss family to run.
+    path :
+        The YAML file describing the run.
+    """
+    report = Report()
+    report.write_banner(profile.banner)
+
+    config = parse_config(path.read_text())
+    budget = config.descent
+    bays = config.structure.num_bays
+
+    structure = profile.build_structure(
+        bays, config.structure.span, config.structure.depth
+    )
+    graph = equilibrium_graph(structure)
+    nodes_mirrored = profile.mirrored_nodes(bays)
+    problem = prepare_problem(
+        structure, config, nodes_mirrored, mirrored_edges(nodes_mirrored, structure)
+    )
+
+    start = profile.signed_start(problem, config)
+    finder = problem.pipeline.formfinder
+    shape = finder.formfinder(jnp.asarray(start.q), problem.loads.formfinding)
+    reproduction = float(jnp.max(jnp.abs(shape.xyz - jnp.asarray(start.lens))))
+    disagreement = force_agreement(problem, start, shape.xyz)
+
+    if profile.chord_guard is None:
+        guard = None
+    else:
+        guard = profile.chord_guard(config, start)
+
+    limits = height_truss(budget, config.structure.depth)
+    maps = route_maps(problem, limits, budget.length_floor, guard)
+    starts = route_starts(problem, start, shape.xyz, budget.diameter_floor)
+    opening_found, opening_drawn = seed_openings(maps, starts)
+    measures = StartMeasures(reproduction, disagreement, opening_found, opening_drawn)
+
+    fit_scaled = start.gap / config.loads.total
+    opening = stiffness_spectrum(graph, start.q)
+
+    report.write_heading(profile.start_heading)
+    entries = start_entries(config, problem, start, measures, limits)
+    entries.append(("lens fit gap / total load", f"{fit_scaled:.2e}"))
+    if guard is not None:
+        entries.append(
+            (
+                "chord sign margin [N/mm]",
+                f"{guard.margin:.1f} on {guard.chords.size} chords, linear rows",
+            )
+        )
+    report.write_entries(tuple(entries))
+
+    best_found = report_gradient(
+        report, maps[ROUTE_FORMFOUND], starts[ROUTE_FORMFOUND], ROUTE_FORMFOUND
+    )
+    best_heights = report_gradient(
+        report, maps[ROUTE_HEIGHTS], starts[ROUTE_HEIGHTS], ROUTE_HEIGHTS
+    )
+    best_error = max(best_found, best_heights)
+
+    report.write_heading("Descending the three routes")
+    boxes = route_boxes(problem, budget.diameter_floor, limits)
+    answers = descend_all(report, maps, starts, boxes, budget)
+
+    reads = route_reads(problem, answers, budget)
+    report_routes(report, reads, answers, route_variables(problem))
+    report_families(report, reads, profile.member_families(bays))
+    report_governing(report, reads, problem.case_names)
+
+    width = int(finder.basis.shape[1])
+    q_final = np.asarray(finder.basis) @ answers[ROUTE_FORMFOUND].variables[:width]
+    landing = stiffness_spectrum(graph, q_final)
+
+    xyz_found = jnp.asarray(reads[ROUTE_FORMFOUND].xyz)
+    lengths_found = member_lengths(xyz_found, problem.structure.edges)
+    shortest_found = float(jnp.min(lengths_found))
+    xyz_heights = jnp.asarray(reads[ROUTE_HEIGHTS].xyz)
+    lengths_heights = member_lengths(xyz_heights, problem.structure.edges)
+    shortest_heights = float(jnp.min(lengths_heights))
+
+    report.write_heading("The degeneracies, watched at the answers")
+    entries = [
+        (
+            "vertical stiffness at the start",
+            f"{opening.negatives} negative of {opening.size}, "
+            f"cond {opening.condition:.1e}",
+        ),
+        (
+            "vertical stiffness at the answer",
+            f"{landing.negatives} negative of {landing.size}, "
+            f"cond {landing.condition:.1e}",
+        ),
+        (
+            "shortest member, end to end [mm]",
+            f"{shortest_found:.0f} against the {budget.length_floor:.0f} floor",
+        ),
+        (
+            "shortest member, free heights [mm]",
+            f"{shortest_heights:.0f} against the {budget.length_floor:.0f} floor",
+        ),
+    ]
+    if guard is not None:
+        signed_final = float(np.min(guard.signs * q_final[guard.chords]))
+        entries.append(
+            (
+                "chord sign slack at the answer [N/mm]",
+                f"{signed_final:.1f} against the {guard.margin:.1f} margin",
+            )
+        )
+    report.write_entries(tuple(entries))
+
+    report_summary(report, reads, config, limits)
+
+    write_figures(problem, reads, answers, profile.prefix)
+    report.write_heading(f"figures written to {FIGURES}")
+
+    checks = [
+        ToleranceCheck("gradient scaled error", best_error, TOLERANCE_GRADIENT),
+        ToleranceCheck("projection gap", start.projection, TOLERANCE_PROJECTION),
+        ToleranceCheck("lens reproduction [mm]", reproduction, TOLERANCE_SHAPE),
+        ToleranceCheck("lens fit gap / total load", fit_scaled, TOLERANCE_FIT),
+    ]
+    floor = budget.length_floor
+    undershort_found = max(0.0, (floor - shortest_found) / floor)
+    checks.append(
+        ToleranceCheck(
+            "end to end length violation", undershort_found, TOLERANCE_FEASIBILITY
+        )
+    )
+    undershort_heights = max(0.0, (floor - shortest_heights) / floor)
+    checks.append(
+        ToleranceCheck(
+            "free heights length violation", undershort_heights, TOLERANCE_FEASIBILITY
+        )
+    )
+    if guard is not None:
+        undersign = max(0.0, (guard.margin - signed_final) / guard.scale)
+        checks.append(
+            ToleranceCheck("chord sign violation", undersign, TOLERANCE_FEASIBILITY)
+        )
+    routed, sound = route_checks(reads, answers, limits)
+    checks.extend(routed)
+    passed = checks_passed(tuple(checks)) and sound
+
+    report.write_checks(tuple(checks))
+    report.write_verdict(passed)
+
+    # Last, because the window holds the process until it closes.
+    if config.viewer.enabled:
+        view_answers(problem, reads, (config.viewer.route,))

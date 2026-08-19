@@ -32,3 +32,7 @@ descent:
   rise_factor: 2.0
   limit_sag: true
   sag_factor: 1.0
+
+viewer:
+  enabled: false
+  route: end to end
