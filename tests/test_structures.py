@@ -7,12 +7,18 @@ from normax.loads import loads_point
 from normax.loads import loads_uniform
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
+from normax.structures import build_vierendeel_2d
 from normax.structures import build_warren_2d
 
 
 @pytest.fixture
 def structures():
-    return [build_arch_2d(), build_gridshell_3d(), build_warren_2d()]
+    return [
+        build_arch_2d(),
+        build_gridshell_3d(),
+        build_warren_2d(),
+        build_vierendeel_2d(),
+    ]
 
 
 def test_arrays_are_jax(structures):
@@ -156,6 +162,50 @@ def test_the_warren_rejects_too_few_bays(num_bays):
 def test_the_warren_rejects_a_nonpositive_depth():
     with pytest.raises(ValueError):
         build_warren_2d(depth=0.0)
+
+
+def test_vierendeel_counts():
+    structure = build_vierendeel_2d(num_bays=8)
+
+    assert structure.nodes.shape[0] == 18
+    assert structure.edges.shape[0] == 23
+    assert structure.supports.tolist() == [0, 8, 9, 17]
+
+
+def test_vierendeel_chords_sit_level():
+    structure = build_vierendeel_2d(num_bays=6, span=12.0, depth=1.5)
+    nodes = np.asarray(structure.nodes)
+
+    assert np.all(nodes[:7, 2] == 0.0)
+    assert np.all(nodes[7:, 2] == 1.5)
+    assert np.all(nodes[:, 1] == 0.0)
+
+
+def test_vierendeel_verticals_are_plumb():
+    structure = build_vierendeel_2d(num_bays=6, span=12.0)
+    nodes = np.asarray(structure.nodes)
+
+    assert nodes[7:, 0] == pytest.approx(nodes[:7, 0])
+
+
+def test_vierendeel_edge_families_come_in_order():
+    structure = build_vierendeel_2d(num_bays=4)
+    edges = np.asarray(structure.edges)
+
+    assert edges[:4].tolist() == [[0, 1], [1, 2], [2, 3], [3, 4]]
+    assert edges[4:8].tolist() == [[5, 6], [6, 7], [7, 8], [8, 9]]
+    assert edges[8:].tolist() == [[1, 6], [2, 7], [3, 8]]
+
+
+@pytest.mark.parametrize("num_bays", [1, 0, -2])
+def test_the_vierendeel_rejects_too_few_bays(num_bays):
+    with pytest.raises(ValueError):
+        build_vierendeel_2d(num_bays=num_bays)
+
+
+def test_the_vierendeel_rejects_a_nonpositive_depth():
+    with pytest.raises(ValueError):
+        build_vierendeel_2d(depth=0.0)
 
 
 def test_gridshell_counts():
