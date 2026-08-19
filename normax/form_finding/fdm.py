@@ -610,3 +610,134 @@ class FdmFormFinder(AbstractFormFinder):
         shape = FormFoundShape(state.xyz, state.lengths[:, 0])
 
         return shape
+
+
+class SubspaceFormFinder(AbstractFormFinder):
+    """
+    A form finder searched through the coordinates of a density subspace.
+
+    Attributes
+    ----------
+    formfinder :
+        The form finder the coordinates are expanded into.
+    basis :
+        Density basis the coordinates span, one column per coordinate.
+    independents :
+        Edge indices the pivoted coordinates read back as, or None when the
+        basis is orthonormal and coordinates are projections.
+
+    Notes
+    -----
+    Wraps a form finder so the design space itself is the first argument: a
+    call takes coordinates of the basis, expands them to member densities,
+    and hands those to the wrapped finder. With a held-plan basis every
+    reachable geometry keeps the drawn plan, so no bound on a coordinate is
+    a bound on funicularity — the parametrization becomes the block's
+    contract rather than a driver's convention.
+
+    The two read-back conventions live here and nowhere else. An orthonormal
+    basis reads a density vector as projections, `Bᵀ q`; a pivoted basis
+    reads off the named independent densities, `q[independents]` — never
+    `Bᵀ q`, its columns not being orthonormal. Inside the span both are
+    exact; outside it they land on the nearest expressible densities, and
+    the caller reports the gap rather than assuming it away.
+    """
+
+    formfinder: AbstractFormFinder
+    basis: Float[Array, "edges independents"]
+    independents: Int[np.ndarray, "independents"] | None
+
+    def __init__(
+        self,
+        formfinder: AbstractFormFinder,
+        basis: Float[np.ndarray, "edges independents"],
+        independents: Int[np.ndarray, "independents"] | None = None,
+    ) -> None:
+        """
+        Wrap a form finder in a density subspace.
+
+        Parameters
+        ----------
+        formfinder :
+            The form finder the coordinates are expanded into.
+        basis :
+            Density basis to search through, from `density_basis` or
+            `pivoted_basis`.
+        independents :
+            Edge indices of a pivoted basis's coordinates, or None for an
+            orthonormal basis.
+        """
+        self.formfinder = formfinder
+        self.basis = jnp.asarray(basis)
+        if independents is None:
+            self.independents = None
+        else:
+            self.independents = np.asarray(independents)
+
+    def __call__(
+        self,
+        xi: Float[Array, "independents"],
+        loads: Float[Array, "nodes 3"],
+    ) -> FormFoundShape:
+        """
+        Find the shape at one coordinate of the subspace.
+
+        Parameters
+        ----------
+        xi :
+            Coordinate along the basis columns.
+        loads :
+            Force applied at every node.
+
+        Returns
+        -------
+        shape :
+            The geometry at equilibrium, and its member lengths.
+        """
+        densities = self.member_densities(xi)
+
+        return self.formfinder(densities, loads)
+
+    def member_densities(
+        self,
+        xi: Float[Array, "independents"],
+    ) -> Float[Array, "edges"]:
+        """
+        Expand a coordinate into the density of every member.
+
+        Parameters
+        ----------
+        xi :
+            Coordinate along the basis columns.
+
+        Returns
+        -------
+        densities :
+            Force density of every member, inside the span by construction.
+        """
+        return self.basis @ xi
+
+    def read_coordinates(
+        self,
+        q: Float[np.ndarray, "edges"],
+    ) -> Float[np.ndarray, "independents"]:
+        """
+        Read a density vector back as a coordinate of the subspace.
+
+        Parameters
+        ----------
+        q :
+            Force density of every member.
+
+        Returns
+        -------
+        xi :
+            The coordinate whose expansion reproduces the densities exactly
+            when they lie in the span; how much is lost outside it is the
+            caller's number to report.
+        """
+        basis = np.asarray(self.basis)
+        if self.independents is None:
+            return basis.T @ np.asarray(q)
+
+        return np.asarray(q)[self.independents]

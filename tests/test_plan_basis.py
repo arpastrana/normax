@@ -1,7 +1,10 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding.fdm import SubspaceFormFinder
 from normax.form_finding.fdm import density_basis
 from normax.form_finding.fdm import equilibrium_gap
 from normax.form_finding.fdm import equilibrium_graph
@@ -283,3 +286,61 @@ def test_the_pivoted_vierendeel_elects_the_verticals(vierendeel):
 
     assert pivot.basis.shape[1] == 9
     assert verticals.issubset(set(pivot.independents.tolist()))
+
+
+def test_the_subspace_finder_expands_before_solving(warren, lens):
+    loads = loads_uniform(warren, LOAD)
+    fit = fit_densities(warren, lens, loads)
+    inner = FdmFormFinder(warren)
+    finder = SubspaceFormFinder(inner, density_basis(warren))
+    xi = jnp.asarray(finder.read_coordinates(fit.q))
+
+    routed = finder(xi, loads)
+    direct = inner(finder.member_densities(xi), loads)
+
+    assert np.array_equal(np.asarray(routed.xyz), np.asarray(direct.xyz))
+    assert np.array_equal(np.asarray(routed.lengths), np.asarray(direct.lengths))
+
+
+def test_the_orthonormal_coordinates_read_back_through_the_finder(warren, lens):
+    loads = loads_uniform(warren, LOAD)
+    fit = fit_densities(warren, lens, loads)
+    finder = SubspaceFormFinder(FdmFormFinder(warren), density_basis(warren))
+
+    xi = finder.read_coordinates(fit.q)
+    rebuilt = np.asarray(finder.member_densities(jnp.asarray(xi)))
+
+    assert np.abs(rebuilt - fit.q).max() < 1e-9
+
+
+def test_the_pivoted_coordinates_read_back_through_the_finder(warren, lens):
+    loads = loads_uniform(warren, LOAD)
+    fit = fit_densities(warren, lens, loads)
+    pivot = pivoted_basis(warren)
+    finder = SubspaceFormFinder(FdmFormFinder(warren), pivot.basis, pivot.independents)
+
+    xi = finder.read_coordinates(fit.q)
+    rebuilt = np.asarray(finder.member_densities(jnp.asarray(xi)))
+
+    assert np.array_equal(xi, fit.q[pivot.independents])
+    assert np.abs(rebuilt - fit.q).max() < 1e-9
+
+
+def test_the_subspace_gradient_chains_through_the_basis(warren, lens):
+    loads = loads_uniform(warren, LOAD)
+    fit = fit_densities(warren, lens, loads)
+    inner = FdmFormFinder(warren)
+    basis = density_basis(warren)
+    finder = SubspaceFormFinder(inner, basis)
+    xi = jnp.asarray(finder.read_coordinates(fit.q))
+
+    def spanned_length(coordinate):
+        return jnp.sum(finder(coordinate, loads).lengths)
+
+    def member_length(q):
+        return jnp.sum(inner(q, loads).lengths)
+
+    slope_xi = np.asarray(jax.grad(spanned_length)(xi))
+    slope_q = np.asarray(jax.grad(member_length)(finder.member_densities(xi)))
+
+    assert np.abs(slope_xi - basis.T @ slope_q).max() < 1e-12
