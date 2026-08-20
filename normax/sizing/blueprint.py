@@ -21,11 +21,26 @@ with the implicit function theorem supplying the tangent of the root the host
 bisection finds. The library computes every reported value; only the
 derivative coefficients are restated here.
 
-The check is cross-section resistance alone, because that is all Blueprints
-implements — it has no §6.3 member buckling and no classification. An honestly
-different design philosophy from `normax.sizing.ec3`, not a reimplementation:
-this sizer never reads a buckling length, and a compressed arch is sized
-differently by the two.
+The check is **axial force with bending, at cross-section level, and nothing
+else**. Two of those boundaries are the library's and one is this module's, and
+they are worth keeping apart. Blueprints implements no §6.3 member buckling and
+no cross-section classification, so neither could be had from it. It does
+implement shear (§6.2.6), torsion (§6.2.7) and bending with shear (§6.2.8) —
+including Eq. 6.18's `A_v` for a circular hollow section and Eq. 6.28's
+`V_pl,T,Rd` for a hollow one — and **this module declines all three by choice**.
+
+The choice is measured rather than assumed. EN 1993-1-1 6.2.10 allows shear out
+of the bending and axial checks while the design shear stays under half the
+plastic shear resistance; `experiments/20_shear_audit.py` reads that fraction off
+every converged design in the repo and finds 0.36 at worst, on the drawn
+Vierendeel, and 0.16 at worst on any optimized answer. Torsion is identically
+zero, a planar frame under in-plane nodal load carrying none. Adding either
+clause would move no diameter here. See `docs/shear_design.md` for what adding
+them would take, and for the case that would need it.
+
+An honestly different design philosophy from `normax.sizing.ec3`, not a
+reimplementation: this sizer never reads a buckling length, and a compressed arch
+is sized differently by the two.
 
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15: never on the
 Apache-2.0 submission path.
