@@ -60,6 +60,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import yaml
+from ec3x.material import Steel
+from ec3x.resistance import SHEAR_THRESHOLD
+from ec3x.resistance import area_shear
+from ec3x.resistance import utilization_shear
 from jaxtyping import Array
 from jaxtyping import Float
 from scipy.optimize import minimize
@@ -72,6 +76,7 @@ from normax.design import design_envelope
 from normax.form_finding import FormFoundShape
 from normax.loads import LoadCases
 from normax.optimization import Trajectory
+from normax.sections import TubeFamily
 from normax.sizing import MemberSizes
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.structures import Structure
@@ -84,6 +89,9 @@ FIGURES = Path(__file__).resolve().parent.parent / "figures"
 
 # The 2D arch rises along Z; see `build_arch_2d`.
 VERTICAL_AXIS = 2
+
+# EN 1993-1-1 §6.1's recommended value, as every sizer in the repo states it.
+GAMMA_M0_SHEAR = 1.0
 
 
 class SimultaneousConfig(NamedTuple):
@@ -656,6 +664,39 @@ def tabulate_members(
         )
 
 
+def shear_fraction(family: TubeFamily, design: Design) -> float:
+    """
+    The design shear of the worst member, as a fraction of its plastic resistance.
+
+    Parameters
+    ----------
+    family :
+        The tube family the design's sections were drawn from.
+    design :
+        The design to read, carrying both the sections and the analysis.
+
+    Returns
+    -------
+    fraction :
+        Largest fraction over members and load cases.
+
+    Notes
+    -----
+    Eq. 6.17 through `ec3x`, once per component and taken at its worst rather
+    than on a resultant of the two: whether a resultant is sanctioned for a tube
+    is an open question there, and the worst component needs no ruling. Read at
+    the answer, because a bound over a demand mix describes a member that might
+    exist and 6.2.10 asks about the member that does.
+    """
+    steel = Steel(f_y=family.material.f_y, gamma_m0=GAMMA_M0_SHEAR)
+    mobilized = area_shear(design.sizes.sections.area)
+
+    major = np.asarray(utilization_shear(design.forces.shear_major, mobilized, steel))
+    minor = np.asarray(utilization_shear(design.forces.shear_minor, mobilized, steel))
+
+    return float(np.max(np.maximum(major, minor)))
+
+
 def main(config_path: Path) -> None:
     """
     Redesign the arch with the sizes as variables, and report what it bought.
@@ -735,6 +776,14 @@ def main(config_path: Path) -> None:
     print(
         f"Crown rise: seed {constraints.rise_target:.1f} mm"
         f" -> optimized {rise_opt:.1f} mm ({rise_state})"
+    )
+    # The clause the check leaves out, read at the answer rather than assumed.
+    # EN 1993-1-1 6.2.10 allows the exclusion only under half the resistance.
+    shear = shear_fraction(pipeline.sizer.family, optimized)
+    verdict = "honest" if shear < SHEAR_THRESHOLD else "NOT HONEST"
+    print(
+        f"Excluded shear, worst V_Ed/V_pl,Rd: {shear:.4f}"
+        f" against the {SHEAR_THRESHOLD} of 6.2.10 ({verdict})"
     )
     print(f"Optimizer spent: {answer.evaluations} in {answer.elapsed:.3f} s")
     print("Nothing to settle: the analysis ran at the answer's own sections.")

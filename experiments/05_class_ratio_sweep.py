@@ -20,9 +20,11 @@ but Class 3 forfeits the shape factor of 1.326 in bending and reads the weaker
 column of Table B.1. Which wins depends on how much of the demand is bending,
 and that is a number rather than an argument.
 
-The sweep also reports the shear the excluded clause would have seen, which is
-what open item 0d of ec3x's docs/clauses.md asks for: the exclusion of 6.2.6 is only
-honest while the design shear stays under half the plastic shear resistance.
+The sweep also bounds the shear the excluded clause would have seen, which open
+item 0d of ec3x's docs/clauses.md asks after: the exclusion of 6.2.6 is only honest
+while the design shear stays under half the plastic shear resistance. A bound is
+all a sweep over demand mixes can give, and `normax.analysis.MemberForces` now
+carries the analyzed shear so that a converged design can be read instead.
 
 Run with `uv run python experiments/05_class_ratio_sweep.py`.
 """
@@ -63,9 +65,9 @@ CLASSES = (2, 3)
 CROSSOVER_SAMPLES = 321
 CROSSOVER_MOMENT_MAX = 1.6e8
 
-# A simply supported span carrying an end moment has a shear of about four
-# moments over its length, which is the worst plausible pairing.
-SHEAR_FACTOR = 4.0
+# Nodal loading makes the shear exactly the end-moment difference over the
+# length, so a moment bounded either way is worst antisymmetric, at twice it.
+SHEAR_FACTOR = 2.0
 
 
 def behavior_of(catalogue: TubeCatalogue) -> str:
@@ -155,7 +157,13 @@ class ShearCheck(NamedTuple):
     resistance :
         Plastic shear resistance of the sized section.
     demand :
-        Design shear the worst plausible span pairing implies.
+        Largest design shear the sized moment admits, from equilibrium.
+
+    Notes
+    -----
+    The demand is a bound rather than a measurement, this sweep having no frame
+    to measure on. It is exact as a bound: `normax.analysis.MemberForces` now
+    carries the analyzed shear, and auditing a real design means reading that.
     """
 
     moment: float
@@ -363,13 +371,17 @@ def report_masses(report: Report, families: Sequence[TubeCatalogue]) -> None:
 def report_shear(report: Report, catalogue: TubeCatalogue) -> None:
     """
     The shear the excluded clause would have seen, open item 0d.
+
+    A bound over the demand mix, not a reading off a structure. What the ratio
+    does on a converged design is what open item 0d actually asks for, and the
+    analyzed shear a backend now reports is what answers it.
     """
     checked = [shear_check(catalogue, moment) for moment in MOMENTS[1:]]
     columns = (
         ReportColumn("M_y [kNm]", ".0f"),
         ReportColumn("d [mm]", ".2f"),
         ReportColumn("V_pl,Rd [kN]", ".1f"),
-        ReportColumn("V_Ed simple span [kN]", ".1f"),
+        ReportColumn("V_Ed bound [kN]", ".1f"),
         ReportColumn("ratio", ".3f"),
         ReportColumn("", align="<"),
     )
@@ -394,8 +406,12 @@ def report_shear(report: Report, catalogue: TubeCatalogue) -> None:
     report.write_note(
         f"""
         The exclusion of 6.2.6 stays honest while every ratio is under
-        {SHEAR_THRESHOLD}. Recompute this on the converged design before quoting
-        it.
+        {SHEAR_THRESHOLD}. Every demand here is the largest a member carrying
+        this moment over {LENGTH:.0f} mm can see, the shear under nodal loading
+        being the end-moment difference over the length and the moment bounded
+        both ways. A shorter member at the same moment sees more, in inverse
+        proportion. Read the analyzed shear off the converged design rather than
+        quoting this.
         """
     )
 

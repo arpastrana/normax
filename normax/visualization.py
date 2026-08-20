@@ -81,6 +81,8 @@ class ColorRange(NamedTuple):
         Lower end of the range. If None, taken from the data.
     vmax :
         Upper end of the range. If None, taken from the data.
+    cmap :
+        Name of the colormap the range is rendered through.
 
     Notes
     -----
@@ -91,6 +93,7 @@ class ColorRange(NamedTuple):
     values: Float[Array, "members"] | None = None
     vmin: float | None = None
     vmax: float | None = None
+    cmap: str = "viridis"
 
 
 def draw_members(
@@ -129,7 +132,7 @@ def draw_members(
         segments,
         linewidths=WIDTH_MAX * sizes / drawn.widest,
         array=values,
-        cmap="viridis",
+        cmap=coloring.cmap,
         capstyle="round",
     )
     members.set_clim(
@@ -1295,5 +1298,554 @@ def figure_beam_profile(
         fontsize=9,
         color="0.35",
     )
+
+    return figure
+
+
+class UtilizationForm(NamedTuple):
+    """
+    One design to draw, and how hard the check works each of its members.
+
+    Attributes
+    ----------
+    title :
+        Name of the design, shown above its drawing.
+    xyz :
+        Position of every node.
+    diameters :
+        Outer diameter of every member.
+    utilization :
+        Worst utilization of every member over the load cases.
+    governed :
+        How many members each load case governs, in case order. The caller
+        owns the counting, tie policy included — mirror-paired cases tie to
+        solver precision on symmetric designs, and an argmax here would
+        split those ties by index order.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    diameters: Float[Array, "members"]
+    utilization: Float[Array, "members"]
+    governed: Int[np.ndarray, "cases"]
+
+
+def figure_utilization(
+    edges: Int[Array, "members 2"],
+    forms: Sequence[UtilizationForm],
+    names: tuple[str, ...],
+    reference: Float[Array, "nodes 3"] | None = None,
+) -> Figure:
+    """
+    Designs colored by envelope utilization, above who governs each of them.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    forms :
+        The designs to compare, in the order they are to be drawn.
+    names :
+        Name of every load case, in index order.
+    reference :
+        Shape to outline behind every form, or None to draw none.
+
+    Returns
+    -------
+    figure :
+        One drawing per design, sharing one width scale, one pair of axis
+        limits and one utilization colorbar, above a count of which load
+        case governs how many members.
+
+    Notes
+    -----
+    The colorbar is capped at one — the feasible ceiling, which fully
+    stressed members sit exactly on — and floored just under the least
+    worked member across all the designs, so the color range is spent on
+    the diversity that exists rather than on the empty run down to zero.
+    A member at the cap is at a binding constraint; a visibly colder one is
+    either resting on the diameter floor or buying force relief for its
+    fully stressed neighbors, which only an indeterminate structure can do.
+
+    The counts underneath answer the question the coloring no longer can:
+    which case put each member at its ceiling. They share one scale, so a
+    bar is read against its neighbors across the designs, and they arrive
+    counted rather than labeled — a member tied between cases may appear
+    under each of them, so a panel's bars can sum past the member count.
+    """
+    widest = max(float(np.max(np.asarray(form.diameters))) for form in forms)
+    lowest = min(float(np.min(np.asarray(form.utilization))) for form in forms)
+    floor = np.floor(lowest * 20.0) / 20.0
+    load_cases = len(names)
+    columns = len(forms)
+
+    figure, axes = plt.subplots(
+        2,
+        columns,
+        figsize=(4.6 * columns, 7.0),
+        height_ratios=[2.0, 1.0],
+        squeeze=False,
+        layout="constrained",
+    )
+    for ax in axes[1, 1:]:
+        ax.sharey(axes[1, 0])
+
+    shapes = [np.asarray(form.xyz) for form in forms]
+    if reference is not None:
+        shapes.append(np.asarray(reference))
+    both = np.concatenate(shapes)
+    margin = 0.05 * float(np.ptp(both[:, 0]))
+
+    for ax, form in zip(axes[0], forms):
+        if reference is not None:
+            outline = draw_outline(ax, reference, edges)
+            outline.set_label("starting shape")
+        members = draw_members(
+            ax,
+            DrawnStructure(form.xyz, edges, form.diameters, widest),
+            ColorRange(form.utilization, floor, 1.0),
+        )
+        ax.set_xlim(float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
+        ax.set_ylim(float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
+        ax.set_title(form.title, fontsize=11)
+
+    if reference is not None:
+        axes[0][0].legend(loc="lower center", fontsize=8, frameon=False)
+
+    bar = figure.colorbar(
+        members,
+        ax=axes[0].tolist(),
+        shrink=0.85,
+        aspect=14,
+        pad=0.02,
+    )
+    bar.set_label("envelope utilization", fontsize=9)
+
+    for ax, form in zip(axes[1], forms):
+        counts = [int(count) for count in np.asarray(form.governed)]
+        ax.bar(np.arange(load_cases), counts, 0.6, color="#31688e")
+        ax.set_xticks(np.arange(load_cases))
+        ax.set_xticklabels(names, fontsize=8, rotation=15)
+        ax.set_ylabel("members governed")
+        ax.set_title(form.title, fontsize=10)
+        ax.grid(axis="y", alpha=0.3)
+
+    return figure
+
+
+class DescentTrace(NamedTuple):
+    """
+    One constrained descent, read as the objective at every iterate.
+
+    Attributes
+    ----------
+    title :
+        Name of the route, shown in the legend.
+    mass :
+        Objective at every iterate, the start included.
+    """
+
+    title: str
+    mass: Float[np.ndarray, "steps"]
+
+
+def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
+    """
+    Constrained descents side by side, one line of objective per route.
+
+    Parameters
+    ----------
+    traces :
+        The descents to compare, in the order they are drawn.
+
+    Returns
+    -------
+    figure :
+        One panel of mass against iteration.
+
+    Notes
+    -----
+    A single shared panel rather than one per route: the comparison is where
+    each line flattens, and separately scaled axes would hide the gap the
+    figure exists to show. The first and last shades match the palette of
+    `figure_parametrization` so a route reads the same across experiments.
+    """
+    figure, descent = plt.subplots(figsize=(6.0, 4.0), layout="constrained")
+    shades = ("#31688e", "#35b779", "#c0392b")
+
+    for index, trace in enumerate(traces):
+        steps = np.arange(len(trace.mass))
+        color = shades[index % len(shades)]
+        descent.plot(steps, trace.mass, "-", color=color, lw=1.4, label=trace.title)
+
+    descent.set_xlabel("iteration")
+    descent.set_ylabel("mass [t]")
+    descent.set_title("The constrained descents", fontsize=11)
+    descent.legend(frameon=False, fontsize=9)
+    descent.grid(alpha=0.3)
+
+    return figure
+
+
+class RouteTrace(NamedTuple):
+    """
+    One route's descent, and how funicular its iterates stayed.
+
+    Attributes
+    ----------
+    title :
+        Name of the route, shown in the legend.
+    mass :
+        Objective at every iterate.
+    bending :
+        Largest bending-to-axial ratio of any member at every iterate, under
+        the load case the shape answers to.
+    """
+
+    title: str
+    mass: Float[np.ndarray, "steps"]
+    bending: Float[np.ndarray, "steps"]
+
+
+class StartSpread(NamedTuple):
+    """
+    The mass each route reaches from every matched start.
+
+    Attributes
+    ----------
+    labels :
+        Name of every start, in the order the masses are given.
+    mass_density :
+        Mass the single force density reaches from each start.
+    mass_heights :
+        Mass the free heights reach from each start.
+
+    Notes
+    -----
+    A start only one route can take carries NaN in the other route's slot,
+    and the figure draws no marker there.
+    """
+
+    labels: tuple[str, ...]
+    mass_density: Float[np.ndarray, "starts"]
+    mass_heights: Float[np.ndarray, "starts"]
+
+
+def figure_parametrization(
+    traces: Sequence[RouteTrace],
+    spread: StartSpread,
+    closed: StartSpread | None = None,
+    constrained: float | None = None,
+) -> Figure:
+    """
+    A physics-informed parametrization against free coordinates, side by side.
+
+    Parameters
+    ----------
+    traces :
+        The matched-start descent of every route, in the order they are drawn.
+    spread :
+        The mass each route reaches from every start.
+    closed :
+        The same masses with the coupling closed, or None where no staggered
+        runs were made. Shares the spread's start order.
+    constrained :
+        Mass the simultaneous density-and-diameters search reaches, or None
+        where none ran. One level rather than one mass per start, because
+        that search lands on the same answer from every start — which is
+        exactly what a horizontal line says and a row of markers would not.
+
+    Returns
+    -------
+    figure :
+        The descents, the bending ratio along them, and the start dependence.
+
+    Notes
+    -----
+    Three panels because the comparison makes three claims. The descent panel
+    shows where each route ends; the bending panel shows what its iterates
+    passed through on the way, on a logarithmic axis because the routes differ
+    by orders of magnitude; the spread panel shows what each start bought,
+    which is where a larger design space pays for itself or does not.
+
+    One color per route across all three panels, so a route reads as one
+    entity wherever it appears, and the spread panel's markers differ in shape
+    so it survives being printed without color. The closed-coupling masses
+    wear the same marks hollow: filled against open is the frozen seed
+    against the settled sections, per route, without a third color.
+    """
+    figure, axes = plt.subplots(1, 3, figsize=(12.5, 4.0), layout="constrained")
+    descent, quality, robustness = axes
+    shades = ("#31688e", "#c0392b")
+    markers = ("o", "s")
+
+    for index, trace in enumerate(traces):
+        steps = np.arange(len(trace.mass))
+        color = shades[index % len(shades)]
+        descent.plot(steps, trace.mass, "-", color=color, lw=1.4, label=trace.title)
+        quality.plot(steps, trace.bending, "-", color=color, lw=1.4)
+
+    descent.set_xlabel("iteration")
+    descent.set_ylabel("objective [t]")
+    descent.set_title("The two descents, matched start", fontsize=11)
+    descent.legend(frameon=False, fontsize=8)
+    descent.grid(alpha=0.3)
+
+    quality.set_yscale("log")
+    quality.set_xlabel("iteration")
+    quality.set_ylabel(r"$\max_k \, |M| \, / \, (|N| \, L)$")
+    quality.set_title("How funicular the iterates stayed", fontsize=11)
+    quality.grid(alpha=0.3, which="both")
+
+    positions = np.arange(len(spread.labels))
+    reaches = (spread.mass_density, spread.mass_heights)
+    for index, trace in enumerate(traces):
+        robustness.plot(
+            positions,
+            reaches[index],
+            markers[index % len(markers)],
+            color=shades[index % len(shades)],
+            markersize=8,
+            label=trace.title,
+        )
+    if closed is not None:
+        settled = (closed.mass_density, closed.mass_heights)
+        for index, trace in enumerate(traces):
+            # Dodged sideways: a coupling shift of a tenth of a percent would
+            # otherwise sit exactly under its own frozen marker.
+            robustness.plot(
+                positions + 0.18,
+                settled[index],
+                markers[index % len(markers)],
+                color=shades[index % len(shades)],
+                markersize=8,
+                markerfacecolor="none",
+                label=f"{trace.title}, staggered",
+            )
+    if constrained is not None:
+        robustness.axhline(
+            constrained,
+            color=shades[0],
+            ls="--",
+            lw=1.4,
+            label="density and diameters, constrained",
+        )
+    robustness.set_xticks(positions)
+    robustness.set_xticklabels(spread.labels)
+    robustness.set_xlim(-0.5, len(spread.labels) - 0.5)
+    robustness.set_xlabel("starting shape")
+    robustness.set_ylabel("mass at the answer [t]")
+    robustness.set_title("What each start bought", fontsize=11)
+    robustness.legend(frameon=False, fontsize=8)
+    robustness.grid(alpha=0.3)
+
+    return figure
+
+
+class TrussForm(NamedTuple):
+    """
+    One truss shape to draw, and the axial force its members carry.
+
+    Attributes
+    ----------
+    title :
+        Name of the form, shown above its drawing.
+    xyz :
+        Position of every node.
+    forces :
+        Axial force of every member, negative in compression.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    forces: Float[Array, "members"]
+
+
+def figure_truss_forms(
+    edges: Int[Array, "members 2"],
+    forms: Sequence[TrussForm],
+    reference: Float[Array, "nodes 3"],
+    reference_label: str = "drawn truss",
+) -> Figure:
+    """
+    Truss shapes side by side, members as wide as the force they carry.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    forms :
+        The shapes to compare, in the order they are to be drawn.
+    reference :
+        Shape to outline behind every form.
+    reference_label :
+        What the outline is called in the legend.
+
+    Returns
+    -------
+    figure :
+        One drawing per form, four to a row, sharing one force scale and one
+        pair of axis limits.
+
+    Notes
+    -----
+    Forces sit on one diverging scale, compression on the red side and tension
+    on the blue, so a chord that swaps role between panels swaps color rather
+    than merely shade. Width carries magnitude, floored so that a member
+    carrying nothing stays visible as a thin line instead of vanishing.
+    """
+    peak = max(float(np.max(np.abs(np.asarray(form.forces)))) for form in forms)
+    columns = min(4, len(forms))
+    rows = -(-len(forms) // columns)
+
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(4.8 * columns, (3.2 if rows == 1 else 2.1) * rows),
+        squeeze=False,
+        layout="constrained",
+    )
+
+    flat = axes.ravel()
+    for ax in flat[len(forms) :]:
+        ax.set_axis_off()
+
+    shapes = [np.asarray(form.xyz) for form in forms]
+    shapes.append(np.asarray(reference))
+    every = np.concatenate(shapes)
+    margin = 0.05 * float(np.ptp(every[:, 0]))
+    across = (float(every[:, 0].min()) - margin, float(every[:, 0].max()) + margin)
+    upward = (float(every[:, 2].min()) - margin, float(every[:, 2].max()) + margin)
+
+    for index, (ax, form) in enumerate(zip(flat, forms)):
+        outline = draw_outline(ax, reference, edges)
+        if index == 0:
+            outline.set_label(reference_label)
+        magnitudes = np.abs(np.asarray(form.forces))
+        widths = np.maximum(magnitudes, 0.05 * peak)
+        members = draw_members(
+            ax,
+            DrawnStructure(form.xyz, edges, widths, peak),
+            ColorRange(form.forces, -peak, peak, "RdBu"),
+        )
+        ax.set_xlim(across)
+        ax.set_ylim(upward)
+        ax.set_title(form.title, fontsize=10)
+        if index % columns:
+            ax.set_ylabel("")
+        if index < len(forms) - columns:
+            ax.set_xlabel("")
+
+    flat[0].legend(loc="upper right", fontsize=8, frameon=False)
+
+    bar = figure.colorbar(
+        members,
+        ax=flat.tolist(),
+        shrink=0.85 if rows == 1 else 0.6,
+        aspect=14 if rows == 1 else 25,
+        pad=0.02,
+    )
+    bar.set_label("axial force [N]")
+
+    return figure
+
+
+class SubspaceMode(NamedTuple):
+    """
+    One direction of the held-plan density subspace, made visible.
+
+    Attributes
+    ----------
+    title :
+        Name of the mode, shown above its drawing.
+    xyz :
+        Geometry displaced along the mode, exaggerated for the eye.
+    densities :
+        The density direction itself, one component per member.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+    densities: Float[Array, "members"]
+
+
+def figure_density_modes(
+    edges: Int[Array, "members 2"],
+    reference: Float[Array, "nodes 3"],
+    modes: Sequence[SubspaceMode],
+) -> Figure:
+    """
+    Every independent direction of the held-plan subspace, one panel each.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    reference :
+        The undisplaced shape, outlined behind every mode.
+    modes :
+        The directions to draw, in the order they are to be drawn.
+
+    Returns
+    -------
+    figure :
+        A grid of drawings, four to a row, sharing one color scale.
+
+    Notes
+    -----
+    Each panel shows one direction twice over: the solid shape is the geometry
+    displaced along the mode, and its coloring is the density change driving
+    it. A panel that changes color without moving the shape is a state of
+    self-stress — force redistribution the geometry cannot see.
+    """
+    peak = max(float(np.max(np.abs(np.asarray(mode.densities)))) for mode in modes)
+    columns = 4
+    rows = -(-len(modes) // columns)
+
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(3.9 * columns, 1.9 * rows),
+        squeeze=False,
+        layout="constrained",
+    )
+
+    flat = axes.ravel()
+    for ax in flat[len(modes) :]:
+        ax.set_axis_off()
+
+    shapes = [np.asarray(mode.xyz) for mode in modes]
+    shapes.append(np.asarray(reference))
+    every = np.concatenate(shapes)
+    margin = 0.05 * float(np.ptp(every[:, 0]))
+    across = (float(every[:, 0].min()) - margin, float(every[:, 0].max()) + margin)
+    upward = (float(every[:, 2].min()) - margin, float(every[:, 2].max()) + margin)
+
+    num_members = np.asarray(edges).shape[0]
+    widths = np.ones(num_members)
+
+    for index, (ax, mode) in enumerate(zip(flat, modes)):
+        draw_outline(ax, reference, edges)
+        members = draw_members(
+            ax,
+            DrawnStructure(mode.xyz, edges, widths, 3.0),
+            ColorRange(mode.densities, -peak, peak, "RdBu"),
+        )
+        ax.set_xlim(across)
+        ax.set_ylim(upward)
+        ax.set_title(mode.title, fontsize=9)
+        if index % columns:
+            ax.set_ylabel("")
+        if index < len(modes) - columns:
+            ax.set_xlabel("")
+
+    bar = figure.colorbar(
+        members,
+        ax=flat.tolist(),
+        shrink=0.6,
+        aspect=25,
+        pad=0.01,
+    )
+    bar.set_label("density direction")
 
     return figure

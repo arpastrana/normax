@@ -323,10 +323,22 @@ def member_forces(
     Returns
     -------
     forces :
-        Axial force and both end moments of every member.
+        Axial force and both end moments of every member, and the shear and
+        torsion the design check excludes.
 
     Notes
     -----
+    The solver recovers all six components of the internal-force field, so the
+    shear and torsion cost nothing to report and are carried rather than
+    dropped. Nothing downstream checks them; they are what audits the exemption
+    of EN 1993-1-1 6.2.10 that leaving 6.2.6 out of the check relies on.
+
+    **A shear is paired with the moment it differentiates, not with the axis it
+    shares a letter with.** Bending about the major axis varies with the shear
+    across the minor one, so the major-axis shear here is the solver's `vz` and
+    the minor-axis shear its `vy`. Reading the letters instead puts a real force
+    in the wrong component, which the two backends disagreeing is what shows.
+
     Differentiable in the geometry, in the diameters and in every material
     property, since all of them are injected into the assembly here rather than
     baked into it when the model was built.
@@ -351,6 +363,9 @@ def member_forces(
         axial_force=field.nx[:, 0],
         moment_major=to_newton_millimeters(field.my),
         moment_minor=to_newton_millimeters(field.mz),
+        shear_major=field.vz[:, 0],
+        shear_minor=field.vy[:, 0],
+        torsion_moment=to_newton_millimeters(field.mx[:, 0]),
     )
 
 

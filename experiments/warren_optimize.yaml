@@ -1,0 +1,38 @@
+# The Warren truss experiment 18 optimizes, in millimeters and newtons.
+structure:
+  num_bays: 8
+  span: 10000.0
+  depth: 1000.0
+
+loads:
+  total: 180000.0
+  half_factor: 0.5
+  point_factor: 0.5
+  mirrored_case: false
+
+sketch:
+  sag_lens: 600.0
+  rise_lens: 800.0
+
+subspace:
+  symmetric: true
+  basis: svd
+  margin_fraction: 0.1
+
+analysis:
+  diameter: 100.0
+
+descent:
+  iterations: 1000
+  rounds: 5
+  tolerance: 1.0e-10
+  diameter_floor: 21.3
+  length_floor: 500.0
+  limit_rise: true
+  rise_factor: 2.0
+  limit_sag: true
+  sag_factor: 1.0
+
+viewer:
+  enabled: false
+  route: end to end

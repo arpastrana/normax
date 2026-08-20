@@ -23,6 +23,8 @@ is topology, known before any force density is chosen, and is built once on the
 host by `equilibrium_graph`. Only the force densities enter the traced call.
 """
 
+from typing import NamedTuple
+
 import jax.numpy as jnp
 import numpy as np
 from jax_fdm import DTYPE_INT_NP
@@ -33,6 +35,8 @@ from jax_fdm.equilibrium import EquilibriumStructure
 from jax_fdm.equilibrium import LoadState
 from jaxtyping import Array
 from jaxtyping import Float
+from jaxtyping import Int
+from scipy.linalg import qr
 
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
@@ -152,20 +156,16 @@ def positions_vertical(
     shorten past its own projection**, which is what makes this a hard bound on
     member length rather than a penalty on one.
 
-    **It is not a design space, and the reason is algebraic rather than
-    numerical.** Only vertical equilibrium is imposed here. Horizontal
-    equilibrium of the axial forces at a node reads
-    `q_before (x_before - x) + q_after (x_after - x) = 0`, so on an evenly spaced
-    plan it collapses to `q_after = q_before`: **the only force densities that
-    leave such a shape funicular are uniform ones.** Every other choice buys its
+    **Only vertical equilibrium is imposed here**, so an arbitrary `q` buys its
     fixed plan by handing the horizontal thrust to structure that is not being
     designed, and the shape then carries the design load in bending rather than
-    axially.
-
-    So this holds the plan exactly, and a member can never shorten past its own
-    projection, but the funicular part of what it can reach is a single
-    parameter — the scale of a uniform force density. Use it to hold a plan while
-    sweeping that one parameter, not to give an optimizer twenty.
+    axially. On a chain the funicular part of what this reaches is a single
+    parameter: horizontal balance at a two-edge node reads
+    `q_before (x_before - x) + q_after (x_after - x) = 0`, which on an evenly
+    spaced plan collapses to `q_after = q_before`. How wide the funicular part
+    is on any other topology is a counting question, and `density_basis`
+    answers it — a `q` in its span puts this solve in full equilibrium,
+    horizontal included, and that subspace is a legitimate design space.
     """
     xyz = jnp.asarray(xyz)
 
@@ -181,6 +181,363 @@ def positions_vertical(
     heights = jnp.linalg.solve(stiffness, applied - held)
 
     return xyz.at[free, 2].set(heights)
+
+
+def _balance_rows(
+    xyz: Float[np.ndarray, "nodes 3"],
+    edges: Int[np.ndarray, "edges 2"],
+    nodes_free: Int[np.ndarray, "nodes_free"],
+    axes: tuple[int, ...],
+) -> Float[np.ndarray, "equations edges"]:
+    """
+    Coefficient of every force density in the nodal balance, per axis.
+
+    Parameters
+    ----------
+    xyz :
+        The geometry the balance is written at.
+    edges :
+        The two node indices spanned by every edge.
+    nodes_free :
+        Indices of the nodes whose balance is written.
+    axes :
+        Coordinate axes to write a balance row for, in row-block order.
+
+    Returns
+    -------
+    balance :
+        One row per free node and axis; the residual there is this matrix
+        times the densities, minus the applied load.
+    """
+    num_edges = edges.shape[0]
+
+    incidence = np.zeros((num_edges, xyz.shape[0]))
+    incidence[np.arange(num_edges), edges[:, 0]] = 1.0
+    incidence[np.arange(num_edges), edges[:, 1]] = -1.0
+
+    blocks = [(incidence.T * (incidence @ xyz[:, axis]))[nodes_free] for axis in axes]
+
+    return np.concatenate(blocks, axis=0)
+
+
+def _nodes_free(structure: Structure) -> Int[np.ndarray, "nodes_free"]:
+    """
+    Indices of the unsupported nodes, in ascending order.
+    """
+    every = np.arange(structure.num_nodes)
+
+    return np.setdiff1d(every, np.asarray(structure.supports))
+
+
+def plan_equilibrium(structure: Structure) -> Float[np.ndarray, "equations edges"]:
+    """
+    Horizontal balance of the axial forces at every free node, linear in `q`.
+
+    Parameters
+    ----------
+    structure :
+        The structure whose starting plan is to be held.
+
+    Returns
+    -------
+    balance :
+        One row per free node and horizontal axis. A force density vector in
+        its null space keeps the held plan in horizontal equilibrium under
+        purely vertical loads.
+
+    Notes
+    -----
+    The coefficients read only the plan, which a held-plan search never moves,
+    so the matrix is a constant of the topology and is built once on the host.
+    """
+    nodes = np.asarray(structure.nodes)
+    edges = np.asarray(structure.edges)
+
+    return _balance_rows(nodes, edges, _nodes_free(structure), (0, 1))
+
+
+def _mirror_rows(
+    structure: Structure,
+    nodes_mirrored: Int[np.ndarray, "nodes"],
+) -> Float[np.ndarray, "edges edges"]:
+    """
+    Rows demanding every density equal that of its mirrored member.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the members the mirror permutes.
+    nodes_mirrored :
+        Mirror image of every node index.
+
+    Returns
+    -------
+    rows :
+        One row per member, zero exactly when the densities are symmetric.
+    """
+    edges = np.asarray(structure.edges)
+    ordered = np.sort(edges, axis=1)
+    reflected = np.sort(nodes_mirrored[edges], axis=1)
+
+    lookup = {tuple(pair): index for index, pair in enumerate(ordered.tolist())}
+    targets = []
+    for pair in reflected.tolist():
+        target = lookup.get(tuple(pair))
+        if target is None:
+            raise ValueError(f"the mirror maps edge {pair} onto no member")
+        targets.append(target)
+
+    rows = np.eye(edges.shape[0])
+    rows[np.arange(edges.shape[0]), targets] -= 1.0
+
+    return rows
+
+
+def density_basis(
+    structure: Structure,
+    nodes_mirrored: Int[np.ndarray, "nodes"] | None = None,
+) -> Float[np.ndarray, "edges independents"]:
+    """
+    Orthonormal basis of the force densities that hold the starting plan.
+
+    Parameters
+    ----------
+    structure :
+        The structure whose starting plan is to be held.
+    nodes_mirrored :
+        Mirror image of every node index, or None to ask for no symmetry.
+        When given, the basis spans only the densities equal on mirrored
+        members, and the search shrinks accordingly.
+
+    Returns
+    -------
+    basis :
+        One orthonormal column per independent edge, spanning the null space
+        of `plan_equilibrium` — intersected, when a mirror is given, with the
+        densities that mirror onto themselves.
+
+    Notes
+    -----
+    The width of the basis is the count of independent edges: members minus
+    the rank of the horizontal balance. A chain gives one, which is the
+    degeneracy `positions_vertical` warns about; a triangulated topology gives
+    more, its members accumulating faster than its balance rows. Any `q` in
+    the span of this basis, put through `positions_vertical`, yields a shape
+    in full equilibrium — horizontal included.
+
+    Symmetry arrives as extra rows rather than as orbit bookkeeping: the
+    stacked system asks the density vector to balance the plan and to survive
+    the edge permutation the node mirror induces, and its null space is what
+    is returned. A mirror that fails to map members onto members raises.
+    """
+    balance = plan_equilibrium(structure)
+    if nodes_mirrored is not None:
+        symmetry = _mirror_rows(structure, np.asarray(nodes_mirrored))
+        balance = np.concatenate([balance, symmetry], axis=0)
+
+    _, singulars, rows = np.linalg.svd(balance)
+    tolerance = singulars.max() * max(balance.shape) * np.finfo(float).eps
+    rank = int(np.sum(singulars > tolerance))
+
+    return rows[rank:].T
+
+
+class PivotedBasis(NamedTuple):
+    """
+    A held-plan basis whose coordinates are the densities of named members.
+
+    Attributes
+    ----------
+    basis :
+        One column per independent edge, with identity rows on the
+        independent members and the transfer on the dependent ones.
+    independents :
+        Edge indices whose densities are the coordinates, ascending.
+    dependents :
+        Edge indices the transfer fills in, in the pivot order QR chose.
+    """
+
+    basis: Float[np.ndarray, "edges independents"]
+    independents: Int[np.ndarray, "independents"]
+    dependents: Int[np.ndarray, "dependents"]
+
+
+def pivoted_basis(
+    structure: Structure,
+    nodes_mirrored: Int[np.ndarray, "nodes"] | None = None,
+) -> PivotedBasis:
+    """
+    The held-plan subspace in member coordinates, pivoted the TNA way.
+
+    Parameters
+    ----------
+    structure :
+        The structure whose starting plan is to be held.
+    nodes_mirrored :
+        Mirror image of every node index, or None to ask for no symmetry.
+        When given, each coordinate drives its mirrored member too, and the
+        count of coordinates shrinks accordingly.
+
+    Returns
+    -------
+    pivot :
+        The basis, and the edges elected independent and dependent.
+
+    Notes
+    -----
+    The same subspace `density_basis` spans, in different coordinates: each
+    one is the density of one actual member, so a bound, a start or a report
+    reads member by member. QR with column pivoting elects the
+    best-conditioned dependent block — thrust network analysis's
+    independent-edges construction — and every dependent density becomes a
+    fixed linear function of the independent ones. The columns are not
+    orthonormal: legibility is bought at the price of the transfer's
+    conditioning, which the pivoting keeps as mild as the topology allows.
+    """
+    balance = plan_equilibrium(structure)
+    if nodes_mirrored is not None:
+        symmetry = _mirror_rows(structure, np.asarray(nodes_mirrored))
+        balance = np.concatenate([balance, symmetry], axis=0)
+
+    _, triangular, permutation = qr(balance, pivoting=True)
+    diagonal = np.abs(np.diag(triangular))
+    tolerance = diagonal.max() * max(balance.shape) * np.finfo(float).eps
+    rank = int(np.sum(diagonal > tolerance))
+
+    dependents = permutation[:rank]
+    independents = np.sort(permutation[rank:])
+
+    held = balance[:, dependents]
+    thrown = -balance[:, independents]
+    transfer, _, _, _ = np.linalg.lstsq(held, thrown, rcond=None)
+
+    basis = np.zeros((balance.shape[1], independents.size))
+    basis[independents, np.arange(independents.size)] = 1.0
+    basis[dependents] = transfer
+
+    return PivotedBasis(basis, independents, dependents)
+
+
+class DensityFit(NamedTuple):
+    """
+    Force densities that put a drawn geometry in equilibrium with its loads.
+
+    Attributes
+    ----------
+    q :
+        Force density of every edge, from a least-squares fit of the balance.
+    self_stresses :
+        Orthonormal basis of the density directions that leave the drawn
+        geometry balanced, one column per state of self-stress.
+    gap :
+        Largest balance violation the fit leaves, near zero when the drawn
+        geometry is exactly reachable.
+    """
+
+    q: Float[np.ndarray, "edges"]
+    self_stresses: Float[np.ndarray, "edges stresses"]
+    gap: float
+
+
+def fit_densities(
+    structure: Structure,
+    xyz: Float[np.ndarray, "nodes 3"],
+    loads: Float[np.ndarray, "nodes 3"],
+    basis: Float[np.ndarray, "edges independents"] | None = None,
+) -> DensityFit:
+    """
+    Fit force densities to a drawn geometry, the balance being linear in them.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the topology and the supports.
+    xyz :
+        The drawn geometry to be equilibrated.
+    loads :
+        Force applied at every node.
+    basis :
+        Columns to restrict the fit to, or None to fit every density freely.
+        Hand a held-plan basis here and the fit is the nearest funicular
+        member of that subspace, plan balance kept exactly by construction.
+
+    Returns
+    -------
+    fit :
+        The fitted densities, the self-stress directions, and the largest
+        balance violation left.
+
+    Notes
+    -----
+    A start generator: sketch the shape wanted, read off the densities that
+    make it funicular, and begin a search there. Whether the sketch is exactly
+    reachable is reported by the gap rather than assumed. A topology with more
+    members than balance rows reaches every sketch, and the surplus returns as
+    states of self-stress — directions to trade member signs along without
+    moving a node. Under a basis the self-stress columns are combinations of
+    its columns, orthonormal only when the basis is.
+    """
+    nodes = np.asarray(xyz)
+    edges = np.asarray(structure.edges)
+    nodes_free = _nodes_free(structure)
+
+    balance = _balance_rows(nodes, edges, nodes_free, (0, 1, 2))
+    columns = [np.asarray(loads)[nodes_free, axis] for axis in (0, 1, 2)]
+    applied = np.concatenate(columns)
+
+    span = np.eye(edges.shape[0]) if basis is None else np.asarray(basis)
+    restricted = balance @ span
+
+    coordinates, _, rank, _ = np.linalg.lstsq(restricted, applied, rcond=None)
+    _, _, rows = np.linalg.svd(restricted)
+    q = span @ coordinates
+    self_stresses = span @ rows[rank:].T
+    gap = float(np.abs(balance @ q - applied).max())
+
+    return DensityFit(q, self_stresses, gap)
+
+
+def equilibrium_gap(
+    structure: Structure,
+    xyz: Float[np.ndarray, "nodes 3"],
+    q: Float[np.ndarray, "edges"],
+    loads: Float[np.ndarray, "nodes 3"],
+) -> float:
+    """
+    Largest nodal balance violation of a geometry at given force densities.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the topology and the supports.
+    xyz :
+        The geometry the balance is measured at.
+    q :
+        Force density of every edge.
+    loads :
+        Force applied at every node.
+
+    Returns
+    -------
+    gap :
+        Largest residual force component over the free nodes and all three
+        axes, in the units of the loads.
+
+    Notes
+    -----
+    The measurement `fit_densities` reports about its own answer, offered for
+    a `q` chosen elsewhere — a solved shape, a shifted fit, a hand guess. Host
+    arithmetic, for reporting rather than for tracing.
+    """
+    nodes = np.asarray(xyz)
+    edges = np.asarray(structure.edges)
+    nodes_free = _nodes_free(structure)
+
+    balance = _balance_rows(nodes, edges, nodes_free, (0, 1, 2))
+    columns = [np.asarray(loads)[nodes_free, axis] for axis in (0, 1, 2)]
+    applied = np.concatenate(columns)
+
+    return float(np.abs(balance @ np.asarray(q) - applied).max())
 
 
 class FdmFormFinder(AbstractFormFinder):
@@ -253,3 +610,134 @@ class FdmFormFinder(AbstractFormFinder):
         shape = FormFoundShape(state.xyz, state.lengths[:, 0])
 
         return shape
+
+
+class SubspaceFormFinder(AbstractFormFinder):
+    """
+    A form finder searched through the coordinates of a density subspace.
+
+    Attributes
+    ----------
+    formfinder :
+        The form finder the coordinates are expanded into.
+    basis :
+        Density basis the coordinates span, one column per coordinate.
+    independents :
+        Edge indices the pivoted coordinates read back as, or None when the
+        basis is orthonormal and coordinates are projections.
+
+    Notes
+    -----
+    Wraps a form finder so the design space itself is the first argument: a
+    call takes coordinates of the basis, expands them to member densities,
+    and hands those to the wrapped finder. With a held-plan basis every
+    reachable geometry keeps the drawn plan, so no bound on a coordinate is
+    a bound on funicularity — the parametrization becomes the block's
+    contract rather than a driver's convention.
+
+    The two read-back conventions live here and nowhere else. An orthonormal
+    basis reads a density vector as projections, `Bᵀ q`; a pivoted basis
+    reads off the named independent densities, `q[independents]` — never
+    `Bᵀ q`, its columns not being orthonormal. Inside the span both are
+    exact; outside it they land on the nearest expressible densities, and
+    the caller reports the gap rather than assuming it away.
+    """
+
+    formfinder: AbstractFormFinder
+    basis: Float[Array, "edges independents"]
+    independents: Int[np.ndarray, "independents"] | None
+
+    def __init__(
+        self,
+        formfinder: AbstractFormFinder,
+        basis: Float[np.ndarray, "edges independents"],
+        independents: Int[np.ndarray, "independents"] | None = None,
+    ) -> None:
+        """
+        Wrap a form finder in a density subspace.
+
+        Parameters
+        ----------
+        formfinder :
+            The form finder the coordinates are expanded into.
+        basis :
+            Density basis to search through, from `density_basis` or
+            `pivoted_basis`.
+        independents :
+            Edge indices of a pivoted basis's coordinates, or None for an
+            orthonormal basis.
+        """
+        self.formfinder = formfinder
+        self.basis = jnp.asarray(basis)
+        if independents is None:
+            self.independents = None
+        else:
+            self.independents = np.asarray(independents)
+
+    def __call__(
+        self,
+        xi: Float[Array, "independents"],
+        loads: Float[Array, "nodes 3"],
+    ) -> FormFoundShape:
+        """
+        Find the shape at one coordinate of the subspace.
+
+        Parameters
+        ----------
+        xi :
+            Coordinate along the basis columns.
+        loads :
+            Force applied at every node.
+
+        Returns
+        -------
+        shape :
+            The geometry at equilibrium, and its member lengths.
+        """
+        densities = self.member_densities(xi)
+
+        return self.formfinder(densities, loads)
+
+    def member_densities(
+        self,
+        xi: Float[Array, "independents"],
+    ) -> Float[Array, "edges"]:
+        """
+        Expand a coordinate into the density of every member.
+
+        Parameters
+        ----------
+        xi :
+            Coordinate along the basis columns.
+
+        Returns
+        -------
+        densities :
+            Force density of every member, inside the span by construction.
+        """
+        return self.basis @ xi
+
+    def read_coordinates(
+        self,
+        q: Float[np.ndarray, "edges"],
+    ) -> Float[np.ndarray, "independents"]:
+        """
+        Read a density vector back as a coordinate of the subspace.
+
+        Parameters
+        ----------
+        q :
+            Force density of every member.
+
+        Returns
+        -------
+        xi :
+            The coordinate whose expansion reproduces the densities exactly
+            when they lie in the span; how much is lost outside it is the
+            caller's number to report.
+        """
+        basis = np.asarray(self.basis)
+        if self.independents is None:
+            return basis.T @ np.asarray(q)
+
+        return np.asarray(q)[self.independents]

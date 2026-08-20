@@ -83,6 +83,12 @@ class MemberForces(NamedTuple):
         Bending moment about the major axis, at each end of every member.
     moment_minor :
         Bending moment about the minor axis, at each end of every member.
+    shear_major :
+        Shear force along the major axis of every member.
+    shear_minor :
+        Shear force along the minor axis of every member.
+    torsion_moment :
+        Torsional moment of every member.
 
     Notes
     -----
@@ -101,11 +107,31 @@ class MemberForces(NamedTuple):
 
     The axial force is one number per member and load case for the same reason:
     with no load along the span it does not vary, and the analysis is linear.
+    The shears and the torsion are one number each on the same grounds: a linear
+    moment differentiates to a constant shear, and a frame loaded at its nodes
+    alone is given no distributed torque.
+
+    **All six components, of which the check reads three.** EN 1993-1-1 6.2.10
+    lets shear be ignored in the bending and axial checks while the design shear
+    stays under half the plastic shear resistance, and that exemption is what
+    the design path here rests on. It is an exemption to be measured on a
+    converged design rather than assumed, and nothing can measure it unless the
+    analysis reports what it already computed. The three the check does not read
+    default to zero, so a caller stating a demand by hand states what it means
+    to; a backend states all six.
     """
 
     axial_force: Float[Array, "*load_cases members"]
     moment_major: Float[Array, "*load_cases members ends"]
     moment_minor: Float[Array, "*load_cases members ends"]
+    shear_major: float | Float[Array, "*load_cases members"] = 0.0
+    shear_minor: float | Float[Array, "*load_cases members"] = 0.0
+    torsion_moment: float | Float[Array, "*load_cases members"] = 0.0
+
+
+# The load case axis of `MemberForces` as a check maps over it: the three fields
+# a check reads, and never the shear and torsion it audits with instead.
+DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)
 
 
 class AbstractFrameAnalyzer(eqx.Module):

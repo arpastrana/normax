@@ -75,6 +75,15 @@ MOMENT_FIELDS = (
     "moment_minor",
 )
 
+# The audit payload the analysis tesseract does not serve. Its output schema
+# carries the three design fields alone, so comparing these would read a real
+# shear against the idle default and call it a disagreement.
+UNSERVED_FIELDS = (
+    "shear_major",
+    "shear_minor",
+    "torsion_moment",
+)
+
 # A size reads the moments, so it inherits their near-cancellation rather than the
 # axial force's precision, damped by the small share of utilization a funicular
 # moment claims. Measured: substituting the moments of one route into the other
@@ -314,6 +323,8 @@ def field_by_field(oracle, composed, limit_envelope):
 
     for (label, left), (_, right) in zip(named_fields(oracle), named_fields(composed)):
         leaf = label.rpartition(".")[2]
+        if leaf in UNSERVED_FIELDS:
+            continue
         limit = inherited.get(leaf, limit_envelope)
 
         yield label, left, right, limit
@@ -338,6 +349,21 @@ def test_every_field_of_the_design_survives_the_boundary(arch, one_case, section
 
     for label, left, right, limit in field_by_field(oracle, composed, TOLERANCE_PARITY):
         assert relative(left, right) < limit, label
+
+
+def test_the_boundary_does_not_carry_the_secondary_forces(arch, one_case):
+    # Recorded rather than hidden. The analysis tesseract serves three fields,
+    # so a design taken across it cannot audit the shear its in-process twin
+    # reports, and widening that schema is what would change this.
+    oracle, composed = both(arch, one_case, 2)
+
+    assert float(np.max(np.abs(oracle.forces.shear_major))) > 0.0
+    for unserved in (
+        composed.forces.shear_major,
+        composed.forces.shear_minor,
+        composed.forces.torsion_moment,
+    ):
+        assert float(np.max(np.abs(unserved))) == 0.0
 
 
 @pytest.mark.parametrize("section_class", [2, 3])
