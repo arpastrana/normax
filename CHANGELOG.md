@@ -100,6 +100,18 @@ and the VJP plumbing to match, which is its own change. Until then the
 limitation is asserted by `test_the_boundary_does_not_carry_the_secondary_forces`
 rather than left to be discovered.
 
+### The class-ratio sweep's shear bound was wrong by a factor of two
+
+`experiments/05_class_ratio_sweep.py` inferred a shear from a moment as
+`V = 4M/L`, and ec3x's `docs/clauses.md` quoted the resulting 0.12 as the
+evidence that excluding 6.2.6 is honest. The factor came from a span-loaded
+beam — a load case this pipeline never has. Under nodal loading the shear is
+exactly the end-moment difference over the length, so with each end moment
+bounded by `M` the worst pairing is antisymmetric at `V = 2M/L`. The bound now
+peaks at 0.059, half the old figure and reached by the right mechanism, and the
+report says it is a bound rather than a reading. `V = ΔM/L` is asserted to
+`rtol=1e-10` against the solver.
+
 ### The end-to-end answer opens in a viewer, when a file asks for one
 
 Both truss experiments end at PNGs, so the design the three-route
