@@ -119,6 +119,36 @@ point `d = D(N(d), L)` — and backpropagating through it end to end, so a size'
 effect on the forces that sized it reaches `q`. That is the next piece of work,
 not a boundary of the approach.
 
+**Shear and torsion are not designed for, and the exclusion is measured rather
+than assumed.** The check covers axial force with bending — EN 1993-1-1 §6.2.9 at
+cross-section level and §6.3.3 for the member — and leaves out §6.2.6 shear,
+§6.2.7 torsion and §6.2.8 bending with shear. Clause 6.2.10 permits that while the
+design shear stays under half the plastic shear resistance, and that permission is
+a measurement, not an assumption: the analysis reports both shears and the torsion
+whether or not the check reads them, and `experiments/20_shear_audit.py` reads them
+off every converged design here.
+
+The worst case in the study is **0.36** of the plastic shear resistance, on the
+drawn Vierendeel that no search has shaped; no optimized answer exceeds **0.16**,
+and the Warren stays under 0.03. So designing for shear would move no diameter,
+which is why it is left out. Two things that measurement says rather than assumes.
+Topology decides the number, not slenderness — a Vierendeel has no diagonals, so
+transverse load crosses each bay by frame action and lands in the verticals, where
+every one of its worst cases sits, while a Warren hands the same load to its
+diagonals axially. And optimizing *lowers* the ratio, against the intuition that
+thinner members sit closer to every limit: a funicular member carries less moment,
+and the shear is that moment's slope, so the demand falls faster than the
+resistance does. The Vierendeel goes 0.36 drawn to 0.10 end to end while its mass
+falls 71.6%.
+
+None of that licenses "shear is negligible for tubular frames". It is negligible
+for *these* frames. 0.36 is a factor of 1.4 under the threshold, not 20, and a
+shallower or longer-spanned Vierendeel would cross it and be governed in its
+verticals first. Torsion is a stronger statement: identically zero, since a planar
+frame under in-plane nodal load carries none, and asserted rather than assumed.
+`docs/shear_design.md` records what designing for shear would take, across this
+repo and `ec3x`, for whoever needs it.
+
 **Global stability is not checked.** Every member is verified over its own
 buckling length, which presumes every node is held in position by structure
 outside the model; nothing here computes a critical load factor of the whole

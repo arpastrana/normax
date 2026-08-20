@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### The excluded shear is measured, and stays excluded
+
+EN 1993-1-1 6.2.10 lets shear out of the bending and axial checks while the
+design shear stays under half the plastic shear resistance. That had been
+argued from a bound over a demand mix, which describes a member that might
+exist; `experiments/20_shear_audit.py` reads it off the members that do — the
+arch at experiment 103's simultaneous optimum, and both trusses at each of the
+three answers experiments 18 and 19 descend to. The demand is the vector
+resultant of the two shears, which a circular section admits because it
+resists shear alike in every direction, against Eq. 6.18 over the shear area
+of 6.2.6(3) at the settled diameters.
+
+Worst `V_Ed/V_pl,Rd`: **0.3558** on the drawn Vierendeel, 0.1606 free heights,
+0.1147 on the arch, 0.0962 Vierendeel end to end, and 0.0246 down to 0.0108
+across the Warren. Torsion is **exactly zero** on all seven, a planar frame
+under in-plane nodal load carrying none, so declining §6.2.7 is now measured
+rather than assumed too.
+
+Three things the measurement says that the bound could not. The **0.059 bound
+does not bound a frame** — the drawn Vierendeel reaches six times it, because
+that figure was taken over one 6 m member and a frame sets its own shear from
+its topology. **Topology decides the number, not slenderness**: a Vierendeel
+has no diagonals, so transverse load crosses each bay by frame action and
+lands in the verticals, where every one of its worst cases sits, while a
+Warren hands the same load to its diagonals axially — a factor of 15 between
+two trusses of identical span, depth and load. And **optimizing lowers the
+ratio**, against the intuition that thinner members sit closer to every limit:
+a funicular member carries less moment and the shear is that moment's slope,
+so the demand falls faster than the resistance does as the members thin. The
+Vierendeel goes 0.3558 drawn to 0.0962 end to end while its mass falls 71.6%,
+which makes the heaviest design in the study the one nearest the edge.
+
+**So shear design is not landing.** Eq. 6.17 needs 1.0 against a worst of
+0.3558 and §6.2.8's reduction needs 0.5, so a shear term would move no
+diameter, while the cost falls almost entirely on the hand-written NumPy
+duplicate of the Blueprints wrapper. `docs/shear_design.md` records what
+building it would take, so the decision reads as a decision. What ships
+instead is the measurement: every truss and arch run now carries the fraction
+as a tolerance check against 0.5, so a structure that crosses it fails rather
+than waits to be noticed, and the exclusion is stated where a reader will find
+it — the README's limitations, the Blueprints sizer's own docstring, which had
+attributed the scope to a library that implements all three clauses, and
+ec3x's `docs/clauses.md`.
+
+None of it licenses "shear is negligible for tubular frames". It is negligible
+for these frames: 0.3558 is a factor of 1.4 under the threshold, not 20, and a
+shallower or longer-spanned Vierendeel would cross it and be governed in its
+verticals first.
+
 ### The end-to-end answer opens in a viewer, when a file asks for one
 
 Both truss experiments end at PNGs, so the design the three-route
