@@ -9,7 +9,11 @@ Force densities to a funicular shape, a frame analysis to member forces, and
 EN 1993-1-1 to the sections it requires — composed into one function with exact
 gradients throughout. The building code is a normative text rather than a solver:
 it has no derivatives of its own, and giving it one is what lets it sit in an
-optimization loop beside an autodiff form-finder.
+optimization loop beside an autodiff form-finder. The three blocks differentiate
+three different ways — implicit-function-theorem rules on the form-finding and
+sizing solves, a frame analysis swappable between JAX tracing and OpenSees'
+analytic sensitivities, and a hand-derived piecewise adjoint on the code check —
+and one composed function is what the optimizer sees.
 
 ## Installation
 
@@ -21,13 +25,9 @@ cd normax
 uv sync --group dev --group pipeline
 ```
 
-The `pipeline` group carries `jax-fdm`, `smax` and `matplotlib`, which the
-composed pipeline and the experiments need. The `spike` extra carries
-`openseespy` for the second analysis backend, and CI never installs it:
-
-```bash
-uv sync --extra spike
-```
+The `pipeline` group carries the form finder and the frame solver, the `viz`
+group the interactive viewer, and the `spike` extra `openseespy` for the second
+analysis backend.
 
 ## Usage
 
@@ -35,125 +35,110 @@ uv sync --extra spike
 import jax
 import jax.numpy as jnp
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
-from normax.loads import assemble_load_cases
-from normax.loads import loads_uniform
+from normax.form_finding import FdmFormFinder
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import build_arch_2d
 
-grade = Steel355()
-family = thinnest_family(grade, 3)
 
-structure = build_arch_2d(num_edges=20, span=10_000.0, rise=3_000.0)
-uniform = loads_uniform(structure, 9_474.0)
-loads = assemble_load_cases([uniform])
+num_edges = 20
+section_class = 3
+diameter_start = 100.0
+force_density_start = -50.0
+
+material = Steel355()
+section_family = build_section_family(material, section_class)
+diameters = jnp.full(num_edges, diameter_start)
+force_densities = jnp.full(num_edges, force_density_start)
+tubes = section_family(diameters)
+
+structure = build_arch_2d(num_edges, span=10_000.0, rise=3_000.0)
+loads_uniform = create_loads_uniform(structure, 15_000.0)
 
 pipeline = StructuralDesignPipeline(
     FdmFormFinder(structure),
-    SmaxAnalyzer(structure, family(100.0)),
-    Ec3Sizer(structure, family),
+    SmaxAnalyzer(structure, tubes),
+    Ec3Sizer(structure, section_family),
 )
 
-seed = jnp.full(20, 100.0)
+def code_mass(force_densities):
+    parameters = DesignParameters(force_densities, diameters)
+    design = pipeline(parameters, loads_uniform)
+    return compute_mass(design)
 
-
-def total(q):
-    design = pipeline(DesignParameters(q, seed), loads)
-
-    return compute_mass(design_envelope(design))
-
-
-q = jnp.full(20, -60.0)
-print(total(q))  # tonnes of steel EN 1993-1-1 requires
-print(jax.grad(total)(q))  # its gradient in the force densities
+print(code_mass(force_densities))  # tonnes of steel EN 1993-1-1 requires
+print(jax.grad(code_mass)(force_densities))  # its gradient in the force densities
 ```
 
-**The pipeline is three swappable blocks.** Each one is built from a structure on
-the host and then called, and the split is where every piece of software gets to
-see the structure in its own terms — a form finder wants connectivity matrices, a
-frame solver wants an assembly and degree of freedom maps, a code check wants
-nothing at all. What is left is a function of design parameters and load cases,
-and that is what an optimizer differentiates.
+The pipeline is three swappable blocks, each built from a structure on the
+host and then called; what is left is a function of design parameters and load
+cases, and that is what an optimizer differentiates. `normax.tesseract` holds
+the same three blocks reached across a Tesseract boundary, and the pipeline
+cannot tell the difference. The check also runs the other way around: `Ec3Sizer.compute_utilization`
+has exactly a constraint function's signature, so a constrained optimizer can
+hold `utilization <= 1` with analytic Jacobians while shape and sections move together.
+See `experiments/101_api.py` for the whole API in one file,
+`experiments/103_simultaneous_api.py` for the constrained formulation, and
+`experiments/04_backend_agreement.py` for the two analysis backends against
+each other.
 
-**A section family is one argument, and it carries its own grade.** A catalogue's
-ratio is a class limit read at a yield strength, so the grade and the class are the
-family's identity rather than companions handed in beside it; calling the catalogue
-at a diameter generates the tube, which carries both onward. Nothing downstream can
-pair a wall with the class of a different one. The check is handed the family, since
-choosing within it is what a check does; the analysis is handed one tube of it,
-because a solver is configured with the sections its elements have.
+## What the gradient buys
 
-Swapping a block is a constructor argument. `normax.tesseract` holds the same three
-reached across a Tesseract boundary, and `StructuralDesignPipeline` cannot tell the
-difference — `tests/test_tesseract_parity.py` runs one pipeline over both sets and
-measures it. See `experiments/` for the arch optimization, the two analysis
-backends against each other, and `experiments/101_api.py` for the whole API in one
-file.
+`normax/structures.py` generates the structures the claims are measured on — a
+funicular arch, a Warren truss, a Vierendeel truss, and a gridshell cap — and
+the experiments race parametrizations against each other on them, so what the
+gradient buys is a comparison rather than a demo. A form finder acts as a
+shape prior: descending one force density through it is start-proof where
+descending every free node height stalls in bending. On a truss, holding the
+plan leaves a null space of force densities to search, and
+`SubspaceFormFinder` makes its basis coordinates the design variables.
+`experiments/truss_routes.py` then races three routes over the same members,
+loads and check — the whole pipeline end to end, free heights without the form
+finder, and sizing alone at the drawn geometry — and moving the geometry buys
+the larger share of the mass on both trusses. Numbers, tolerances and the full
+protocol are in the accompanying paper and in `CHANGELOG.md`; every experiment
+reads its settings from the YAML beside it and reproduces headless:
+
+```bash
+uv run --group pipeline --group viz python experiments/18_warren_optimize.py
+```
 
 ## Limitations
 
-**The gradient omits `∂d/∂q`.** The analysis is configured with a diameter per
-member, and through a search those diameters stay at their seed while the force
-densities move. So `jax.grad` returns the exact gradient of the mass *at a frozen
-seed*, not of the mass of a self-consistent design: the loop where a size changes
-the stiffness, the stiffness redistributes the member forces, and the forces
-change the size is a path the reverse pass never enters. The sizing map's own
-implicit derivative is unaffected — what is missing is the feedback from its
-answer back into the analysis that fed it.
-
-What the shortcut costs is measured rather than assumed.
-`experiments/101_api.py` re-analyzes its answer at the sections that answer
-requires and prints the gap: **+0.24867 %** on the mass. Both ends of the reported
-saving are weighed the same way, which is why the saving is quoted and the
-frozen-seed mass is not quoted alone.
-
-Closing it means making the design self-consistent inside the pipeline — a fixed
-point `d = D(N(d), L)` — and backpropagating through it end to end, so a size's
-effect on the forces that sized it reaches `q`. That is the next piece of work,
-not a boundary of the approach.
+**The nested route's gradient omits `∂d/∂q`.** In the fully-stressed
+formulation the diameters the analysis runs at stay at their seed while the
+force densities move, so the feedback from a chosen size back into the forces
+that chose it is a path the reverse pass never enters. The cost is measured,
+and two closures exist: staggered re-sectioning, and the simultaneous
+formulation above, which makes the design self-consistent by construction.
 
 **Shear and torsion are not designed for, and the exclusion is measured rather
-than assumed.** The check covers axial force with bending — EN 1993-1-1 §6.2.9 at
-cross-section level and §6.3.3 for the member — and leaves out §6.2.6 shear,
-§6.2.7 torsion and §6.2.8 bending with shear. Clause 6.2.10 permits that while the
-design shear stays under half the plastic shear resistance, and that permission is
-a measurement, not an assumption: the analysis reports both shears and the torsion
-whether or not the check reads them, and `experiments/20_shear_audit.py` reads them
-off every converged design here.
+than assumed.** The check covers axial force with bending and leaves out
+EN 1993-1-1 §6.2.6–6.2.8, as clause 6.2.10 permits while the design shear
+stays under half the plastic shear resistance. `experiments/20_shear_audit.py`
+reads that fraction off every converged design and no structure here
+approaches the threshold; `docs/shear_design.md` records what designing for
+shear would take.
 
-The worst case in the study is **0.36** of the plastic shear resistance, on the
-drawn Vierendeel that no search has shaped; no optimized answer exceeds **0.16**,
-and the Warren stays under 0.03. So designing for shear would move no diameter,
-which is why it is left out. Two things that measurement says rather than assumes.
-Topology decides the number, not slenderness — a Vierendeel has no diagonals, so
-transverse load crosses each bay by frame action and lands in the verticals, where
-every one of its worst cases sits, while a Warren hands the same load to its
-diagonals axially. And optimizing *lowers* the ratio, against the intuition that
-thinner members sit closer to every limit: a funicular member carries less moment,
-and the shear is that moment's slope, so the demand falls faster than the
-resistance does. The Vierendeel goes 0.36 drawn to 0.10 end to end while its mass
-falls 71.6%.
+**No lateral-torsional buckling check, by construction.** Every member is a
+circular hollow section, which is doubly symmetric, so lateral-torsional
+buckling does not occur and §6.3.2 is not implemented.
 
-None of that licenses "shear is negligible for tubular frames". It is negligible
-for *these* frames. 0.36 is a factor of 1.4 under the threshold, not 20, and a
-shallower or longer-spanned Vierendeel would cross it and be governed in its
-verticals first. Torsion is a stronger statement: identically zero, since a planar
-frame under in-plane nodal load carries none, and asserted rather than assumed.
-`docs/shear_design.md` records what designing for shear would take, across this
-repo and `ec3x`, for whoever needs it.
+**Self-weight does not feed back into the loads.** The load cases are stated
+once and never re-assembled from the sections a design chose.
+
+**No buildability constraint.** Diameters are continuous and per member; the
+continuous optimum is a lower bound on any catalog design.
 
 **Global stability is not checked.** Every member is verified over its own
-buckling length, which presumes every node is held in position by structure
-outside the model; nothing here computes a critical load factor of the whole
-frame or verifies a finished design against EN 1993-1-1 §5.2. Buckling and
-frame-stability checks are future work.
+buckling length; nothing computes a critical load factor of the whole frame
+per §5.2. Frame-stability checks are future work.
 
 ## Development
 
