@@ -46,8 +46,8 @@ from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 from tesseract_core.runtime import Int64
 
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.structures import Structure
 
 jax.config.update("jax_enable_x64", True)

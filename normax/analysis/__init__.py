@@ -27,9 +27,11 @@ downstream consumes moments, and a pin-jointed form-finder has none to give.
 
 **This module says what the stage means; a backend beside it says how a solver
 computes it.** `normax.analysis.smax` traces a JAX frame solver in three
-dimensions and `normax.analysis.opensees` drives a C++ one in two. Nothing here
-imports either, so the contracts below are readable without a solver installed
-and neither backend inherits the other's dependencies.
+dimensions and `normax.analysis.opensees` drives a C++ one in two. The smax
+backend is re-exported at the bottom so every call site imports two levels
+deep; the OpenSees one is not, because `openseespy` is an optional extra, so
+its names are reached through the module — `from normax.analysis import
+opensees` — and only the files that need it pay for it.
 
 **Every backend is reached in two calls, and the split is where the topology
 lives.** `prepare_model` reads a structure and returns a model: whatever that
@@ -301,3 +303,10 @@ def support_fixities(structure: Structure) -> Bool[np.ndarray, "nodes 6"]:
         flags[np.ix_(supports, rotations)] = True
 
     return flags
+
+
+# The default backend, re-exported so call sites import two levels deep.
+from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis.smax import frame_model
+from normax.analysis.smax import member_forces
+from normax.analysis.smax import prepare_model

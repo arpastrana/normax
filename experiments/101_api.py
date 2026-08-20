@@ -63,16 +63,16 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import LoadCase
 
+from normax.analysis import SmaxAnalyzer
+from normax.analysis import frame_model
 from normax.analysis import normal_axis
-from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import frame_model
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import settle_diameters
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
@@ -81,9 +81,9 @@ from normax.optimization import minimize_bounded
 from normax.optimization import penalized_mass
 from normax.optimization import value_and_gradient
 from normax.replay import save_trajectory
-from normax.sizing.blueprint import BlueprintSizer
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import BlueprintSizer
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import BACKEND_VARIABLE
@@ -441,7 +441,7 @@ def build_pipeline(
     # Both backends draw tubes from the same class-limit family, so whatever
     # differs downstream is the check itself, not the geometry.
     grade = Steel355()
-    family = thinnest_family(grade, config.sizing.section_class)
+    family = build_section_family(grade, config.sizing.section_class)
     backend = config.sizing.backend
     if backend == "ec3":
         sizer = Ec3Sizer(structure, family)

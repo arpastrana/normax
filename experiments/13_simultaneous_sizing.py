@@ -48,16 +48,16 @@ import numpy as np
 from jaxtyping import Float
 from scipy.optimize import minimize
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import settle_diameters
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
@@ -66,8 +66,8 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sections import TubeFamily
-from normax.sizing.blueprint import DIAMETER_MINIMUM
-from normax.sizing.blueprint import BlueprintSizer
+from normax.sizing import DIAMETER_MINIMUM
+from normax.sizing import BlueprintSizer
 from normax.structures import build_arch_2d
 
 TITLE = "Sizes as a solver's answer, and sizes as an optimizer's variables."
@@ -192,7 +192,7 @@ def arch_problem() -> ArchProblem:
         BlueprintSizer(structure, family),
     )
 
-    load_case = loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    load_case = create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
     loads = assemble_load_cases([load_case])
 
     trial = jnp.full(NUM_EDGES, -1.0)

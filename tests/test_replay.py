@@ -2,12 +2,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_by_name
 from normax.materials import Steel355
@@ -17,8 +17,8 @@ from normax.optimization import penalized_mass
 from normax.replay import load_trajectory
 from normax.replay import replay_trajectory
 from normax.replay import save_trajectory
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import build_arch_2d
 
 # A small arch under 180 kN, in millimeters and newtons.
@@ -65,7 +65,7 @@ def loads(structure):
 @pytest.fixture(scope="module")
 def pipeline(structure):
     grade = Steel355()
-    family = thinnest_family(grade, 3)
+    family = build_section_family(grade, 3)
     section = family(SEED)
 
     return StructuralDesignPipeline(

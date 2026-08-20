@@ -43,13 +43,13 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import diagnose_mechanisms
 
-from normax.analysis.smax import frame_model
-from normax.analysis.smax import member_forces
-from normax.analysis.smax import prepare_model
+from normax.analysis import frame_model
+from normax.analysis import member_forces
+from normax.analysis import prepare_model
 from normax.design import MemberForces
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
-from normax.loads import loads_uniform
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.reporting import Report
@@ -57,7 +57,7 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sections import MemberSections
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import GapScaling
@@ -102,7 +102,7 @@ def graded_section(structure: Structure, grade: SteelGrade) -> MemberSections:
     The wall proportion is the class limit, which is the sizer's clause work;
     the driver asks the sizer's module for the family rather than deriving it.
     """
-    family = thinnest_family(grade, SECTION_CLASS)
+    family = build_section_family(grade, SECTION_CLASS)
 
     return family(DIAMETER)
 
@@ -187,7 +187,7 @@ def funicular_arch(load: float, force_density: float) -> FunicularArch:
     Form-find the arch, and report the state the analysis has to reproduce.
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
-    applied = loads_uniform(structure, load)
+    applied = create_loads_uniform(structure, load)
     graph = equilibrium_graph(structure)
     q = jnp.full(NUM_EDGES, force_density)
     state = equilibrium_state(q, structure.nodes[graph.indices_fixed], graph, applied)

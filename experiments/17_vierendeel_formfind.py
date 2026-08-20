@@ -78,15 +78,15 @@ from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
 
-from normax.form_finding.fdm import DensityFit
-from normax.form_finding.fdm import PivotedBasis
-from normax.form_finding.fdm import density_basis
-from normax.form_finding.fdm import equilibrium_gap
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import fit_densities
-from normax.form_finding.fdm import pivoted_basis
-from normax.form_finding.fdm import positions_vertical
-from normax.loads import loads_point
+from normax.form_finding import DensityFit
+from normax.form_finding import PivotedBasis
+from normax.form_finding import density_basis
+from normax.form_finding import equilibrium_gap
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import fit_densities
+from normax.form_finding import pivoted_basis
+from normax.form_finding import positions_vertical
+from normax.loads import create_loads_point
 from normax.reporting import Report
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
@@ -298,7 +298,9 @@ def deck_loads(problem: TrussProblem, structure: Structure) -> Float[Array, "nod
         Force applied at every node, the top chord carrying none.
     """
     interior = range(1, problem.num_bays)
-    cases = [loads_point(structure, problem.load, node=node) for node in interior]
+    cases = [
+        create_loads_point(structure, problem.load, node=node) for node in interior
+    ]
 
     return jnp.sum(jnp.stack(cases), axis=0)
 

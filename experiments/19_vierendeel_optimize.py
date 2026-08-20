@@ -64,7 +64,7 @@ from truss_routes import lens_geometry
 from truss_routes import run_routes
 from truss_routes import signed_shift
 
-from normax.form_finding.fdm import fit_densities
+from normax.form_finding import fit_densities
 from normax.structures import build_vierendeel_2d
 
 

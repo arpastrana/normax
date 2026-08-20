@@ -81,7 +81,7 @@ def design_steel(grade: SteelGrade) -> Steel:
     )
 
 
-def thinnest_family(grade: SteelGrade, section_class: int) -> TubeFamily:
+def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
     """
     The section family as thin as a given class allows, from a bare grade.
 

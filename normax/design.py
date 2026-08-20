@@ -191,7 +191,7 @@ class StructuralDesignPipeline(eqx.Module):
     def __call__(
         self,
         params: DesignParameters,
-        loads: LoadCases,
+        loads: LoadCases | Float[Array, "nodes 3"],
     ) -> Design:
         """
         Form-find once, analyze every load case, and size for each of them.
@@ -202,7 +202,15 @@ class StructuralDesignPipeline(eqx.Module):
             Force densities, and the diameters the frame is analyzed with.
         loads :
             The load case the shape answers to, and the ones it is checked
-            against.
+            against. A bare nodal array is a structure shaped and checked by
+            that one case, promoted here to what `assemble_load_cases` would
+            have built from it.
+
+        Raises
+        ------
+        ValueError
+            If a bare array arrives with a load case axis, which cannot say
+            which of its cases the shape answers to.
 
         Returns
         -------
@@ -236,6 +244,11 @@ class StructuralDesignPipeline(eqx.Module):
         length. What is fixed is this composition's choice of what to pass, and
         that choice is temporary; see ec3x's `docs/clauses.md`.
         """
+        if not isinstance(loads, LoadCases):
+            if loads.ndim != 2:
+                raise ValueError(f"one bare load case only, got shape {loads.shape}")
+            loads = LoadCases(loads, loads[None])
+
         shape = self.formfinder(params.force_densities, loads.formfinding)
         forces = self.analyzer(shape.xyz, params.diameters, loads.analysis)
         sizes = self.sizer(forces, shape.lengths)

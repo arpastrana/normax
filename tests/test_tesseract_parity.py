@@ -10,21 +10,21 @@ from ec3x.material import Steel
 from ec3x.section import DIAMETER_MINIMUM
 from tesseract_jax import apply_tesseract
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_half_span
-from normax.loads import loads_point
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_point
+from normax.loads import create_loads_uniform
 from normax.loads import select_load_case
 from normax.materials import SteelGrade
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import design_actions
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
+from normax.sizing import design_actions
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import STAGES
@@ -102,6 +102,11 @@ SIZE_FIELDS = (
 # divides by a slope that differs in its last bits.
 TOLERANCE_DERIVATIVE = 5e-12
 
+# The two Jacobian routes, scaled by the largest entry. A funicular arch's
+# axial force barely reads its diameters, so the entries sit near zero and
+# reassociation across the two programs measured at 1.2e-11 of the largest.
+TOLERANCE_ROUTE = 1e-9
+
 # Invariant 6.5 of CLAUDE.md. Measured at 1.8e-15 through the boundary.
 TOLERANCE_UTILIZATION = 1e-9
 
@@ -153,7 +158,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -184,14 +189,14 @@ def three_cases(structure):
     """
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
 
-    half = loads_half_span(structure, spread, factor=0.5)
+    half = create_loads_half_span(structure, spread, factor=0.5)
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
-    point = loads_uniform(structure, spread * 0.75) + loads_point(
+    point = create_loads_uniform(structure, spread * 0.75) + create_loads_point(
         structure, TOTAL_LOAD * 0.25, node=structure.crown_node()
     )
 
-    cases = [loads_uniform(structure, spread), half, point]
+    cases = [create_loads_uniform(structure, spread), half, point]
 
     return load_cases_of(cases)
 
@@ -216,7 +221,7 @@ def both_pipelines(arch, section_class, resultant=True):
     descriptor and every later test errors out of capture rather than failing an
     assertion. Nothing here needs it: the stages compile behind the boundary.
     """
-    family = thinnest_family(neutral_grade(arch.steel), section_class)
+    family = build_section_family(neutral_grade(arch.steel), section_class)
 
     sizer = Ec3Sizer(arch.structure, family, resultant)
     in_process = StructuralDesignPipeline(
@@ -382,7 +387,7 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     # The buckling length is an input rather than a mesh length, so it has to
     # reach the check as itself and not as the member length beside it.
     buckling_length = jnp.full(NUM_EDGES, 1_000.0)
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
 
     shape = FdmFormFinder(arch.structure)(
         arch.params.force_densities, one_case.formfinding
@@ -608,7 +613,7 @@ def sized_through_the_check(arch, result, family):
 
 
 def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
     oracle, _ = both_designs(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, family)
 
@@ -630,7 +635,7 @@ def test_the_moment_factors_survive_the_boundary(arch, one_case):
     # the field walk no longer reaches them. The boundary still publishes them,
     # and here they are held against the local reduction of the same forces at
     # the tolerance the end moments they are read from are held to.
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
     oracle, _ = both_designs(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, family)
 
@@ -648,7 +653,7 @@ def test_the_moment_factors_survive_the_boundary(arch, one_case):
 def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
     # A concrete cotangent on a non-differentiable output raises rather than
     # returning a zero, which is the whole reason the composition drops it.
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
     oracle, _ = both(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, family)
 
@@ -662,10 +667,57 @@ def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
 @pytest.mark.parametrize("stage", STAGES)
 def test_every_stage_exposes_the_endpoints_jax_needs(chain, stage):
     # `abstract_eval` is mandatory because JAX resolves shapes before it runs
-    # anything, and `jax.grad` reaches for the adjoint and never the Jacobian.
+    # anything; `jax.grad` reaches for the adjoint, while a batched `jacrev`
+    # takes a `jacobian` endpoint wherever a server offers one.
     available = set(dict(zip(STAGES, chain))[stage].available_endpoints)
 
     assert {"apply", "abstract_eval", "vector_jacobian_product"} <= available
+
+
+def test_the_analysis_jacobian_route_matches_the_sequential_rows(arch):
+    # A batched jacrev takes the analysis stage's `jacobian` endpoint in one
+    # crossing; forcing the fallback pulls the same rows one product crossing
+    # at a time. The traced backend answers both from the same solve, so the
+    # two Jacobians may differ only by reassociation.
+    structure = arch.structure
+    steel = arch.steel
+    family = build_section_family(neutral_grade(arch.steel), 3)
+    shape = FdmFormFinder(structure)(arch.params.force_densities, funicular(structure))
+
+    payload = {
+        "xyz": shape.xyz,
+        "edges": np.asarray(structure.edges, dtype=np.int64),
+        "supports": np.asarray(structure.supports, dtype=np.int64),
+        "loads": np.asarray(funicular(structure), dtype=np.float64),
+        "f_y": steel.f_y,
+        "e_mod": steel.e_mod,
+        "density": steel.density,
+        "ratio": family.ratio,
+        "normal": NORMAL,
+    }
+
+    def crossed_axial(diameters, materialize):
+        member = apply_tesseract(
+            arch.chain.analysis,
+            {**payload, "diameter": diameters},
+            vmap_method="sequential",
+            materialize_jacobian=materialize,
+        )
+
+        return member["axial_force"]
+
+    assert "jacobian" in arch.chain.analysis.available_endpoints
+
+    routed = jax.jacrev(lambda d: crossed_axial(d, None))(arch.params.diameters)
+    rowed = jax.jacrev(lambda d: crossed_axial(d, False))(arch.params.diameters)
+    largest = float(jnp.max(jnp.abs(rowed)))
+
+    assert np.allclose(
+        np.asarray(routed) / largest,
+        np.asarray(rowed) / largest,
+        rtol=0.0,
+        atol=TOLERANCE_ROUTE,
+    )
 
 
 def test_a_python_list_is_refused_at_the_boundary(structure, chain):

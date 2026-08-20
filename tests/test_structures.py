@@ -2,9 +2,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.loads import loads_half_span
-from normax.loads import loads_point
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_point
+from normax.loads import create_loads_uniform
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 from normax.structures import build_vierendeel_2d
@@ -67,7 +67,7 @@ def test_supports_are_valid(structures):
 
 def test_loads_hang_from_free_nodes_only(structures):
     for structure in structures:
-        loads = np.asarray(loads_uniform(structure, 1.0))
+        loads = np.asarray(create_loads_uniform(structure, 1.0))
         supports = np.asarray(structure.supports)
         free = np.setdiff1d(np.arange(loads.shape[0]), supports)
 
@@ -290,7 +290,7 @@ def loaded():
 def test_a_uniform_load_case_hangs_the_same_force_from_every_free_node(loaded):
     # A structure carries no load of its own, so a load case is built from it
     # rather than read off it.
-    applied = np.asarray(loads_uniform(loaded, 20_000.0))
+    applied = np.asarray(create_loads_uniform(loaded, 20_000.0))
     free = np.setdiff1d(np.arange(applied.shape[0]), np.asarray(loaded.supports))
 
     assert np.allclose(applied[free, 2], -20_000.0)
@@ -302,9 +302,9 @@ def test_no_load_is_ever_applied_to_a_support(loaded, load_case):
     # A support carries a load straight to ground, so one placed there is not a
     # load case but a bookkeeping error.
     load_cases = {
-        "uniform": loads_uniform(loaded, 20_000.0),
-        "half": loads_half_span(loaded, 20_000.0),
-        "point": loads_point(loaded, 50_000.0, node=int(loaded.supports[0])),
+        "uniform": create_loads_uniform(loaded, 20_000.0),
+        "half": create_loads_half_span(loaded, 20_000.0),
+        "point": create_loads_point(loaded, 50_000.0, node=int(loaded.supports[0])),
     }
     assert np.allclose(
         np.asarray(load_cases[load_case])[np.asarray(loaded.supports)], 0.0
@@ -314,9 +314,9 @@ def test_no_load_is_ever_applied_to_a_support(loaded, load_case):
 @pytest.mark.parametrize("load_case", ["uniform", "half", "point"])
 def test_every_load_points_down(loaded, load_case):
     load_cases = {
-        "uniform": loads_uniform(loaded, 20_000.0),
-        "half": loads_half_span(loaded, 20_000.0),
-        "point": loads_point(loaded, 50_000.0, node=5),
+        "uniform": create_loads_uniform(loaded, 20_000.0),
+        "half": create_loads_half_span(loaded, 20_000.0),
+        "point": create_loads_point(loaded, 50_000.0, node=5),
     }
     applied = np.asarray(load_cases[load_case])
     assert np.all(applied[:, :2] == 0.0)
@@ -324,7 +324,7 @@ def test_every_load_points_down(loaded, load_case):
 
 
 def test_a_half_span_load_case_loads_one_half_more_than_the_other(loaded):
-    applied = np.asarray(loads_half_span(loaded, 20_000.0, factor=0.5)[:, 2])
+    applied = np.asarray(create_loads_half_span(loaded, 20_000.0, factor=0.5)[:, 2])
     along = np.asarray(loaded.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
 
@@ -334,7 +334,7 @@ def test_a_half_span_load_case_loads_one_half_more_than_the_other(loaded):
 
 
 def test_a_half_span_load_case_with_no_factor_leaves_one_half_bare(loaded):
-    applied = np.asarray(loads_half_span(loaded, 20_000.0, factor=0.0)[:, 2])
+    applied = np.asarray(create_loads_half_span(loaded, 20_000.0, factor=0.0)[:, 2])
     along = np.asarray(loaded.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
 
@@ -343,7 +343,7 @@ def test_a_half_span_load_case_with_no_factor_leaves_one_half_bare(loaded):
 
 
 def test_a_mirrored_half_span_load_case_loads_the_other_half(loaded):
-    applied = np.asarray(loads_half_span(loaded, 20_000.0, mirrored=True)[:, 2])
+    applied = np.asarray(create_loads_half_span(loaded, 20_000.0, mirrored=True)[:, 2])
     along = np.asarray(loaded.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
 
@@ -352,8 +352,10 @@ def test_a_mirrored_half_span_load_case_loads_the_other_half(loaded):
 
 
 def test_a_mirrored_half_span_load_case_is_the_reflection_of_the_unmirrored_one(loaded):
-    near = np.asarray(loads_half_span(loaded, 20_000.0, factor=0.5)[:, 2])
-    far = np.asarray(loads_half_span(loaded, 20_000.0, factor=0.5, mirrored=True)[:, 2])
+    near = np.asarray(create_loads_half_span(loaded, 20_000.0, factor=0.5)[:, 2])
+    far = np.asarray(
+        create_loads_half_span(loaded, 20_000.0, factor=0.5, mirrored=True)[:, 2]
+    )
 
     assert np.allclose(near, far[::-1])
     assert np.isclose(near.sum(), far.sum())
@@ -362,11 +364,11 @@ def test_a_mirrored_half_span_load_case_is_the_reflection_of_the_unmirrored_one(
 @pytest.mark.parametrize("axis", [-1, 3])
 def test_a_half_span_load_case_refuses_an_axis_that_is_not_a_dimension(loaded, axis):
     with pytest.raises(ValueError, match="axis"):
-        loads_half_span(loaded, 20_000.0, axis=axis)
+        create_loads_half_span(loaded, 20_000.0, axis=axis)
 
 
 def test_a_point_load_case_loads_exactly_one_node(loaded):
-    applied = np.asarray(loads_point(loaded, 50_000.0, node=5)[:, 2])
+    applied = np.asarray(create_loads_point(loaded, 50_000.0, node=5)[:, 2])
 
     assert np.count_nonzero(applied) == 1
     assert applied[5] == -50_000.0
@@ -375,7 +377,9 @@ def test_a_point_load_case_loads_exactly_one_node(loaded):
 def test_load_cases_add(loaded):
     # Cases are arrays and nothing else, so a distributed load with a point load
     # on top of it needs no generator of its own.
-    combined = loads_uniform(loaded, 10_000.0) + loads_point(loaded, 50_000.0, node=5)
+    combined = create_loads_uniform(loaded, 10_000.0) + create_loads_point(
+        loaded, 50_000.0, node=5
+    )
     total = float(jnp.sum(combined[:, 2]))
 
     assert total == pytest.approx(-(9 * 10_000.0 + 50_000.0))

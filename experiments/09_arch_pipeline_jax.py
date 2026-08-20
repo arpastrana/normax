@@ -64,26 +64,26 @@ from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import design_actions
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
+from normax.sizing import design_actions
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import MeshRefinement
@@ -181,7 +181,7 @@ class ArchSetup(NamedTuple):
         """
         The uniform load case the arch is form-found under.
         """
-        return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
+        return create_loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
 
     @property
     def xyz_fixed(self) -> Float[Array, "nodes_fixed 3"]:
@@ -293,9 +293,9 @@ def arch_setup(num_edges: int) -> ArchSetup:
     graph = equilibrium_graph(structure)
     # Standing a frame up needs a section, and every property of it is replaced
     # per call; the seed tube is drawn from the class-3 family as bare geometry.
-    seeded = thinnest_family(GRADE, 3)
+    seeded = build_section_family(GRADE, 3)
     analyzer = SmaxAnalyzer(structure, seeded(SEED))
-    applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
+    applied = create_loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
     xyz_fixed = structure.nodes[graph.indices_fixed]
@@ -314,7 +314,7 @@ def pipeline_from_setup(
     Bind a section class and this mesh into the three blocks.
     """
     structure = setup.structure
-    family = thinnest_family(GRADE, section_class)
+    family = build_section_family(GRADE, section_class)
     sizer = Ec3Sizer(structure, family)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),

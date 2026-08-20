@@ -6,7 +6,7 @@ from ec3x.material import Steel
 from normax.materials import Steel235
 from normax.materials import Steel355
 from normax.materials import SteelGrade
-from normax.sizing.ec3 import design_steel
+from normax.sizing import design_steel
 
 
 def test_the_default_grade_is_the_default_steel():

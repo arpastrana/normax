@@ -18,8 +18,8 @@ This module holds the contract alone: the container a sizer returns and the
 abstract block a pipeline calls. Every clause lives in a backend beside it —
 `normax.sizing.ec3` today — and nothing about any clause is decided here.
 
-No backend is re-exported. A call site names the standard it sizes against,
-`from normax.sizing.ec3 import Ec3Sizer`, the way an analysis names its solver.
+Both backends are re-exported at the bottom, so a call site names the standard
+it sizes against two levels deep: `from normax.sizing import Ec3Sizer`.
 """
 
 import abc
@@ -165,3 +165,18 @@ class AbstractMemberSizer(eqx.Module):
         simultaneous optimization holding it at or under one as a constraint,
         which is why every implementation keeps it differentiable.
         """
+
+
+# Both standards, re-exported so call sites import two levels deep.
+from normax.sizing.blueprint import DIAMETER_MINIMUM
+from normax.sizing.blueprint import GAMMA_M0
+from normax.sizing.blueprint import BlueprintSizer
+from normax.sizing.blueprint import checked_utilization
+from normax.sizing.blueprint import demand_moment
+from normax.sizing.blueprint import host_family
+from normax.sizing.blueprint import sized_diameter
+from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing.ec3 import build_section_family
+from normax.sizing.ec3 import design_actions
+from normax.sizing.ec3 import design_steel
+from normax.sizing.ec3 import neutral_sections

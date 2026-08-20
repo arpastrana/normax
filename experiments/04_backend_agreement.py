@@ -57,25 +57,25 @@ from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.analysis import member_forces as forces_smax
 from normax.analysis import opensees as backend_opensees
-from normax.analysis.smax import member_forces as forces_smax
-from normax.analysis.smax import prepare_model as prepare_smax
+from normax.analysis import prepare_model as prepare_smax
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.optimization import Trajectory
 from normax.optimization import minimize_bounded
 from normax.optimization import value_and_gradient
 from normax.reporting import Report
 from normax.reporting import ReportColumn
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
@@ -185,7 +185,7 @@ class ArchSetup(NamedTuple):
         """
         The uniform load case the arch is form-found under.
         """
-        return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
+        return create_loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
 
     @property
     def bounds(self) -> tuple[float, float]:
@@ -290,7 +290,7 @@ def arch_setup(num_edges: int) -> ArchSetup:
     """
     structure = build_arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
-    applied = loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
+    applied = create_loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
     state = equilibrium_state(
@@ -318,7 +318,7 @@ def mass_objective(setup: ArchSetup, chain) -> Callable[[Float[Array, "edges"]],
     Force densities to a mass, through whichever backend is selected.
     """
     structure = setup.structure
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     sizer = TesseractSizer(structure, chain.ec3, family)
     pipeline = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
@@ -408,7 +408,7 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     """
     xyz = setup.xyz
     diameters = setup.seed
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     prepared_ddm = backend_opensees.prepare_model(
         setup.structure, family, normal=NORMAL
     )
@@ -461,7 +461,7 @@ def agreement(report: Report) -> float:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     prepared_ddm = backend_opensees.prepare_model(
         setup.structure, family, normal=NORMAL
     )
@@ -555,7 +555,7 @@ def blind(report: Report) -> None:
     setup = arch_setup(NUM_EDGES)
     xyz = setup.xyz
     diameters = setup.seed
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     prepared = prepare_smax(setup.structure, family(SEED))
 
     def run(coords):

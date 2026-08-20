@@ -82,14 +82,14 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import CompiledStructure
 
-from normax.analysis.smax import member_forces
-from normax.analysis.smax import prepare_model
-from normax.loads import loads_uniform
+from normax.analysis import member_forces
+from normax.analysis import prepare_model
+from normax.loads import create_loads_uniform
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.sizing.ec3 import neutral_sections
+from normax.sizing import neutral_sections
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import BeamSizing
@@ -315,7 +315,7 @@ def beam_problem() -> BeamProblem:
     arch = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=ARCH_RISE)
     structure = arch._replace(nodes=arch.nodes.at[:, 2].set(0.0))
     model = prepare_model(structure, SECTION_SEED)
-    setup = BeamProblem(structure, model, loads_uniform(structure, spread))
+    setup = BeamProblem(structure, model, create_loads_uniform(structure, spread))
 
     return setup
 

@@ -17,7 +17,7 @@ What a form-found shape is, and what any form finder must answer.
 A form finder maps a parametrization to the geometry that carries a load case
 without bending. This module says what that geometry is and what the contract
 looks like; `normax.form_finding.fdm` holds the force density method as one
-implementation, and it is the only thing here that needs `jax-fdm`.
+implementation, re-exported at the bottom so call sites import two levels deep.
 
 **The contract is separated from the method for the same reason the analysis
 stage separates its own.** A design composes blocks and has to name their types,
@@ -100,3 +100,18 @@ class AbstractFormFinder(eqx.Module):
         shape :
             The geometry at equilibrium, and its member lengths.
         """
+
+
+# The force density method, re-exported so call sites import two levels deep.
+from normax.form_finding.fdm import DensityFit
+from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding.fdm import PivotedBasis
+from normax.form_finding.fdm import SubspaceFormFinder
+from normax.form_finding.fdm import density_basis
+from normax.form_finding.fdm import equilibrium_gap
+from normax.form_finding.fdm import equilibrium_graph
+from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding.fdm import fit_densities
+from normax.form_finding.fdm import pivoted_basis
+from normax.form_finding.fdm import plan_equilibrium
+from normax.form_finding.fdm import positions_vertical

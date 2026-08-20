@@ -25,19 +25,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from tesseract_jax import apply_tesseract
 
+from normax.analysis import member_forces as forces_smax
 from normax.analysis import opensees as backend_opensees
-from normax.analysis.smax import member_forces as forces_smax
-from normax.analysis.smax import prepare_model as prepare_smax
+from normax.analysis import prepare_model as prepare_smax
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import build_section_family
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractFormFinder
@@ -80,7 +81,7 @@ def steel():
 def catalogue(steel):
     # The class-limit wall proportion, as bare geometry: both backends read the
     # ratio and the grade, and neither has any use for the class.
-    return thinnest_family(steel, 3)
+    return build_section_family(steel, 3)
 
 
 @pytest.fixture(scope="module")
@@ -104,7 +105,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -445,3 +446,43 @@ def test_the_backend_is_restored_when_the_block_raises():
         raise RuntimeError("boom")
 
     assert os.environ.get("NORMAX_ANALYSIS_BACKEND") == before
+
+
+def test_the_jacobian_route_hands_over_the_swept_blocks(
+    geometry, diameters, steel, catalogue
+):
+    # The endpoint returns the same dense blocks both product rules contract
+    # one slice of, so the two routes agree exactly, not merely closely.
+    structure, xyz = geometry
+
+    payload = {
+        "xyz": xyz,
+        "edges": np.asarray(structure.edges, dtype=np.int64),
+        "supports": np.asarray(structure.supports, dtype=np.int64),
+        "loads": np.asarray(funicular(structure), dtype=np.float64),
+        "f_y": steel.f_y,
+        "e_mod": steel.e_mod,
+        "density": steel.density,
+        "ratio": catalogue.ratio,
+        "normal": NORMAL,
+    }
+
+    with analysis_backend("opensees"):
+        analysis = local_chain().analysis
+
+        def crossed_axial(sized, materialize):
+            member = apply_tesseract(
+                analysis,
+                {**payload, "diameter": sized},
+                vmap_method="sequential",
+                materialize_jacobian=materialize,
+            )
+
+            return member["axial_force"]
+
+        assert "jacobian" in analysis.available_endpoints
+
+        routed = jax.jacrev(lambda sized: crossed_axial(sized, None))(diameters)
+        rowed = jax.jacrev(lambda sized: crossed_axial(sized, False))(diameters)
+
+    assert np.array_equal(np.asarray(routed), np.asarray(rowed))

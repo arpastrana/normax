@@ -813,3 +813,81 @@ def jacobian_vector_product(
         tangents[output] = pushed
 
     return tangents
+
+
+def jacobian(
+    inputs: InputSchema,
+    jac_inputs: set[str],
+    jac_outputs: set[str],
+) -> dict[str, dict[str, np.ndarray]]:
+    """
+    Materialize every requested derivative block, by hand.
+
+    Parameters
+    ----------
+    inputs :
+        The member actions and the family.
+    jac_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jac_outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    blocks :
+        One array per (output, input) pair, keyed output first, each shaped
+        as the output's shape followed by the input's.
+
+    Raises
+    ------
+    ValueError
+        If the clamp mask is requested, or an input has no derivative rule.
+
+    Notes
+    -----
+    What a batched `jax.jacrev` or `jax.jacfwd` calls once per Jacobian:
+    tesseract-jax routes stacked (co)tangents here whenever this endpoint
+    exists, contracting the blocks client-side, so one crossing replaces one
+    per constraint row. The caller requests every differentiable output
+    whether or not its cotangent is live, and the runtime holds the returned
+    keys to exactly the requested sets.
+
+    The blocks are the same per-member pulls the two product endpoints
+    contract, written out: every map is diagonal over members, so each block
+    is zeros with one entry per member — on the diagonal for the vectors, at
+    the winning end column with that end's sign for the moments. No matmul,
+    no re-solve, no tracer.
+
+    The name sets arrive unordered and are iterated sorted, which fixes the
+    construction order without touching the keyed result.
+    """
+    outputs = sorted(jac_outputs)
+    state = _adjoint_state(inputs, outputs)
+    partials = state.partials
+    rows = state.rows
+    members = rows.shape[0]
+
+    blocks: dict[str, dict[str, np.ndarray]] = {}
+    for output in outputs:
+        per_input = {}
+        for name in sorted(jac_inputs):
+            if name == "axial_force":
+                block = np.zeros((members, members))
+                block[rows, rows] = state.axial_pulls[output]
+            elif name == "diameter_held":
+                block = np.zeros((members, members))
+                block[rows, rows] = state.held_pulls[output]
+            elif name == "end_moments_major":
+                block = np.zeros((members, members, 2))
+                routed = state.moment_pulls[output] * partials.sign_major
+                block[rows, rows, partials.winner_major] = routed
+            elif name == "end_moments_minor":
+                block = np.zeros((members, members, 2))
+                routed = state.moment_pulls[output] * partials.sign_minor
+                block[rows, rows, partials.winner_minor] = routed
+            else:
+                raise ValueError(f"no hand-written derivative covers `{name}`")
+            per_input[name] = block
+        blocks[output] = per_input
+
+    return blocks

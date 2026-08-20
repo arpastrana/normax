@@ -6,26 +6,26 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import diameter_envelope
 from normax.design import optimize_staggered
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_half_span
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
 from normax.optimization import SearchResult
 from normax.sections import TubeFamily
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import design_actions
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
+from normax.sizing import design_actions
 from normax.structures import build_arch_2d
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
@@ -66,7 +66,7 @@ def grade():
 
 @pytest.fixture(scope="module")
 def family(grade):
-    return thinnest_family(grade, 3)
+    return build_section_family(grade, 3)
 
 
 @pytest.fixture(scope="module")
@@ -78,7 +78,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -156,9 +156,9 @@ def one_case(structure):
 def three_cases(structure):
     load = TOTAL_LOAD / (NUM_EDGES - 1)
     cases = [
-        loads_uniform(structure, load),
-        loads_half_span(structure, load, factor=0.25),
-        loads_half_span(structure, load, factor=0.25, mirrored=True),
+        create_loads_uniform(structure, load),
+        create_loads_half_span(structure, load, factor=0.25),
+        create_loads_half_span(structure, load, factor=0.25, mirrored=True),
     ]
 
     return load_cases_of(cases)
@@ -188,7 +188,7 @@ def staggered(pipeline, params, three_cases):
 def test_sizer_reads_its_class_off_its_family(structure, grade):
     """The class is derived from the family and never accepted beside it."""
     for section_class in (1, 2, 3):
-        family = thinnest_family(grade, section_class)
+        family = build_section_family(grade, section_class)
         sizer = Ec3Sizer(structure, family)
 
         assert sizer.section_class == section_class
@@ -249,6 +249,22 @@ def test_repeating_a_load_case_changes_nothing(pipeline, params, one_case):
         design_envelope(once).sizes.sections.diameter,
     )
     assert compute_mass(design_envelope(twice)) == compute_mass(design_envelope(once))
+
+
+def test_a_bare_load_array_is_the_assembled_single_case(pipeline, params, one_case):
+    # A structure shaped and checked by one case needs no container to say
+    # which case shapes it, so the pipeline promotes the bare array to exactly
+    # what assemble_load_cases builds — identical to the leaf, not merely close.
+    assembled = pipeline(params, one_case)
+    bare = pipeline(params, one_case.formfinding)
+
+    assert eqx.tree_equal(bare, assembled)
+
+
+def test_a_stacked_bare_array_is_refused(pipeline, params, three_cases):
+    # A raw stack cannot say which of its cases the shape answers to.
+    with pytest.raises(ValueError, match="one bare load case"):
+        pipeline(params, three_cases.analysis)
 
 
 def test_a_geometry_is_form_found_once_for_every_load_case(

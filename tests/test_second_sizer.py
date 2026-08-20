@@ -9,20 +9,20 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
+from normax.sizing import Ec3Sizer
 from normax.sizing import MemberSizes
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 
@@ -153,7 +153,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -222,7 +222,7 @@ def test_the_two_philosophies_disagree_about_the_sizes(
     limit_state = StructuralDesignPipeline(
         pipeline.formfinder,
         pipeline.analyzer,
-        Ec3Sizer(structure, thinnest_family(Steel355(), 3)),
+        Ec3Sizer(structure, build_section_family(Steel355(), 3)),
     )
 
     naive = pipeline(params, one_case).sizes.sections.diameter

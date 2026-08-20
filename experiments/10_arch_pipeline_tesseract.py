@@ -62,24 +62,24 @@ from jaxtyping import Float
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import Chain
@@ -213,7 +213,7 @@ class ArchSetup(NamedTuple):
         """
         The uniform load case the arch is form-found under.
         """
-        return loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
+        return create_loads_uniform(self.structure, TOTAL_LOAD / (self.num_edges - 1))
 
 
 def in_process_pipeline(
@@ -224,7 +224,7 @@ def in_process_pipeline(
     The three blocks that compute here, built against the arch.
     """
     structure = setup.structure
-    family = thinnest_family(GRADE, section_class)
+    family = build_section_family(GRADE, section_class)
     sizer = Ec3Sizer(structure, family)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
@@ -244,7 +244,7 @@ def composed_pipeline(
     The same three blocks, each reached across a Tesseract boundary.
     """
     structure = setup.structure
-    family = thinnest_family(GRADE, section_class)
+    family = build_section_family(GRADE, section_class)
     sizer = TesseractSizer(structure, chain.ec3, family)
     blocks = StructuralDesignPipeline(
         TesseractFormFinder(structure, chain.formfinding),
@@ -312,7 +312,7 @@ def arch_setup() -> ArchSetup:
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     graph = equilibrium_graph(structure)
-    applied = loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    applied = create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
     trial = jnp.full(NUM_EDGES, -1.0)
     xyz_fixed = structure.nodes[graph.indices_fixed]
@@ -702,7 +702,7 @@ def main(verbose: bool = True) -> None:
 
     modes = report_modes(report, setup, chain)
 
-    family = thinnest_family(GRADE, 3)
+    family = build_section_family(GRADE, 3)
     sizer = Ec3Sizer(setup.structure, family)
     refused = refusal_message(setup, chain, sizer)
     entries = (("refused", refused),)
