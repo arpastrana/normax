@@ -17,7 +17,7 @@ The Vierendeel truss designed end to end, against two searches without a form fi
 The Warren race of experiment 18, rerun on the truss where funicularity is
 scarce. Same three constrained searches, same analysis, same EN 1993-1-1
 check, same rise ceiling and sag floor, the whole flow shared in
-`truss_routes`; this file is the Vierendeel's profile — its generator, its
+`design_routes`; this file is the Vierendeel's profile — its generator, its
 mirror, its families, its start recipe, and the one guard it alone needs.
 
 **On this truss the two shaped routes do not span the same geometries.** The
@@ -54,44 +54,53 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+from design_routes import ChordSigns
+from design_routes import RouteProblem
+from design_routes import RouteProfile
+from design_routes import StartPoint
+from design_routes import TaskConfig
+from design_routes import lens_geometry
+from design_routes import parse_truss
+from design_routes import run_routes
+from design_routes import signed_shift
+from design_routes import truss_extent
+from design_routes import truss_heights
+from design_routes import truss_loads
 from jaxtyping import Int
-from truss_routes import ChordSigns
-from truss_routes import RouteProblem
-from truss_routes import StartPoint
-from truss_routes import TaskConfig
-from truss_routes import TrussProfile
-from truss_routes import lens_geometry
-from truss_routes import run_routes
-from truss_routes import signed_shift
 
 from normax.form_finding import fit_densities
+from normax.structures import Structure
 from normax.structures import build_vierendeel_2d
 
 
-def mirrored_nodes(num_bays: int) -> Int[np.ndarray, "nodes"]:
+def mirrored_nodes(config: TaskConfig) -> Int[np.ndarray, "nodes"]:
     """
     Mirror image of every node index about midspan, chord by chord.
     """
+    num_bays = config.structure.num_bays
+
     bottom = num_bays - np.arange(num_bays + 1)
     top = 2 * num_bays + 1 - np.arange(num_bays + 1)
 
     return np.concatenate([bottom, top])
 
 
-def member_families(num_bays: int) -> tuple[tuple[str, slice], ...]:
+def member_families(config: TaskConfig) -> tuple[tuple[str, slice], ...]:
     """
     Name and member slice of every family, in the generator's order.
 
     Parameters
     ----------
-    num_bays :
-        Number of bottom-chord segments the span is divided into.
+    config :
+        The run description, read for the bay count.
 
     Returns
     -------
     families :
         The two chords and the verticals — no diagonals on a Vierendeel.
     """
+    num_bays = config.structure.num_bays
+
     families = (
         ("bottom chord", slice(0, num_bays)),
         ("top chord", slice(num_bays, 2 * num_bays)),
@@ -99,6 +108,25 @@ def member_families(num_bays: int) -> tuple[tuple[str, slice], ...]:
     )
 
     return families
+
+
+def build_truss(config: TaskConfig) -> Structure:
+    """
+    The truss the run describes.
+
+    Parameters
+    ----------
+    config :
+        The run description, read for the bays, the span and the depth.
+
+    Returns
+    -------
+    structure :
+        The drawn truss.
+    """
+    sketch = config.structure
+
+    return build_vierendeel_2d(sketch.num_bays, sketch.span, sketch.depth)
 
 
 def signed_start(problem: RouteProblem, config: TaskConfig) -> StartPoint:
@@ -181,15 +209,19 @@ def chord_guard(config: TaskConfig, start: StartPoint) -> ChordSigns:
     return ChordSigns(signs, chords, config.subspace.margin_fraction * scale, scale)
 
 
-VIERENDEEL_PROFILE = TrussProfile(
+VIERENDEEL_PROFILE = RouteProfile(
     banner="Vierendeel truss — three routes to a design",
     prefix="19_vierendeel",
     start_heading="The start, and what the scarcity does to it",
-    build_structure=build_vierendeel_2d,
+    parse_task=parse_truss,
+    build_structure=build_truss,
     mirrored_nodes=mirrored_nodes,
     member_families=member_families,
+    build_loads=truss_loads,
+    height_limits=truss_heights,
     signed_start=signed_start,
-    chord_guard=chord_guard,
+    sign_guard=chord_guard,
+    extent=truss_extent,
 )
 
 

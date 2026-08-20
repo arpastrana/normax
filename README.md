@@ -98,7 +98,7 @@ shape prior: descending one force density through it is start-proof where
 descending every free node height stalls in bending. On a truss, holding the
 plan leaves a null space of force densities to search, and
 `SubspaceFormFinder` makes its basis coordinates the design variables.
-`experiments/truss_routes.py` then races three routes over the same members,
+`experiments/design_routes.py` then races three routes over the same members,
 loads and check — the whole pipeline end to end, free heights without the form
 finder, and sizing alone at the drawn geometry — and moving the geometry buys
 the larger share of the mass on both trusses. Numbers, tolerances and the full

@@ -24,7 +24,7 @@ the form finder and hands the optimizer the node heights directly, driving
 the same T2 and T3 alone. The sizing-only route holds the truss as drawn and
 moves the diameters alone. All three run the same SLSQP under hard `U <= 1`
 per member and load case, analytic Jacobians throughout, inside the rise
-ceiling and above the sag floor. The flow lives in `truss_routes` and is
+ceiling and above the sag floor. The flow lives in `design_routes` and is
 shared with the Vierendeel of experiment 19; this file is the Warren's
 profile — its generator, its mirror, its families, and its start recipe.
 
@@ -61,43 +61,52 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+from design_routes import RouteProblem
+from design_routes import RouteProfile
+from design_routes import StartPoint
+from design_routes import TaskConfig
+from design_routes import lens_geometry
+from design_routes import parse_truss
+from design_routes import run_routes
+from design_routes import signed_shift
+from design_routes import truss_extent
+from design_routes import truss_heights
+from design_routes import truss_loads
 from jaxtyping import Int
-from truss_routes import RouteProblem
-from truss_routes import StartPoint
-from truss_routes import TaskConfig
-from truss_routes import TrussProfile
-from truss_routes import lens_geometry
-from truss_routes import run_routes
-from truss_routes import signed_shift
 
 from normax.form_finding import fit_densities
+from normax.structures import Structure
 from normax.structures import build_warren_2d
 
 
-def mirrored_nodes(num_bays: int) -> Int[np.ndarray, "nodes"]:
+def mirrored_nodes(config: TaskConfig) -> Int[np.ndarray, "nodes"]:
     """
     Mirror image of every node index about midspan, chord by chord.
     """
+    num_bays = config.structure.num_bays
+
     bottom = num_bays - np.arange(num_bays + 1)
     top = 2 * num_bays - np.arange(num_bays)
 
     return np.concatenate([bottom, top])
 
 
-def member_families(num_bays: int) -> tuple[tuple[str, slice], ...]:
+def member_families(config: TaskConfig) -> tuple[tuple[str, slice], ...]:
     """
     Name and member slice of every family, in the generator's order.
 
     Parameters
     ----------
-    num_bays :
-        Number of bottom-chord segments the span is divided into.
+    config :
+        The run description, read for the bay count.
 
     Returns
     -------
     families :
         The two chords and the two diagonal directions.
     """
+    num_bays = config.structure.num_bays
+
     families = (
         ("bottom chord", slice(0, num_bays)),
         ("top chord", slice(num_bays, 2 * num_bays - 1)),
@@ -106,6 +115,25 @@ def member_families(num_bays: int) -> tuple[tuple[str, slice], ...]:
     )
 
     return families
+
+
+def build_truss(config: TaskConfig) -> Structure:
+    """
+    The truss the run describes.
+
+    Parameters
+    ----------
+    config :
+        The run description, read for the bays, the span and the depth.
+
+    Returns
+    -------
+    structure :
+        The drawn truss.
+    """
+    sketch = config.structure
+
+    return build_warren_2d(sketch.num_bays, sketch.span, sketch.depth)
 
 
 def signed_start(problem: RouteProblem, config: TaskConfig) -> StartPoint:
@@ -158,15 +186,19 @@ def signed_start(problem: RouteProblem, config: TaskConfig) -> StartPoint:
     return StartPoint(shifted.q, xi, lens, projection, fit.gap)
 
 
-WARREN_PROFILE = TrussProfile(
+WARREN_PROFILE = RouteProfile(
     banner="Warren truss — three routes to a design",
     prefix="18_warren",
     start_heading="The start, and what the indeterminacy does to it",
-    build_structure=build_warren_2d,
+    parse_task=parse_truss,
+    build_structure=build_truss,
     mirrored_nodes=mirrored_nodes,
     member_families=member_families,
+    build_loads=truss_loads,
+    height_limits=truss_heights,
     signed_start=signed_start,
-    chord_guard=None,
+    sign_guard=None,
+    extent=truss_extent,
 )
 
 

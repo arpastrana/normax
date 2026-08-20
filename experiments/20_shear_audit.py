@@ -52,7 +52,7 @@ from normax.sections import TubeFamily
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from truss_routes import TrussProfile  # noqa: E402
+from design_routes import RouteProfile  # noqa: E402
 
 EXPERIMENTS = Path(__file__).resolve().parent
 
@@ -282,7 +282,7 @@ def read_the_arch() -> ShearReading:
     )
 
 
-def read_a_truss(profile: TrussProfile, stem: str) -> tuple[ShearReading, ...]:
+def read_a_truss(profile: RouteProfile, stem: str) -> tuple[ShearReading, ...]:
     """
     One truss's three answers, each read at its own converged design.
 
@@ -300,40 +300,38 @@ def read_a_truss(profile: TrussProfile, stem: str) -> tuple[ShearReading, ...]:
 
     Notes
     -----
-    The shared flow of `truss_routes` up to the reads, without its report: the
+    The shared flow of `design_routes` up to the reads, without its report: the
     descent is the same one experiments 18 and 19 run, so the answers read here
     are theirs.
     """
-    routes = load_experiment("truss_routes")
+    routes = load_experiment("design_routes")
 
-    config = routes.parse_config((EXPERIMENTS / f"{stem}.yaml").read_text())
+    config = profile.parse_task((EXPERIMENTS / f"{stem}.yaml").read_text())
     budget = config.descent
-    bays = config.structure.num_bays
 
-    structure = profile.build_structure(
-        bays, config.structure.span, config.structure.depth
-    )
-    mirrored = profile.mirrored_nodes(bays)
+    structure = profile.build_structure(config)
+    mirrored = profile.mirrored_nodes(config)
+    plan = profile.build_loads(structure, config)
     problem = routes.prepare_problem(
-        structure, config, mirrored, routes.mirrored_edges(mirrored, structure)
+        structure, config, plan, mirrored, routes.mirrored_edges(mirrored, structure)
     )
 
     start = profile.signed_start(problem, config)
     finder = problem.pipeline.formfinder
     shape = finder.formfinder(jnp.asarray(start.q), problem.loads.formfinding)
-    if profile.chord_guard is None:
+    if profile.sign_guard is None:
         guard = None
     else:
-        guard = profile.chord_guard(config, start)
+        guard = profile.sign_guard(config, start)
 
-    limits = routes.height_truss(budget, config.structure.depth)
+    limits = profile.height_limits(config)
     maps = routes.route_maps(problem, limits, budget.length_floor, guard)
     starts = routes.route_starts(problem, start, shape.xyz, budget.diameter_floor)
     boxes = routes.route_boxes(problem, budget.diameter_floor, limits)
     answers = routes.descend_all(Report(verbose=False), maps, starts, boxes, budget)
     reads = routes.route_reads(problem, answers, budget)
 
-    families = profile.member_families(bays)
+    families = profile.member_families(config)
     readings = []
     for route in routes.ROUTE_ORDER:
         read = reads[route]

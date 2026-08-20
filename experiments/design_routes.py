@@ -64,6 +64,7 @@ from normax.form_finding import pivoted_basis
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_point
+from normax.loads import create_loads_tributary
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
@@ -85,6 +86,13 @@ CASE_NAMES = (
     "LC2 half span",
     "LC3 half span mirrored",
     "LC4 midspan point",
+)
+
+# The shell's cases, whose sector is self-symmetric so none of them is deleted.
+SHELL_NAMES = (
+    "LC1 uniform pressure",
+    "LC2 sector drift",
+    "LC3 apex point",
 )
 
 # Relative steps the central difference sweeps, and the worst scaled error the
@@ -162,6 +170,59 @@ class TrussConfig(NamedTuple):
     num_bays: int
     span: float
     depth: float
+
+
+class ShellConfig(NamedTuple):
+    """
+    The gridshell to build.
+
+    Attributes
+    ----------
+    num_rings :
+        Number of rings between the apex and the boundary, boundary included.
+    num_spokes :
+        Number of spokes radiating from the apex.
+    radius :
+        Radius of the circular plan of the cap.
+    rise :
+        Height of the apex above the plane of the boundary.
+    """
+
+    num_rings: int
+    num_spokes: int
+    radius: float
+    rise: float
+
+
+class ShellLoads(NamedTuple):
+    """
+    The pressure the shell answers to, and where the cases put it.
+
+    Attributes
+    ----------
+    pressure :
+        Downward force per unit of plan area, which every distributed case
+        carries the same total of.
+    sector_spokes :
+        How many spokes the drift case loads fully. Odd, and centred on spoke
+        zero, so the case is symmetric about the mirror plane and the design
+        may be folded without going blind to it.
+    drift_factor :
+        Fraction of the pressure the plan outside the sector keeps, before
+        the case is rescaled back to the shared total. The shell's reading of
+        the trusses' `half_factor`: a drift is a redistribution over the
+        whole roof, not a spotlight on a quarter of it, and a case that
+        unloads three quarters entirely is a stress test rather than a
+        snow load.
+    point_factor :
+        Fraction of the total the apex case concentrates at the crown. The
+        one case exempt from the shared total, as on the trusses.
+    """
+
+    pressure: float
+    sector_spokes: int
+    drift_factor: float
+    point_factor: float
 
 
 class LoadConfig(NamedTuple):
@@ -321,11 +382,12 @@ class TaskConfig(NamedTuple):
     Attributes
     ----------
     structure :
-        The truss to build.
+        The structure to build, in whichever family's terms it is drawn.
     loads :
-        The load every case carries.
+        The load every case carries, in whichever family's terms it is stated.
     sketch :
-        The lens the end-to-end route starts from.
+        The lens the end-to-end route starts from, or None where the drawn
+        geometry is already the start and no sketch is needed.
     subspace :
         Which held-plan basis the geometry variables span.
     analysis :
@@ -334,18 +396,67 @@ class TaskConfig(NamedTuple):
         The budgets the searches share.
     viewer :
         Whether the run ends in a viewer.
+
+    Notes
+    -----
+    The first three sections are the profile's to parse and the profile's to
+    read; nothing in the shared flow touches a field of them. The last four
+    are family-blind, which is what lets one flow run a truss and a shell.
     """
 
-    structure: TrussConfig
-    loads: LoadConfig
-    sketch: SketchConfig
+    structure: TrussConfig | ShellConfig
+    loads: LoadConfig | ShellLoads
+    sketch: SketchConfig | None
     subspace: SubspaceConfig
     analysis: AnalysisConfig
     descent: DescentConfig
     viewer: ViewerConfig
 
 
-def parse_config(text: str) -> TaskConfig:
+def shared_sections(document: dict[str, object]) -> dict[str, object]:
+    """
+    The four sections every family describes a run with, parsed and checked.
+
+    Parameters
+    ----------
+    document :
+        The loaded YAML document.
+
+    Returns
+    -------
+    sections :
+        Keyword arguments naming the family-blind half of a `TaskConfig`.
+
+    Raises
+    ------
+    ValueError
+        If the basis or the viewer's route is not one this flow serves.
+    TypeError
+        If a section names a field that does not exist, or omits one it does.
+
+    Notes
+    -----
+    No container carries a default, so a file missing a field is refused
+    rather than quietly completed.
+    """
+    subspace = SubspaceConfig(**document["subspace"])
+    viewer = ViewerConfig(**document["viewer"])
+
+    if subspace.basis not in ("svd", "pivoted"):
+        raise ValueError(f"basis must be svd or pivoted, got {subspace.basis}")
+    if viewer.route not in ROUTE_ORDER:
+        named = ", ".join(ROUTE_ORDER)
+        raise ValueError(f"viewer route must be one of {named}, got {viewer.route}")
+
+    return {
+        "subspace": subspace,
+        "analysis": AnalysisConfig(**document["analysis"]),
+        "descent": DescentConfig(**document["descent"]),
+        "viewer": viewer,
+    }
+
+
+def parse_truss(text: str) -> TaskConfig:
     """
     The truss and the budgets a run is described by.
 
@@ -361,13 +472,9 @@ def parse_config(text: str) -> TaskConfig:
 
     Raises
     ------
-    TypeError
-        If the text names a field that does not exist, or omits one that does.
-
-    Notes
-    -----
-    No container carries a default, so a file missing a field is refused
-    rather than quietly completed.
+    ValueError
+        If the length floor is shallower than half the drawn depth, or the
+        mirrored case is deleted from a problem that is not folded.
     """
     document = yaml.safe_load(text)
 
@@ -375,18 +482,8 @@ def parse_config(text: str) -> TaskConfig:
         structure=TrussConfig(**document["structure"]),
         loads=LoadConfig(**document["loads"]),
         sketch=SketchConfig(**document["sketch"]),
-        subspace=SubspaceConfig(**document["subspace"]),
-        analysis=AnalysisConfig(**document["analysis"]),
-        descent=DescentConfig(**document["descent"]),
-        viewer=ViewerConfig(**document["viewer"]),
+        **shared_sections(document),
     )
-    if config.subspace.basis not in ("svd", "pivoted"):
-        raise ValueError(f"basis must be svd or pivoted, got {config.subspace.basis}")
-    if config.viewer.route not in ROUTE_ORDER:
-        named = ", ".join(ROUTE_ORDER)
-        raise ValueError(
-            f"viewer route must be one of {named}, got {config.viewer.route}"
-        )
     shallowest = 0.5 * config.structure.depth
     if config.descent.length_floor < shallowest:
         raise ValueError(
@@ -397,6 +494,58 @@ def parse_config(text: str) -> TaskConfig:
         raise ValueError(
             "the mirrored half-span case can only be deleted from a symmetric"
             " problem — set symmetric: true, or keep mirrored_case: true"
+        )
+
+    return config
+
+
+def parse_shell(text: str) -> TaskConfig:
+    """
+    The gridshell and the budgets a run is described by.
+
+    Parameters
+    ----------
+    text :
+        Text of the file describing the run.
+
+    Returns
+    -------
+    config :
+        The shell, and the settings its routes are compared under.
+
+    Raises
+    ------
+    ValueError
+        If the drift sector cannot be centred on a spoke, or is wider than the
+        shell has spokes.
+
+    Notes
+    -----
+    No sketch section: the generated cap is already funicular under its own
+    uniform case, so the end-to-end route starts on the drawn geometry rather
+    than on a lens sketched beside it.
+
+    No length-floor rule either. A held plan bounds every member length below
+    by its own plan projection, which no search can shorten, so the floor that
+    keeps a truss's verticals from collapsing has nothing to do here.
+    """
+    document = yaml.safe_load(text)
+
+    config = TaskConfig(
+        structure=ShellConfig(**document["structure"]),
+        loads=ShellLoads(**document["loads"]),
+        sketch=None,
+        **shared_sections(document),
+    )
+    spokes = config.loads.sector_spokes
+    if spokes % 2 == 0:
+        raise ValueError(
+            f"sector_spokes must be odd to centre on a spoke, got {spokes}"
+        )
+    if spokes > config.structure.num_spokes:
+        raise ValueError(
+            f"sector_spokes must not exceed num_spokes, "
+            f"{config.structure.num_spokes}, got {spokes}"
         )
 
     return config
@@ -840,6 +989,151 @@ def load_names(weight: LoadConfig) -> tuple[str, ...]:
     return (CASE_NAMES[0], CASE_NAMES[1], CASE_NAMES[3])
 
 
+class LoadPlan(NamedTuple):
+    """
+    Every case a run is checked against, named, and what they each weigh.
+
+    Attributes
+    ----------
+    cases :
+        The case the shape is found under, and the stack every route is
+        checked against.
+    names :
+        Name of every case, in build order.
+    total :
+        Downward force each distributed case carries, the scale the start's
+        equilibrium gap is reported against.
+
+    Notes
+    -----
+    A profile's one job on the loading side is to return this: how a family
+    spreads a load over its own nodes is the one part of a load case no
+    shared flow can know, while the three things read afterwards are the same
+    for every family.
+    """
+
+    cases: LoadCases
+    names: tuple[str, ...]
+    total: float
+
+
+def truss_loads(structure: Structure, config: TaskConfig) -> LoadPlan:
+    """
+    The deck cases of experiments 18 and 19, gathered into a plan.
+
+    Parameters
+    ----------
+    structure :
+        The truss to load.
+    config :
+        The run description, read for the loads and the bay count.
+
+    Returns
+    -------
+    plan :
+        The four deck cases, or three where the mirrored one is deleted.
+    """
+    weight = config.loads
+    cases = build_load_cases(structure, weight, config.structure.num_bays)
+
+    return LoadPlan(cases, load_names(weight), weight.total)
+
+
+def tributary_areas(sketch: ShellConfig) -> Float[np.ndarray, "nodes"]:
+    """
+    Plan area every node of a polar cap carries.
+
+    Parameters
+    ----------
+    sketch :
+        The cap the generator was asked to draw.
+
+    Returns
+    -------
+    areas :
+        Plan area of every node, the apex first and then ring by ring.
+
+    Notes
+    -----
+    Each ring owns the annulus reaching halfway to its neighbours, split
+    evenly between its spokes; the apex owns the disc inside the first such
+    boundary. The areas therefore sum to the whole plan exactly, which is what
+    makes the supports' share readable as the difference between the stated
+    pressure's total and the total actually applied.
+    """
+    rings = sketch.num_rings
+    spokes = sketch.num_spokes
+
+    rhos = sketch.radius * np.arange(1, rings + 1) / rings
+    inner = np.concatenate([[0.0], 0.5 * (rhos[:-1] + rhos[1:])])
+    outer = np.concatenate([0.5 * (rhos[:-1] + rhos[1:]), [sketch.radius]])
+
+    inner[0] = 0.5 * rhos[0]
+    apex = np.pi * inner[0] ** 2
+
+    annuli = np.pi * (outer**2 - inner**2) / spokes
+    ring_areas = np.repeat(annuli, spokes)
+
+    return np.concatenate([[apex], ring_areas])
+
+
+def shell_loads(structure: Structure, config: TaskConfig) -> LoadPlan:
+    """
+    A uniform pressure, a drift over one sector, and a load at the crown.
+
+    Parameters
+    ----------
+    structure :
+        The shell to load.
+    config :
+        The run description, read for the pressure and the sector width.
+
+    Returns
+    -------
+    plan :
+        The three cases, the first two carrying the same total.
+
+    Notes
+    -----
+    **The stated pressure and the applied total are two different numbers.**
+    The pressure acts on the whole plan, but the boundary ring's tributary
+    share sits on supported nodes and goes straight to ground, so the total
+    the structure carries is what is left. That remainder is the plan's total,
+    and the drift case is rescaled onto it so no case wins by carrying less.
+
+    **The drift grades rather than spotlights.** The sector keeps the full
+    pressure and the rest of the plan keeps `drift_factor` of it, which is
+    the trusses' half-span construction read onto a disc; the crown, sitting
+    on every sector's axis, stays inside whichever sector is loaded. Emptying
+    the plan outside the sector instead would concentrate the whole roof's
+    load on a quarter of it once rescaled — a stress test rather than a
+    snow load, and one whose feasible set is measurably harder to descend.
+
+    The sector is centred on spoke zero and holds an odd number of spokes, so
+    it is symmetric about the same mirror plane the design is folded under —
+    which is what lets an asymmetric case ride on a symmetric design without
+    blinding the governing readout.
+    """
+    sketch = config.structure
+    weight = config.loads
+    areas = tributary_areas(sketch)
+
+    uniform = create_loads_tributary(structure, weight.pressure, jnp.asarray(areas))
+    total = float(jnp.sum(jnp.abs(uniform)))
+
+    reach = weight.sector_spokes // 2
+    within = (np.arange(sketch.num_spokes) + reach) % sketch.num_spokes <= 2 * reach
+    inside = np.concatenate([[True], np.tile(within, sketch.num_rings)])
+    drifting = np.where(inside, areas, weight.drift_factor * areas)
+    drift = create_loads_tributary(structure, weight.pressure, jnp.asarray(drifting))
+    carried = float(jnp.sum(jnp.abs(drift)))
+    drift = drift * (total / carried)
+
+    apex = create_loads_point(structure, total * weight.point_factor, node=0)
+
+    return LoadPlan(assemble_load_cases([uniform, drift, apex]), SHELL_NAMES, total)
+
+
 def lens_geometry(
     structure: Structure,
     span: float,
@@ -969,29 +1263,32 @@ def signed_shift(
 def prepare_problem(
     structure: Structure,
     config: TaskConfig,
+    plan: LoadPlan,
     nodes_mirrored: Int[np.ndarray, "nodes"],
     edges_mirrored: Int[np.ndarray, "edges"],
 ) -> RouteProblem:
     """
-    The truss, its prepared blocks, and the searched basis.
+    The structure, its prepared blocks, and the searched basis.
 
     Parameters
     ----------
     structure :
-        The truss the experiment built.
+        The structure the experiment built.
     config :
         The run description.
+    plan :
+        The load cases the profile built, already named.
     nodes_mirrored :
-        The node the midspan mirror carries each node onto.
+        The node the mirror carries each node onto.
     edges_mirrored :
-        The member the midspan mirror carries each member onto.
+        The member the mirror carries each member onto.
 
     Returns
     -------
     problem :
         Everything the routes read, gathered once on the host.
     """
-    loads = build_load_cases(structure, config.loads, config.structure.num_bays)
+    loads = plan.cases
 
     mirror = nodes_mirrored if config.subspace.symmetric else None
     if config.subspace.basis == "pivoted":
@@ -1031,7 +1328,7 @@ def prepare_problem(
         structure,
         blocks,
         loads,
-        load_names(config.loads),
+        plan.names,
         folding,
         edges_mirrored,
         nodes_free,
@@ -1064,22 +1361,63 @@ class HeightTruss(NamedTuple):
     floor: float | None
 
 
-def height_truss(budget: DescentConfig, depth: float) -> HeightTruss:
+def truss_heights(config: TaskConfig) -> HeightTruss:
     """
-    The height limits a run keeps its trusses inside, read from the budgets.
+    The height limits a truss run keeps its vertices inside.
 
     Parameters
     ----------
-    budget :
-        The budgets, read for the switches and the factors.
-    depth :
-        The drawn depth both limits are multiples of.
+    config :
+        The run description, read for the switches, the factors and the depth.
 
     Returns
     -------
     limits :
         The ceiling above and the floor below, None where a side is off.
     """
+    return height_truss(config.descent, config.structure.depth)
+
+
+def shell_heights(config: TaskConfig) -> HeightTruss:
+    """
+    The height limits a shell run keeps its vertices inside.
+
+    Parameters
+    ----------
+    config :
+        The run description, read for the switches, the factors and the rise.
+
+    Returns
+    -------
+    limits :
+        The ceiling above and the floor below, None where a side is off.
+
+    Notes
+    -----
+    The drawn rise plays the part the drawn depth plays on a truss: it is the
+    one length the structure is scaled by, so a ceiling stated as a multiple
+    of it means the same thing on both.
+    """
+    return height_truss(config.descent, config.structure.rise)
+
+
+def height_truss(budget: DescentConfig, reference: float) -> HeightTruss:
+    """
+    The height limits a run keeps its vertices inside, read from the budgets.
+
+    Parameters
+    ----------
+    budget :
+        The budgets, read for the switches and the factors.
+    reference :
+        The drawn length both limits are multiples of.
+
+    Returns
+    -------
+    limits :
+        The ceiling above and the floor below, None where a side is off.
+    """
+    depth = reference
     if budget.limit_rise:
         ceiling = budget.rise_factor * depth
     else:
@@ -2174,11 +2512,58 @@ def report_governing(
     report.write_table(tuple(columns), rows)
 
 
+def truss_extent(config: TaskConfig, read: RouteRead) -> tuple[str, str]:
+    """
+    The depth a truss reached, against the depth it was drawn at.
+
+    Parameters
+    ----------
+    config :
+        The run description, read for the drawn depth.
+    read :
+        The end-to-end answer, read for the rise and the sag it spans.
+
+    Returns
+    -------
+    entry :
+        The label and its value, ready for the summary block.
+    """
+    reached = read.rise - read.sag
+
+    return (
+        "depth at the answer [mm]",
+        f"{reached:.0f}, drawn at {config.structure.depth:.0f}",
+    )
+
+
+def shell_extent(config: TaskConfig, read: RouteRead) -> tuple[str, str]:
+    """
+    The rise a shell reached, against the rise it was drawn at.
+
+    Parameters
+    ----------
+    config :
+        The run description, read for the drawn rise.
+    read :
+        The end-to-end answer, read for the height its crown reached.
+
+    Returns
+    -------
+    entry :
+        The label and its value, ready for the summary block.
+    """
+    return (
+        "rise at the answer [mm]",
+        f"{read.rise:.0f}, drawn at {config.structure.rise:.0f}",
+    )
+
+
 def report_summary(
     report: Report,
     reads: dict[str, RouteRead],
     config: TaskConfig,
     limits: HeightTruss,
+    extent: Callable[[TaskConfig, RouteRead], tuple[str, str]],
 ) -> None:
     """
     The masses, the gaps between the routes, and the shape extremes.
@@ -2190,16 +2575,18 @@ def report_summary(
     reads :
         Each route's answer read back, keyed by route.
     config :
-        The run description, read for the drawn depth and the limit factors.
+        The run description, read for the limit factors.
     limits :
         The ceiling and the floor no vertex may leave.
+    extent :
+        The profile's one entry saying how far the shape travelled, a truss
+        reading it as a depth and a shell as a rise.
     """
     read_found = reads[ROUTE_FORMFOUND]
     read_heights = reads[ROUTE_HEIGHTS]
     read_drawn = reads[ROUTE_DRAWN]
 
     saving = 1.0 - read_found.mass / read_drawn.mass
-    depth_found = read_found.rise - read_found.sag
     routes_gap = read_heights.mass / read_found.mass - 1.0
     shapes_gap = float(np.abs(read_found.xyz[:, 2] - read_heights.xyz[:, 2]).max())
     lidded = limit_label(limits.ceiling, config.descent.rise_factor)
@@ -2212,10 +2599,7 @@ def report_summary(
         ("the geometry bought", f"{saving:.1%}"),
         ("free heights vs end to end", f"{routes_gap:+.2%}"),
         ("the shaped answers differ by [mm]", f"{shapes_gap:.0f}"),
-        (
-            "depth at the answer [mm]",
-            f"{depth_found:.0f}, drawn at {config.structure.depth:.0f}",
-        ),
+        extent(config, read_found),
         ("rise ceiling", lidded),
         ("sag floor", grounded),
         ("diameter mirror gap, end to end", f"{read_found.mirror:.2e}"),
@@ -2468,9 +2852,9 @@ def stiffness_spectrum(
     return StiffnessSpectrum(negatives, eigen.size, condition)
 
 
-class TrussProfile(NamedTuple):
+class RouteProfile(NamedTuple):
     """
-    What one truss family contributes to the shared three-route flow.
+    What one structural family contributes to the shared three-route flow.
 
     Attributes
     ----------
@@ -2479,62 +2863,79 @@ class TrussProfile(NamedTuple):
     prefix :
         Stem the run's figure files are named under.
     start_heading :
-        Heading of the report's start block, carrying the truss's story.
+        Heading of the report's start block, carrying the family's story.
+    parse_task :
+        Reader of the run's YAML, the three family-shaped sections being the
+        profile's to name and the other four `shared_sections`'.
     build_structure :
-        The generator, taking the bay count, the span and the depth.
+        The generator, taking the parsed run description.
     mirrored_nodes :
-        The node the midspan mirror carries each node onto, from the bays.
+        The node the mirror carries each node onto.
     member_families :
-        Name and member slice of every family, from the bays.
+        Name and member slice of every family, in the generator's order.
+    build_loads :
+        The load cases, named, and the total the distributed ones carry.
+    height_limits :
+        The ceiling and floor the shape is held between, each family reading
+        the multiple against the one length it is drawn by.
     signed_start :
-        The truss's start recipe — how the lens densities are fitted and
-        signed differs per truss, and each recipe is a measured decision.
-    chord_guard :
-        Builder of the chord-sign rows, or None where the subspace has no
-        degenerate states worth guarding.
+        The start recipe — how the densities are fitted and signed differs
+        per family, and each recipe is a measured decision.
+    sign_guard :
+        Builder of the density-sign rows, or None where the subspace has no
+        degenerate states worth guarding. A builder may also answer None for
+        a particular run, which is how a family makes its guard a switch.
+    extent :
+        The summary's one entry saying how far the shape travelled.
 
     Notes
     -----
     Everything else is topology-blind and lives in `run_routes`: an
-    experiment is this record, a module docstring telling the truss's
+    experiment is this record, a module docstring telling the family's
     story, and a YAML naming the run.
     """
 
     banner: str
     prefix: str
     start_heading: str
-    build_structure: Callable[[int, float, float], Structure]
-    mirrored_nodes: Callable[[int], Int[np.ndarray, "nodes"]]
-    member_families: Callable[[int], tuple[tuple[str, slice], ...]]
+    parse_task: Callable[[str], TaskConfig]
+    build_structure: Callable[[TaskConfig], Structure]
+    mirrored_nodes: Callable[[TaskConfig], Int[np.ndarray, "nodes"]]
+    member_families: Callable[[TaskConfig], tuple[tuple[str, slice], ...]]
+    build_loads: Callable[[Structure, TaskConfig], LoadPlan]
+    height_limits: Callable[[TaskConfig], HeightTruss]
     signed_start: Callable[[RouteProblem, TaskConfig], StartPoint]
-    chord_guard: Callable[[TaskConfig, StartPoint], ChordSigns] | None
+    sign_guard: Callable[[TaskConfig, StartPoint], ChordSigns | None] | None
+    extent: Callable[[TaskConfig, RouteRead], tuple[str, str]]
 
 
-def run_routes(profile: TrussProfile, path: Path) -> None:
+def run_routes(profile: RouteProfile, path: Path) -> None:
     """
-    Run one truss's three routes, write the report, and save the figures.
+    Run one structure's three routes, write the report, and save the figures.
 
     Parameters
     ----------
     profile :
-        The truss family to run.
+        The structural family to run.
     path :
         The YAML file describing the run.
     """
     report = Report()
     report.write_banner(profile.banner)
 
-    config = parse_config(path.read_text())
+    config = profile.parse_task(path.read_text())
     budget = config.descent
-    bays = config.structure.num_bays
 
-    structure = profile.build_structure(
-        bays, config.structure.span, config.structure.depth
-    )
+    structure = profile.build_structure(config)
     graph = equilibrium_graph(structure)
-    nodes_mirrored = profile.mirrored_nodes(bays)
+    nodes_mirrored = profile.mirrored_nodes(config)
+    plan = profile.build_loads(structure, config)
     problem = prepare_problem(
-        structure, config, nodes_mirrored, mirrored_edges(nodes_mirrored, structure)
+        structure,
+        config,
+        plan,
+        nodes_mirrored,
+        mirrored_edges(nodes_mirrored, structure),
     )
 
     start = profile.signed_start(problem, config)
@@ -2543,18 +2944,18 @@ def run_routes(profile: TrussProfile, path: Path) -> None:
     reproduction = float(jnp.max(jnp.abs(shape.xyz - jnp.asarray(start.lens))))
     disagreement = force_agreement(problem, start, shape.xyz)
 
-    if profile.chord_guard is None:
+    if profile.sign_guard is None:
         guard = None
     else:
-        guard = profile.chord_guard(config, start)
+        guard = profile.sign_guard(config, start)
 
-    limits = height_truss(budget, config.structure.depth)
+    limits = profile.height_limits(config)
     maps = route_maps(problem, limits, budget.length_floor, guard)
     starts = route_starts(problem, start, shape.xyz, budget.diameter_floor)
     opening_found, opening_drawn = seed_openings(maps, starts)
     measures = StartMeasures(reproduction, disagreement, opening_found, opening_drawn)
 
-    fit_scaled = start.gap / config.loads.total
+    fit_scaled = start.gap / plan.total
     opening = stiffness_spectrum(graph, start.q)
 
     report.write_heading(profile.start_heading)
@@ -2583,7 +2984,7 @@ def run_routes(profile: TrussProfile, path: Path) -> None:
 
     reads = route_reads(problem, answers, budget)
     report_routes(report, reads, answers, route_variables(problem))
-    report_families(report, reads, profile.member_families(bays))
+    report_families(report, reads, profile.member_families(config))
     report_governing(report, reads, problem.case_names)
 
     width = int(finder.basis.shape[1])
@@ -2628,7 +3029,7 @@ def run_routes(profile: TrussProfile, path: Path) -> None:
         )
     report.write_entries(tuple(entries))
 
-    report_summary(report, reads, config, limits)
+    report_summary(report, reads, config, limits, profile.extent)
 
     write_figures(problem, reads, answers, profile.prefix)
     report.write_heading(f"figures written to {FIGURES}")
@@ -2639,19 +3040,25 @@ def run_routes(profile: TrussProfile, path: Path) -> None:
         ToleranceCheck("lens reproduction [mm]", reproduction, TOLERANCE_SHAPE),
         ToleranceCheck("lens fit gap / total load", fit_scaled, TOLERANCE_FIT),
     ]
+    # A held plan already floors every length at its own plan projection, so a
+    # family that needs no floor of its own states zero and is not checked
+    # against it.
     floor = budget.length_floor
-    undershort_found = max(0.0, (floor - shortest_found) / floor)
-    checks.append(
-        ToleranceCheck(
-            "end to end length violation", undershort_found, TOLERANCE_FEASIBILITY
+    if floor > 0.0:
+        undershort_found = max(0.0, (floor - shortest_found) / floor)
+        checks.append(
+            ToleranceCheck(
+                "end to end length violation", undershort_found, TOLERANCE_FEASIBILITY
+            )
         )
-    )
-    undershort_heights = max(0.0, (floor - shortest_heights) / floor)
-    checks.append(
-        ToleranceCheck(
-            "free heights length violation", undershort_heights, TOLERANCE_FEASIBILITY
+        undershort_heights = max(0.0, (floor - shortest_heights) / floor)
+        checks.append(
+            ToleranceCheck(
+                "free heights length violation",
+                undershort_heights,
+                TOLERANCE_FEASIBILITY,
+            )
         )
-    )
     if guard is not None:
         undersign = max(0.0, (guard.margin - signed_final) / guard.scale)
         checks.append(
