@@ -53,6 +53,9 @@ NUM_EDGES = 10
 NORMAL = 1
 SEED = 100.0
 
+# The vertical, which the arch's plane contains and a load can be skewed along.
+IN_PLANE = 2
+
 # Two solvers agreeing on a value they compute independently. Measured at
 # 1.4e-15 on the axial force and 9.0e-13 on the moments, the latter being
 # larger only because a moment is a difference of larger numbers.
@@ -181,6 +184,53 @@ def test_a_plane_frame_carries_no_minor_axis_moment(
     )
 
     assert np.all(np.asarray(mine.moment_minor) == 0.0)
+
+
+def skewed(structure):
+    """
+    The funicular case with one node pushed in plane, so bending is real.
+    """
+    return jnp.asarray(funicular(structure)).at[2, IN_PLANE].add(-4.0e4)
+
+
+def test_the_two_solvers_agree_on_the_shear(
+    prepared, geometry, diameters, steel, catalogue
+):
+    structure, xyz = geometry
+    ops, smax = prepared
+    pushed = skewed(structure)
+
+    mine = backend_opensees.member_forces(ops, xyz, diameters, catalogue, pushed)
+    theirs = forces_smax(smax, xyz, diameters, catalogue(SEED), pushed)
+
+    assert relative(mine.shear_major, theirs.shear_major) < TOLERANCE_PRIMAL
+
+
+def test_the_shear_the_two_solvers_agree_on_is_not_zero(
+    prepared, geometry, diameters, steel, catalogue
+):
+    # Without this the agreement above would hold on a pair of empty arrays.
+    structure, xyz = geometry
+    _, smax = prepared
+
+    theirs = forces_smax(smax, xyz, diameters, catalogue(SEED), skewed(structure))
+
+    assert float(np.max(np.abs(theirs.shear_major))) > 1.0e3
+
+
+def test_a_plane_frame_carries_no_minor_axis_shear_and_no_torsion(
+    prepared, geometry, diameters, steel, catalogue
+):
+    structure, xyz = geometry
+    ops, smax = prepared
+    pushed = skewed(structure)
+
+    mine = backend_opensees.member_forces(ops, xyz, diameters, catalogue, pushed)
+    theirs = forces_smax(smax, xyz, diameters, catalogue(SEED), pushed)
+
+    for forces in (mine, theirs):
+        assert np.all(np.asarray(forces.shear_minor) == 0.0)
+        assert np.all(np.asarray(forces.torsion_moment) == 0.0)
 
 
 @pytest.fixture(scope="module")

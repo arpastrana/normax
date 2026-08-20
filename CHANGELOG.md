@@ -54,6 +54,52 @@ for these frames: 0.3558 is a factor of 1.4 under the threshold, not 20, and a
 shallower or longer-spanned Vierendeel would cross it and be governed in its
 verticals first.
 
+### The analysis reports the shear and the torsion it was already computing
+
+`element_forces` recovers all six components of the internal-force field, and
+`member_forces` kept three of them. The other three — two shears and a torsion —
+were computed and dropped at the return statement, so nothing downstream could
+audit the clause the design check leaves out. EN 1993-1-1 6.2.10 lets shear be
+ignored in the bending and axial checks while the design shear stays under half
+the plastic shear resistance, and that is an exemption to be measured on a
+converged design, not asserted.
+
+`MemberForces` now states all six components as direct fields: `shear_major`,
+`shear_minor` and `torsion_moment` beside the axial force and the two moments.
+Six fields is a deliberate exception to the five-argument rule, taken because
+the six components of a member's internal force are one thing an analysis
+reports and not a group with a subgroup inside it. The three the check does not
+read default to zero, so a caller stating a demand by hand states only what it
+means to and a backend states all six. One number each rather than two — nodal
+loading leaves the moment linear, so its slope is constant, and a frame loaded
+at its nodes is given no distributed torque.
+
+**A shear pairs with the moment it differentiates, not with the axis it shares a
+letter with.** The first version of this read `vy` into `shear_major` beside
+`my` in `moment_major`, which is wrong: bending about the major axis varies with
+the shear across the minor one, so the major-axis shear is the solver's `vz`.
+The magnitudes were right and in the wrong components, which no single-backend
+test would have shown. The two backends disagreeing is what caught it, and
+`test_the_reported_shear_is_the_one_the_solver_recovered` is what holds it.
+
+The OpenSees backend reads its shear from the element's local end forces rather
+than from a section, an elastic section in two dimensions resolving to an axial
+force and a moment and carrying no shear of its own. Its minor-axis shear and
+torsion are exact zeros on the same grounds the minor-axis moment already was.
+The two backends agree on the shear to 1e-11, on a load case skewed off the
+funicular so the agreement is not between two empty arrays.
+
+The sizers now `vmap` over the design fields alone, through a `DESIGN_AXES`
+prefix, rather than over the whole container. A check has no business mapping a
+payload it never reads, and mapping it was what made an idle default unusable.
+
+**What did not change: the Tesseract boundary.** The analysis tesseract's output
+schema serves the three design fields, so a design taken across it reports no
+secondary forces. Widening a served differentiable API means three new outputs
+and the VJP plumbing to match, which is its own change. Until then the
+limitation is asserted by `test_the_boundary_does_not_carry_the_secondary_forces`
+rather than left to be discovered.
+
 ### The end-to-end answer opens in a viewer, when a file asks for one
 
 Both truss experiments end at PNGs, so the design the three-route

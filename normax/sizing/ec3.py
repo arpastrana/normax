@@ -39,6 +39,7 @@ from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.analysis import DESIGN_AXES
 from normax.analysis import MemberForces
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
@@ -369,7 +370,7 @@ class Ec3Sizer(AbstractMemberSizer):
 
             return demanded, used
 
-        demanded, used = jax.vmap(size_case)(forces)
+        demanded, used = jax.vmap(size_case, in_axes=(DESIGN_AXES,))(forces)
         sections = neutral_sections(self.catalogue(demanded))
 
         return MemberSizes(sections, used)
@@ -422,7 +423,7 @@ class Ec3Sizer(AbstractMemberSizer):
                 resultant=self.resultant,
             )
 
-        return jax.vmap(governing_case)(forces)
+        return jax.vmap(governing_case, in_axes=(DESIGN_AXES,))(forces)
 
     def compute_utilization(
         self,
@@ -468,4 +469,4 @@ class Ec3Sizer(AbstractMemberSizer):
                 resultant=self.resultant,
             )
 
-        return jax.vmap(utilization_case)(forces)
+        return jax.vmap(utilization_case, in_axes=(DESIGN_AXES,))(forces)

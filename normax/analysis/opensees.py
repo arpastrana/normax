@@ -76,6 +76,10 @@ DOF_PER_NODE_PLANAR = 3
 DOF_AXIAL = 1
 DOF_MOMENT = 2
 
+# Shear of a plane element's local end forces, ordered axial, shear, moment per
+# end. A plain index into that vector, not a `sensSectionForce` component.
+LOCAL_SHEAR = 1
+
 
 class Model(NamedTuple):
     """
@@ -444,7 +448,31 @@ def _parameter_specifications(
     return coordinates + sections
 
 
-def _read_forces(num_members: int) -> tuple[np.ndarray, np.ndarray]:
+class PlaneForces(NamedTuple):
+    """
+    What one plane-frame solve reports about every member.
+
+    Attributes
+    ----------
+    axial :
+        Axial force of every member.
+    moments :
+        In-plane moment at each end of every member.
+    shear :
+        In-plane shear force of every member.
+
+    Notes
+    -----
+    The in-plane components alone. What a plane frame carries out of plane is
+    nothing, so the caller states those as exact zeros rather than reading them.
+    """
+
+    axial: np.ndarray
+    moments: np.ndarray
+    shear: np.ndarray
+
+
+def _read_forces(num_members: int) -> PlaneForces:
     """
     Section forces at both ends of every member.
 
@@ -456,25 +484,34 @@ def _read_forces(num_members: int) -> tuple[np.ndarray, np.ndarray]:
     Returns
     -------
     forces :
-        Axial force of every member, and its moment at each end.
+        Axial force of every member, its moment at each end, and its shear.
 
     Notes
     -----
-    Read at the first and last integration points, which a Lobatto rule places
-    exactly on the end sections. The axial force is taken once because nodal
-    loading leaves it constant along the span.
+    Moments are read at the first and last integration points, which a Lobatto
+    rule places exactly on the end sections. The axial force is taken once
+    because nodal loading leaves it constant along the span.
+
+    The shear comes from the element's local end forces rather than from a
+    section, an elastic section in two dimensions resolving to an axial force
+    and a moment and carrying no shear of its own. It is taken once for the same
+    reason the axial force is, and from the first end, whose local axes are the
+    element's own.
     """
     axial = np.empty(num_members)
     moments = np.empty((num_members, 2))
+    shear = np.empty(num_members)
 
     for member in range(num_members):
         first = ops.eleResponse(member + 1, "section", 1, "force")
         last = ops.eleResponse(member + 1, "section", NUM_INTEGRATION_POINTS, "force")
+        local = ops.eleResponse(member + 1, "localForce")
         axial[member] = first[0]
         moments[member, 0] = first[1]
         moments[member, 1] = last[1]
+        shear[member] = local[LOCAL_SHEAR]
 
-    return axial, moments
+    return PlaneForces(axial, moments, shear)
 
 
 def member_forces(
@@ -514,15 +551,21 @@ def member_forces(
 
     The minor-axis moment is returned as exact zeros. A plane frame under
     in-plane load carries none, so this is the value rather than a placeholder.
+    The minor-axis shear and the torsion are zero for the same reason, both
+    being out-of-plane responses.
     """
     _build_model(model, xyz, diameters, catalogue, loads=loads, parameters=False)
 
-    axial, moments = _read_forces(model.structure.num_edges)
+    read = _read_forces(model.structure.num_edges)
+    in_plane = jnp.asarray(read.shear)
 
     return MemberForces(
-        axial_force=jnp.asarray(axial),
-        moment_major=jnp.asarray(to_newton_millimeters(moments)),
-        moment_minor=jnp.zeros_like(jnp.asarray(moments)),
+        axial_force=jnp.asarray(read.axial),
+        moment_major=jnp.asarray(to_newton_millimeters(read.moments)),
+        moment_minor=jnp.zeros_like(jnp.asarray(read.moments)),
+        shear_major=in_plane,
+        shear_minor=jnp.zeros_like(in_plane),
+        torsion_moment=jnp.zeros_like(in_plane),
     )
 
 

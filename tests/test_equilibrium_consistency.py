@@ -282,6 +282,28 @@ def test_an_arch_in_a_plane_carries_no_minor_axis_moment(member):
     assert float(jnp.max(jnp.abs(member.moment_minor))) == 0.0
 
 
+def test_an_arch_in_a_plane_carries_no_minor_axis_shear_and_no_torsion(member):
+    assert float(jnp.max(jnp.abs(member.shear_minor))) == 0.0
+    assert float(jnp.max(jnp.abs(member.torsion_moment))) == 0.0
+
+
+def test_the_reported_shear_is_the_one_the_solver_recovered(
+    structure, state, section, member
+):
+    # Guards the pairing: major-axis bending goes with the solver's vz, not vy.
+    field = span_field(structure, state.xyz, section)
+
+    assert np.allclose(member.shear_major, field.vz[:, 0], rtol=1e-15)
+
+
+def test_the_shear_is_the_end_moment_difference_over_the_length(state, member):
+    # Nodal loading alone, so the moment is linear and the shear is its slope.
+    spans = state.lengths[:, 0]
+    slope = (member.moment_major[:, 1] - member.moment_major[:, 0]) / spans
+
+    assert np.allclose(member.shear_major, slope, rtol=1e-10)
+
+
 def test_the_end_moments_of_neighbouring_members_agree(member):
     # Continuity at a shared node, and the sign convention that goes with it.
     assert np.allclose(
