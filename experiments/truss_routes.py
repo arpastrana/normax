@@ -38,6 +38,10 @@ import jax.numpy as jnp
 import numpy as np
 import vix
 import yaml
+from ec3x.material import Steel
+from ec3x.resistance import SHEAR_THRESHOLD
+from ec3x.resistance import area_shear
+from ec3x.resistance import resistance_shear
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
@@ -45,6 +49,7 @@ from jaxtyping import Int
 from scipy.optimize import minimize
 from smax import LoadCase
 
+from normax.analysis import MemberForces
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import frame_model
 from normax.design import Design
@@ -64,6 +69,8 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.sections import MemberSections
+from normax.sections import TubeFamily
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import thinnest_family
 from normax.structures import Structure
@@ -132,6 +139,9 @@ ROUTE_ORDER = (ROUTE_FORMFOUND, ROUTE_HEIGHTS, ROUTE_DRAWN)
 # The truss is planar in XZ, so the axial force and the moment about y are
 # the whole of what a member carries.
 FORCE_DIAGRAMS = ("nx", "my")
+
+# EN 1993-1-1 §6.1's recommended value, as every sizer in the repo states it.
+GAMMA_M0_SHEAR = 1.0
 
 
 class TrussConfig(NamedTuple):
@@ -731,6 +741,11 @@ class RouteRead(NamedTuple):
         Count of members resting on the diameter floor.
     mirror :
         How far the diameters depart from their own reflection.
+    shear :
+        Largest design shear over members and load cases, as a fraction of the
+        plastic shear resistance. EN 1993-1-1 6.2.10 lets the check leave shear
+        out only while this stays under half, so the answer carries the number
+        that says whether it may.
     """
 
     mass: float
@@ -743,6 +758,7 @@ class RouteRead(NamedTuple):
     active: int
     floored: int
     mirror: float
+    shear: float
 
 
 def build_load_cases(
@@ -1678,6 +1694,48 @@ def descend_all(
     return answers
 
 
+def shear_fraction(
+    family: TubeFamily,
+    sections: MemberSections,
+    forces: MemberForces,
+) -> float:
+    """
+    The design shear of the worst member, as a fraction of its plastic resistance.
+
+    Parameters
+    ----------
+    family :
+        The tube family the sections were drawn from, supplying the material.
+    sections :
+        The sections the answer settled on.
+    forces :
+        The analysis at that answer, carrying the shear the check leaves out.
+
+    Returns
+    -------
+    fraction :
+        Largest fraction over members and load cases.
+
+    Notes
+    -----
+    The demand is the vector resultant of the two shears, which a circular
+    section admits because it resists shear alike in every direction. The
+    resistance is EN 1993-1-1 Eq. 6.18 over the shear area of 6.2.6(3).
+
+    Read at the answer rather than bounded ahead of it: a bound over a demand
+    mix describes a member that might exist, and what 6.2.10 asks about is the
+    member that does.
+    """
+    steel = Steel(f_y=family.material.f_y, gamma_m0=GAMMA_M0_SHEAR)
+    capacity = np.asarray(resistance_shear(area_shear(sections.area), steel))
+
+    major = np.asarray(forces.shear_major)
+    minor = np.asarray(forces.shear_minor)
+    demand = np.sqrt(major**2 + minor**2)
+
+    return float(np.max(demand / capacity))
+
+
 def read_answer(
     problem: RouteProblem,
     xyz: Float[Array, "nodes 3"],
@@ -1721,6 +1779,8 @@ def read_answer(
     reflected = diameters[problem.edges_mirrored]
     mirror = float(np.max(np.abs(diameters - reflected)) / np.max(diameters))
 
+    shear = shear_fraction(family, sections, forces)
+
     read = RouteRead(
         mass,
         np.asarray(xyz),
@@ -1732,6 +1792,7 @@ def read_answer(
         active,
         floored,
         mirror,
+        shear,
     )
 
     return read
@@ -2183,7 +2244,7 @@ def route_checks(
     Returns
     -------
     checks :
-        Constraint, rise and sag violations, one check per route.
+        Constraint, rise, sag and excluded-shear checks, one of each per route.
     sound :
         Whether every route converged and both shaped routes beat sizing.
     """
@@ -2209,6 +2270,13 @@ def route_checks(
             checks.append(
                 ToleranceCheck(f"{route} sag violation", oversag, TOLERANCE_FEASIBILITY)
             )
+
+    for route in ROUTE_ORDER:
+        checks.append(
+            ToleranceCheck(
+                f"{route} shear fraction", reads[route].shear, SHEAR_THRESHOLD
+            )
+        )
 
     converged = all(answers[route].converged for route in ROUTE_ORDER)
     lighter = reads[ROUTE_FORMFOUND].mass < reads[ROUTE_DRAWN].mass
