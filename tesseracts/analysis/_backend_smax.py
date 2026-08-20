@@ -367,3 +367,41 @@ def forces_vjp(
     )
 
     return dict(zip(vjp_inputs, cotangents))
+
+
+def forces_jacobian(
+    inputs: dict[str, Any],
+    jac_inputs: list[str],
+    jac_outputs: list[str],
+) -> dict[str, dict[str, jnp.ndarray]]:
+    """
+    Materialize every requested derivative block in one traced sweep.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+    jac_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jac_outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    blocks :
+        One array per (output, input) pair, keyed output first, each shaped
+        as the output's shape followed by the input's.
+
+    Notes
+    -----
+    One reverse pass per output element over the same restricted solve the
+    product rules trace, so what a batched Jacobian used to buy with one
+    crossing per row it now buys in one crossing.
+    """
+    restricted_solve, primals = _restricted_solve(inputs, jac_inputs, jac_outputs)
+
+    argnums = tuple(range(len(primals)))
+    computed = jax.jacrev(restricted_solve, argnums=argnums)(*primals)
+    blocks = {name: dict(zip(jac_inputs, computed[name])) for name in jac_outputs}
+
+    return blocks

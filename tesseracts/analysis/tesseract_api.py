@@ -288,3 +288,41 @@ def jacobian_vector_product(
     return _selected_backend().forces_jvp(
         inputs.model_dump(), jvp_inputs, jvp_outputs, tangent_vector
     )
+
+
+def jacobian(
+    inputs: InputSchema,
+    jac_inputs: set[str],
+    jac_outputs: set[str],
+):
+    """
+    Materialize every requested derivative block.
+
+    Parameters
+    ----------
+    inputs :
+        The geometry, the sections, the topology and the load case.
+    jac_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jac_outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    blocks :
+        One array per (output, input) pair, keyed output first, each shaped
+        as the output's shape followed by the input's.
+
+    Notes
+    -----
+    What a batched `jax.jacrev` or `jax.jacfwd` calls once per Jacobian
+    whenever this endpoint exists, in place of one product crossing per row.
+    The traced backend answers it with one reverse sweep over the same
+    restricted solve; the direct differentiation backend hands over the dense
+    blocks its sweep assembles anyway, which is the mode it was built for.
+
+    The name sets arrive unordered and are fixed sorted, once, here.
+    """
+    return _selected_backend().forces_jacobian(
+        inputs.model_dump(), sorted(jac_inputs), sorted(jac_outputs)
+    )

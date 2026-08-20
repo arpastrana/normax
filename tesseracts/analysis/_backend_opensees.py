@@ -258,6 +258,53 @@ def forces_vjp(
     return cotangents
 
 
+def forces_jacobian(
+    inputs: dict[str, Any],
+    jac_inputs: list[str],
+    jac_outputs: list[str],
+) -> dict[str, dict[str, jnp.ndarray]]:
+    """
+    Hand over every requested derivative block the sweep already assembled.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+    jac_inputs :
+        Names of the input fields a derivative is taken with respect to.
+    jac_outputs :
+        Names of the output fields a derivative is taken of.
+
+    Returns
+    -------
+    blocks :
+        One array per (output, input) pair, keyed output first, each shaped
+        as the output's shape followed by the input's.
+
+    Notes
+    -----
+    The endpoint this solver was built for: both product rules contract the
+    dense Jacobian the sweep assembles and then keep one slice of it, so
+    returning it whole costs the sweep once instead of once per row. A pair
+    with no block — the minor-axis moment a plane frame does not carry — is
+    an explicit zero, the same reading the product rules give it by skipping.
+    """
+    blocks = _jacobian_blocks(inputs)
+
+    jacobian = {}
+    for output in jac_outputs:
+        per_input = {}
+        for field in jac_inputs:
+            if (output, field) in BLOCKS:
+                per_input[field] = getattr(blocks, BLOCKS[(output, field)])
+            else:
+                in_shape = jnp.asarray(inputs[field]).shape
+                per_input[field] = jnp.zeros(_output_shape(blocks, output) + in_shape)
+        jacobian[output] = per_input
+
+    return jacobian
+
+
 def _output_shape(blocks: opensees.Jacobian, output: str) -> tuple[int, ...]:
     """
     Shape of one output field, read off the blocks that produce it.
