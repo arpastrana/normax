@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### CI goes green again, two masks deep
+
+The suite had been red on every push since Aug 11 without anyone noticing,
+because nothing before the first pull request put the check in front of a
+reader. Three causes stacked up, each hiding the next. First, `equinox`
+entered `normax/optimization.py` before it entered the project dependencies,
+so CI's dev-only environment failed collection from Aug 11 until the
+dependency landed on Aug 15. Second, the ruff 0.16 series began formatting
+Python code fences inside Markdown, and `ruff format --check .` started
+rejecting `ROADMAP.md`'s aligned trailing comments — invisible locally
+because the pre-commit `ruff-format` hook only runs on Python files. The
+formatter now excludes Markdown; the fences keep their alignment and `ruff
+check` still covers everything it did. Third, behind the failing lint step,
+`tests/test_plan_basis.py` imports `jax_fdm` at module level but was missing
+from `PIPELINE_TESTS`, exactly the staleness its conftest comment warns
+about; it is now guarded. A rebuilt CI environment (project plus dev group
+alone) collects cleanly and passes 140 tests; the full local suite still
+runs all 32 plan-basis tests.
+
 ### The excluded shear is measured, and stays excluded
 
 EN 1993-1-1 6.2.10 lets shear out of the bending and axial checks while the

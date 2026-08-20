@@ -51,6 +51,7 @@ line-length = 88
 
 [tool.ruff.format]
 docstring-code-format = true
+exclude = ["*.md"]  # keeps the aligned comments in ROADMAP.md's code fences
 
 [tool.ruff.lint]
 select = [
