@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### One load case may skip its container
+
+`StructuralDesignPipeline.__call__` now also takes a bare nodal load array and
+promotes it to exactly what `assemble_load_cases` builds from a one-entry
+list, so the minimum working example loads, shapes and checks in three lines.
+The narrowing is on the container type — static under `jit`, never a traced
+value — and a stacked array is refused with a `ValueError`, because a raw
+stack cannot say which of its cases the shape answers to. Bare-array and
+assembled designs are asserted leaf-identical in `tests/test_design.py`.
+
+### The API reads two levels deep, and builders say they build
+
+Three logistics changes surfaced by writing the README's minimum working
+example, applied across the package, the tests, the experiments and the
+tesseracts. `thinnest_family` is now `build_section_family` — the old name
+described the implementation's choice of wall, the new one what the caller
+gets. The load-case generators carry the verb their registry sibling already
+had: `create_loads_uniform`, `create_loads_half_span`,
+`create_loads_half_span_mirrored`, `create_loads_point` beside
+`create_loads_by_name`; the registry keys and the YAML case names are
+unchanged. And no import reaches three modules deep anymore: the package
+`__init__`s re-export their backends at the bottom, so every call site writes
+`from normax.sizing import Ec3Sizer` and its kin. Two deliberate exceptions
+keep optional dependencies optional: the OpenSees backend is reached as
+`from normax.analysis import opensees` because `openseespy` is a spike extra
+even in the full environment, and nothing about a re-export could stay lazy.
+A consequence worth naming: importing `normax.sizing` now pulls the frame
+solver and blue-prints along, so `test_materials` moved from the ec3x-alone
+conftest gate to the pipeline and blueprint gates; `test_sections` still runs
+with ec3x alone. Full suite 395 pass, CI environment 140 pass, README example
+and the gridshell review both rerun bit-identically.
+
 ### CI goes green again, two masks deep
 
 The suite had been red on every push since Aug 11 without anyone noticing,
