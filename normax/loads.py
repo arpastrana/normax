@@ -185,6 +185,51 @@ def create_loads_point(
     return _nodal_loads(structure, magnitudes)
 
 
+def create_loads_tributary(
+    structure: Structure,
+    pressure: float,
+    areas: Float[Array, "nodes"],
+) -> Float[Array, "nodes 3"]:
+    """
+    A surface pressure resolved onto the nodes that share the surface out.
+
+    Parameters
+    ----------
+    structure :
+        The structure to load.
+    pressure :
+        Downward force per unit of plan area.
+    areas :
+        Plan area every node carries.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+
+    Notes
+    -----
+    **The areas are the caller's to compute**, a tributary area being a property
+    of the mesh rather than of the load: a polar grid divides its plan by rings
+    and spokes, a rectangular one by panels, and neither division is derivable
+    from a node list alone. What is fixed here is the conversion, so a pressure
+    is stated once and never re-derived per case.
+
+    **The pressure acts on the plan projection**, not on the developed surface,
+    which is how an imposed or snow load is stated. A steeper shell therefore
+    collects no more of it, and the total a structure carries is the pressure
+    times the plan area — but only over the nodes that are free. The share
+    belonging to supported nodes is zeroed like every other case here, going
+    straight to ground, so the applied total falls short of pressure times the
+    whole plan by exactly the supports' tributary share. Report both rather than
+    let the shortfall pass as a rounding error.
+
+    Not in `LOAD_CASE_REGISTRY`: every generator a name selects takes a
+    structure and a single magnitude, and an area per node is not that.
+    """
+    return _nodal_loads(structure, pressure * jnp.asarray(areas))
+
+
 def _nodal_loads(
     structure: Structure,
     magnitudes: Float[Array, "nodes"],

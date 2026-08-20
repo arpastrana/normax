@@ -4,6 +4,7 @@ import pytest
 
 from normax.loads import create_loads_half_span
 from normax.loads import create_loads_point
+from normax.loads import create_loads_tributary
 from normax.loads import create_loads_uniform
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
@@ -332,6 +333,29 @@ def test_every_load_points_down(loaded, load_case):
     applied = np.asarray(load_cases[load_case])
     assert np.all(applied[:, :2] == 0.0)
     assert np.all(applied[:, 2] <= 0.0)
+
+
+def test_a_tributary_load_case_weighs_each_node_by_its_own_area(loaded):
+    # The point of the creator: a pressure times an area per node, not a total
+    # shared out equally, which on an uneven mesh is a different load.
+    areas = np.arange(1.0, loaded.nodes.shape[0] + 1.0)
+    applied = np.asarray(create_loads_tributary(loaded, 2.0, jnp.asarray(areas)))
+    free = np.setdiff1d(np.arange(applied.shape[0]), np.asarray(loaded.supports))
+
+    assert np.allclose(applied[free, 2], -2.0 * areas[free])
+    assert np.all(applied[np.asarray(loaded.supports)] == 0.0)
+    assert np.all(applied[:, :2] == 0.0)
+
+
+def test_a_tributary_load_case_drops_the_supports_share(loaded):
+    # The shortfall against pressure times the whole plan is the supports'
+    # tributary area, which goes to ground rather than into the structure.
+    areas = np.ones(loaded.nodes.shape[0])
+    applied = np.asarray(create_loads_tributary(loaded, 3.0, jnp.asarray(areas)))
+    supported = np.asarray(loaded.supports).size
+
+    carried = -applied[:, 2].sum()
+    assert carried == pytest.approx(3.0 * (areas.size - supported))
 
 
 def test_a_half_span_load_case_loads_one_half_more_than_the_other(loaded):
