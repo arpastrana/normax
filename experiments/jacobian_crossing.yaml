@@ -1,0 +1,12 @@
+# The boundary-crossing study of experiment 22. The arch, its loads and the
+# search budgets come verbatim from the file named here, read beside this one.
+
+arch_config: arch.yaml
+
+crossing:
+  # Odd, so the median is a sample rather than an average of two.
+  repeats: 7
+
+served:
+  image: normax-blueprint-check
+  version: 0.1.0

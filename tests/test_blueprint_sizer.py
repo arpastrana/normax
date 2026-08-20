@@ -483,6 +483,78 @@ def test_the_held_adjoint_matches_the_traced_rule(boundary, crossing):
         assert np.allclose(handmade[name], np.asarray(expected), rtol=1e-12, atol=1e-18)
 
 
+def test_the_jacobian_blocks_match_the_traced_rule(boundary, crossing):
+    # The materialized blocks against jax.jacobian of route A, per (output,
+    # input) pair, in the boundary's (*out_shape, *in_shape) convention —
+    # which is also jax's own.
+    fields = {"axial_force", "end_moments_major", "end_moments_minor"}
+    outputs = {"diameter", "utilization", "utilization_held"}
+    axial = jnp.asarray(crossing.axial_force)
+    end_major = jnp.asarray(crossing.end_moments_major)
+    end_minor = jnp.asarray(crossing.end_moments_minor)
+    held = jnp.asarray(crossing.diameter_held)
+
+    blocks = boundary.jacobian(crossing, fields | {"diameter_held"}, outputs)
+
+    def traced_held(diameter, axial_force, major, minor):
+        forces = MemberForces(axial_force, major, minor)
+        moment = demand_moment(forces)
+
+        return checked_utilization(RATIO, YIELD_SAMPLE, diameter, axial_force, moment)
+
+    references = {
+        "diameter": jax.jacobian(traced_sizes, argnums=(0, 1, 2)),
+        "utilization": jax.jacobian(traced_check, argnums=(0, 1, 2)),
+    }
+    names = ("axial_force", "end_moments_major", "end_moments_minor")
+    for output, reference in references.items():
+        traced = reference(axial, end_major, end_minor)
+        for name, expected in zip(names, traced, strict=True):
+            assert np.allclose(
+                blocks[output][name], np.asarray(expected), rtol=1e-12, atol=1e-18
+            )
+        # The solve never reads the held size, so that block is exactly zero.
+        assert np.all(blocks[output]["diameter_held"] == 0.0)
+
+    held_reference = jax.jacobian(traced_held, argnums=(0, 1, 2, 3))
+    traced = held_reference(held, axial, end_major, end_minor)
+    held_names = ("diameter_held", *names)
+    for name, expected in zip(held_names, traced, strict=True):
+        assert np.allclose(
+            blocks["utilization_held"][name],
+            np.asarray(expected),
+            rtol=1e-12,
+            atol=1e-18,
+        )
+
+
+def test_the_jacobian_blocks_are_diagonal_over_members(boundary, crossing):
+    # A member's outputs read that member's inputs alone, so every block is
+    # exactly zero off the member diagonal — structure, not tolerance.
+    fields = {"axial_force", "end_moments_major", "end_moments_minor", "diameter_held"}
+    outputs = {"diameter", "utilization", "utilization_held"}
+    members = np.asarray(crossing.axial_force).shape[0]
+    off_members = ~np.eye(members, dtype=bool)
+
+    blocks = boundary.jacobian(crossing, fields, outputs)
+
+    for per_input in blocks.values():
+        for block in per_input.values():
+            assert np.all(np.asarray(block)[off_members] == 0.0)
+
+
+def test_a_jacobian_request_returns_exactly_its_keys(boundary, crossing):
+    blocks = boundary.jacobian(crossing, {"axial_force"}, {"utilization_held"})
+
+    assert set(blocks) == {"utilization_held"}
+    assert set(blocks["utilization_held"]) == {"axial_force"}
+
+
+def test_a_jacobian_of_the_clamp_mask_is_refused(boundary, crossing):
+    with pytest.raises(ValueError, match="clamped"):
+        boundary.jacobian(crossing, {"axial_force"}, {"clamped"})
+
+
 def test_the_crossed_utilization_matches_the_local_sizer(
     structure, pipeline, params, one_case
 ):
@@ -523,6 +595,70 @@ def test_the_crossed_utilization_matches_the_local_sizer(
         rtol=0.0,
         atol=TOLERANCE_DERIVATIVE,
     )
+
+
+def counted_endpoints(client):
+    """
+    Wrap a Tesseract's two derivative endpoints with call counters.
+    """
+    calls = {"jacobian": 0, "vector_jacobian_product": 0}
+    true_jacobian = client.jacobian
+    true_pullback = client.vector_jacobian_product
+
+    def counting_jacobian(*args, **kwargs):
+        calls["jacobian"] += 1
+
+        return true_jacobian(*args, **kwargs)
+
+    def counting_pullback(*args, **kwargs):
+        calls["vector_jacobian_product"] += 1
+
+        return true_pullback(*args, **kwargs)
+
+    client.jacobian = counting_jacobian
+    client.vector_jacobian_product = counting_pullback
+
+    return calls
+
+
+def test_the_jacobian_route_replaces_the_sequential_crossings(
+    structure, pipeline, params, one_case
+):
+    # One crossing per Jacobian through the endpoint, one per constraint row
+    # without it — same numbers either way, counted rather than assumed.
+    grade = Steel355()
+    family = TubeFamily(RATIO, grade)
+    shape = pipeline.formfinder(params.force_densities, one_case.formfinding)
+    forces = pipeline.analyzer(shape.xyz, params.diameters, one_case.analysis)
+
+    endpoint_client = blueprint_tesseract()
+    endpoint_calls = counted_endpoints(endpoint_client)
+    routed = BlueprintClient(structure, endpoint_client, family)
+
+    def routed_used(diameters):
+        return routed.compute_utilization(diameters, forces, shape.lengths)
+
+    through_endpoint = jax.jacrev(routed_used)(params.diameters)
+
+    assert "jacobian" in endpoint_client.available_endpoints
+    assert endpoint_calls["jacobian"] == 1
+    assert endpoint_calls["vector_jacobian_product"] == 0
+
+    sequential_client = blueprint_tesseract()
+    sequential_calls = counted_endpoints(sequential_client)
+    rowed = BlueprintClient(
+        structure, sequential_client, family, materialize_jacobian=False
+    )
+
+    def rowed_used(diameters):
+        return rowed.compute_utilization(diameters, forces, shape.lengths)
+
+    through_rows = jax.jacrev(rowed_used)(params.diameters)
+
+    assert sequential_calls["jacobian"] == 0
+    assert sequential_calls["vector_jacobian_product"] == through_rows[..., 0].size
+
+    assert np.array_equal(np.asarray(through_endpoint), np.asarray(through_rows))
 
 
 def test_the_client_composes_into_the_pipeline(structure, pipeline, params, one_case):

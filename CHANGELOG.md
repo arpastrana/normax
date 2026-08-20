@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### One crossing per Jacobian, and the boundary stops being the bottleneck
+
+The blueprint boundary now offers a `jacobian` endpoint, and tesseract-jax
+0.4.1 takes it by itself: whenever a batched `jacrev` or `jacfwd` meets a
+server whose OpenAPI paths list `jacobian`, the sequential
+one-crossing-per-cotangent-row fallback (upstream issue #244) is bypassed for
+one crossing per call site plus a client-side `tensordot`. The endpoint is
+pure NumPy and adds no derivative arithmetic — `_adjoint_state`'s per-member
+pulls, written into blocks that are diagonal over members, shaped
+`(*out_shape, *in_shape)` per the runtime contract. The client's only change
+is a `materialize_jacobian` knob on `BlueprintClient` (upstream's own kwarg,
+default auto) so the sequential route stays reachable for comparison; a
+finding worth keeping is that `vmap_method="sequential"` does NOT disable the
+route — the gate runs before the vmap dispatch — and that `jax.grad`'s
+single-cotangent VJP never touches it, so mass gradients keep the hand
+adjoint.
+
+Measured by `experiments/22_jacobian_crossing.py` on the arch (30 constraint
+rows, 11 variables, 3 load cases), median of 7. One slack Jacobian, reverse
+mode: **19.2 ms through the endpoint (3 crossings) against 384 ms sequential
+(90 crossings) in process — 20x**; served over HTTP, **27.6 ms against 618 ms
+— 22x**. Forward mode: 18.2 ms against 136 ms in process (33 crossings —
+the jacfwd flip buys 2.8x on the sequential route but is a wash once the
+endpoint serves both modes). End to end, experiment 103's whole search on
+`blueprint_tesseract` reproduces **0.157469285 t in identical 51 iterations
+either way, at 2.35 s against 20.0 s** — the crossed backend now costs ~2.3x
+the in-process 1.0 s rather than the recorded 37 s. The routes agree to the
+bit (scaled gap exactly 0.0, in process and served); forward against reverse
+sits at 1.72e-13. Five new boundary tests pin the blocks to `jax.jacobian`
+of the traced rule at the hand-adjoint tolerances, the diagonal structure
+exactly, key exactness, the clamp-mask refusal, and the crossing counts (one
+`jacobian`, zero VJPs).
+
+Rolled out to the **analysis server** on that number, both backends behind
+the one endpoint: the traced backend answers with one `jax.jacrev` over the
+same restricted solve its product rules trace, and the DDM backend hands
+over the dense blocks its sweep already assembles — the mode that solver was
+built for, since both its product rules were keeping one slice of exactly
+this Jacobian per crossing. A pair with no block (the minor-axis moment a
+plane frame does not carry) is an explicit zero, matching the products'
+skip-means-zero reading. Route parity: the DDM routes agree **exactly**; the
+traced routes to 1.2e-11 of the largest entry, which on a funicular arch is
+nearly zero (~0.1 N/mm against 1e5 N forces), so that is reassociation seen
+against a degenerate scale. `formfinding` and `ec3_check` are deliberately
+skipped: both are JAX-native delegations that nothing sends batched
+cotangents to — `TesseractSizer.compute_utilization` answers in process and
+scalar mass gradients are single-cotangent VJPs the endpoint never serves.
+
+The composition that motivated the rollout now runs end to end: **jax-fdm
+traced in process, OpenSees behind a Tesseract, Blueprints behind a
+Tesseract**, one gradient across all three — experiment 103 on
+`analysis: opensees` + `sizing: blueprint_tesseract` lands the same
+**0.157469285 t in the same 51 iterations, in 2.783 s** with both boundaries
+on their jacobian endpoints, against 1.0 s all-in-process. Surfaced and
+fixed on the way: the post-solve shear audit read `forces.shear_major` off a
+crossed analysis, whose schema serves the three design fields alone, so the
+stacked scalar defaults arrived shaped by load case and broke the division —
+the audit now says the shear was not served and skips, and the in-process
+default still reads its 0.1147.
+
 ### One load case may skip its container
 
 `StructuralDesignPipeline.__call__` now also takes a bare nodal load array and

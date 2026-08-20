@@ -779,12 +779,17 @@ def main(config_path: Path) -> None:
     )
     # The clause the check leaves out, read at the answer rather than assumed.
     # EN 1993-1-1 6.2.10 allows the exclusion only under half the resistance.
-    shear = shear_fraction(pipeline.sizer.family, optimized)
-    verdict = "honest" if shear < SHEAR_THRESHOLD else "NOT HONEST"
-    print(
-        f"Excluded shear, worst V_Ed/V_pl,Rd: {shear:.4f}"
-        f" against the {SHEAR_THRESHOLD} of 6.2.10 ({verdict})"
-    )
+    # A crossed analysis serves the three design fields alone, so its shear
+    # arrives as the container's scalar default and there is nothing to read.
+    if np.asarray(optimized.forces.shear_major).ndim < 2:
+        print("Excluded shear: not served across the analysis boundary, unread.")
+    else:
+        shear = shear_fraction(pipeline.sizer.family, optimized)
+        verdict = "honest" if shear < SHEAR_THRESHOLD else "NOT HONEST"
+        print(
+            f"Excluded shear, worst V_Ed/V_pl,Rd: {shear:.4f}"
+            f" against the {SHEAR_THRESHOLD} of 6.2.10 ({verdict})"
+        )
     print(f"Optimizer spent: {answer.evaluations} in {answer.elapsed:.3f} s")
     print("Nothing to settle: the analysis ran at the answer's own sections.")
 

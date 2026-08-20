@@ -25,6 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from tesseract_jax import apply_tesseract
 
 from normax.analysis import member_forces as forces_smax
 from normax.analysis import opensees as backend_opensees
@@ -445,3 +446,43 @@ def test_the_backend_is_restored_when_the_block_raises():
         raise RuntimeError("boom")
 
     assert os.environ.get("NORMAX_ANALYSIS_BACKEND") == before
+
+
+def test_the_jacobian_route_hands_over_the_swept_blocks(
+    geometry, diameters, steel, catalogue
+):
+    # The endpoint returns the same dense blocks both product rules contract
+    # one slice of, so the two routes agree exactly, not merely closely.
+    structure, xyz = geometry
+
+    payload = {
+        "xyz": xyz,
+        "edges": np.asarray(structure.edges, dtype=np.int64),
+        "supports": np.asarray(structure.supports, dtype=np.int64),
+        "loads": np.asarray(funicular(structure), dtype=np.float64),
+        "f_y": steel.f_y,
+        "e_mod": steel.e_mod,
+        "density": steel.density,
+        "ratio": catalogue.ratio,
+        "normal": NORMAL,
+    }
+
+    with analysis_backend("opensees"):
+        analysis = local_chain().analysis
+
+        def crossed_axial(sized, materialize):
+            member = apply_tesseract(
+                analysis,
+                {**payload, "diameter": sized},
+                vmap_method="sequential",
+                materialize_jacobian=materialize,
+            )
+
+            return member["axial_force"]
+
+        assert "jacobian" in analysis.available_endpoints
+
+        routed = jax.jacrev(lambda sized: crossed_axial(sized, None))(diameters)
+        rowed = jax.jacrev(lambda sized: crossed_axial(sized, False))(diameters)
+
+    assert np.array_equal(np.asarray(routed), np.asarray(rowed))

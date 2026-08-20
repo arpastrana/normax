@@ -102,6 +102,11 @@ SIZE_FIELDS = (
 # divides by a slope that differs in its last bits.
 TOLERANCE_DERIVATIVE = 5e-12
 
+# The two Jacobian routes, scaled by the largest entry. A funicular arch's
+# axial force barely reads its diameters, so the entries sit near zero and
+# reassociation across the two programs measured at 1.2e-11 of the largest.
+TOLERANCE_ROUTE = 1e-9
+
 # Invariant 6.5 of CLAUDE.md. Measured at 1.8e-15 through the boundary.
 TOLERANCE_UTILIZATION = 1e-9
 
@@ -662,10 +667,57 @@ def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
 @pytest.mark.parametrize("stage", STAGES)
 def test_every_stage_exposes_the_endpoints_jax_needs(chain, stage):
     # `abstract_eval` is mandatory because JAX resolves shapes before it runs
-    # anything, and `jax.grad` reaches for the adjoint and never the Jacobian.
+    # anything; `jax.grad` reaches for the adjoint, while a batched `jacrev`
+    # takes a `jacobian` endpoint wherever a server offers one.
     available = set(dict(zip(STAGES, chain))[stage].available_endpoints)
 
     assert {"apply", "abstract_eval", "vector_jacobian_product"} <= available
+
+
+def test_the_analysis_jacobian_route_matches_the_sequential_rows(arch):
+    # A batched jacrev takes the analysis stage's `jacobian` endpoint in one
+    # crossing; forcing the fallback pulls the same rows one product crossing
+    # at a time. The traced backend answers both from the same solve, so the
+    # two Jacobians may differ only by reassociation.
+    structure = arch.structure
+    steel = arch.steel
+    family = build_section_family(neutral_grade(arch.steel), 3)
+    shape = FdmFormFinder(structure)(arch.params.force_densities, funicular(structure))
+
+    payload = {
+        "xyz": shape.xyz,
+        "edges": np.asarray(structure.edges, dtype=np.int64),
+        "supports": np.asarray(structure.supports, dtype=np.int64),
+        "loads": np.asarray(funicular(structure), dtype=np.float64),
+        "f_y": steel.f_y,
+        "e_mod": steel.e_mod,
+        "density": steel.density,
+        "ratio": family.ratio,
+        "normal": NORMAL,
+    }
+
+    def crossed_axial(diameters, materialize):
+        member = apply_tesseract(
+            arch.chain.analysis,
+            {**payload, "diameter": diameters},
+            vmap_method="sequential",
+            materialize_jacobian=materialize,
+        )
+
+        return member["axial_force"]
+
+    assert "jacobian" in arch.chain.analysis.available_endpoints
+
+    routed = jax.jacrev(lambda d: crossed_axial(d, None))(arch.params.diameters)
+    rowed = jax.jacrev(lambda d: crossed_axial(d, False))(arch.params.diameters)
+    largest = float(jnp.max(jnp.abs(rowed)))
+
+    assert np.allclose(
+        np.asarray(routed) / largest,
+        np.asarray(rowed) / largest,
+        rtol=0.0,
+        atol=TOLERANCE_ROUTE,
+    )
 
 
 def test_a_python_list_is_refused_at_the_boundary(structure, chain):

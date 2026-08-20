@@ -67,3 +67,69 @@ serial FD endpoints first — it must exist before its parallelization means
 anything; the executor over its perturbations second (small, isolated); the
 OpenSees IFT rule third, DDM staying as its oracle. Decide by Aug 22 how many
 of the three fit.
+
+## Addendum 2026-08-20 — the study feeding the Aug 22 decision
+
+The batched-Jacobian client and the parallel-FD client are not competitors.
+They answer different questions at different layers: the endpoint makes the
+derivative crossings the pipeline already does cheap, and creates no new
+derivative; finite differences give a gradient to code that has none, and a
+coarse one. They also compose — finite differences produce a full Jacobian by
+construction, so an FD backend is the natural tenant behind a `jacobian`
+endpoint, while serving FD through the sequential VJP path would multiply the
+two costs: crossings times perturbation sweeps.
+
+### The batched-Jacobian endpoint
+
+None of the four servers defines `jacobian`; `tesseract-jax` 0.4.1 already
+materializes through it whenever it exists, and the stacked-cotangent
+alternative is blocked upstream twice, so the endpoint is the only supported
+route. For it: it targets the measured pain directly (experiment 103 crossed
+was 37 s against 1.0 s in process, ~13.7 ms a crossing, ~30 sequential
+crossings per SLSQP iteration, each redoing the primal because a request is
+stateless — the endpoint wins whenever `(R-1)(t+P) > (O-R)a`, and the
+measured `O/R` of 1, 2 and ~1.7 across the stages makes that essentially
+always true at R ≈ 30); two stages get it almost free (`blueprint_check`'s
+Jacobian is diagonal in members, and the DDM sweep already assembles the
+dense Jacobian it then discards rows of); it serves `jacfwd` too, composing
+with the cheaper row count of forward mode on a wide constraint slack; and
+gradient exactness is untouched. Against it: it is pure acceleration with a
+one-crossing floor; the traced servers implement it as a server-side
+`jacrev` that recompiles per shape; materialized payloads grow with the
+Jacobian's area, irrelevant at this scale; and the served half of the
+measurement is blocked for `ec3_check` by the sibling-repo wheel outside the
+build context, which is why the standing order — `blueprint_check` first,
+measure, then roll out — is the right sequencing.
+
+### The parallel-FD client
+
+For it: the strongest why-Tesseract sentence available — a stock library
+nobody instrumented composes into an end-to-end gradient, paying in its own
+currency, and the claim generalizes to every legacy code the building-code
+argument gestures at; the sweep is embarrassingly parallel with the cluster
+story free; the FD helpers already exist so only the executor is new; and it
+slots behind the `jacobian` endpoint for one crossing. Against it, and these
+are load-bearing: central differences top out around 1e-8 to 1e-10 relative
+where the exact adjoints hold 1e-12 to 1e-14, and FD is order-one wrong at
+kinks — exactly where a fully-stressed optimizer parks every member
+(`U = 1` active, the χ cap, the tension–compression sign), branches the hand
+adjoints dispatch analytically; fed to SLSQP at `ftol` 1e-12 that noise
+stalls or false-converges a descent, so FD must never drive one; a
+central-difference Jacobian of the check is hundreds of primal applies per
+iteration, which a local pool divides but never closes against one primal
+plus a cheap adjoint; the repo already carries an FD scar (the zero-moment
+gradcheck needed a widened one-sided stencil); and it is a third route for a
+stage that already has two exact ones — narrative depth, not capability.
+
+### Recommendation
+
+Build the endpoint as decided: `blueprint_check` first, measure in process
+and served, roll out on the realized number — it is needed regardless of the
+FD question. Treat parallel-FD as a demonstration and never as the
+optimizer's gradient: if the endpoint lands fast and the gridshell is on
+track by ~Aug 24, build the serial backend plus the executor as an
+experiment-level exhibit — a third curve on the backend-agreement plot, its
+accuracy quoted honestly against the exact adjoints, with one honest
+sentence about finite differences at active constraints. If time is tight,
+cut it and keep the future-work paragraph; the three-mechanisms claim
+already stands on traced, DDM and hand adjoint.
