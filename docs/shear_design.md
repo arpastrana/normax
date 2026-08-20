@@ -124,7 +124,7 @@ identity already pinned at `rtol=1e-10`.
 `experiments/20_shear_audit.py` reads the analyzed shear off every converged
 design in the repo: the arch at 103's simultaneous optimum, and both trusses at
 each of the three answers 18 and 19 descend to. Worst `V_Ed/V_pl,Rd` over members
-and load cases:
+and load cases, Eq. 6.17 read once per shear component and taken at its worst:
 
 | design | worst | median | under 0.5 by | worst member |
 |---|---|---|---|---|

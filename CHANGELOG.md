@@ -9,10 +9,13 @@ design shear stays under half the plastic shear resistance. That had been
 argued from a bound over a demand mix, which describes a member that might
 exist; `experiments/20_shear_audit.py` reads it off the members that do — the
 arch at experiment 103's simultaneous optimum, and both trusses at each of the
-three answers experiments 18 and 19 descend to. The demand is the vector
-resultant of the two shears, which a circular section admits because it
-resists shear alike in every direction, against Eq. 6.18 over the shear area
-of 6.2.6(3) at the settled diameters.
+three answers experiments 18 and 19 descend to. Eq. 6.17 is read once per
+shear component at the settled diameters and taken at its worst, not on a
+resultant of the two: a tube's shear area is the same whichever way the force
+acts, which makes a resultant tempting, but whether one is sanctioned is an
+open question in `ec3x` and the worst component needs no ruling. On a planar
+frame the minor component is zero, so the two readings coincide, and the audit
+asserts that rather than assuming it.
 
 Worst `V_Ed/V_pl,Rd`: **0.3558** on the drawn Vierendeel, 0.1606 free heights,
 0.1147 on the arch, 0.0962 Vierendeel end to end, and 0.0246 down to 0.0108

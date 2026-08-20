@@ -41,6 +41,7 @@ from ec3x.material import Steel
 from ec3x.resistance import SHEAR_THRESHOLD
 from ec3x.resistance import area_shear
 from ec3x.resistance import resistance_shear
+from ec3x.resistance import utilization_shear
 
 from normax.analysis import MemberForces
 from normax.reporting import Report
@@ -81,7 +82,8 @@ class ShearReading(NamedTuple):
         Median of that fraction, which says whether the worst is a lone member
         or the whole frame.
     demand :
-        Design shear of the worst member, in newtons.
+        Design shear of the worst member, in newtons, on the component that
+        governs it.
     capacity :
         Plastic shear resistance of the worst member, in newtons.
     family :
@@ -164,18 +166,24 @@ def shear_reading(
 
     Notes
     -----
-    The two shears combine as a vector resultant rather than a sum, which is
-    exact for a section that resists shear alike in every direction, and the
-    resultant is the demand the one resistance is compared against.
+    Eq. 6.17 through `ec3x`, once per component and taken at its worst. The two
+    are deliberately not combined: a tube's shear area is the same whichever way
+    the force acts, which makes a resultant tempting, but whether one is
+    sanctioned is an open question in that package and the worst component needs
+    no ruling. On a planar frame the minor component is zero, so the two readings
+    coincide, and this asserts that rather than assuming it.
     """
     sections = family(jnp.asarray(diameters))
     steel = Steel(f_y=family.material.f_y, gamma_m0=GAMMA_M0)
-    capacity = np.asarray(resistance_shear(area_shear(sections.area), steel))
+    mobilized = area_shear(sections.area)
 
-    major = np.asarray(forces.shear_major)
-    minor = np.asarray(forces.shear_minor)
-    demand = np.sqrt(major**2 + minor**2)
-    fraction = demand / capacity
+    major = np.asarray(utilization_shear(forces.shear_major, mobilized, steel))
+    minor = np.asarray(utilization_shear(forces.shear_minor, mobilized, steel))
+    fraction = np.maximum(major, minor)
+
+    resultant = np.sqrt(major**2 + minor**2)
+    if not np.allclose(resultant, fraction, rtol=0.0, atol=0.0):
+        raise ValueError("a minor-axis shear is present: the two readings differ")
 
     members = fraction.shape[-1]
     flat = fraction.reshape(-1)
@@ -185,11 +193,17 @@ def shear_reading(
 
     twisted = float(np.max(np.abs(np.asarray(forces.torsion_moment))))
 
+    shears = np.maximum(
+        np.abs(np.asarray(forces.shear_major)),
+        np.abs(np.asarray(forces.shear_minor)),
+    )
+    capacity = np.asarray(resistance_shear(mobilized, steel))
+
     return ShearReading(
         label,
         float(flat[worst]),
         float(np.median(flat)),
-        float(demand.reshape(-1)[worst]),
+        float(np.broadcast_to(shears, fraction.shape).reshape(-1)[worst]),
         float(np.broadcast_to(capacity, fraction.shape).reshape(-1)[worst]),
         named,
         twisted,

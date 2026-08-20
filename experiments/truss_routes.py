@@ -41,7 +41,7 @@ import yaml
 from ec3x.material import Steel
 from ec3x.resistance import SHEAR_THRESHOLD
 from ec3x.resistance import area_shear
-from ec3x.resistance import resistance_shear
+from ec3x.resistance import utilization_shear
 from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
@@ -1718,22 +1718,24 @@ def shear_fraction(
 
     Notes
     -----
-    The demand is the vector resultant of the two shears, which a circular
-    section admits because it resists shear alike in every direction. The
-    resistance is EN 1993-1-1 Eq. 6.18 over the shear area of 6.2.6(3).
+    Eq. 6.17 through `ec3x`, read once per component and taken at its worst
+    rather than on a resultant of the two. The shear area of a tube is the same
+    whichever way the force acts, which makes a resultant tempting, and whether
+    one is sanctioned is an open question in that package — the worst component
+    needs no ruling and is the same number wherever the other is zero, which on
+    a planar frame it is.
 
     Read at the answer rather than bounded ahead of it: a bound over a demand
     mix describes a member that might exist, and what 6.2.10 asks about is the
     member that does.
     """
     steel = Steel(f_y=family.material.f_y, gamma_m0=GAMMA_M0_SHEAR)
-    capacity = np.asarray(resistance_shear(area_shear(sections.area), steel))
+    mobilized = area_shear(sections.area)
 
-    major = np.asarray(forces.shear_major)
-    minor = np.asarray(forces.shear_minor)
-    demand = np.sqrt(major**2 + minor**2)
+    major = np.asarray(utilization_shear(forces.shear_major, mobilized, steel))
+    minor = np.asarray(utilization_shear(forces.shear_minor, mobilized, steel))
 
-    return float(np.max(demand / capacity))
+    return float(np.max(np.maximum(major, minor)))
 
 
 def read_answer(
