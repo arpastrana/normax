@@ -267,7 +267,8 @@ def build_gridshell_3d(
     A gridshell on a spherical cap, supported along its circular boundary.
 
     The grid is polar: one node at the apex, then a node per spoke on every
-    ring. Radial edges run from the apex outwards, hoop edges close each ring.
+    ring. Radial edges run from the apex outwards, hoop edges close every ring
+    but the boundary one.
 
     Parameters
     ----------
@@ -290,6 +291,12 @@ def build_gridshell_3d(
     The cap is a sphere of radius `(radius ** 2 + rise ** 2) / (2 * rise)`,
     which is never smaller than the plan radius, so the cap is well defined
     from a shallow dome up to a hemisphere and beyond.
+
+    **The boundary ring carries no hoop members.** Both ends of such a member
+    are pinned, so it appears in no equilibrium equation: its column of the
+    horizontal balance is identically zero and its force density moves no
+    node. Emitting it would widen a held-plan basis by one silent coordinate
+    per spoke, and hand a search directions along which nothing happens.
     """
     if num_rings < 1:
         raise ValueError(f"num_rings must be at least 1, got {num_rings}")
@@ -321,7 +328,8 @@ def build_gridshell_3d(
     neighbors = np.roll(indices, -1, axis=1)
 
     edges_radial = np.stack([starts.ravel(), indices.ravel()], axis=1)
-    edges_hoop = np.stack([indices.ravel(), neighbors.ravel()], axis=1)
+    hooped = indices[:-1]
+    edges_hoop = np.stack([hooped.ravel(), neighbors[:-1].ravel()], axis=1)
     edges = np.concatenate([edges_radial, edges_hoop], axis=0)
 
     supports = indices[-1]

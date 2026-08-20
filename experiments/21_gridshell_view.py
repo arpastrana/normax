@@ -15,11 +15,12 @@
 Eyeball the gridshell generator before any experiment stands on it.
 
 The generator draws a polar grid on a spherical cap: an apex, a node per spoke
-on every ring, radial members running outward and hoop members closing each
-ring, the outermost ring pinned. This script puts that output in front of the
-eye before the gridshell optimization is built, so the drawn shape, the rise
-and the candidate seed diameters are reviewed as geometry rather than
-discovered as a misshapen answer three stages downstream.
+on every ring, radial members running outward and hoop members closing every
+ring but the outermost, which is pinned and needs none: a member spanning two
+supports appears in no equilibrium equation and moves no node. This script puts
+that output in front of the eye before the gridshell optimization is built, so
+the drawn shape, the rise and the candidate seed diameters are reviewed as
+geometry rather than discovered as a misshapen answer three stages downstream.
 
 Three things are reported and one is drawn.
 
@@ -200,7 +201,7 @@ def report_counts(
         ("nodes", f"{structure.num_nodes}"),
         ("members", f"{structure.num_edges}"),
         ("members, radial", f"{num_polar}"),
-        ("members, hoop", f"{num_polar}"),
+        ("members, hoop", f"{num_polar - sketch.num_spokes}"),
         ("supports", f"{sketch.num_spokes}"),
         ("plan radius [mm]", f"{sketch.radius:.1f}"),
         ("rise [mm]", f"{sketch.rise:.1f}"),
@@ -233,10 +234,11 @@ def report_rings(
     arithmetic repeated from its source.
     """
     grid = (sketch.num_rings, sketch.num_spokes)
+    hooped = (sketch.num_rings - 1, sketch.num_spokes)
     ring_nodes = np.asarray(structure.nodes)[1:].reshape(*grid, 3)
     lengths = np.asarray(member_lengths(structure.nodes, structure.edges))
     radial = lengths[: grid[0] * grid[1]].reshape(grid)
-    hoop = lengths[grid[0] * grid[1] :].reshape(grid)
+    hoop = lengths[grid[0] * grid[1] :].reshape(hooped)
 
     plan_radii = np.linalg.norm(ring_nodes[:, 0, :2], axis=1)
     heights = ring_nodes[:, 0, 2]
@@ -249,7 +251,13 @@ def report_rings(
         ReportColumn("hoop L [mm]", ".1f"),
     )
     rows = [
-        (ring + 1, plan_radii[ring], heights[ring], radial[ring, 0], hoop[ring, 0])
+        (
+            ring + 1,
+            plan_radii[ring],
+            heights[ring],
+            radial[ring, 0],
+            hoop[ring, 0] if ring < hooped[0] else "pinned",
+        )
         for ring in range(sketch.num_rings)
     ]
     report.write_table(columns, rows)

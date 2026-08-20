@@ -212,8 +212,18 @@ def test_gridshell_counts():
     structure = build_gridshell_3d(num_rings=3, num_spokes=6)
 
     assert structure.nodes.shape[0] == 1 + 3 * 6
-    assert structure.edges.shape[0] == 2 * 3 * 6
+    assert structure.edges.shape[0] == 3 * 6 + (3 - 1) * 6
     assert structure.supports.shape[0] == 6
+
+
+def test_gridshell_leaves_the_boundary_ring_unhooped():
+    structure = build_gridshell_3d(num_rings=3, num_spokes=6)
+    edges = np.asarray(structure.edges)
+    supports = set(np.asarray(structure.supports).tolist())
+
+    both = [pair for pair in edges.tolist() if set(pair) <= supports]
+
+    assert both == []
 
 
 def test_gridshell_supports_are_the_outer_ring():
@@ -246,13 +256,14 @@ def test_gridshell_nodes_lie_on_a_sphere(rise):
 
 
 def test_gridshell_hoops_close_each_ring():
-    structure = build_gridshell_3d(num_rings=2, num_spokes=5)
+    structure = build_gridshell_3d(num_rings=3, num_spokes=5)
     nodes = np.asarray(structure.nodes)
     edges = np.asarray(structure.edges)
 
-    hoops = edges[2 * 5 :]
+    hoops = edges[3 * 5 :]
     lengths = np.linalg.norm(nodes[hoops[:, 0]] - nodes[hoops[:, 1]], axis=1)
 
+    assert lengths.size == 2 * 5
     assert lengths[:5] == pytest.approx(lengths[0])
     assert lengths[5:] == pytest.approx(lengths[5])
 

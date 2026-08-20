@@ -48,9 +48,23 @@ def test_the_warren_has_sixteen(warren):
     assert density_basis(warren).shape[1] == 16
 
 
-def test_the_gridshell_has_twenty_five():
-    # 96 edges minus rank 71: the polar symmetry drops three balance rows.
-    assert density_basis(build_gridshell_3d()).shape[1] == 25
+def test_the_gridshell_has_thirteen():
+    # 84 edges minus rank 71: the polar symmetry drops three balance rows.
+    # The generator emits no boundary hoops, so none of the thirteen is a
+    # member joining two supports — those move no node and would be silent
+    # coordinates. Twenty-five before that ring was dropped.
+    assert density_basis(build_gridshell_3d()).shape[1] == 13
+
+
+def test_every_gridshell_coordinate_moves_the_shell():
+    # The point of leaving the boundary ring unhooped: a coordinate that
+    # changes no height is one a search wanders along for nothing.
+    structure = build_gridshell_3d()
+    basis = density_basis(structure)
+    balance = plan_equilibrium(structure)
+
+    assert np.abs(balance).max(axis=0).min() > 0.0
+    assert np.linalg.matrix_rank(basis) == basis.shape[1]
 
 
 def test_the_basis_is_orthonormal(warren):
@@ -177,10 +191,10 @@ def test_the_pivoted_symmetric_basis_is_mirror_invariant(warren):
     assert np.allclose(pivot.basis[targets], pivot.basis)
 
 
-def test_the_pivoted_gridshell_has_twenty_five():
+def test_the_pivoted_gridshell_has_thirteen():
     pivot = pivoted_basis(build_gridshell_3d())
 
-    assert pivot.basis.shape[1] == 25
+    assert pivot.basis.shape[1] == 13
 
 
 @pytest.fixture(scope="module")
