@@ -21,6 +21,7 @@ PIPELINE_PACKAGES = ("jax_fdm", "smax", "ec3x")
 # quietly, so this list fails loudly when stale.
 PIPELINE_TESTS = (
     "test_analysis_prepared.py",
+    "test_plan_basis.py",
     "test_equilibrium_consistency.py",
     "test_pipeline.py",
     "test_design.py",
