@@ -23,6 +23,7 @@ PIPELINE_TESTS = (
     "test_analysis_prepared.py",
     "test_plan_basis.py",
     "test_equilibrium_consistency.py",
+    "test_materials.py",
     "test_pipeline.py",
     "test_design.py",
     "test_replay.py",
@@ -30,14 +31,13 @@ PIPELINE_TESTS = (
     "test_tesseract_parity.py",
 )
 
-# These two compare normax's neutral containers against ec3x's, so they need
-# ec3x alone — an environment with ec3x but no frame solver still runs them.
+# This one compares normax's neutral containers against ec3x's, so it needs
+# ec3x alone — an environment with ec3x but no frame solver still runs it.
+# test_materials used to sit here too, but it imports normax.sizing, whose
+# backend re-exports pull the frame solver and blue-prints along.
 EC3X_PACKAGES = ("ec3x",)
 
-EC3X_TESTS = (
-    "test_materials.py",
-    "test_sections.py",
-)
+EC3X_TESTS = ("test_sections.py",)
 
 # openseespy is the "spike" optional extra and CI never installs it, so the
 # second analysis backend is skipped wherever it is absent. It needs smax too,
@@ -54,6 +54,7 @@ BLUEPRINT_PACKAGES = ("blueprints",)
 BLUEPRINT_TESTS = (
     "test_backend_opensees.py",
     "test_blueprint_sizer.py",
+    "test_materials.py",
     "test_tesseract_parity.py",
 )
 

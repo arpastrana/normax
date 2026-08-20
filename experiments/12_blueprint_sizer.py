@@ -46,27 +46,27 @@ import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sections import TubeFamily
-from normax.sizing.blueprint import DIAMETER_MINIMUM
-from normax.sizing.blueprint import GAMMA_M0
-from normax.sizing.blueprint import BlueprintSizer
-from normax.sizing.blueprint import host_family
-from normax.sizing.blueprint import sized_diameter
-from normax.sizing.ec3 import Ec3Sizer
+from normax.sizing import DIAMETER_MINIMUM
+from normax.sizing import GAMMA_M0
+from normax.sizing import BlueprintSizer
+from normax.sizing import Ec3Sizer
+from normax.sizing import host_family
+from normax.sizing import sized_diameter
 from normax.structures import build_arch_2d
 from normax.tesseract import BlueprintClient
 from normax.tesseract import blueprint_tesseract
@@ -329,7 +329,7 @@ def arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
     """
     structure = pipeline.sizer.structure
     trial = jnp.full(NUM_EDGES, -1.0)
-    loads = loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    loads = create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
     shape = pipeline.formfinder(trial, loads)
     reached = jnp.max(shape.xyz[:, 2])
 
@@ -466,7 +466,7 @@ def main(verbose: bool = True) -> None:
     params = arch_parameters(local_pipeline)
     structure = local_pipeline.sizer.structure
     loads = assemble_load_cases(
-        [loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
+        [create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
     )
 
     local_design = local_pipeline(params, loads)

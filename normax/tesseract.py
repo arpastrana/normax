@@ -63,13 +63,13 @@ from normax.loads import select_load_case
 from normax.loads import stack_load_cases
 from normax.materials import SteelGrade
 from normax.sections import TubeFamily
+from normax.sizing import DIAMETER_MINIMUM
+from normax.sizing import GAMMA_M0
 from normax.sizing import AbstractMemberSizer
+from normax.sizing import BlueprintSizer
+from normax.sizing import Ec3Sizer
 from normax.sizing import MemberSizes
-from normax.sizing.blueprint import DIAMETER_MINIMUM
-from normax.sizing.blueprint import GAMMA_M0
-from normax.sizing.blueprint import BlueprintSizer
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import neutral_sections
+from normax.sizing import neutral_sections
 from normax.structures import Structure
 from normax.structures import member_lengths
 

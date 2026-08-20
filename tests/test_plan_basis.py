@@ -3,16 +3,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import SubspaceFormFinder
-from normax.form_finding.fdm import density_basis
-from normax.form_finding.fdm import equilibrium_gap
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import fit_densities
-from normax.form_finding.fdm import pivoted_basis
-from normax.form_finding.fdm import plan_equilibrium
-from normax.form_finding.fdm import positions_vertical
-from normax.loads import loads_uniform
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import SubspaceFormFinder
+from normax.form_finding import density_basis
+from normax.form_finding import equilibrium_gap
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import fit_densities
+from normax.form_finding import pivoted_basis
+from normax.form_finding import plan_equilibrium
+from normax.form_finding import positions_vertical
+from normax.loads import create_loads_uniform
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 from normax.structures import build_structure
@@ -67,7 +67,7 @@ def test_the_basis_annihilates_the_plan_balance(warren):
 
 
 def test_the_fit_reaches_a_drawn_lens_exactly(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
 
     assert fit.gap < 1e-12
@@ -75,7 +75,7 @@ def test_the_fit_reaches_a_drawn_lens_exactly(warren, lens):
 
 
 def test_the_vertical_solve_reproduces_the_fitted_lens(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
 
     graph = equilibrium_graph(warren)
@@ -85,7 +85,7 @@ def test_the_vertical_solve_reproduces_the_fitted_lens(warren, lens):
 
 
 def test_the_self_stress_leaves_the_lens_balanced(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
     shifted = fit.q + 10.0 * fit.self_stresses[:, 0]
 
@@ -93,7 +93,7 @@ def test_the_self_stress_leaves_the_lens_balanced(warren, lens):
 
 
 def test_the_gap_reports_an_unbalanced_guess(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     q = np.ones(warren.num_edges)
 
     assert equilibrium_gap(warren, lens, q, loads) > 1e-2
@@ -151,7 +151,7 @@ def test_the_pivoted_basis_spans_the_full_subspace(warren):
 
 
 def test_the_pivoted_coordinates_read_back(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
     pivot = pivoted_basis(warren)
     rebuilt = pivot.basis @ fit.q[pivot.independents]
@@ -289,7 +289,7 @@ def test_the_pivoted_vierendeel_elects_the_verticals(vierendeel):
 
 
 def test_the_subspace_finder_expands_before_solving(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
     inner = FdmFormFinder(warren)
     finder = SubspaceFormFinder(inner, density_basis(warren))
@@ -303,7 +303,7 @@ def test_the_subspace_finder_expands_before_solving(warren, lens):
 
 
 def test_the_orthonormal_coordinates_read_back_through_the_finder(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
     finder = SubspaceFormFinder(FdmFormFinder(warren), density_basis(warren))
 
@@ -314,7 +314,7 @@ def test_the_orthonormal_coordinates_read_back_through_the_finder(warren, lens):
 
 
 def test_the_pivoted_coordinates_read_back_through_the_finder(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
     pivot = pivoted_basis(warren)
     finder = SubspaceFormFinder(FdmFormFinder(warren), pivot.basis, pivot.independents)
@@ -327,7 +327,7 @@ def test_the_pivoted_coordinates_read_back_through_the_finder(warren, lens):
 
 
 def test_the_subspace_gradient_chains_through_the_basis(warren, lens):
-    loads = loads_uniform(warren, LOAD)
+    loads = create_loads_uniform(warren, LOAD)
     fit = fit_densities(warren, lens, loads)
     inner = FdmFormFinder(warren)
     basis = density_basis(warren)

@@ -29,11 +29,7 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from normax.analysis.opensees import Jacobian
-from normax.analysis.opensees import Model
-from normax.analysis.opensees import force_jacobian
-from normax.analysis.opensees import member_forces
-from normax.analysis.opensees import prepare_model
+from normax.analysis import opensees
 from normax.materials import SteelGrade
 from normax.sections import TubeFamily
 from normax.structures import Structure
@@ -53,7 +49,7 @@ BLOCKS = {
 OUTPUT_RANK = {"axial_force": 1, "end_moments_major": 2, "end_moments_minor": 2}
 
 
-def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeFamily]:
+def _build_model(inputs: dict[str, Any]) -> tuple[opensees.Model, TubeFamily]:
     """
     The frame the inputs describe, in the containers the backend takes.
 
@@ -92,7 +88,7 @@ def _build_model(inputs: dict[str, Any]) -> tuple[Model, TubeFamily]:
     catalogue = TubeFamily(inputs["ratio"], grade)
 
     return (
-        prepare_model(structure, catalogue, normal=inputs["normal"]),
+        opensees.prepare_model(structure, catalogue, normal=inputs["normal"]),
         catalogue,
     )
 
@@ -119,7 +115,7 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     """
     model, catalogue = _build_model(inputs)
 
-    member = member_forces(
+    member = opensees.member_forces(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
@@ -134,7 +130,7 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     }
 
 
-def _jacobian_blocks(inputs: dict[str, Any]) -> Jacobian:
+def _jacobian_blocks(inputs: dict[str, Any]) -> opensees.Jacobian:
     """
     Sweep the solver once for every derivative the stage can be asked for.
 
@@ -157,7 +153,7 @@ def _jacobian_blocks(inputs: dict[str, Any]) -> Jacobian:
     """
     model, catalogue = _build_model(inputs)
 
-    return force_jacobian(
+    return opensees.force_jacobian(
         model,
         jnp.asarray(inputs["xyz"]),
         jnp.asarray(inputs["diameter"]),
@@ -262,7 +258,7 @@ def forces_vjp(
     return cotangents
 
 
-def _output_shape(blocks: Jacobian, output: str) -> tuple[int, ...]:
+def _output_shape(blocks: opensees.Jacobian, output: str) -> tuple[int, ...]:
     """
     Shape of one output field, read off the blocks that produce it.
 

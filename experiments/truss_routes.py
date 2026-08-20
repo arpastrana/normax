@@ -50,20 +50,20 @@ from scipy.optimize import minimize
 from smax import LoadCase
 
 from normax.analysis import MemberForces
-from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import frame_model
+from normax.analysis import SmaxAnalyzer
+from normax.analysis import frame_model
 from normax.design import Design
 from normax.design import StructuralDesignPipeline
 from normax.design import design_envelope
+from normax.form_finding import FdmFormFinder
 from normax.form_finding import FormFoundShape
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import SubspaceFormFinder
-from normax.form_finding.fdm import density_basis
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import pivoted_basis
+from normax.form_finding import SubspaceFormFinder
+from normax.form_finding import density_basis
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import pivoted_basis
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_point
+from normax.loads import create_loads_point
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
@@ -71,8 +71,8 @@ from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import member_lengths
 from normax.visualization import DescentTrace
@@ -802,7 +802,7 @@ def build_load_cases(
     def deck_case(weights: Float[np.ndarray, "interior"]) -> Float[Array, "nodes 3"]:
         scaled = weights * (weight.total / float(weights.sum()))
         cases = [
-            loads_point(structure, float(load), node=int(node))
+            create_loads_point(structure, float(load), node=int(node))
             for node, load in zip(interior, scaled)
         ]
 
@@ -811,7 +811,7 @@ def build_load_cases(
     uniform = deck_case(np.ones(interior.size))
     near = deck_case(np.where(along <= middle, 1.0, weight.half_factor))
     concentrated = weight.total * weight.point_factor
-    point = loads_point(structure, concentrated, node=num_bays // 2)
+    point = create_loads_point(structure, concentrated, node=num_bays // 2)
     cases = [uniform, near, point]
     if weight.mirrored_case:
         far = deck_case(np.where(along >= middle, 1.0, weight.half_factor))
@@ -1003,7 +1003,7 @@ def prepare_problem(
         held = density_basis(structure, mirror)
         finder = SubspaceFormFinder(FdmFormFinder(structure), held)
 
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     blocks = StructuralDesignPipeline(
         finder,
         SmaxAnalyzer(structure, family(config.analysis.diameter)),

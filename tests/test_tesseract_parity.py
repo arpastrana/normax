@@ -10,21 +10,21 @@ from ec3x.material import Steel
 from ec3x.section import DIAMETER_MINIMUM
 from tesseract_jax import apply_tesseract
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_half_span
-from normax.loads import loads_point
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_point
+from normax.loads import create_loads_uniform
 from normax.loads import select_load_case
 from normax.materials import SteelGrade
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import design_actions
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
+from normax.sizing import design_actions
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import STAGES
@@ -153,7 +153,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -184,14 +184,14 @@ def three_cases(structure):
     """
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
 
-    half = loads_half_span(structure, spread, factor=0.5)
+    half = create_loads_half_span(structure, spread, factor=0.5)
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
-    point = loads_uniform(structure, spread * 0.75) + loads_point(
+    point = create_loads_uniform(structure, spread * 0.75) + create_loads_point(
         structure, TOTAL_LOAD * 0.25, node=structure.crown_node()
     )
 
-    cases = [loads_uniform(structure, spread), half, point]
+    cases = [create_loads_uniform(structure, spread), half, point]
 
     return load_cases_of(cases)
 
@@ -216,7 +216,7 @@ def both_pipelines(arch, section_class, resultant=True):
     descriptor and every later test errors out of capture rather than failing an
     assertion. Nothing here needs it: the stages compile behind the boundary.
     """
-    family = thinnest_family(neutral_grade(arch.steel), section_class)
+    family = build_section_family(neutral_grade(arch.steel), section_class)
 
     sizer = Ec3Sizer(arch.structure, family, resultant)
     in_process = StructuralDesignPipeline(
@@ -382,7 +382,7 @@ def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
     # The buckling length is an input rather than a mesh length, so it has to
     # reach the check as itself and not as the member length beside it.
     buckling_length = jnp.full(NUM_EDGES, 1_000.0)
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
 
     shape = FdmFormFinder(arch.structure)(
         arch.params.force_densities, one_case.formfinding
@@ -608,7 +608,7 @@ def sized_through_the_check(arch, result, family):
 
 
 def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
     oracle, _ = both_designs(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, family)
 
@@ -630,7 +630,7 @@ def test_the_moment_factors_survive_the_boundary(arch, one_case):
     # the field walk no longer reaches them. The boundary still publishes them,
     # and here they are held against the local reduction of the same forces at
     # the tolerance the end moments they are read from are held to.
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
     oracle, _ = both_designs(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, family)
 
@@ -648,7 +648,7 @@ def test_the_moment_factors_survive_the_boundary(arch, one_case):
 def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
     # A concrete cotangent on a non-differentiable output raises rather than
     # returning a zero, which is the whole reason the composition drops it.
-    family = thinnest_family(neutral_grade(arch.steel), 3)
+    family = build_section_family(neutral_grade(arch.steel), 3)
     oracle, _ = both(arch, one_case, 3)
     check, axial_force = sized_through_the_check(arch, oracle, family)
 

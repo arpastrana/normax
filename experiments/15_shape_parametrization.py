@@ -103,7 +103,7 @@ from jaxtyping import Float
 from jaxtyping import Int
 from scipy.optimize import minimize
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -111,12 +111,12 @@ from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import governing_load_case
 from normax.design import optimize_staggered
+from normax.form_finding import FdmFormFinder
 from normax.form_finding import FormFoundShape
-from normax.form_finding.fdm import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_half_span
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.optimization import SearchResult
 from normax.optimization import Trajectory
@@ -126,8 +126,8 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.structures import member_lengths
@@ -568,12 +568,12 @@ def build_load_cases(structure: Structure, weight: LoadConfig) -> LoadCases:
     """
     spread = weight.total / (structure.num_edges - 1)
 
-    uniform = loads_uniform(structure, spread)
+    uniform = create_loads_uniform(structure, spread)
 
-    half = loads_half_span(structure, spread, factor=weight.half_factor)
+    half = create_loads_half_span(structure, spread, factor=weight.half_factor)
     half = half * (weight.total / abs(float(jnp.sum(half[:, 2]))))
 
-    mirrored = loads_half_span(
+    mirrored = create_loads_half_span(
         structure, spread, factor=weight.half_factor, mirrored=True
     )
     mirrored = mirrored * (weight.total / abs(float(jnp.sum(mirrored[:, 2]))))
@@ -601,7 +601,7 @@ def arch_problem(config: TaskConfig) -> ArchProblem:
     shape = formfinder(trial, loads.formfinding)
     reached = jnp.max(shape.xyz[:, 2])
 
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     blocks = StructuralDesignPipeline(
         formfinder,
         SmaxAnalyzer(structure, family(config.analysis.diameter)),

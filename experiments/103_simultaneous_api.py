@@ -77,8 +77,8 @@ from normax.form_finding import FormFoundShape
 from normax.loads import LoadCases
 from normax.optimization import Trajectory
 from normax.sections import TubeFamily
+from normax.sizing import DIAMETER_MINIMUM
 from normax.sizing import MemberSizes
-from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.structures import Structure
 from normax.visualization import figure_trajectory
 

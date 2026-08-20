@@ -15,26 +15,26 @@ from jax.test_util import check_grads
 from scipy.optimize import minimize
 
 from normax.analysis import MemberForces
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding.fdm import FdmFormFinder
+from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_uniform
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.sections import TubeFamily
+from normax.sizing import DIAMETER_MINIMUM
+from normax.sizing import BlueprintSizer
+from normax.sizing import Ec3Sizer
 from normax.sizing import MemberSizes
 from normax.sizing import blueprint as blueprint_module
-from normax.sizing.blueprint import DIAMETER_MINIMUM
-from normax.sizing.blueprint import BlueprintSizer
-from normax.sizing.blueprint import checked_utilization
-from normax.sizing.blueprint import demand_moment
-from normax.sizing.blueprint import host_family
-from normax.sizing.blueprint import sized_diameter
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import build_section_family
+from normax.sizing import checked_utilization
+from normax.sizing import demand_moment
+from normax.sizing import host_family
+from normax.sizing import sized_diameter
 from normax.structures import build_arch_2d
 from normax.tesseract import BlueprintClient
 from normax.tesseract import blueprint_tesseract
@@ -108,7 +108,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -200,7 +200,7 @@ def test_the_philosophies_disagree_on_a_compressed_arch(
     limit_state = StructuralDesignPipeline(
         pipeline.formfinder,
         pipeline.analyzer,
-        Ec3Sizer(structure, thinnest_family(Steel355(), 3)),
+        Ec3Sizer(structure, build_section_family(Steel355(), 3)),
     )
 
     naive = pipeline(params, one_case).sizes.sections.diameter
@@ -695,7 +695,7 @@ def test_the_diameter_floor_matches_the_catalogue(structure):
     # The cross-repo drift alarm the constant's comment promises: both
     # pipelines clamp to the same floor, read here off the EC3 adapter's own
     # catalogue rather than by importing the clause library into this file.
-    checked = Ec3Sizer(structure, thinnest_family(Steel355(), 3))
+    checked = Ec3Sizer(structure, build_section_family(Steel355(), 3))
 
     assert float(checked.catalogue.diameter_min) == DIAMETER_MINIMUM
 

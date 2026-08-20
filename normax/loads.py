@@ -47,7 +47,7 @@ from normax.structures import Structure
 LoadCaseAxis = TypeVar("LoadCaseAxis", bound=tuple)
 
 
-def loads_uniform(
+def create_loads_uniform(
     structure: Structure,
     load: float,
 ) -> Float[Array, "nodes 3"]:
@@ -76,7 +76,7 @@ def loads_uniform(
     return _nodal_loads(structure, jnp.ones(structure.num_nodes) * load)
 
 
-def loads_half_span_mirrored(
+def create_loads_half_span_mirrored(
     structure: Structure,
     load: float,
 ) -> Float[Array, "nodes 3"]:
@@ -97,15 +97,15 @@ def loads_half_span_mirrored(
 
     Notes
     -----
-    The exact reflection of `loads_half_span` on a structure whose nodes are
+    The exact reflection of `create_loads_half_span` on a structure whose nodes are
     symmetric about midspan, a node sitting exactly at midspan being loaded
     either way. One asymmetric case on its own biases a search towards the half
     it leaves light; the pair does not.
     """
-    return loads_half_span(structure, load, axis=0, factor=0.0, mirrored=True)
+    return create_loads_half_span(structure, load, axis=0, factor=0.0, mirrored=True)
 
 
-def loads_half_span(
+def create_loads_half_span(
     structure: Structure,
     load: float,
     *,
@@ -150,7 +150,7 @@ def loads_half_span(
     return _nodal_loads(structure, applied)
 
 
-def loads_point(
+def create_loads_point(
     structure: Structure,
     load: float,
     *,
@@ -210,9 +210,9 @@ def _nodal_loads(
 
 
 LOAD_CASE_REGISTRY = {
-    "uniform": loads_uniform,
-    "half_span": loads_half_span,
-    "half_span_mirrored": loads_half_span_mirrored,
+    "uniform": create_loads_uniform,
+    "half_span": create_loads_half_span,
+    "half_span_mirrored": create_loads_half_span_mirrored,
 }
 
 

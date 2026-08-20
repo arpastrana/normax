@@ -9,16 +9,16 @@ from smax import diagnose_mechanisms
 from smax import element_forces
 from smax import solve
 
+from normax.analysis import frame_model
+from normax.analysis import member_forces
 from normax.analysis import normal_axis
+from normax.analysis import prepare_model
 from normax.analysis import support_fixities
-from normax.analysis.smax import frame_model
-from normax.analysis.smax import member_forces
-from normax.analysis.smax import prepare_model
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
-from normax.loads import loads_uniform
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import build_section_family
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 
@@ -53,7 +53,7 @@ def funicular(structure, load=LOAD):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, load)
+    return create_loads_uniform(structure, load)
 
 
 @pytest.fixture(scope="module")
@@ -65,7 +65,7 @@ def steel():
 def catalogue(steel):
     # The class-limit wall proportion, as bare geometry: the analysis needs a
     # family and has no use for the class.
-    return thinnest_family(steel, 3)
+    return build_section_family(steel, 3)
 
 
 @pytest.fixture(scope="module")

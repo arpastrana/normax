@@ -81,20 +81,20 @@ import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import governing_load_case
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import loads_half_span
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.optimization import Trajectory
 from normax.optimization import annealing_schedule
@@ -105,8 +105,8 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import Descent
@@ -349,7 +349,7 @@ def arch_problem() -> ArchProblem:
 
     # The analysis is configured with one tube, drawn from the sizer's family;
     # the check chooses within that family.
-    family = thinnest_family(GRADE, SECTION_CLASS)
+    family = build_section_family(GRADE, SECTION_CLASS)
     sizer = Ec3Sizer(structure, family)
     blocks = StructuralDesignPipeline(
         FdmFormFinder(structure),
@@ -368,12 +368,17 @@ def build_load_cases(structure: Structure) -> LoadCases:
     """
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
 
-    uniform = loads_uniform(structure, spread)
+    uniform = create_loads_uniform(structure, spread)
 
-    half = loads_half_span(structure, spread, factor=HALF_FACTOR)
+    half = create_loads_half_span(structure, spread, factor=HALF_FACTOR)
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
-    mirrored = loads_half_span(structure, spread, factor=HALF_FACTOR, mirrored=True)
+    mirrored = create_loads_half_span(
+        structure,
+        spread,
+        factor=HALF_FACTOR,
+        mirrored=True,
+    )
     mirrored = mirrored * (TOTAL_LOAD / abs(float(jnp.sum(mirrored[:, 2]))))
 
     cases = [uniform, half, mirrored]

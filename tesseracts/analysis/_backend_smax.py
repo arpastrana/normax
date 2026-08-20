@@ -41,8 +41,8 @@ from jaxtyping import Float
 from smax import CompiledStructure
 
 from normax.analysis import MemberForces
-from normax.analysis.smax import member_forces
-from normax.analysis.smax import prepare_model
+from normax.analysis import member_forces
+from normax.analysis import prepare_model
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
 from normax.sections import TubeFamily

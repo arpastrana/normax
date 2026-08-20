@@ -7,25 +7,25 @@ import pytest
 from ec3x.section import DIAMETER_MINIMUM
 from ec3x.sizing import LIMIT_MAJOR
 
-from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import governing_load_case
-from normax.form_finding.fdm import FdmFormFinder
-from normax.form_finding.fdm import equilibrium_graph
-from normax.form_finding.fdm import equilibrium_state
-from normax.form_finding.fdm import positions_vertical
+from normax.form_finding import FdmFormFinder
+from normax.form_finding import equilibrium_graph
+from normax.form_finding import equilibrium_state
+from normax.form_finding import positions_vertical
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import loads_half_span
-from normax.loads import loads_point
-from normax.loads import loads_uniform
+from normax.loads import create_loads_half_span
+from normax.loads import create_loads_point
+from normax.loads import create_loads_uniform
 from normax.materials import Steel355
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import thinnest_family
+from normax.sizing import Ec3Sizer
+from normax.sizing import build_section_family
 from normax.structures import build_arch_2d
 from normax.visualization import Descent
 from normax.visualization import Form
@@ -98,7 +98,7 @@ def funicular(structure):
     """
     The uniform load case the arch is form-found under.
     """
-    return loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
 
 def one_case(structure):
@@ -176,7 +176,7 @@ def sized(setup, steel, section_class, buckling_length=None):
     takes one; the composition always hands it the member length.
     """
     structure, _, _ = setup
-    family = thinnest_family(steel, section_class)
+    family = build_section_family(steel, section_class)
     pipeline = pipeline_of(setup, steel, family)
     params = params_of(setup)
     loads = one_case(structure)
@@ -305,7 +305,7 @@ def test_the_mass_gradient_matches_central_differences(
     setup, steel, seed, section_class
 ):
     structure, fdm, q = setup
-    family = thinnest_family(steel, section_class)
+    family = build_section_family(steel, section_class)
 
     def objective(q):
         return compute_mass(
@@ -329,7 +329,7 @@ def test_the_mass_gradient_matches_central_differences(
 
 def test_the_mass_gradient_is_finite_and_nowhere_zero(setup, steel, seed):
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     gradient = jax.grad(mass_of(setup, steel, family))(q)
 
@@ -339,7 +339,7 @@ def test_the_mass_gradient_is_finite_and_nowhere_zero(setup, steel, seed):
 
 def test_forward_and_reverse_mode_agree_on_the_mass(setup, steel, seed):
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     def objective(q):
         return compute_mass(
@@ -356,7 +356,7 @@ def test_the_mass_is_differentiable_in_the_analyzed_diameters(setup, steel, seed
     # The staggered coupling is one-way, but it is not a dead input: the sections
     # the frame is built from move the forces, and so the sizes.
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     gradient = jax.grad(sizes_of(setup, steel, family))(seed)
 
@@ -368,7 +368,7 @@ def test_the_gradient_changes_sign_across_the_arch(setup, steel, seed):
     # The springing gains more from length than it loses to section, and the
     # crown the other way round, so the sensitivity crosses zero in between.
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     gradient = jax.grad(mass_of(setup, steel, family))(q)
 
@@ -381,7 +381,7 @@ def test_the_gradient_changes_sign_across_the_arch(setup, steel, seed):
 # --------------------------------------------------------------------------- #
 def test_repeating_the_pass_reaches_a_fixed_point(setup, steel, seed):
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     diameters = seed
     moves = []
@@ -411,7 +411,7 @@ def test_repeating_the_pass_reaches_a_fixed_point(setup, steel, seed):
 
 def test_one_pass_is_within_two_percent_of_the_fixed_point(setup, steel, seed):
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     first = design_envelope(
         pipeline_of(setup, steel, family)(DesignParameters(q, seed), one_case(setup[0]))
@@ -496,19 +496,19 @@ def load_cases(setup):
     structure, _, _ = setup
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
 
-    half = loads_half_span(structure, spread, factor=0.5)
+    half = create_loads_half_span(structure, spread, factor=0.5)
     half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
 
-    point = loads_uniform(structure, spread * 0.75) + loads_point(
+    point = create_loads_uniform(structure, spread * 0.75) + create_loads_point(
         structure, TOTAL_LOAD * 0.25, node=structure.crown_node()
     )
 
-    return load_cases_of([loads_uniform(structure, spread), half, point])
+    return load_cases_of([create_loads_uniform(structure, spread), half, point])
 
 
 def covered(setup, steel, load_cases, beta, section_class=3):
     structure, _, _ = setup
-    family = thinnest_family(steel, section_class)
+    family = build_section_family(steel, section_class)
     pipeline = pipeline_of(setup, steel, family)
 
     demanded = pipeline(params_of(setup), load_cases)
@@ -581,7 +581,7 @@ def test_one_load_case_reproduces_the_single_case_design(setup, steel, load_case
     # An envelope over one case is that case, whatever the sharpness, so the
     # aggregation cannot be quietly changing the answer.
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
     seeds = jnp.full(NUM_EDGES, SEED)
 
     single = pipeline_of(setup, steel, family)(
@@ -639,11 +639,11 @@ def test_a_load_case_reaches_the_analysis(setup, steel):
     # The load case is an argument to the analysis alone; form finding keeps the
     # loads the shape answers to.
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
     seeds = jnp.full(NUM_EDGES, SEED)
 
     spread = TOTAL_LOAD / (NUM_EDGES - 1)
-    asymmetric = loads_half_span(structure, spread, factor=0.0)
+    asymmetric = create_loads_half_span(structure, spread, factor=0.0)
 
     pipeline = pipeline_of(setup, steel, family)
     shaped = pipeline(DesignParameters(q, seeds), one_case(structure))
@@ -662,7 +662,7 @@ def test_the_enveloped_mass_gradient_matches_central_differences(
     setup, steel, load_cases
 ):
     structure, fdm, q = setup
-    family = thinnest_family(steel, 3)
+    family = build_section_family(steel, 3)
 
     pipeline = pipeline_of(setup, steel, family)
 
