@@ -656,6 +656,11 @@ class BlueprintClient(AbstractMemberSizer):
     local :
         The same check in this process, supplying the family and the static
         snapshots the schema's flat fields are read from.
+    materialize_jacobian :
+        How a batched derivative crosses: `None` lets tesseract-jax take the
+        `jacobian` endpoint whenever the server offers one, `False` forces
+        one sequential product crossing per row, `True` demands the endpoint
+        and raises where it is missing.
 
     Notes
     -----
@@ -664,20 +669,24 @@ class BlueprintClient(AbstractMemberSizer):
     and their diagonal come off the solve's outputs, and a size the caller
     owns goes over as `diameter_held` and comes back as `utilization_held`.
     A simultaneous optimization constrained on this block therefore crosses
-    the boundary on every constraint evaluation, and its Jacobian pulls one
-    cotangent per constraint row through the hand-written NumPy adjoint.
+    the boundary on every constraint evaluation. Its Jacobian crosses once
+    through the server's `jacobian` endpoint — or once per constraint row
+    through the hand-written NumPy adjoint when `materialize_jacobian` says
+    so. A single-cotangent `jax.grad` always takes the adjoint.
 
     Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
     """
 
     client: Tesseract
     local: BlueprintSizer
+    materialize_jacobian: bool | None
 
     def __init__(
         self,
         structure: Structure,
         client: Tesseract,
         family: TubeFamily,
+        materialize_jacobian: bool | None = None,
     ) -> None:
         """
         Build a sizer that crosses a boundary to size and stays home to re-read.
@@ -691,6 +700,9 @@ class BlueprintClient(AbstractMemberSizer):
         family :
             The section family every member is drawn from, whose ratio fixes
             the wall proportion and whose grade supplies the material.
+        materialize_jacobian :
+            How a batched derivative crosses; the default lets the boundary
+            take its `jacobian` endpoint whenever the server offers one.
 
         Raises
         ------
@@ -699,6 +711,7 @@ class BlueprintClient(AbstractMemberSizer):
         """
         self.client = client
         self.local = BlueprintSizer(structure, family)
+        self.materialize_jacobian = materialize_jacobian
 
     @property
     def family(self) -> TubeFamily:
@@ -751,6 +764,7 @@ class BlueprintClient(AbstractMemberSizer):
                     "ratio": jnp.asarray(local.ratio),
                     "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
                 },
+                materialize_jacobian=self.materialize_jacobian,
             )
             for acting in carried
         ]
@@ -790,11 +804,13 @@ class BlueprintClient(AbstractMemberSizer):
         Notes
         -----
         Answered by the boundary's held-size check, so a constrained search
-        over the diameters exercises the hand-written adjoint on every
-        constraint evaluation and every Jacobian row. The in-process block
-        would give the same bits, and a parity test holds it to that.
-        A Jacobian of this map batches its cotangents, and the sequential
-        vmap method turns that batch into one boundary crossing per row.
+        over the diameters crosses on every constraint evaluation. The
+        in-process block would give the same bits, and a parity test holds
+        it to that. A Jacobian of this map batches its cotangents, which
+        tesseract-jax routes through the server's `jacobian` endpoint in one
+        crossing; the sequential vmap method is the fallback that turns the
+        batch into one product crossing per row when `materialize_jacobian`
+        declines the endpoint.
         """
         local = self.local
         carried = [
@@ -816,6 +832,7 @@ class BlueprintClient(AbstractMemberSizer):
                     "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
                 },
                 vmap_method="sequential",
+                materialize_jacobian=self.materialize_jacobian,
             )
             for acting in carried
         ]
