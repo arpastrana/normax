@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### The gridshell joins the race, and the code check picks the shape
+
+The three-route flow now runs a shell. `experiments/truss_routes.py` is
+`experiments/design_routes.py`, `TrussProfile` is `RouteProfile`, and every
+callable a profile carries takes the parsed run description rather than a bay
+count — so a family that is not drawn from bays, spans and depths can supply
+its own. `TaskConfig`'s first three sections (`structure`, `loads`, `sketch`)
+became the profile's to name and to read, `shared_sections` parsing the four
+that are family-blind; `parse_truss` and `parse_shell` keep their own rules,
+and the shell has no sketch at all. Experiments 18, 19 and 20 reproduce every
+committed number bit for bit through the move.
+
+**The boundary ring is gone from the generator.** A hoop member spanning two
+supports appears in no equilibrium equation: its column of the horizontal
+balance is identically zero, its density moves no node. Emitting it widened
+the held-plan basis by one silent coordinate per spoke — the 4x12 cap's
+nullity of 25 was 13 live directions and 12 that did nothing, which
+differentiating the form finder shows directly as 13 nonzero singular values
+of `d(xyz)/d(xi)` and 12 zeros. Dropped, the shell has 84 members and a basis
+of 13, every coordinate of which moves it. The spectrum is one dominant rise
+mode and then degenerate pairs, the polar harmonics.
+
+**The load is a pressure spread by tributary area**, `create_loads_tributary`
+converting it once. Sharing a total equally over the nodes of a polar grid
+overloads the crown by 73% and starves the rim, the tributary areas running
+threefold across the rings, and the funicular answer to that is a peakier cap
+than a uniform pressure asks for. The areas sum to the plan exactly, which
+makes the supports' share readable: at 1 kN/m2 the cap states **78.54 kN and
+applies 60.13 kN**, the boundary ring's annulus going straight to ground.
+
+**Under that load the drawn cap is already a compression-only funicular** —
+zero members in tension, zero states of self-stress, a balance gap of 1.6e-11
+— so its densities are unique and the end-to-end route starts on the drawn
+geometry with nothing to shift. Under the equal-share load it was not: twelve
+ring-2 hoops came out in tension, and the tension was the load's artifact
+rather than the shape's.
+
+**The compression rows are the design constraint, and they bind.** Every
+member is guarded, `q = B xi` being linear, so the quadratic subproblem holds
+each trial point inside the cone — where the vertical stiffness is negative
+definite and a form-finding solve cannot go singular, a guarantee no truss
+guard could give. Priced at the default 4x12 cap, 1 kN/m2, three cases:
+**0.087452 t guarded against 0.057875 t unguarded, so compression costs
+34%**. What the unguarded search buys is not a better shell but a different
+structure — rise 0, **64 of 84 members in tension** — because EN 1993-1-1
+applies no buckling reduction to a tie. The clause chooses the geometry.
+
+That makes the shipped comparison asymmetric, and it is reported as such: the
+end-to-end route carries a constraint the free-heights route does not, so its
+**-22.9%** against free heights is the price of a compression structure. Held
+to the same terms, with neither route signed, the form finder wins as the
+counting predicts — **0.057875 t against 0.067404 t, free heights +16.5%** —
+the Vierendeel situation, thirteen coordinates inside thirty-seven heights.
+Buckling is live throughout: 48 of 84 members below `chi` 0.9 at the drawn
+cap, the worst at 0.562, and nothing near the catalogue floor.
+
+Two things the shell needs no help with. **No length floor**: a held plan
+bounds every member length below by its own plan projection, 647 mm on the
+ring-1 hoops, so the rows that cost the Vierendeel 13% of its mass are never
+emitted. **No mirrored partner case**: the drift sector is centred on the
+mirror plane and holds an odd number of spokes, so all three cases are
+self-symmetric, the design folds to nine coordinates and forty-six diameters,
+and the governing readout stays fully sighted. Shear stays excluded on the
+measurement, worst `V_Ed/V_pl,Rd` **0.052** across the three answers.
+
 ### One crossing per Jacobian, and the boundary stops being the bottleneck
 
 The blueprint boundary now offers a `jacobian` endpoint, and tesseract-jax
