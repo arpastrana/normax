@@ -262,13 +262,16 @@ def build_gridshell_3d(
     num_spokes: int = 12,
     radius: float = 5.0,
     rise: float = 2.0,
+    oculus: bool = False,
+    braced: bool = False,
 ) -> Structure:
     """
     A gridshell on a spherical cap, supported along its circular boundary.
 
     The grid is polar: one node at the apex, then a node per spoke on every
     ring. Radial edges run from the apex outwards, hoop edges close every ring
-    but the boundary one.
+    but the boundary one. An oculus deletes the apex and the members reaching
+    it, opening the crown into a hole the first ring bounds.
 
     Parameters
     ----------
@@ -279,7 +282,17 @@ def build_gridshell_3d(
     radius :
         Radius of the circular plan of the cap.
     rise :
-        Height of the apex above the plane of the boundary.
+        Height of the apex above the plane of the boundary, whether or not a
+        node is placed there.
+    oculus :
+        Whether to leave the crown open. The first ring is then the edge of
+        the hole, hooped like any other and reaching the boundary through the
+        radials alone.
+    braced :
+        Whether to triangulate the quads, adding both diagonals of every panel
+        between consecutive rings. Both rather than one: a single diagonal is
+        chiral, so the mirror carries it onto the other diagonal and the edge
+        set is no longer symmetric.
 
     Returns
     -------
@@ -297,9 +310,27 @@ def build_gridshell_3d(
     horizontal balance is identically zero and its force density moves no
     node. Emitting it would widen a held-plan basis by one silent coordinate
     per spoke, and hand a search directions along which nothing happens.
+
+    **Bracing is what widens a held-plan basis.** The null space of the
+    horizontal balance is the member count less twice the free nodes, up to
+    rank, so it grows with members per node and not with the mesh: refining a
+    quad grid adds equations as fast as it adds members, while triangulating
+    one adds only members. A quad cap leaves a basis a fraction of its free
+    node count; a triangulated one leaves several times it, most of the excess
+    being states of self-stress that hold a shape rather than move it.
+
+    **An oculus is a narrowing, not a simplification.** Deleting the apex
+    removes one spoke's worth of members but only the two balance equations
+    that node stood for, so the null space a held plan leaves shrinks far
+    faster than the member count does. The crown is where a polar grid's
+    freedom is concentrated, and opening it spends most of it.
     """
     if num_rings < 1:
         raise ValueError(f"num_rings must be at least 1, got {num_rings}")
+    if oculus and num_rings < 2:
+        raise ValueError(f"an oculus needs at least 2 rings, got {num_rings}")
+    if braced and num_rings < 2:
+        raise ValueError(f"bracing needs at least 2 rings, got {num_rings}")
     if num_spokes < 3:
         raise ValueError(f"num_spokes must be at least 3, got {num_spokes}")
     if radius <= 0.0:
@@ -319,18 +350,32 @@ def build_gridshell_3d(
 
     apex = np.array([[0.0, 0.0, rise]])
     ring = np.stack([xs.ravel(), ys.ravel(), zs.ravel()], axis=1)
-    nodes = np.concatenate([apex, ring], axis=0)
+    crowned = np.concatenate([apex, ring], axis=0)
+    nodes = ring if oculus else crowned
 
-    # Node index of spoke k on ring j, with the apex at index 0.
-    indices = 1 + np.arange(num_rings * num_spokes).reshape(num_rings, num_spokes)
-    starts = np.concatenate([np.zeros((1, num_spokes), dtype=int), indices[:-1]])
+    # Node index of spoke k on ring j, the apex taking index 0 where it exists.
+    offset = 0 if oculus else 1
+    indices = offset + np.arange(num_rings * num_spokes).reshape(num_rings, num_spokes)
+    crown = np.zeros((1, num_spokes), dtype=int)
+    starts = indices[:-1] if oculus else np.concatenate([crown, indices[:-1]])
+    ends = indices[1:] if oculus else indices
 
-    neighbors = np.roll(indices, -1, axis=1)
+    ahead = np.roll(indices, -1, axis=1)
+    behind = np.roll(indices, 1, axis=1)
 
-    edges_radial = np.stack([starts.ravel(), indices.ravel()], axis=1)
+    edges_radial = np.stack([starts.ravel(), ends.ravel()], axis=1)
     hooped = indices[:-1]
-    edges_hoop = np.stack([hooped.ravel(), neighbors[:-1].ravel()], axis=1)
-    edges = np.concatenate([edges_radial, edges_hoop], axis=0)
+    edges_hoop = np.stack([hooped.ravel(), ahead[:-1].ravel()], axis=1)
+    families = [edges_radial, edges_hoop]
+
+    if braced:
+        panelled = indices[:-1]
+        edges_ahead = np.stack([panelled.ravel(), ahead[1:].ravel()], axis=1)
+        edges_behind = np.stack([panelled.ravel(), behind[1:].ravel()], axis=1)
+        families.append(edges_ahead)
+        families.append(edges_behind)
+
+    edges = np.concatenate(families, axis=0)
 
     supports = indices[-1]
 
