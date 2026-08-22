@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+### Three numbers from the last section do not hold
+
+Withdrawn, with the measurements that replace them.
+
+**"The compression constraint costs 34%"** and the pair **"0.057875 t against
+0.067404 t, free heights +16.5%"** were both read off an unguarded descent
+that had landed exactly on its sag floor. Sweeping the floor moves the answer
+and does not converge on one: at -2000 it reads 0.057875 t, at -4000 0.038592,
+at -8000 0.054726, in a different and heavier basin. A floor-determined
+landing is not an optimum and the difference between it and a guarded one
+prices nothing.
+
+**"The -22.9% is the price of a compression structure"** does not survive
+either. Free heights lands compression-dominated of its own accord — 38 of its
+members are in compression under every load case against the end-to-end
+answer's 48 — so whatever separates the routes, it is not that one of them
+builds a tension net and the other does not.
+
+What does hold from that section: the basis of 13, the tributary loading, and
+the drawn cap fitting an all-compression funicular with no self-stress at all.
+
+### An open crown, and a triangulated one
+
+`build_gridshell_3d` takes `oculus` and `braced`.
+
+**An oculus is a narrowing, not a simplification.** Deleting the apex removes
+one spoke's worth of members but only the two balance equations that node
+stood for, so the null space a held plan leaves collapses from 13 to **3** on
+the 4x12 cap. Doubling the spokes to 4x24 leaves it at 3: the basis is set by
+the crown's topology, not by the mesh. The tributary rule treats the hole as a
+hole — the first ring owns only the annulus outside itself and the opening
+carries nothing — so the stated pressure buys less total load than on a closed
+cap, which is part of what the opening costs.
+
+**Bracing is what widens a held-plan basis.** The nullity is the member count
+less twice the free nodes, up to rank, so it grows with members per node and
+not with the mesh: refining a quad grid adds equations as fast as it adds
+members, while triangulating one adds only members. Measured across the 4x12
+cap, `basis / free nodes` runs 0.35 for the quad, 0.08 with an oculus, and
+**1.24** braced; the oculus recovers from 3 to 36 under bracing, so the open
+crown was never the problem and the quad topology was.
+
+**Both diagonals of a panel, never one.** A single diagonal is chiral: the
+mirror carries it onto the other diagonal of the same panel, the edge set is
+no longer symmetric, and the folding refuses it. Alternating the direction ring
+by ring does not repair this, measured rather than assumed. Full triangulation
+is the only pattern here that survives the mirror.
+
+### The drifts come in pairs, the foldings come in three, and a route may run alone
+
+**The apex point case is gone, replaced by a mirrored pair of drifts.**
+`ShellLoads` carries `sector_center`; the drift at `+center` and its reflection
+at `-center` are separate cases, so each is genuinely one-sided while the pair
+is symmetric about the plane the design is folded by. Measured on the 4x24
+cap: each case's self-mirror gap is 1900 N, LC3 matches LC2 reflected to
+0.000e+00, the pair is symmetric to 0.000e+00, and all three carry the
+identical total. A crown is one node of many when it exists and no node at all
+once an oculus opens, so a point load there was a property of the drawing
+rather than of the structure; the parse refuses a sector centred on the mirror
+plane, where the two drifts would be the same case twice.
+
+**Three kinds of variable, three foldings.** `FoldingMaps` carries the mirror,
+the height permutations and the member permutations, and `prepare_problem`
+takes it as one argument. `orbit_matrix` reads orbits by union-find over every
+generator at once, so a mirror and a one-spoke rotation fold the whole
+dihedral group rather than two reflections separately; on a single involution
+it reproduces `folding_matrix` column for column, checked by equality and not
+by shape, so the trusses and every mirror-only run are untouched. The density
+basis is folded by the mirror alone, always. `polar_diameters` folds the
+sections as far as fabrication wants — 312 members onto 10 orbits, one per
+ring per family. `polar_heights` folds the free heights the same way and is
+kept apart from it, because it changes what the route comparison means rather
+than what the design costs.
+
+**A run may descend one route.** `viewer.solo_route` descends the viewer's
+route and leaves the other two undone: 12.9 s against 4:37 on the oculus,
+bit-identical answer. Every table reads its route list off the collection it
+is handed rather than off `ROUTE_ORDER`, so a solo report writes the same
+tables with one row and drops the entries that are comparisons; the verdict
+then rests on convergence and feasibility rather than on beating a baseline
+that was never descended. The routes table also prints whether each descent
+converged, added because the verdict was failing with every printed tolerance
+passing.
+
 ### The gridshell joins the race, and the code check picks the shape
 
 The three-route flow now runs a shell. `experiments/truss_routes.py` is
