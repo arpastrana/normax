@@ -310,11 +310,9 @@ def read_a_truss(profile: RouteProfile, stem: str) -> tuple[ShearReading, ...]:
     budget = config.descent
 
     structure = profile.build_structure(config)
-    mirrored = profile.mirrored_nodes(config)
     plan = profile.build_loads(structure, config)
-    problem = routes.prepare_problem(
-        structure, config, plan, mirrored, routes.mirrored_edges(mirrored, structure)
-    )
+    folding_by = routes.folding_maps(profile, config, structure)
+    problem = routes.prepare_problem(structure, config, plan, folding_by)
 
     start = profile.signed_start(problem, config)
     finder = problem.pipeline.formfinder

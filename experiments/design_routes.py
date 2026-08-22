@@ -88,11 +88,12 @@ CASE_NAMES = (
     "LC4 midspan point",
 )
 
-# The shell's cases, whose sector is self-symmetric so none of them is deleted.
+# The shell's cases: a pressure, and a drift with its own mirror image, so the
+# pair is jointly symmetric about the plane the design is folded by.
 SHELL_NAMES = (
     "LC1 uniform pressure",
     "LC2 sector drift",
-    "LC3 apex point",
+    "LC3 mirrored drift",
 )
 
 # Relative steps the central difference sweeps, and the worst scaled error the
@@ -120,6 +121,13 @@ FLOOR_SLACK = 1e-6
 # Violation a trial point is charged when its frame cannot be factorized —
 # enormous against the order-one slack rows, so the line search recoils.
 RECOIL_SLACK = 1e3
+
+# Fixed, so a multi-start run is a measurement rather than a lottery.
+SCATTER_SEED = 20260820
+
+# Slack a scattered landing may sit at and still be counted feasible enough to
+# compete; the run's own checks hold the winner to the real tolerance.
+SCATTER_SLACK = -1e-6
 
 # A member is governed by every case within this distance of its worst:
 # mirror-paired cases tie exactly on self-mirrored members, and splitting a
@@ -150,6 +158,30 @@ FORCE_DIAGRAMS = ("nx", "my")
 
 # EN 1993-1-1 §6.1's recommended value, as every sizer in the repo states it.
 GAMMA_M0_SHEAR = 1.0
+
+
+def routes_present(keyed: dict[str, object]) -> tuple[str, ...]:
+    """
+    Which routes a keyed collection holds, in the shared order.
+
+    Parameters
+    ----------
+    keyed :
+        Anything keyed by route — maps, starts, answers or reads.
+
+    Returns
+    -------
+    routes :
+        The routes present, ordered as `ROUTE_ORDER` orders them.
+
+    Notes
+    -----
+    Every table and every check reads its route list off the collection it is
+    handed rather than off `ROUTE_ORDER`, which is what lets a solo run write
+    the same report with one row in it. The order is still the shared one, so
+    a full run's tables are unchanged to the character.
+    """
+    return tuple(route for route in ROUTE_ORDER if route in keyed)
 
 
 class TrussConfig(NamedTuple):
@@ -186,12 +218,40 @@ class ShellConfig(NamedTuple):
         Radius of the circular plan of the cap.
     rise :
         Height of the apex above the plane of the boundary.
+    oculus :
+        Whether the crown is open. The apex node and the members reaching it
+        are then absent, the first ring bounding a hole that carries no load.
+    braced :
+        Whether the quads are triangulated, both diagonals of every panel. It
+        is what widens the held-plan basis: a quad cap leaves a fraction of its
+        free node count, a triangulated one several times it.
+    polar_diameters :
+        Whether the diameters are folded by the polar symmetry as well as the
+        mirror, leaving one section per ring per family instead of one per
+        mirror pair. A fabrication constraint rather than a response to the
+        loading: the drift cases stay one-sided, and the sections simply
+        cannot answer them spoke by spoke.
+    polar_heights :
+        Whether the free-heights route's heights are folded the same way,
+        leaving one height per ring. It changes what the comparison means:
+        the two routes then search spaces of the same dimension, neither one
+        inside the other, so a gap between them is no longer reach.
+    guard_hoops :
+        Whether the compression guard covers the hoops as well as the radials.
+        Off is the shell's own division of labour, meridian compression with
+        a free hoop that may take the membrane tension a dome asks of its
+        lower rings; on forbids that and designs a wholly compressive net.
     """
 
     num_rings: int
     num_spokes: int
     radius: float
     rise: float
+    oculus: bool
+    braced: bool
+    polar_diameters: bool
+    polar_heights: bool
+    guard_hoops: bool
 
 
 class ShellLoads(NamedTuple):
@@ -204,9 +264,12 @@ class ShellLoads(NamedTuple):
         Downward force per unit of plan area, which every distributed case
         carries the same total of.
     sector_spokes :
-        How many spokes the drift case loads fully. Odd, and centred on spoke
-        zero, so the case is symmetric about the mirror plane and the design
-        may be folded without going blind to it.
+        How many spokes the drift case loads fully. Odd, so it centres on a
+        spoke rather than between two.
+    sector_center :
+        Spoke the drift sector is centred on. Off the mirror plane the case is
+        genuinely one-sided and its reflection is a second, different case;
+        on the plane the two would coincide and the parse refuses it.
     drift_factor :
         Fraction of the pressure the plan outside the sector keeps, before
         the case is rescaled back to the shared total. The shell's reading of
@@ -214,15 +277,33 @@ class ShellLoads(NamedTuple):
         whole roof, not a spotlight on a quarter of it, and a case that
         unloads three quarters entirely is a stress test rather than a
         snow load.
-    point_factor :
-        Fraction of the total the apex case concentrates at the crown. The
-        one case exempt from the shared total, as on the trusses.
+    asymmetric_cases :
+        Whether the two drift cases are built at all. Off leaves the uniform
+        pressure alone, which is the one loading a polar structure shares
+        every symmetry with — so the answer ought to come back rotationally
+        symmetric, and a search that returns anything else is reporting on
+        itself rather than on the structure.
+
+    Notes
+    -----
+    **The drifts come as a mirrored pair, which is what keeps a symmetric
+    design honest.** One sector alone would ask a folded design to answer an
+    unfolded load, and the fold would then average two halves the structure
+    never sees separately. Reflecting the case instead gives the pair the
+    mirror symmetry the design already has, so folding costs nothing and the
+    one-sided demand still reaches every member — the trusses' half-span pair,
+    read onto a disc.
+
+    No apex case. A polar grid's crown is one node of many when it exists and
+    no node at all once an oculus opens, so a point load there is a property
+    of the drawing rather than of the structure.
     """
 
     pressure: float
     sector_spokes: int
+    sector_center: int
     drift_factor: float
-    point_factor: float
+    asymmetric_cases: bool
 
 
 class LoadConfig(NamedTuple):
@@ -333,6 +414,13 @@ class DescentConfig(NamedTuple):
         The ceiling, as a multiple of the drawn depth.
     limit_sag :
         Whether any vertex is kept above the sag floor.
+    starts :
+        How many points each route is descended from, the first being the
+        nominal start and the rest scattered around it. One is a single
+        descent and the search a local one.
+    scatter :
+        Relative spread of the scattered starts, as a fraction of each
+        variable's own value.
     sag_factor :
         The floor, as a multiple of the drawn depth below zero: at 1.0 on a
         1000 mm truss no vertex may hang under -1000 mm — the mirror of the
@@ -348,6 +436,8 @@ class DescentConfig(NamedTuple):
     rise_factor: float
     limit_sag: bool
     sag_factor: float
+    starts: int
+    scatter: float
 
 
 class ViewerConfig(NamedTuple):
@@ -360,6 +450,10 @@ class ViewerConfig(NamedTuple):
         Whether an answer is opened in a viewer once the report is written.
     route :
         Which route's answer to draw, named as the routes are named.
+    solo_route :
+        Whether to descend `route` alone and leave the other two undone. The
+        report then holds whatever a single route can say — its own landing,
+        its families, its checks — and drops every entry that is a comparison.
 
     Notes
     -----
@@ -369,10 +463,17 @@ class ViewerConfig(NamedTuple):
     One route rather than a set of them: two answers occupy nearly the same
     space, so a scene holding both is read by switching halves of it off, and
     naming the one wanted is the shorter way to the same look.
+
+    **A solo run is for iterating, never for reporting a result.** The gaps
+    between the routes are the point of the comparison, and a run that
+    descends one route cannot state them; what it buys is the loop between
+    changing a file and seeing the shape, which the slowest route otherwise
+    sets the pace of.
     """
 
     enabled: bool
     route: str
+    solo_route: bool
 
 
 class TaskConfig(NamedTuple):
@@ -516,8 +617,9 @@ def parse_shell(text: str) -> TaskConfig:
     Raises
     ------
     ValueError
-        If the drift sector cannot be centred on a spoke, or is wider than the
-        shell has spokes.
+        If the drift sector cannot be centred on a spoke, is wider than the
+        shell has spokes, or is centred on the mirror plane itself, where the
+        two drift cases would be the same case twice.
 
     Notes
     -----
@@ -546,6 +648,17 @@ def parse_shell(text: str) -> TaskConfig:
         raise ValueError(
             f"sector_spokes must not exceed num_spokes, "
             f"{config.structure.num_spokes}, got {spokes}"
+        )
+    center = config.loads.sector_center
+    turns = config.structure.num_spokes
+    if not 0 <= center < turns:
+        raise ValueError(f"sector_center must be a spoke in [0, {turns}), got {center}")
+    reflected = (-center) % turns
+    if config.loads.asymmetric_cases and reflected == center:
+        raise ValueError(
+            f"sector_center {center} lies on the mirror plane, so the drift "
+            f"and its reflection are the same case — centre it off the plane, "
+            f"anywhere but 0 and {turns // 2}"
         )
 
     return config
@@ -719,6 +832,66 @@ def folding_matrix(
         columns.append(column)
         seen.add(index)
         seen.add(partner)
+
+    return np.stack(columns, axis=1)
+
+
+def orbit_matrix(
+    mappings: tuple[Int[np.ndarray, "items"], ...],
+) -> Float[np.ndarray, "items patterns"]:
+    """
+    One column per orbit of the group several permutations generate.
+
+    Parameters
+    ----------
+    mappings :
+        The item each permutation carries each item onto, one array per
+        generator. A single generator that is an involution reproduces
+        `folding_matrix` exactly, column for column.
+
+    Returns
+    -------
+    spread :
+        Matrix expanding one value per orbit into a full vector that every
+        generator leaves unchanged.
+
+    Notes
+    -----
+    Orbits come from union-find over every generator at once, so the group
+    they generate is folded rather than each generator separately — a mirror
+    and a one-spoke rotation together give the whole dihedral group, not two
+    reflections. Columns are ordered by their smallest member, which keeps the
+    pattern order stable as generators are added or dropped.
+
+    Folding is a restriction of the search, not a symmetrisation of the
+    answer: a pattern variable *is* the shared value of its orbit, so the
+    design cannot break the symmetry however unsymmetric the loading is.
+    """
+    size = int(mappings[0].size)
+    parent = list(range(size))
+
+    def root_of(item: int) -> int:
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    for mapping in mappings:
+        for index, image in enumerate(mapping.tolist()):
+            left = root_of(index)
+            right = root_of(int(image))
+            if left != right:
+                parent[max(left, right)] = min(left, right)
+
+    orbits: dict[int, list[int]] = {}
+    for index in range(size):
+        orbits.setdefault(root_of(index), []).append(index)
+
+    columns = []
+    for root in sorted(orbits):
+        column = np.zeros(size)
+        column[orbits[root]] = 1.0
+        columns.append(column)
 
     return np.stack(columns, axis=1)
 
@@ -1051,7 +1224,8 @@ def tributary_areas(sketch: ShellConfig) -> Float[np.ndarray, "nodes"]:
     Returns
     -------
     areas :
-        Plan area of every node, the apex first and then ring by ring.
+        Plan area of every node, the apex first where there is one and then
+        ring by ring.
 
     Notes
     -----
@@ -1060,6 +1234,11 @@ def tributary_areas(sketch: ShellConfig) -> Float[np.ndarray, "nodes"]:
     boundary. The areas therefore sum to the whole plan exactly, which is what
     makes the supports' share readable as the difference between the stated
     pressure's total and the total actually applied.
+
+    **An oculus is open, so it carries nothing.** The first ring then owns
+    only the annulus outside itself, and the areas sum to the plan less the
+    hole — the run's stated pressure buys less total load than the same
+    pressure on a closed cap, which is part of what the opening costs.
     """
     rings = sketch.num_rings
     spokes = sketch.num_spokes
@@ -1068,30 +1247,80 @@ def tributary_areas(sketch: ShellConfig) -> Float[np.ndarray, "nodes"]:
     inner = np.concatenate([[0.0], 0.5 * (rhos[:-1] + rhos[1:])])
     outer = np.concatenate([0.5 * (rhos[:-1] + rhos[1:]), [sketch.radius]])
 
-    inner[0] = 0.5 * rhos[0]
-    apex = np.pi * inner[0] ** 2
+    inner[0] = rhos[0] if sketch.oculus else 0.5 * rhos[0]
 
     annuli = np.pi * (outer**2 - inner**2) / spokes
     ring_areas = np.repeat(annuli, spokes)
+    if sketch.oculus:
+        return ring_areas
+
+    apex = np.pi * inner[0] ** 2
 
     return np.concatenate([[apex], ring_areas])
 
 
+def sector_areas(
+    sketch: ShellConfig,
+    weight: ShellLoads,
+    areas: Float[np.ndarray, "nodes"],
+    center: int,
+) -> Float[np.ndarray, "nodes"]:
+    """
+    The tributary areas a drift over one sector loads each node through.
+
+    Parameters
+    ----------
+    sketch :
+        The cap the generator was asked to draw.
+    weight :
+        The loading, read for the sector width and what the rest keeps.
+    areas :
+        Plan area of every node, as the tributary rule shares it out.
+    center :
+        Spoke the sector is centred on.
+
+    Returns
+    -------
+    drifting :
+        Each node's area, kept whole inside the sector and scaled by
+        `drift_factor` outside it. A crown node, sitting on every sector's
+        axis, is always inside.
+
+    Notes
+    -----
+    **The drift grades rather than spotlights.** The sector keeps the full
+    pressure and the rest of the plan keeps its fraction, which is the
+    trusses' half-span construction read onto a disc. Emptying the plan
+    outside the sector instead would concentrate the whole roof's load on a
+    slice of it once rescaled — a stress test rather than a snow load, and one
+    whose feasible set is measurably harder to descend.
+    """
+    spokes = sketch.num_spokes
+    reach = weight.sector_spokes // 2
+
+    offset = (np.arange(spokes) - center + reach) % spokes
+    within = offset <= 2 * reach
+    tiled = np.tile(within, sketch.num_rings)
+    inside = tiled if sketch.oculus else np.concatenate([[True], tiled])
+
+    return np.where(inside, areas, weight.drift_factor * areas)
+
+
 def shell_loads(structure: Structure, config: TaskConfig) -> LoadPlan:
     """
-    A uniform pressure, a drift over one sector, and a load at the crown.
+    A uniform pressure, a drift over one sector, and that drift reflected.
 
     Parameters
     ----------
     structure :
         The shell to load.
     config :
-        The run description, read for the pressure and the sector width.
+        The run description, read for the pressure and the sector.
 
     Returns
     -------
     plan :
-        The three cases, the first two carrying the same total.
+        The three cases, every one of them carrying the same total.
 
     Notes
     -----
@@ -1099,20 +1328,14 @@ def shell_loads(structure: Structure, config: TaskConfig) -> LoadPlan:
     The pressure acts on the whole plan, but the boundary ring's tributary
     share sits on supported nodes and goes straight to ground, so the total
     the structure carries is what is left. That remainder is the plan's total,
-    and the drift case is rescaled onto it so no case wins by carrying less.
+    and both drift cases are rescaled onto it so no case wins by carrying
+    less.
 
-    **The drift grades rather than spotlights.** The sector keeps the full
-    pressure and the rest of the plan keeps `drift_factor` of it, which is
-    the trusses' half-span construction read onto a disc; the crown, sitting
-    on every sector's axis, stays inside whichever sector is loaded. Emptying
-    the plan outside the sector instead would concentrate the whole roof's
-    load on a quarter of it once rescaled — a stress test rather than a
-    snow load, and one whose feasible set is measurably harder to descend.
-
-    The sector is centred on spoke zero and holds an odd number of spokes, so
-    it is symmetric about the same mirror plane the design is folded under —
-    which is what lets an asymmetric case ride on a symmetric design without
-    blinding the governing readout.
+    **The second drift is the first one's mirror image**, built by reflecting
+    the sector's centre rather than by permuting the case, so the two are the
+    same construction at two centres and their asymmetries cancel over the
+    pair. A design folded about that plane therefore loses nothing: what one
+    case asks of a member, the other asks of its mirror twin.
     """
     sketch = config.structure
     weight = config.loads
@@ -1121,17 +1344,24 @@ def shell_loads(structure: Structure, config: TaskConfig) -> LoadPlan:
     uniform = create_loads_tributary(structure, weight.pressure, jnp.asarray(areas))
     total = float(jnp.sum(jnp.abs(uniform)))
 
-    reach = weight.sector_spokes // 2
-    within = (np.arange(sketch.num_spokes) + reach) % sketch.num_spokes <= 2 * reach
-    inside = np.concatenate([[True], np.tile(within, sketch.num_rings)])
-    drifting = np.where(inside, areas, weight.drift_factor * areas)
-    drift = create_loads_tributary(structure, weight.pressure, jnp.asarray(drifting))
-    carried = float(jnp.sum(jnp.abs(drift)))
-    drift = drift * (total / carried)
+    if not weight.asymmetric_cases:
+        return LoadPlan(assemble_load_cases([uniform]), SHELL_NAMES[:1], total)
 
-    apex = create_loads_point(structure, total * weight.point_factor, node=0)
+    center = weight.sector_center
+    reflected = (-center) % sketch.num_spokes
 
-    return LoadPlan(assemble_load_cases([uniform, drift, apex]), SHELL_NAMES, total)
+    drifts = []
+    for spoke in (center, reflected):
+        drifting = sector_areas(sketch, weight, areas, spoke)
+        drift = create_loads_tributary(
+            structure, weight.pressure, jnp.asarray(drifting)
+        )
+        carried = float(jnp.sum(jnp.abs(drift)))
+        drifts.append(drift * (total / carried))
+
+    cases = assemble_load_cases([uniform, *drifts])
+
+    return LoadPlan(cases, SHELL_NAMES, total)
 
 
 def lens_geometry(
@@ -1192,14 +1422,122 @@ def mirrored_edges(
     edges_mirrored :
         The member the mirror carries each member onto.
     """
+    return permuted_members(nodes_mirrored, structure)
+
+
+def permuted_members(
+    nodes_permuted: Int[np.ndarray, "nodes"],
+    structure: Structure,
+) -> Int[np.ndarray, "edges"]:
+    """
+    Index of every member's image under a permutation of the nodes.
+
+    Parameters
+    ----------
+    nodes_permuted :
+        The node the permutation carries each node onto.
+    structure :
+        The structure supplying the members the permutation acts on.
+
+    Returns
+    -------
+    edges_permuted :
+        The member the permutation carries each member onto.
+
+    Raises
+    ------
+    KeyError
+        If some member's image is not itself a member, which means the
+        permutation is not a symmetry of the structure.
+
+    Notes
+    -----
+    Members are matched unordered, so a permutation that reverses a member
+    still finds it. Nothing here assumes the permutation is an involution: a
+    rotation is looked up the same way a reflection is.
+    """
     edges = np.asarray(structure.edges)
     ordered = np.sort(edges, axis=1)
-    reflected = np.sort(nodes_mirrored[edges], axis=1)
+    moved = np.sort(nodes_permuted[edges], axis=1)
 
     lookup = {tuple(pair): index for index, pair in enumerate(ordered.tolist())}
-    targets = [lookup[tuple(pair)] for pair in reflected.tolist()]
+    targets = [lookup[tuple(pair)] for pair in moved.tolist()]
 
     return np.asarray(targets)
+
+
+class FoldingMaps(NamedTuple):
+    """
+    The permutations a run folds each kind of variable by.
+
+    Attributes
+    ----------
+    nodes_mirrored :
+        The node the mirror carries each node onto. Restricts the density
+        basis, which is folded by the mirror alone whatever else is.
+    nodes_folded :
+        The node permutations the free heights are folded by, the mirror
+        first.
+    members_folded :
+        The member permutations the diameters are folded by, the mirror
+        first.
+
+    Notes
+    -----
+    Three entries rather than one because the three kinds of variable need not
+    fold by the same group, and on a polar grid they deliberately do not: a
+    section may be folded as far as fabrication wants, while folding the
+    geometry changes what a comparison between the routes even means.
+    """
+
+    nodes_mirrored: Int[np.ndarray, "nodes"]
+    nodes_folded: tuple[Int[np.ndarray, "nodes"], ...]
+    members_folded: tuple[Int[np.ndarray, "edges"], ...]
+
+
+def folding_maps(
+    profile: "RouteProfile",
+    config: TaskConfig,
+    structure: Structure,
+) -> FoldingMaps:
+    """
+    Every permutation a run folds its variables by, gathered once.
+
+    Parameters
+    ----------
+    profile :
+        The structural family, read for the mirror and for whichever
+        rotations it offers.
+    config :
+        The run description, which the profile reads to decide which
+        rotations are wanted.
+    structure :
+        The structure the permutations act on.
+
+    Returns
+    -------
+    folding :
+        The mirror, the height permutations and the member permutations. The
+        mirror leads both tuples, so a caller wanting it alone reads the first
+        entry.
+    """
+    nodes_mirrored = profile.mirrored_nodes(config)
+
+    heights = [nodes_mirrored]
+    if profile.heights_rotated is not None:
+        turned = profile.heights_rotated(config)
+        if turned is not None:
+            heights.append(turned)
+
+    sections = [nodes_mirrored]
+    if profile.sections_rotated is not None:
+        turned = profile.sections_rotated(config)
+        if turned is not None:
+            sections.append(turned)
+
+    members = tuple(permuted_members(nodes, structure) for nodes in sections)
+
+    return FoldingMaps(nodes_mirrored, tuple(heights), members)
 
 
 def signed_shift(
@@ -1264,8 +1602,7 @@ def prepare_problem(
     structure: Structure,
     config: TaskConfig,
     plan: LoadPlan,
-    nodes_mirrored: Int[np.ndarray, "nodes"],
-    edges_mirrored: Int[np.ndarray, "edges"],
+    folding_by: FoldingMaps,
 ) -> RouteProblem:
     """
     The structure, its prepared blocks, and the searched basis.
@@ -1278,18 +1615,28 @@ def prepare_problem(
         The run description.
     plan :
         The load cases the profile built, already named.
-    nodes_mirrored :
-        The node the mirror carries each node onto.
-    edges_mirrored :
-        The member the mirror carries each member onto.
+    folding_by :
+        Every permutation the run folds its variables by.
 
     Returns
     -------
     problem :
         Everything the routes read, gathered once on the host.
+
+    Notes
+    -----
+    **The three kinds of variable need not fold by the same group.** The
+    density basis is folded by the mirror alone, always, so the end-to-end
+    route's dimension is a property of the structure. Sections may be folded
+    as far as fabrication wants, carrying no argument with them. Heights are
+    the delicate one: folded by the mirror alone they are a strict superset of
+    what the form finder reaches, which is what makes a gap between the routes
+    a statement about the landscape; folded polar they are a space of their own
+    that neither contains nor is contained by it.
     """
     loads = plan.cases
 
+    nodes_mirrored = folding_by.nodes_mirrored
     mirror = nodes_mirrored if config.subspace.symmetric else None
     if config.subspace.basis == "pivoted":
         pivot = pivoted_basis(structure, mirror)
@@ -1313,9 +1660,12 @@ def prepare_problem(
 
     if config.subspace.symmetric:
         positions = {int(node): place for place, node in enumerate(frees.tolist())}
-        partners = [positions[int(nodes_mirrored[node])] for node in frees.tolist()]
-        spread_diameters = folding_matrix(edges_mirrored)
-        spread_heights = folding_matrix(np.asarray(partners))
+        among_free = [
+            np.asarray([positions[int(nodes[node])] for node in frees.tolist()])
+            for nodes in folding_by.nodes_folded
+        ]
+        spread_diameters = orbit_matrix(folding_by.members_folded)
+        spread_heights = orbit_matrix(tuple(among_free))
         folding = MirrorFolding(
             jnp.asarray(spread_diameters), jnp.asarray(spread_heights)
         )
@@ -1323,6 +1673,9 @@ def prepare_problem(
         folding = MirrorFolding(None, None)
 
     diameters_seed = jnp.full(structure.num_edges, config.analysis.diameter)
+    # The mirror comes first out of `folded_members`, and it is the one the
+    # reported diameter gap is read against whatever else folds the sections.
+    edges_mirrored = folding_by.members_folded[0]
 
     problem = RouteProblem(
         structure,
@@ -1361,6 +1714,36 @@ class HeightTruss(NamedTuple):
     floor: float | None
 
 
+def height_scale(limits: HeightTruss) -> float:
+    """
+    Length the sag rows are normalized by, putting them at the utilization scale.
+
+    Parameters
+    ----------
+    limits :
+        The ceiling and the floor the shape is held between.
+
+    Returns
+    -------
+    scale :
+        The floor's own depth where it has one, and the ceiling otherwise.
+
+    Notes
+    -----
+    A floor at zero is a real limit — no vertex below the plane of the
+    supports — but it is its own distance from zero, so it can normalize
+    nothing. The ceiling stands in, being the one other length the run states
+    about heights. Where the floor is nonzero this is exactly the depth the
+    rows were always divided by, so no truss's descent path moves.
+    """
+    if limits.floor:
+        return abs(limits.floor)
+    if limits.ceiling:
+        return abs(limits.ceiling)
+
+    return 1.0
+
+
 def truss_heights(config: TaskConfig) -> HeightTruss:
     """
     The height limits a truss run keeps its vertices inside.
@@ -1385,7 +1768,8 @@ def shell_heights(config: TaskConfig) -> HeightTruss:
     Parameters
     ----------
     config :
-        The run description, read for the switches, the factors and the rise.
+        The run description, read for the switches, the factors and the plan
+        radius.
 
     Returns
     -------
@@ -1394,11 +1778,20 @@ def shell_heights(config: TaskConfig) -> HeightTruss:
 
     Notes
     -----
-    The drawn rise plays the part the drawn depth plays on a truss: it is the
-    one length the structure is scaled by, so a ceiling stated as a multiple
-    of it means the same thing on both.
+    **The plan radius is the reference, not the drawn rise.** A shell's height
+    limits are the room it has to shelter, which is stated against what it
+    spans rather than against how high it happens to have been drawn: the
+    radius is half the span, so a `rise_factor` of one is a ceiling at half
+    the span and stays that whatever rise the generator is given. A truss
+    scales its limits by its drawn depth instead, having no span-like length
+    of its own that a height should be read against.
+
+    A `sag_factor` of zero puts the floor on the plane of the supports, which
+    is the useful setting here: a shell that dips below its own supports is
+    not sheltering anything, and forbidding it outright is cheaper than
+    pricing it.
     """
-    return height_truss(config.descent, config.structure.rise)
+    return height_truss(config.descent, config.structure.radius)
 
 
 def height_truss(budget: DescentConfig, reference: float) -> HeightTruss:
@@ -1573,7 +1966,7 @@ def formfound_maps(
             rows.append((limits.ceiling - heights) / limits.ceiling)
         if limits.floor is not None:
             heights = shape.xyz[problem.nodes_free, 2]
-            rows.append((heights - limits.floor) / -limits.floor)
+            rows.append((heights - limits.floor) / height_scale(limits))
         if collapsible.size:
             exposed = shape.lengths[collapsible]
             rows.append((exposed - length_floor) / length_floor)
@@ -1993,6 +2386,105 @@ def descend_route(
     return RouteAnswer(x, np.asarray(masses), spent, converged)
 
 
+def scattered_points(
+    start: Float[np.ndarray, "variables"],
+    boxes: list[tuple[float | None, float | None]],
+    budget: DescentConfig,
+) -> list[Float[np.ndarray, "variables"]]:
+    """
+    The nominal start, and however many scattered ones the run asks for.
+
+    Parameters
+    ----------
+    start :
+        The nominal starting variable vector.
+    boxes :
+        One bound pair per variable, which no scattered point may leave.
+    budget :
+        The budgets, read for the count and the spread.
+
+    Returns
+    -------
+    points :
+        The nominal point first, so a run asking for one start descends
+        exactly what a single-start run would.
+
+    Notes
+    -----
+    Scattered multiplicatively, each variable by its own value, because the
+    coordinates and the diameters differ by orders of magnitude and one
+    absolute spread would be a rounding error to one and a catastrophe to the
+    other. The seed is fixed: a multi-start answer that cannot be reproduced
+    is not a measurement.
+    """
+    points = [np.asarray(start, dtype=np.float64)]
+    if budget.starts <= 1:
+        return points
+
+    lower = np.array([-np.inf if low is None else low for low, _ in boxes])
+    upper = np.array([np.inf if high is None else high for _, high in boxes])
+    stream = np.random.default_rng(SCATTER_SEED)
+
+    for _ in range(budget.starts - 1):
+        noise = stream.normal(0.0, budget.scatter, size=points[0].size)
+        points.append(np.clip(points[0] * (1.0 + noise), lower, upper))
+
+    return points
+
+
+def descend_best(
+    maps: RouteMaps,
+    start: Float[np.ndarray, "variables"],
+    boxes: list[tuple[float | None, float | None]],
+    budget: DescentConfig,
+) -> RouteAnswer:
+    """
+    Descend from every scattered start and keep the lightest feasible landing.
+
+    Parameters
+    ----------
+    maps :
+        The route's compiled maps.
+    start :
+        The nominal variable vector to scatter around.
+    boxes :
+        One bound pair per variable.
+    budget :
+        The budgets, read for the start count as well as the descent.
+
+    Returns
+    -------
+    answer :
+        The best landing's record. Its mass trajectory is that one descent's,
+        so a figure drawn from it shows a real descent rather than a mixture.
+
+    Notes
+    -----
+    A scattered start can leave the model's domain — a geometry whose frame
+    will not factorize raises before the first quadratic model is built — so
+    a start that cannot be evaluated is dropped rather than allowed to end
+    the run. Landings are compared only among those that came back feasible,
+    a search that lands outside the constraints having answered a different
+    question.
+    """
+    best = None
+    for point in scattered_points(start, boxes, budget):
+        try:
+            answer = descend_route(maps, point, boxes, budget)
+            slack = float(np.min(np.asarray(maps.slack(jnp.asarray(answer.variables)))))
+        except (ValueError, FloatingPointError):
+            continue
+        if slack < SCATTER_SLACK:
+            continue
+        if best is None or answer.masses[-1] < best.masses[-1]:
+            best = answer
+
+    if best is None:
+        raise ValueError("no scattered start reached a feasible landing")
+
+    return best
+
+
 def descend_all(
     report: Report,
     maps: dict[str, RouteMaps],
@@ -2022,8 +2514,8 @@ def descend_all(
         Every route's descent record, keyed by route.
     """
     answers = {}
-    for route in ROUTE_ORDER:
-        answer = descend_route(maps[route], starts[route], boxes[route], budget)
+    for route in routes_present(starts):
+        answer = descend_best(maps[route], starts[route], boxes[route], budget)
         answers[route] = answer
         report.write_line(
             f"{route}: {answer.masses[-1]:.6f} t in {answer.iterations} iterations"
@@ -2158,38 +2650,36 @@ def route_reads(
     Returns
     -------
     reads :
-        Every answer at its own geometry and sections.
+        Every answer at its own geometry and sections. A route the run never
+        descended is absent rather than seeded, so every reader downstream
+        sees the same routes the descent did.
     """
     width = int(problem.pipeline.formfinder.basis.shape[1])
     spread_heights = problem.folding.heights
     spread_diameters = problem.folding.diameters
     count = pattern_count(spread_heights, int(problem.nodes_free.shape[0]))
 
-    xi_final = jnp.asarray(answers[ROUTE_FORMFOUND].variables[:width])
-    shape_final = problem.pipeline.formfinder(xi_final, problem.loads.formfinding)
+    reads = {}
+    if ROUTE_FORMFOUND in answers:
+        found = answers[ROUTE_FORMFOUND].variables
+        xi_final = jnp.asarray(found[:width])
+        shape_final = problem.pipeline.formfinder(xi_final, problem.loads.formfinding)
+        d_found = unfolded_values(found[width:], spread_diameters)
+        reads[ROUTE_FORMFOUND] = read_answer(problem, shape_final.xyz, d_found, budget)
 
-    z_final = unfolded_values(answers[ROUTE_HEIGHTS].variables[:count], spread_heights)
-    xyz_heights = problem.structure.nodes.at[problem.nodes_free, 2].set(
-        jnp.asarray(z_final)
-    )
+    if ROUTE_HEIGHTS in answers:
+        heights = answers[ROUTE_HEIGHTS].variables
+        z_final = unfolded_values(heights[:count], spread_heights)
+        xyz_heights = problem.structure.nodes.at[problem.nodes_free, 2].set(
+            jnp.asarray(z_final)
+        )
+        d_heights = unfolded_values(heights[count:], spread_diameters)
+        reads[ROUTE_HEIGHTS] = read_answer(problem, xyz_heights, d_heights, budget)
 
-    d_found = unfolded_values(
-        answers[ROUTE_FORMFOUND].variables[width:], spread_diameters
-    )
-    d_heights = unfolded_values(
-        answers[ROUTE_HEIGHTS].variables[count:], spread_diameters
-    )
-    d_drawn = unfolded_values(answers[ROUTE_DRAWN].variables, spread_diameters)
-
-    read_found = read_answer(problem, shape_final.xyz, d_found, budget)
-    read_heights = read_answer(problem, xyz_heights, d_heights, budget)
-    read_drawn = read_answer(problem, problem.structure.nodes, d_drawn, budget)
-
-    reads = {
-        ROUTE_FORMFOUND: read_found,
-        ROUTE_HEIGHTS: read_heights,
-        ROUTE_DRAWN: read_drawn,
-    }
+    if ROUTE_DRAWN in answers:
+        d_drawn = unfolded_values(answers[ROUTE_DRAWN].variables, spread_diameters)
+        drawn = problem.structure.nodes
+        reads[ROUTE_DRAWN] = read_answer(problem, drawn, d_drawn, budget)
 
     return reads
 
@@ -2380,6 +2870,7 @@ def report_routes(
         ReportColumn("route", align="<"),
         ReportColumn("variables"),
         ReportColumn("iterations"),
+        ReportColumn("converged", align="<"),
         ReportColumn("mass [t]", ".6f"),
         ReportColumn("rise [mm]", ".0f"),
         ReportColumn("sag [mm]", ".0f"),
@@ -2388,13 +2879,14 @@ def report_routes(
         ReportColumn("at floor"),
     )
     rows = []
-    for route in ROUTE_ORDER:
+    for route in routes_present(reads):
         read = reads[route]
         rows.append(
             (
                 route,
                 variables[route],
                 answers[route].iterations,
+                "yes" if answers[route].converged else "NO",
                 read.mass,
                 read.rise,
                 read.sag,
@@ -2434,7 +2926,7 @@ def report_families(
         ReportColumn("U max", ".3f"),
     )
     rows = []
-    for route in ROUTE_ORDER:
+    for route in routes_present(reads):
         read = reads[route]
         for name, members in families:
             rows.append(
@@ -2504,7 +2996,7 @@ def report_governing(
         columns.append(ReportColumn(name))
 
     rows = []
-    for route in ROUTE_ORDER:
+    for route in routes_present(reads):
         counts = governed_counts(reads[route])
         rows.append((route, *[int(count) for count in counts]))
 
@@ -2582,32 +3074,36 @@ def report_summary(
         The profile's one entry saying how far the shape travelled, a truss
         reading it as a depth and a shell as a rise.
     """
-    read_found = reads[ROUTE_FORMFOUND]
-    read_heights = reads[ROUTE_HEIGHTS]
-    read_drawn = reads[ROUTE_DRAWN]
-
-    saving = 1.0 - read_found.mass / read_drawn.mass
-    routes_gap = read_heights.mass / read_found.mass - 1.0
-    shapes_gap = float(np.abs(read_found.xyz[:, 2] - read_heights.xyz[:, 2]).max())
+    routes = routes_present(reads)
     lidded = limit_label(limits.ceiling, config.descent.rise_factor)
     grounded = limit_label(limits.floor, config.descent.sag_factor)
 
-    entries = (
-        ("mass, end to end", f"{read_found.mass:.6f} t"),
-        ("mass, free heights", f"{read_heights.mass:.6f} t"),
-        ("mass, sizing only", f"{read_drawn.mass:.6f} t"),
-        ("the geometry bought", f"{saving:.1%}"),
-        ("free heights vs end to end", f"{routes_gap:+.2%}"),
-        ("the shaped answers differ by [mm]", f"{shapes_gap:.0f}"),
-        extent(config, read_found),
-        ("rise ceiling", lidded),
-        ("sag floor", grounded),
-        ("diameter mirror gap, end to end", f"{read_found.mirror:.2e}"),
-        ("diameter mirror gap, free heights", f"{read_heights.mirror:.2e}"),
-        ("diameter mirror gap, sizing only", f"{read_drawn.mirror:.2e}"),
-    )
+    entries = [(f"mass, {route}", f"{reads[route].mass:.6f} t") for route in routes]
+
+    both = ROUTE_FORMFOUND in reads and ROUTE_DRAWN in reads
+    if both:
+        saving = 1.0 - reads[ROUTE_FORMFOUND].mass / reads[ROUTE_DRAWN].mass
+        entries.append(("the geometry bought", f"{saving:.1%}"))
+
+    shaped = ROUTE_FORMFOUND in reads and ROUTE_HEIGHTS in reads
+    if shaped:
+        read_found = reads[ROUTE_FORMFOUND]
+        read_heights = reads[ROUTE_HEIGHTS]
+        routes_gap = read_heights.mass / read_found.mass - 1.0
+        heights_z = read_heights.xyz[:, 2]
+        shapes_gap = float(np.abs(read_found.xyz[:, 2] - heights_z).max())
+        entries.append(("free heights vs end to end", f"{routes_gap:+.2%}"))
+        entries.append(("the shaped answers differ by [mm]", f"{shapes_gap:.0f}"))
+
+    travelled = reads[ROUTE_FORMFOUND] if ROUTE_FORMFOUND in reads else reads[routes[0]]
+    entries.append(extent(config, travelled))
+    entries.append(("rise ceiling", lidded))
+    entries.append(("sag floor", grounded))
+    for route in routes:
+        entries.append((f"diameter mirror gap, {route}", f"{reads[route].mirror:.2e}"))
+
     report.write_heading("Summary")
-    report.write_entries(entries)
+    report.write_entries(tuple(entries))
 
 
 def route_checks(
@@ -2634,16 +3130,18 @@ def route_checks(
     sound :
         Whether every route converged and both shaped routes beat sizing.
     """
+    routes = routes_present(reads)
     checks = []
-    for route in ROUTE_ORDER:
+    for route in routes:
         violation = max(0.0, float(reads[route].utilization.max()) - 1.0)
         checks.append(
             ToleranceCheck(
                 f"{route} constraint violation", violation, TOLERANCE_FEASIBILITY
             )
         )
+    shaped = [route for route in routes if route != ROUTE_DRAWN]
     if limits.ceiling is not None:
-        for route in (ROUTE_FORMFOUND, ROUTE_HEIGHTS):
+        for route in shaped:
             overrise = max(0.0, (reads[route].rise - limits.ceiling) / limits.ceiling)
             checks.append(
                 ToleranceCheck(
@@ -2651,22 +3149,27 @@ def route_checks(
                 )
             )
     if limits.floor is not None:
-        for route in (ROUTE_FORMFOUND, ROUTE_HEIGHTS):
-            oversag = max(0.0, (limits.floor - reads[route].sag) / -limits.floor)
+        for route in shaped:
+            oversag = max(0.0, (limits.floor - reads[route].sag) / height_scale(limits))
             checks.append(
                 ToleranceCheck(f"{route} sag violation", oversag, TOLERANCE_FEASIBILITY)
             )
 
-    for route in ROUTE_ORDER:
+    for route in routes:
         checks.append(
             ToleranceCheck(
                 f"{route} shear fraction", reads[route].shear, SHEAR_THRESHOLD
             )
         )
 
-    converged = all(answers[route].converged for route in ROUTE_ORDER)
-    lighter = reads[ROUTE_FORMFOUND].mass < reads[ROUTE_DRAWN].mass
-    lighter = lighter and reads[ROUTE_HEIGHTS].mass < reads[ROUTE_DRAWN].mass
+    converged = all(answers[route].converged for route in routes)
+    # A solo run has nothing to be lighter than, so it is judged on
+    # convergence and feasibility alone.
+    lighter = all(
+        reads[route].mass < reads[ROUTE_DRAWN].mass
+        for route in shaped
+        if ROUTE_DRAWN in reads
+    )
     sound = converged and lighter
 
     return checks, sound
@@ -2695,7 +3198,7 @@ def write_figures(
     FIGURES.mkdir(exist_ok=True)
 
     forms = []
-    for route in ROUTE_ORDER:
+    for route in routes_present(reads):
         read = reads[route]
         title = f"{route} — {read.mass:.4f} t"
         counts = governed_counts(read)
@@ -2711,10 +3214,14 @@ def write_figures(
     )
     designs.savefig(FIGURES / f"{prefix}_designs.png", dpi=200, bbox_inches="tight")
 
-    traces = (
-        DescentTrace(f"{ROUTE_FORMFOUND} (ξ and d)", answers[ROUTE_FORMFOUND].masses),
-        DescentTrace(f"{ROUTE_HEIGHTS} (z and d)", answers[ROUTE_HEIGHTS].masses),
-        DescentTrace(f"{ROUTE_DRAWN} (d)", answers[ROUTE_DRAWN].masses),
+    variables = {
+        ROUTE_FORMFOUND: "ξ and d",
+        ROUTE_HEIGHTS: "z and d",
+        ROUTE_DRAWN: "d",
+    }
+    traces = tuple(
+        DescentTrace(f"{route} ({variables[route]})", answers[route].masses)
+        for route in routes_present(answers)
     )
     descents = figure_mass_descent(traces)
     descents.savefig(FIGURES / f"{prefix}_descent.png", dpi=200, bbox_inches="tight")
@@ -2871,6 +3378,15 @@ class RouteProfile(NamedTuple):
         The generator, taking the parsed run description.
     mirrored_nodes :
         The node the mirror carries each node onto.
+    sections_rotated :
+        The node a rotation carries each node onto, folding the diameters
+        further, or None from a family with no rotation to offer and from a
+        run that declines it.
+    heights_rotated :
+        The same, for the free-heights route's heights. Kept apart from
+        `sections_rotated` because the two answer different questions —
+        fabrication for the sections, and what the route comparison means for
+        the heights — so a run may fold either without the other.
     member_families :
         Name and member slice of every family, in the generator's order.
     build_loads :
@@ -2901,6 +3417,8 @@ class RouteProfile(NamedTuple):
     parse_task: Callable[[str], TaskConfig]
     build_structure: Callable[[TaskConfig], Structure]
     mirrored_nodes: Callable[[TaskConfig], Int[np.ndarray, "nodes"]]
+    sections_rotated: Callable[[TaskConfig], Int[np.ndarray, "nodes"] | None] | None
+    heights_rotated: Callable[[TaskConfig], Int[np.ndarray, "nodes"] | None] | None
     member_families: Callable[[TaskConfig], tuple[tuple[str, slice], ...]]
     build_loads: Callable[[Structure, TaskConfig], LoadPlan]
     height_limits: Callable[[TaskConfig], HeightTruss]
@@ -2919,6 +3437,13 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
         The structural family to run.
     path :
         The YAML file describing the run.
+
+    Notes
+    -----
+    A file asking for `solo_route` descends the viewer's route alone. Every
+    table then holds one row, every comparison entry is dropped, and the
+    verdict rests on convergence and feasibility rather than on beating a
+    baseline that was never descended.
     """
     report = Report()
     report.write_banner(profile.banner)
@@ -2928,15 +3453,9 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
 
     structure = profile.build_structure(config)
     graph = equilibrium_graph(structure)
-    nodes_mirrored = profile.mirrored_nodes(config)
     plan = profile.build_loads(structure, config)
-    problem = prepare_problem(
-        structure,
-        config,
-        plan,
-        nodes_mirrored,
-        mirrored_edges(nodes_mirrored, structure),
-    )
+    folding_by = folding_maps(profile, config, structure)
+    problem = prepare_problem(structure, config, plan, folding_by)
 
     start = profile.signed_start(problem, config)
     finder = problem.pipeline.formfinder
@@ -2970,17 +3489,24 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
         )
     report.write_entries(tuple(entries))
 
-    best_found = report_gradient(
-        report, maps[ROUTE_FORMFOUND], starts[ROUTE_FORMFOUND], ROUTE_FORMFOUND
-    )
-    best_heights = report_gradient(
-        report, maps[ROUTE_HEIGHTS], starts[ROUTE_HEIGHTS], ROUTE_HEIGHTS
-    )
-    best_error = max(best_found, best_heights)
+    if config.viewer.solo_route:
+        routes = (config.viewer.route,)
+    else:
+        routes = ROUTE_ORDER
 
-    report.write_heading("Descending the three routes")
+    shaped = [route for route in routes if route != ROUTE_DRAWN]
+    errors = [
+        report_gradient(report, maps[route], starts[route], route) for route in shaped
+    ]
+    best_error = max(errors) if errors else 0.0
+
+    named = "the three routes" if len(routes) > 1 else routes[0]
+    report.write_heading(f"Descending {named}")
     boxes = route_boxes(problem, budget.diameter_floor, limits)
-    answers = descend_all(report, maps, starts, boxes, budget)
+    descended = {route: maps[route] for route in routes}
+    seeds = {route: starts[route] for route in routes}
+    bounds = {route: boxes[route] for route in routes}
+    answers = descend_all(report, descended, seeds, bounds, budget)
 
     reads = route_reads(problem, answers, budget)
     report_routes(report, reads, answers, route_variables(problem))
@@ -2988,15 +3514,19 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
     report_governing(report, reads, problem.case_names)
 
     width = int(finder.basis.shape[1])
-    q_final = np.asarray(finder.basis) @ answers[ROUTE_FORMFOUND].variables[:width]
+    # The stiffness at the landing and the sign slack are the form finder's
+    # own readouts, so a run without that route reports them at the start.
+    if ROUTE_FORMFOUND in answers:
+        q_final = np.asarray(finder.basis) @ answers[ROUTE_FORMFOUND].variables[:width]
+    else:
+        q_final = start.q
     landing = stiffness_spectrum(graph, q_final)
 
-    xyz_found = jnp.asarray(reads[ROUTE_FORMFOUND].xyz)
-    lengths_found = member_lengths(xyz_found, problem.structure.edges)
-    shortest_found = float(jnp.min(lengths_found))
-    xyz_heights = jnp.asarray(reads[ROUTE_HEIGHTS].xyz)
-    lengths_heights = member_lengths(xyz_heights, problem.structure.edges)
-    shortest_heights = float(jnp.min(lengths_heights))
+    shortest = {}
+    for route in shaped:
+        xyz_route = jnp.asarray(reads[route].xyz)
+        lengths_route = member_lengths(xyz_route, problem.structure.edges)
+        shortest[route] = float(jnp.min(lengths_route))
 
     report.write_heading("The degeneracies, watched at the answers")
     entries = [
@@ -3010,15 +3540,14 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
             f"{landing.negatives} negative of {landing.size}, "
             f"cond {landing.condition:.1e}",
         ),
-        (
-            "shortest member, end to end [mm]",
-            f"{shortest_found:.0f} against the {budget.length_floor:.0f} floor",
-        ),
-        (
-            "shortest member, free heights [mm]",
-            f"{shortest_heights:.0f} against the {budget.length_floor:.0f} floor",
-        ),
     ]
+    for route in shaped:
+        entries.append(
+            (
+                f"shortest member, {route} [mm]",
+                f"{shortest[route]:.0f} against the {budget.length_floor:.0f} floor",
+            )
+        )
     if guard is not None:
         signed_final = float(np.min(guard.signs * q_final[guard.chords]))
         entries.append(
@@ -3045,20 +3574,13 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
     # against it.
     floor = budget.length_floor
     if floor > 0.0:
-        undershort_found = max(0.0, (floor - shortest_found) / floor)
-        checks.append(
-            ToleranceCheck(
-                "end to end length violation", undershort_found, TOLERANCE_FEASIBILITY
+        for route in shaped:
+            undershort = max(0.0, (floor - shortest[route]) / floor)
+            checks.append(
+                ToleranceCheck(
+                    f"{route} length violation", undershort, TOLERANCE_FEASIBILITY
+                )
             )
-        )
-        undershort_heights = max(0.0, (floor - shortest_heights) / floor)
-        checks.append(
-            ToleranceCheck(
-                "free heights length violation",
-                undershort_heights,
-                TOLERANCE_FEASIBILITY,
-            )
-        )
     if guard is not None:
         undersign = max(0.0, (guard.margin - signed_final) / guard.scale)
         checks.append(

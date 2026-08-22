@@ -28,6 +28,8 @@ descent:
   tolerance: 1.0e-10
   diameter_floor: 21.3
   length_floor: 500.0
+  starts: 1
+  scatter: 0.0
   limit_rise: true
   rise_factor: 2.0
   limit_sag: true
@@ -36,3 +38,6 @@ descent:
 viewer:
   enabled: false
   route: end to end
+  # Descend that one route alone, for iterating rather than reporting:
+  # every comparison entry needs the routes it compares.
+  solo_route: false
