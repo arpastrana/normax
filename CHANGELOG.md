@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### Why free heights loses, in three wrong answers and one right one
+
+The free-heights route, given a strict superset of the search space, eight times
+the variables, no compression guard and identical budgets, recovers 2.0% where
+the form finder recovers 39.1%. Finding out why took three tries.
+
+**Wrong: the gradient is flat.** `dmass/dz` is 3.06e-08 t/mm against 1.66e-04
+for a diameter, which reads as 5,437x — but a millimetre is 0.05% of a height
+and 4% of a tube, so most of that is the unit. Scale-free, `x dmass/dx` gives
+**157x at the start and 122x at the answer**, and the ratio *falls* as the
+design tightens. Two orders, not four.
+
+**Wrong: a bowl with high curvature.** Perturbing the answer and re-sizing every
+diameter to one costs +9.2% of mass for a 1% relative move, +40.5% for 5%,
++120.7% for 15% — ratios of 4.41 and 2.98 against 5 and 3. Linear, not
+quadratic, so it is not curvature.
+
+**Wrong: a kink transverse to the funicular manifold, paid at first order by
+heights and not by densities.** The same perturbation in density coordinates
+costs +13.8%, +50.4%, +131.5%, which looks worse until the baselines are taken
+out: in absolute mass both cost about **0.011 t for a 1% step**. What is true is
+weaker and step-dependent — heights cost 1.07x a density move at 1%, **1.30x at
+5% and 1.48x at 15%** — and densities are markedly sublinear where heights are
+near-linear, which is what a large move landing on a different-but-sensible
+funicular looks like against one landing on a mangled surface.
+
+**Right: flat along the one direction that pays.** Walk the straight line from
+the free-heights answer to the corrugated design, re-sizing at every step:
+
+| t | mass [t] | max U | rms z move |
+|---|---|---|---|
+| 0.00 | 0.124379 | 1.002880 | 0 |
+| 0.25 | 0.125276 | 1.044784 | 91 mm |
+| 0.50 | 0.120570 | 1.023007 | 181 mm |
+| 0.75 | 0.087326 | 1.001470 | 272 mm |
+| 1.00 | 0.077209 | 1.000000 | 363 mm |
+
+Minus three percent over the first 181 mm, with a bump at a quarter of the way,
+and then minus twenty-eight percent in the next ninety. The barrier is
+understated: `max U` peaks mid-path because the resize cannot close on the least
+funicular shapes, so those masses are reported too light.
+
+**And the bridge.** The corrugated design lies **363 mm rms** away in height
+coordinates; a 15% height scatter reaches **238 mm rms**. It is outside the
+search cloud. The same design was found *by* a 15% scatter in density
+coordinates. The parametrization does not shrink the space, move the optimum or
+smooth the objective — it puts the good basin inside the radius a local method
+can see.
+
+**Not the bounds, checked rather than assumed.** The height box is [0, 5000] mm
+for all 241, the answer spans [270.0, 2002.7], and not one sits within a
+millimetre of either bound — 2997 mm of headroom above at the worst node, 270
+below. Sixteen of 1488 rows are active.
+
+**A caveat on the multi-start comparison.** All three routes share the nominal
+start, to 1.1e-11 mm of geometry and 1.4e-12 mm of seeded diameter, and the
+free-heights route's best answer came from it. Scattered starts are not
+comparable across routes: 15% moves the shape 68.9 mm rms in density
+coordinates and 238.1 mm rms in height coordinates. Quote best against best.
+
+**The resize used here is approximate** — fourteen passes of `sqrt(U)` scaling,
+which lands exactly on the constraint at a funicular point (`max U` 1.000000 at
+the end-to-end answer) and 0.29% over at the free-heights answer, worse
+mid-path. Tighten the exponent before quoting any number from it.
+
 ### A load case the mirror already answers carries no rows
 
 `cases_constrained` drops a load case whose rows are another case's rows under
