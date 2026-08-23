@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### A diagrid connectivity
+
+`build_diagrid_3d` builds the same spherical cap out of rhomboids: the polar
+grid's meridians and hoops are deleted and the panel diagonals kept in their
+place.
+
+**A diagrid is half a grid.** Both diagonals of a quad preserve the parity of
+ring plus spoke, so the quad grid carries two diagonal nets that share no node
+and cross where no joint is. Keeping one and deleting the nodes the other
+needed leaves a staggered mesh of half the nodes, every interior one spanned
+by four members and none of them crossing. Matching a quad cap's node count
+therefore asks for twice the rings or twice the spokes: 8x12 diagrid against
+4x12 quad is 49 nodes either way, at 90 members against 84.
+
+**The drawn cap is not funicular for a diagrid.** The quad cap is, exactly, and
+that is what let experiment 23 start from the sketch: its hoops lie in
+horizontal planes and carry no vertical load, so the meridians answer the load
+alone and the hoops absorb what is left horizontally. Every diagrid member is
+inclined, so vertical and horizontal balance couple at every node and the
+system is genuinely overdetermined — `rank([A|b])` exceeds `rank(A)` by one at
+every rise from a shallow cap to a hemisphere. `fit_densities` returns a
+least-squares compromise rather than a fit, and a diagrid start has to come
+from a form-finding solve rather than from the drawing.
+
+**An open crown needs its ring.** A diagrid oculus leaves every node of the
+first ring spanned by its two descending diagonals alone, and a node with two
+members turns freely about the line joining their far ends. `ring_oculus`
+restores one hoop there, the only place the family keeps one.
+
 ### Three numbers from the last section do not hold
 
 Withdrawn, with the measurements that replace them.
