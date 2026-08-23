@@ -29,6 +29,7 @@ signed. Everything here is topology-blind — it reads the truss through a
 `RouteProblem` and the run description through a `TaskConfig`.
 """
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -113,6 +114,10 @@ TOLERANCE_SHAPE = 1e-8
 # How exactly the start's density fit balances the lens, scaled by the load.
 TOLERANCE_FIT = 1e-11
 
+# How exactly one load case must reflect onto another before its rows are
+# dropped as a reindexing, as a share of the largest force in any case.
+TOLERANCE_MIRRORED = 1e-12
+
 # A member is counted fully stressed above this envelope utilization, and
 # counted at the floor within this distance of the bound.
 ACTIVE_UTILIZATION = 0.999
@@ -129,12 +134,22 @@ SCATTER_SEED = 20260820
 # compete; the run's own checks hold the winner to the real tolerance.
 SCATTER_SLACK = -1e-6
 
+# Growth passes a repair is allowed before it gives up on a landing. Capacity
+# is strictly increasing in the diameter, so each pass moves the right way; a
+# pass is needed at all only because a fatter member attracts more force.
+REPAIR_PASSES = 8
+
 # A member is governed by every case within this distance of its worst:
 # mirror-paired cases tie exactly on self-mirrored members, and splitting a
 # tie by index order would misreport a symmetric design as lopsided.
 TIE_MARGIN = 1e-9
 
 FIGURES = Path(__file__).resolve().parent.parent / "figures"
+
+# Where a descent's answer is kept, so that looking at a design again is a
+# read rather than a rerun.
+DESIGNS = Path(__file__).resolve().parent.parent / "designs"
+DESIGNS.mkdir(exist_ok=True)
 
 # Both routes compile a gradient and a Jacobian program; the persistent cache
 # keeps reruns from paying the compilations again.
@@ -421,6 +436,11 @@ class DescentConfig(NamedTuple):
     scatter :
         Relative spread of the scattered starts, as a fraction of each
         variable's own value.
+    reuse_answers :
+        Whether to read a stored answer back instead of descending to it
+        again, where one is held for this same run description. Every run
+        writes its answers whatever this says; only reading them is a
+        decision.
     sag_factor :
         The floor, as a multiple of the drawn depth below zero: at 1.0 on a
         1000 mm truss no vertex may hang under -1000 mm — the mirror of the
@@ -438,6 +458,7 @@ class DescentConfig(NamedTuple):
     sag_factor: float
     starts: int
     scatter: float
+    reuse_answers: bool = False
 
 
 class ViewerConfig(NamedTuple):
@@ -454,6 +475,14 @@ class ViewerConfig(NamedTuple):
         Whether to descend `route` alone and leave the other two undone. The
         report then holds whatever a single route can say — its own landing,
         its families, its checks — and drops every entry that is a comparison.
+    load_case :
+        Name, or leading part of a name, of the one load case to draw the
+        response of. Empty draws every case the run was checked against.
+    load_scale :
+        Multiple the load glyphs are drawn at. A load true to its own size is
+        a load nobody can see on a shell that spans ten metres, so the scene
+        exaggerates it and says by how much rather than leaving the reader to
+        guess.
 
     Notes
     -----
@@ -474,6 +503,8 @@ class ViewerConfig(NamedTuple):
     enabled: bool
     route: str
     solo_route: bool
+    load_case: str = ""
+    load_scale: float = 1.0
 
 
 class TaskConfig(NamedTuple):
@@ -708,6 +739,10 @@ class RouteProblem(NamedTuple):
         against.
     case_names :
         Name of every built load case, in build order.
+    cases_held :
+        Which load cases the descents carry inequality rows for. A symmetric
+        search may need fewer than were built, and every answer is still read
+        and checked against all of them.
     folding :
         Pattern matrices folding the mirror into every route's variables,
         None-valued when the search is not symmetric.
@@ -723,6 +758,7 @@ class RouteProblem(NamedTuple):
     pipeline: StructuralDesignPipeline
     loads: LoadCases
     case_names: tuple[str, ...]
+    cases_held: Int[np.ndarray, "cases_held"]
     folding: MirrorFolding
     edges_mirrored: Int[np.ndarray, "edges"]
     nodes_free: Int[Array, "nodes_free"]
@@ -1007,11 +1043,30 @@ class RouteMaps(NamedTuple):
     jacobian :
         The slack's derivative in every variable, by forward mode — the
         variables are the short axis against members times cases.
+    repair :
+        Grower of the diameters of a landing that missed feasibility, or None
+        from a route that offers no repair.
+
+    Notes
+    -----
+    **A repair is not a relaxation.** A landing that stops short of the
+    constraints is cheaper than a feasible one by construction, so accepting
+    it would bias every reported mass downward by an amount nothing bounds.
+    Growing the diameters instead walks the same design back onto the
+    constraint surface and prices the walk, which is the difference between
+    reporting an optimum and reporting a point the solver happened to stop at.
+
+    It is sound because the resistance the check computes is strictly
+    increasing in the diameter — the same monotonicity that makes the sizing
+    map's bisection unconditionally safe. It is iterative rather than closed
+    because a fatter member is a stiffer one, and stiffness redistributes the
+    force the resistance is measured against.
     """
 
     weigh: object
     slack: object
     jacobian: object
+    repair: object = None
 
 
 class RouteAnswer(NamedTuple):
@@ -1598,6 +1653,72 @@ def signed_shift(
     return SignShift(q + shift * mode, (lower, upper), shift)
 
 
+def cases_constrained(
+    plan: LoadPlan,
+    structure: Structure,
+    nodes_mirrored: Int[np.ndarray, "nodes"],
+    symmetric: bool,
+) -> Int[np.ndarray, "cases_held"]:
+    """
+    Which load cases a descent needs rows for, mirror duplicates dropped.
+
+    Parameters
+    ----------
+    plan :
+        The load cases the profile built.
+    structure :
+        The structure the cases load, read for the mirror it is drawn with.
+    nodes_mirrored :
+        The node the mirror carries each node onto.
+    symmetric :
+        Whether the search is confined to the mirror-symmetric subspace.
+
+    Returns
+    -------
+    cases_held :
+        Indices into the built cases, in build order.
+
+    Notes
+    -----
+    **A mirrored case is a reindexing, not a second condition.** Where every
+    reachable design is mirror-symmetric — a symmetric geometry basis and
+    sections folded by the same mirror — a case that is another case
+    reflected produces the reflected response, so its utilization rows are
+    the first case's rows under a permutation of the members. The feasible
+    set is identical without them and the analysis they would have cost is
+    saved at every iterate.
+
+    Dropping rows is not the same as dropping the case: every answer is read
+    and every feasibility check is made against all of them, so a claim of
+    redundancy that is false shows up as a violated constraint rather than as
+    a quiet omission.
+
+    The rule declines wherever it cannot see that the reflection is exact —
+    an asymmetric search, a mirror that does not preserve height, or a case
+    with a horizontal component the reflection would turn.
+    """
+    cases = np.asarray(plan.cases.analysis)
+    every = np.arange(cases.shape[0])
+    if not symmetric:
+        return every
+
+    heights = np.asarray(structure.nodes)[:, 2]
+    upright = bool(np.allclose(heights, heights[nodes_mirrored]))
+    vertical = bool(np.allclose(cases[:, :, :2], 0.0))
+    if not (upright and vertical):
+        return every
+
+    scale = float(np.max(np.abs(cases)))
+    held = [0]
+    for case in range(1, cases.shape[0]):
+        reflected = cases[case][nodes_mirrored]
+        gaps = [np.max(np.abs(reflected - cases[kept])) for kept in held]
+        if min(gaps) > TOLERANCE_MIRRORED * scale:
+            held.append(case)
+
+    return np.asarray(held)
+
+
 def prepare_problem(
     structure: Structure,
     config: TaskConfig,
@@ -1633,6 +1754,13 @@ def prepare_problem(
     what the form finder reaches, which is what makes a gap between the routes
     a statement about the landscape; folded polar they are a space of their own
     that neither contains nor is contained by it.
+
+    **A section keeps its folding whether or not the search is symmetric.** A
+    run may unfold the geometry to ask what the mirror was costing it and
+    still want one diameter per ring, that being a decision about how the
+    thing is built rather than about where the search may go. Only a family
+    offering no rotation, in a run that asked for no symmetry, leaves the
+    sections free member by member.
     """
     loads = plan.cases
 
@@ -1658,20 +1786,29 @@ def prepare_problem(
     frees = np.setdiff1d(everyone, np.asarray(structure.supports))
     nodes_free = jnp.asarray(frees)
 
+    # A rotation is offered only where the family's own switch asked for one,
+    # which is fabrication speaking rather than the subspace.
+    rotated = len(folding_by.members_folded) > 1
+    if config.subspace.symmetric or rotated:
+        spread_diameters = orbit_matrix(folding_by.members_folded)
+        folded_diameters = jnp.asarray(spread_diameters)
+    else:
+        folded_diameters = None
+
     if config.subspace.symmetric:
         positions = {int(node): place for place, node in enumerate(frees.tolist())}
         among_free = [
             np.asarray([positions[int(nodes[node])] for node in frees.tolist()])
             for nodes in folding_by.nodes_folded
         ]
-        spread_diameters = orbit_matrix(folding_by.members_folded)
         spread_heights = orbit_matrix(tuple(among_free))
-        folding = MirrorFolding(
-            jnp.asarray(spread_diameters), jnp.asarray(spread_heights)
-        )
+        folding = MirrorFolding(folded_diameters, jnp.asarray(spread_heights))
     else:
-        folding = MirrorFolding(None, None)
+        folding = MirrorFolding(folded_diameters, None)
 
+    held_cases = cases_constrained(
+        plan, structure, nodes_mirrored, config.subspace.symmetric
+    )
     diameters_seed = jnp.full(structure.num_edges, config.analysis.diameter)
     # The mirror comes first out of `folded_members`, and it is the one the
     # reported diameter gap is read against whatever else folds the sections.
@@ -1682,6 +1819,7 @@ def prepare_problem(
         blocks,
         loads,
         plan.names,
+        held_cases,
         folding,
         edges_mirrored,
         nodes_free,
@@ -1911,10 +2049,20 @@ def formfound_maps(
     Returns
     -------
     maps :
-        The mass with its gradient, the slack, and the slack's Jacobian.
+        The mass with its gradient, the slack, the slack's Jacobian, and a
+        repair that grows the diameters of a landing that missed feasibility.
 
     Notes
     -----
+    **The repair grows diameters and moves no coordinate.** Only the
+    utilization rows answer to a section; the height limits and the chord
+    signs are functions of the geometry alone, so a landing that missed one of
+    those is beyond repair and stays refused. Each pass grows a folded
+    diameter by the square root of the worst utilization over the members it
+    serves, which under-grows nothing — resistance rises at least as fast as
+    the square of the diameter — and the passes repeat because a fatter member
+    is stiffer and draws more force.
+
     The variable vector is the basis coordinates followed by every diameter,
     so the analysis runs at the search's own geometry and sections: the whole
     `∂N/∂ξ` and `∂N/∂d` feedback rides inside the gradient. Every geometry
@@ -1937,6 +2085,7 @@ def formfound_maps(
     family = sizer.family
     width = int(formfinder.basis.shape[1])
     spread = problem.folding.diameters
+    held_cases = problem.loads.analysis[problem.cases_held]
 
     plan = np.asarray(problem.structure.nodes)[:, :2]
     edges = np.asarray(problem.structure.edges)
@@ -1958,7 +2107,7 @@ def formfound_maps(
     def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
         diameters = sized_members(x)
         shape = formfinder(x[:width], problem.loads.formfinding)
-        forces = analyzer(shape.xyz, diameters, problem.loads.analysis)
+        forces = analyzer(shape.xyz, diameters, held_cases)
         used = sizer.compute_utilization(diameters, forces, shape.lengths)
         rows = [1.0 - used.ravel()]
         if limits.ceiling is not None:
@@ -1977,10 +2126,38 @@ def formfound_maps(
 
         return jnp.concatenate(rows)
 
+    def grown(
+        shape: FormFoundShape,
+        folded: Float[Array, "patterns"],
+    ) -> Float[Array, "patterns"]:
+        diameters = spread @ folded if spread is not None else folded
+        forces = analyzer(shape.xyz, diameters, held_cases)
+        used = sizer.compute_utilization(diameters, forces, shape.lengths)
+        worst = jnp.max(used, axis=0)
+        if spread is None:
+            demanded = worst
+        else:
+            masked = jnp.where(spread.T > 0.0, worst[None, :], 0.0)
+            demanded = jnp.max(masked, axis=1)
+
+        return folded * jnp.sqrt(jnp.maximum(demanded, 1.0))
+
+    def repair(x: Float[Array, "variables"]) -> Float[Array, "variables"]:
+        held = jnp.asarray(x)
+        coordinates = held[:width]
+        folded = held[width:]
+        # The coordinates never move, so the shape is found once for them all.
+        shape = formfinder(coordinates, problem.loads.formfinding)
+        for _ in range(REPAIR_PASSES):
+            folded = grown(shape, folded)
+
+        return jnp.concatenate([coordinates, folded])
+
     maps = RouteMaps(
         jax.jit(jax.value_and_grad(weigh)),
         jax.jit(slack),
         jax.jit(jax.jacfwd(slack)),
+        repair,
     )
 
     return maps
@@ -2025,6 +2202,7 @@ def heights_maps(problem: RouteProblem, length_floor: float) -> RouteMaps:
     spread_heights = problem.folding.heights
     spread_diameters = problem.folding.diameters
     count = pattern_count(spread_heights, int(problem.nodes_free.shape[0]))
+    held_cases = problem.loads.analysis[problem.cases_held]
 
     plan = np.asarray(problem.structure.nodes)[:, :2]
     edges = np.asarray(problem.structure.edges)
@@ -2056,7 +2234,7 @@ def heights_maps(problem: RouteProblem, length_floor: float) -> RouteMaps:
     def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
         shape = written_shape(free_heights(x))
         diameters = sized_members(x)
-        forces = analyzer(shape.xyz, diameters, problem.loads.analysis)
+        forces = analyzer(shape.xyz, diameters, held_cases)
         used = sizer.compute_utilization(diameters, forces, shape.lengths)
         rows = [1.0 - used.ravel()]
         if collapsible.size:
@@ -2094,6 +2272,7 @@ def drawn_maps(problem: RouteProblem) -> RouteMaps:
     xyz = problem.structure.nodes
     lengths = member_lengths(xyz, problem.structure.edges)
     spread = problem.folding.diameters
+    held_cases = problem.loads.analysis[problem.cases_held]
 
     def sized_members(x: Float[Array, "variables"]) -> Float[Array, "edges"]:
         if spread is None:
@@ -2107,7 +2286,7 @@ def drawn_maps(problem: RouteProblem) -> RouteMaps:
 
     def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
         diameters = sized_members(x)
-        forces = analyzer(xyz, diameters, problem.loads.analysis)
+        forces = analyzer(xyz, diameters, held_cases)
         used = sizer.compute_utilization(diameters, forces, lengths)
 
         return 1.0 - used.ravel()
@@ -2295,6 +2474,22 @@ def seed_openings(
     return opening_found, opening_drawn
 
 
+class StartScatter(NamedTuple):
+    """
+    Where a multi-start descent leaves from, and what holds it in.
+
+    Attributes
+    ----------
+    start :
+        The nominal variable vector the scattered points are drawn around.
+    boxes :
+        One bound pair per variable.
+    """
+
+    start: Float[np.ndarray, "variables"]
+    boxes: list[tuple[float | None, float | None]]
+
+
 def descend_route(
     maps: RouteMaps,
     start: Float[np.ndarray, "variables"],
@@ -2328,6 +2523,20 @@ def descend_route(
     through the compiled objective at every iterate, one cheap extra
     evaluation against the figure it buys.
 
+    **The objective is handed over divided by its value at the start, so the
+    budget's tolerance is a relative one.** SLSQP tests `|f - f0| < acc` and
+    `|s| < acc` against the same number, and the two quantities have no
+    common scale: a mass in tonnes is a fraction of one while a step is taken
+    over variables of order a hundred. Dividing the objective through makes
+    the first test read as a share of the mass, which is what the number in a
+    run description is meant to say, and leaves it meaning the same thing on
+    a cap of any size.
+
+    A threshold that is relative is not thereby a loose one. The descent has
+    a long shallow tail and most of a stopping rule's cost is paid there, so
+    the tolerance a run states is a decision about how much of that tail to
+    buy, and the mass it settles at moves with it.
+
     A line-search trial point can leave the model's domain entirely: a
     geometry whose frame cannot be factorized raises from inside the compiled
     slack. Such a point is answered with a uniform, enormous violation
@@ -2336,10 +2545,17 @@ def descend_route(
     Accepted iterates never sit there, so the Jacobian stays unguarded.
     """
 
-    def objective(x):
+    def weighed(x):
         value, slope = maps.weigh(jnp.asarray(x))
 
         return float(value), np.asarray(slope, dtype=np.float64)
+
+    reference = abs(weighed(start)[0]) or 1.0
+
+    def objective(x):
+        value, slope = weighed(x)
+
+        return value / reference, slope / reference
 
     def feasible(x):
         return np.asarray(maps.slack(jnp.asarray(x)), dtype=np.float64)
@@ -2355,10 +2571,10 @@ def descend_route(
         except ValueError:
             return np.full(rows, -RECOIL_SLACK)
 
-    masses = [objective(start)[0]]
+    masses = [weighed(start)[0]]
 
     def track(x):
-        masses.append(objective(x)[0])
+        masses.append(weighed(x)[0])
 
     held = {"type": "ineq", "fun": guarded_slack, "jac": feasible_jacobian}
     options = {"maxiter": budget.iterations, "ftol": budget.tolerance}
@@ -2433,9 +2649,9 @@ def scattered_points(
 
 
 def descend_best(
+    report: Report,
     maps: RouteMaps,
-    start: Float[np.ndarray, "variables"],
-    boxes: list[tuple[float | None, float | None]],
+    seed: StartScatter,
     budget: DescentConfig,
 ) -> RouteAnswer:
     """
@@ -2443,12 +2659,12 @@ def descend_best(
 
     Parameters
     ----------
+    report :
+        Where each start's landing is written as it happens.
     maps :
         The route's compiled maps.
-    start :
-        The nominal variable vector to scatter around.
-    boxes :
-        One bound pair per variable.
+    seed :
+        The nominal variable vector to scatter around, and its bounds.
     budget :
         The budgets, read for the start count as well as the descent.
 
@@ -2466,23 +2682,207 @@ def descend_best(
     the run. Landings are compared only among those that came back feasible,
     a search that lands outside the constraints having answered a different
     question.
+
+    **Every start reports as it lands.** A multi-start descent is the longest
+    thing a run does and the whole of it used to be one silent stretch, so a
+    run that was going badly looked exactly like a run that was going well.
+    The line says which start, what it reached and whether it was kept, which
+    is also the record of how much the scattering earned.
+
+    **A landing that missed feasibility is repaired before it is refused.** A
+    descent that stops a fraction short of the constraints has still found a
+    design, and throwing it away discards whatever basin it found along with
+    the fraction it missed by; growing its diameters onto the constraint
+    surface keeps the first and prices the second. A landing the repair cannot
+    rescue — one that missed a height limit or a chord sign, neither of which a
+    section answers to — is refused exactly as before, and the line says what
+    it missed by either way.
     """
+    start, boxes = seed
     best = None
-    for point in scattered_points(start, boxes, budget):
+    points = scattered_points(start, boxes, budget)
+    for index, point in enumerate(points):
+        named = "nominal" if index == 0 else f"scattered {index}"
         try:
             answer = descend_route(maps, point, boxes, budget)
             slack = float(np.min(np.asarray(maps.slack(jnp.asarray(answer.variables)))))
         except (ValueError, FloatingPointError):
+            report.write_line(
+                f"  start {index + 1}/{len(points)} ({named}): left the domain"
+            )
             continue
+        mended = ""
+        if slack < SCATTER_SLACK and maps.repair is not None:
+            missed = -slack
+            grown = np.asarray(maps.repair(jnp.asarray(answer.variables)))
+            slack_grown = float(np.min(np.asarray(maps.slack(jnp.asarray(grown)))))
+            if slack_grown >= SCATTER_SLACK:
+                mass, _ = maps.weigh(jnp.asarray(grown))
+                trail = np.append(answer.masses, float(mass))
+                answer = answer._replace(variables=grown, masses=trail)
+                slack = slack_grown
+                mended = f", missed by {missed:.2e} and repaired"
         if slack < SCATTER_SLACK:
+            report.write_line(
+                f"  start {index + 1}/{len(points)} ({named}): "
+                f"{answer.masses[-1]:.6f} t, infeasible by {-slack:.2e}"
+            )
             continue
-        if best is None or answer.masses[-1] < best.masses[-1]:
+        kept = best is None or answer.masses[-1] < best.masses[-1]
+        report.write_line(
+            f"  start {index + 1}/{len(points)} ({named}): {answer.masses[-1]:.6f} t "
+            f"in {answer.iterations} iterations, "
+            f"{'converged' if answer.converged else 'no convergence'}"
+            f"{mended}{', best so far' if kept else ''}"
+        )
+        if kept:
             best = answer
 
     if best is None:
         raise ValueError("no scattered start reached a feasible landing")
 
     return best
+
+
+def descent_digest(config: TaskConfig) -> str:
+    """
+    A fingerprint of everything about a run that decides where it lands.
+
+    Parameters
+    ----------
+    config :
+        The run description.
+
+    Returns
+    -------
+    digest :
+        Hexadecimal digest of the run description with the viewer removed.
+
+    Notes
+    -----
+    **The viewer is left out on purpose.** Which route to draw, which case to
+    draw it under, and whether to open a window at all decide nothing about
+    the descent, and a stored answer that a change of camera invalidated would
+    be worthless for the one thing it is for. Everything else is in: change a
+    ring, a pressure, a bound or a budget and the stored answer stops being an
+    answer to the question being asked.
+    """
+    described = repr(config._replace(viewer=None))
+
+    return hashlib.sha256(described.encode()).hexdigest()
+
+
+def answers_stored(config: TaskConfig) -> Path:
+    """
+    Where a run description's answers are kept.
+
+    Parameters
+    ----------
+    config :
+        The run description.
+
+    Returns
+    -------
+    stored :
+        The file the run's answers are written to and read back from.
+
+    Notes
+    -----
+    **Named by what was descended, not by the file that asked for it.** Two
+    descriptions that differ only in which route to draw, or whether to open a
+    window, pose the identical question, and a store keyed by filename would
+    make the second of them pay for the first one's answer all over again. The
+    file that wrote it is kept inside for a reader to recognize it by.
+    """
+    return DESIGNS / f"{descent_digest(config)[:16]}.npz"
+
+
+def save_answers(
+    path: Path,
+    config: TaskConfig,
+    answers: dict[str, RouteAnswer],
+) -> Path:
+    """
+    Write every descended answer beside the run description that reached it.
+
+    Parameters
+    ----------
+    path :
+        The YAML file describing the run.
+    config :
+        The run description, fingerprinted so a stale answer is not reused.
+    answers :
+        Each route's descent record, keyed by route.
+
+    Returns
+    -------
+    stored :
+        The file written.
+
+    Notes
+    -----
+    **A solo run adds to the store rather than replacing it.** Descending one
+    route says nothing about the other two, so an answer already held under
+    the same fingerprint is kept and the descended routes are written over it.
+    A fingerprint that does not match is a different question, and the store
+    is begun again.
+
+    Only the variables are needed to rebuild a design — every mass,
+    utilization and diagram the report carries is recomputed from them — but
+    the trajectory and the two things the solver said about how it stopped are
+    written too, because a report that could not state them would be a
+    different report from the one the descent wrote.
+    """
+    held = load_answers(config) or {}
+    held.update(answers)
+
+    stored = {"described": np.array(path.name)}
+    for route, answer in held.items():
+        stem = route.replace(" ", "-")
+        stored[f"{stem}.variables"] = np.asarray(answer.variables)
+        stored[f"{stem}.masses"] = np.asarray(answer.masses)
+        stored[f"{stem}.iterations"] = np.array(answer.iterations)
+        stored[f"{stem}.converged"] = np.array(answer.converged)
+
+    target = answers_stored(config)
+    np.savez(target, **stored)
+
+    return target
+
+
+def load_answers(config: TaskConfig) -> dict[str, RouteAnswer] | None:
+    """
+    Read back the answers this run description was already descended to.
+
+    Parameters
+    ----------
+    config :
+        The run description.
+
+    Returns
+    -------
+    answers :
+        Each stored route's descent record, or None where this description
+        has not been descended.
+    """
+    target = answers_stored(config)
+    if not target.exists():
+        return None
+
+    stored = np.load(target, allow_pickle=False)
+    answers = {}
+    for route in ROUTE_ORDER:
+        stem = route.replace(" ", "-")
+        if f"{stem}.variables" not in stored:
+            continue
+        answers[route] = RouteAnswer(
+            stored[f"{stem}.variables"],
+            stored[f"{stem}.masses"],
+            int(stored[f"{stem}.iterations"]),
+            bool(stored[f"{stem}.converged"]),
+        )
+
+    return answers or None
 
 
 def descend_all(
@@ -2515,7 +2915,9 @@ def descend_all(
     """
     answers = {}
     for route in routes_present(starts):
-        answer = descend_best(maps[route], starts[route], boxes[route], budget)
+        report.write_line(f"{route}, from {budget.starts} starts")
+        seed = StartScatter(starts[route], boxes[route])
+        answer = descend_best(report, maps[route], seed, budget)
         answers[route] = answer
         report.write_line(
             f"{route}: {answer.masses[-1]:.6f} t in {answer.iterations} iterations"
@@ -3231,6 +3633,7 @@ def view_answers(
     problem: RouteProblem,
     reads: dict[str, RouteRead],
     routes: tuple[str, ...],
+    viewer_config: ViewerConfig,
 ) -> None:
     """
     Open named answers in a viewer, in the frame solver's own terms.
@@ -3244,9 +3647,17 @@ def view_answers(
         Each route's answer read back, keyed by route.
     routes :
         Which routes to draw, each appearing under its own name.
+    viewer_config :
+        The run's viewer section, read for which case to draw and how far to
+        exaggerate its load glyphs.
 
     Notes
     -----
+    **A response per case is a response per solve.** Drawing one case is the
+    difference between opening a scene and assembling the frame again for
+    every condition it was checked against, and a reader comparing shapes
+    rarely wants more than the one the shape was found under.
+
     The sections are the answer's own diameters walled by the family every
     block was built on, not a re-sizing: an envelope would replace them with
     the sizer's demand and draw a structure the report never mentioned.
@@ -3277,6 +3688,7 @@ def view_answers(
     Blocks until the window closes.
     """
     viewer = vix.Viewer(show_reactions=False)
+    load_case = viewer_config.load_case
 
     for route in routes:
         read = reads[route]
@@ -3286,11 +3698,13 @@ def view_answers(
         viewer.add(frame, name=route)
 
         for index, case_name in enumerate(problem.case_names):
-            load_case = problem.loads.analysis[index]
+            if not case_name.startswith(load_case):
+                continue
+            case_loads = problem.loads.analysis[index]
             response = problem.pipeline.analyzer.solve_response(
                 xyz,
                 sections.diameter,
-                load_case,
+                case_loads,
             )
             viewer.add(
                 response,
@@ -3300,11 +3714,12 @@ def view_answers(
                 show_forces=FORCE_DIAGRAMS,
             )
 
-            applied = LoadCase.from_array(load_case, frame)
+            loads_drawn = LoadCase.from_array(case_loads, frame)
             viewer.add(
-                applied,
-                name=f"{route} — {case_name} — loads",
+                loads_drawn,
+                name=f"{route} — {case_name} — loads at {viewer_config.load_scale:g}x",
                 structure=route,
+                load_scale=viewer_config.load_scale,
             )
 
     viewer.show()
@@ -3480,6 +3895,19 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
     report.write_heading(profile.start_heading)
     entries = start_entries(config, problem, start, measures, limits)
     entries.append(("lens fit gap / total load", f"{fit_scaled:.2e}"))
+    held = problem.cases_held
+    built = len(problem.case_names)
+    if held.size < built:
+        reindexed = [
+            name for index, name in enumerate(problem.case_names) if index not in held
+        ]
+        mirrored = ", ".join(reindexed)
+        entries.append(
+            (
+                "load cases with rows",
+                f"{held.size} of {built}, {mirrored} reindexed onto a held case",
+            )
+        )
     if guard is not None:
         entries.append(
             (
@@ -3500,13 +3928,27 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
     ]
     best_error = max(errors) if errors else 0.0
 
+    held = load_answers(config) if budget.reuse_answers else None
+    recalled = held is not None and all(route in held for route in routes)
+
     named = "the three routes" if len(routes) > 1 else routes[0]
-    report.write_heading(f"Descending {named}")
     boxes = route_boxes(problem, budget.diameter_floor, limits)
-    descended = {route: maps[route] for route in routes}
-    seeds = {route: starts[route] for route in routes}
-    bounds = {route: boxes[route] for route in routes}
-    answers = descend_all(report, descended, seeds, bounds, budget)
+    if recalled:
+        report.write_heading(f"Reading {named} back")
+        answers = {route: held[route] for route in routes}
+        for route in routes_present(answers):
+            answer = answers[route]
+            report.write_line(
+                f"{route}: {answer.masses[-1]:.6f} t "
+                f"in {answer.iterations} iterations, descended earlier"
+            )
+    else:
+        report.write_heading(f"Descending {named}")
+        descended = {route: maps[route] for route in routes}
+        seeds = {route: starts[route] for route in routes}
+        bounds = {route: boxes[route] for route in routes}
+        answers = descend_all(report, descended, seeds, bounds, budget)
+        save_answers(path, config, answers)
 
     reads = route_reads(problem, answers, budget)
     report_routes(report, reads, answers, route_variables(problem))
@@ -3595,4 +4037,4 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
 
     # Last, because the window holds the process until it closes.
     if config.viewer.enabled:
-        view_answers(problem, reads, (config.viewer.route,))
+        view_answers(problem, reads, (config.viewer.route,), config.viewer)

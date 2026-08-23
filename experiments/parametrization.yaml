@@ -25,5 +25,5 @@ starts:
 
 simultaneous:
   iterations: 300
-  tolerance: 1.0e-9
+  tolerance: 1.0e-8
   diameter_floor: 21.3

@@ -43,7 +43,7 @@ analysis:
 descent:
   iterations: 1000
   rounds: 5
-  tolerance: 1.0e-10
+  tolerance: 1.0e-9
   diameter_floor: 21.3
   # A held plan floors every length at its own plan projection, so no row is
   # ever emitted; the field stays because the shared budgets carry it.

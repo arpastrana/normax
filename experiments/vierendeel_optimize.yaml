@@ -25,7 +25,7 @@ analysis:
 descent:
   iterations: 1000
   rounds: 5
-  tolerance: 1.0e-10
+  tolerance: 1.0e-9
   diameter_floor: 21.3
   length_floor: 1000.0
   starts: 1

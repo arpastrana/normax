@@ -2,6 +2,144 @@
 
 ## Unreleased
 
+### A load case the mirror already answers carries no rows
+
+`cases_constrained` drops a load case whose rows are another case's rows under
+a permutation, and `RouteProblem.cases_held` carries the survivors.
+
+**A mirrored case is a reindexing, not a second condition.** Where every
+reachable design is mirror-symmetric — a symmetric geometry basis and sections
+folded by the same mirror — a case that is another case reflected produces the
+reflected response, so its utilization rows are the first case's rows with the
+members renumbered. The feasible set is identical without them. On the 16x16
+cap LC3 reflects onto LC2 to 2.1e-12 at the start and at a scattered point, and
+dropping its 496 rows takes the Jacobian from 93.2 to 82.9 ms, eleven percent.
+
+**Dropping rows is not dropping the case.** Every answer is read and every
+feasibility check is made against all of them, so a claim of redundancy that is
+false shows up as a violated constraint rather than as a quiet omission. The
+rule declines wherever it cannot see the reflection is exact: an asymmetric
+search, a mirror that does not preserve height, or a case with a horizontal
+component the reflection would turn.
+
+What it does not see is a design that is symmetric without having been asked to
+be, which every answer on this cap turns out to be. The rule tests the subspace
+rather than the answer, so an unfolded run pays for rows it does not need.
+
+### A descended answer is kept, and every start reports as it lands
+
+Three changes, all of them about an expensive run being legible and re-openable.
+
+**`designs/` holds every answer, keyed by what was descended.** The file name is
+a digest of the run description with the viewer section removed, so two
+descriptions differing only in which route to draw, or whether to open a window,
+share one store. Change a ring, a pressure, a bound or a budget and it is a
+different question and a different file. Stored per route: the variable vector,
+the mass trajectory, the iteration count and the convergence flag. Only the
+variables are load-bearing — every mass, utilization, governing count and
+diagram is recomputed from them — so a read-back run writes the identical
+report. `descent.reuse_answers` reads them instead of descending; every run
+writes them whatever it says, and a solo run adds to the store rather than
+replacing it.
+
+**`descend_best` writes a line per start.** A multi-start descent is the longest
+thing a run does and the whole of it used to be one silent stretch, so a run
+going badly looked exactly like a run going well. The line says which start,
+what it reached, whether it converged and whether it was kept, which is also
+the record of what the scattering earned — and on this cap it earns a great
+deal, the landings of five starts spanning forty percent.
+
+**The viewer takes a case and a scale.** `viewer.load_case` draws the response
+of one case rather than all of them, which is one assembly and one solve rather
+than three; `viewer.load_scale` exaggerates the load glyphs, a kilonewton on a
+ten metre shell being invisible drawn true. The scene names the exaggeration so
+a screenshot cannot misreport it.
+
+### A section folds by fabrication, not by the subspace
+
+`prepare_problem` used to gate all three foldings on `subspace.symmetric`, so
+unfolding the geometry to ask what the mirror was costing also unfolded the
+sections — 525 variables instead of 60, and one diameter per member on a shell
+nobody would build. Sections now fold by whatever the family's own switch asked
+for, which is a decision about how the thing is built rather than about where
+the search may go. Heights stay attached to the subspace, being geometry.
+
+Checked against all four combinations: only `free basis with polar sections`
+moves, from 525 variables to 60. Symmetric with polar sections stays at 54,
+symmetric without at 287, free without at 525.
+
+### A landing that missed feasibility is repaired before it is refused
+
+`RouteMaps.repair` grows the diameters of a landing that stopped short of the
+constraints, and `descend_best` tries it before refusing one.
+
+**A repair is not a relaxation.** A descent that stops a fraction short is
+cheaper than a feasible one by construction, so accepting it would bias every
+reported mass downward by an amount nothing bounds — and on this cap the bias is
+tiny while the mass gap is not: a landing missing by 9e-4 is worth 0.1% of mass
+and sat 4% below the answer that beat it. Loosening the acceptance bound would
+fix that case by making every future case unfalsifiable. Growing the diameters
+instead walks the same design back onto the constraint surface and prices the
+walk.
+
+It is sound because the resistance is strictly increasing in the diameter, the
+same monotonicity that makes the sizing map's bisection unconditionally safe,
+and iterative because a fatter member is stiffer and draws more force. Measured
+against deliberately shrunk designs: a 0.1% shrink costs 0.09% to mend, a 1%
+shrink 0.89%, a 3% shrink 2.80%.
+
+**Only utilization rows answer to a section.** A landing that missed a height
+limit or a chord sign is beyond repair and stays refused, which is what happened
+the one time it was asked to rescue a real failure.
+
+### The descent was stopping on a rule that could not be met
+
+`descend_route` hands SLSQP the objective divided by its value at the start.
+
+**One threshold was doing duty for two quantities that share no scale.** SLSQP
+tests `|f - f0| < acc` and `|s| < acc` against the same number. The mass is a
+fraction of a tonne and the step is taken over variables of order a hundred,
+so a run description asking for `1e-10` was asking the objective for eight
+relative digits and the step for twelve. On the 16x16 cap the criterion was
+simply unreachable: the end-to-end route burned its whole iteration budget,
+reported no convergence, and landed infeasible. Dividing the objective through
+makes the stated number a share of the mass, and makes it mean the same thing
+on a cap of any size.
+
+**Relaxing the threshold without normalizing is worse than leaving it alone.**
+At `1e-10` against a mass of 0.127 the number is a relative 8e-10; at `1e-6` it
+is a relative 8e-6, reached almost at once. That cell stops after ten
+iterations at 0.130012 t, heavier than the 0.126966 t it started from. Both
+halves have to move together.
+
+**What it bought, single start, 16x16 end to end.** As built at `1e-10`: 4612
+iterations, 484 s, 0.096960 t, no convergence. Normalized at `1e-6`: 1792
+iterations, 170 s, 0.091336 t, converged. Faster, lighter, and it stops. The
+full three-route run went from 66 minutes to 9.
+
+**The penalty is a small-cap phenomenon and it reverses with size.** On the
+4x12 cap the same normalized `1e-6` lands 21% heavier than the tight absolute
+rule, which converges there and earns the tail. The gridshell's own file keeps
+a tight relative `1e-9`; only the 16x16 file takes `1e-6`. The four run
+descriptions whose numbers are already recorded were moved one decade looser
+so that normalizing does not silently tighten them.
+
+**Experiment 19 was rerun to check that, and it reproduces.** The Vierendeel's
+end-to-end route lands **0.122263 t** bit for bit and sizing only 0.430475
+against 0.430474, so the same run exercises the mirrored-case rule, the
+normalized objective and the section-folding change at once on a family that is
+not the gridshell, and the geometry still buys 71.6%. The one movement is free
+heights, **0.144921 t against the recorded 0.145248** — 0.23% lighter, which is
+the decade of extra room on the route with the longest tail, spent descending
+slightly further. Every constraint violation lands between 1e-10 and 1e-14 and
+the verdict is PASS. The `mirrored_case` rule does not fire there: the truss's
+drift cases are not mirror pairs, so all three carry rows and that path stays
+untested outside the gridshell.
+
+**Two runs differing only in the stopping rule land 25% apart in mass**, and
+they move the two shaped routes in opposite directions — the geometry reads
+23.0% under one and 42.4% under the other. Neither is yet the number to quote.
+
 ### A diagrid connectivity
 
 `build_diagrid_3d` builds the same spherical cap out of rhomboids: the polar

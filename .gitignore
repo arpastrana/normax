@@ -29,6 +29,10 @@ CLAUDE.md
 *.mp4
 artifacts/
 
+# Descended answers, kept so that looking at a design again is a read rather
+# than a rerun. Reproducible from the run description that names them.
+designs/
+
 # Viewer state polyscope writes beside wherever it ran.
 .polyscope.ini
 imgui.ini
