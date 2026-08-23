@@ -91,6 +91,7 @@ CI = "https://github.com/arpastrana/normax/actions"
 
 [project.optional-dependencies]
 spike = [
+    "nlopt>=2.11.0",
     "openseespy>=3.8",
 ]
 

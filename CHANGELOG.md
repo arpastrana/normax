@@ -140,6 +140,27 @@ untested outside the gridshell.
 they move the two shaped routes in opposite directions — the geometry reads
 23.0% under one and 42.4% under the other. Neither is yet the number to quote.
 
+### MMA and CCSA are the wrong shape for a fully-stressed design
+
+`experiments/24_mma_spike.py` drives the end-to-end route's own maps with
+scipy's SLSQP and with nlopt's two separable-approximation methods, from one
+start, under one normalized objective and one tolerance.
+
+Both nlopt drivers land heavier than the design they were started from —
+0.132966 t and 0.131758 t against 0.126966 t — and MMA spends every one of
+3000 evaluations and 279 seconds doing it. SLSQP reaches 0.104553 t in 57.
+
+**The column that explains it is the utilization.** Both stop near 0.9939,
+strictly inside the feasible region, never touching the bound. Conservative
+convex approximation is built to keep every iterate feasible and to approach a
+constraint from within, and the optimum of a fully-stressed design lies
+entirely on `U = 1`. A method that will not touch the boundary converges to a
+point that is not the answer. SLSQP's active set sits on constraints by
+construction, which is what this problem wants.
+
+Not pursued further. The case for a solver swap rested on the iteration count,
+and the iteration count was the stopping rule.
+
 ### A diagrid connectivity
 
 `build_diagrid_3d` builds the same spherical cap out of rhomboids: the polar
