@@ -35,7 +35,9 @@ from jaxtyping import Int
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LogNorm
+from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 from normax.optimization import Trajectory
 
@@ -1767,6 +1769,120 @@ class SubspaceMode(NamedTuple):
     title: str
     xyz: Float[Array, "nodes 3"]
     densities: Float[Array, "members"]
+
+
+class ShapeVariation(NamedTuple):
+    """
+    One form-found shape, named for the panel it is drawn in.
+
+    Attributes
+    ----------
+    title :
+        Name of the variation, shown above its drawing.
+    xyz :
+        Position of every node.
+    """
+
+    title: str
+    xyz: Float[Array, "nodes 3"]
+
+
+def figure_shape_variations(
+    edges: Int[Array, "members 2"],
+    variations: Sequence[ShapeVariation],
+) -> Figure:
+    """
+    Every shape drawn as a wireframe in three dimensions, three to a row.
+
+    Parameters
+    ----------
+    edges :
+        The two node indices spanned by every member.
+    variations :
+        The shapes to draw, in the order they are to be drawn.
+
+    Returns
+    -------
+    figure :
+        A grid of wireframes sharing one set of axis limits, one viewing
+        angle and one height colorbar.
+
+    Notes
+    -----
+    One set of limits and one color scale across every panel, so a shape is
+    read against its neighbors rather than against its own extent — a panel
+    autoscaled to itself would make every variation look alike.
+
+    Members are colored by the height of their midpoint, which is the whole of
+    what a held plan lets a variation change: the plan is fixed by
+    construction, so two panels differ in nothing but height.
+    """
+    shapes = [np.asarray(variation.xyz) for variation in variations]
+    every = np.concatenate(shapes)
+    spans = np.ptp(every, axis=0)
+    margin = 0.05 * float(np.max(spans))
+    lowest = every.min(axis=0) - margin
+    highest = every.max(axis=0) + margin
+    scale = Normalize(float(every[:, 2].min()), float(every[:, 2].max()))
+
+    columns = 3
+    rows = -(-len(variations) // columns)
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(4.2 * columns, 3.3 * rows),
+        squeeze=False,
+        subplot_kw={"projection": "3d"},
+    )
+
+    flat = axes.ravel()
+    for ax in flat[len(variations) :]:
+        ax.set_axis_off()
+
+    spans_named = np.asarray(edges)
+    drawn = None
+    for ax, variation in zip(flat, variations):
+        nodes = np.asarray(variation.xyz)
+        starts = nodes[spans_named[:, 0]]
+        ends = nodes[spans_named[:, 1]]
+        segments = np.stack([starts, ends], axis=1)
+        heights = 0.5 * (starts[:, 2] + ends[:, 2])
+
+        drawn = Line3DCollection(segments, cmap="viridis", norm=scale, linewidths=0.7)
+        drawn.set_array(heights)
+        ax.add_collection3d(drawn)
+
+        ax.set_xlim(lowest[0], highest[0])
+        ax.set_ylim(lowest[1], highest[1])
+        ax.set_zlim(lowest[2], highest[2])
+        ax.set_box_aspect((spans[0], spans[1], max(spans[2], 0.2 * spans[0])))
+        ax.view_init(elev=24.0, azim=-58.0)
+        ax.set_title(variation.title, fontsize=9, pad=2.0)
+        # Height is read off the shared colorbar, so no axis needs to say it.
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_zticklabels([])
+
+    # Constrained layout collapses a 3D grid once a shared colorbar joins it,
+    # and 3D axes carry margins a negative spacing has to claw back.
+    figure.subplots_adjust(
+        left=0.0,
+        right=0.9,
+        top=0.97,
+        bottom=0.0,
+        wspace=-0.08,
+        hspace=-0.04,
+    )
+    bar = figure.colorbar(
+        drawn,
+        ax=flat.tolist(),
+        shrink=0.42,
+        aspect=28,
+        pad=0.0,
+    )
+    bar.set_label("height [mm]")
+
+    return figure
 
 
 def figure_density_modes(

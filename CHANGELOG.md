@@ -92,6 +92,25 @@ shrink 0.89%, a 3% shrink 2.80%.
 limit or a chord sign is beyond repair and stays refused, which is what happened
 the one time it was asked to rescue a real failure.
 
+### A gridshell's design space, sampled and drawn
+
+`experiments/25_gridshell_space.py` perturbs the independent force densities
+around the drawn cap's own funicular and form-finds what comes back — no
+analysis, no sizing, no descent, a second of arithmetic for the whole picture.
+
+**The plan is held, so height is the whole of what varies**, which is why the
+members are coloured by height and the plan needs no drawing. The coordinates
+are pivoted rather than orthonormal, so a perturbation is a statement about one
+named edge.
+
+**The compression guard is off, and that is a decision.** Guarding refused
+99.98% of draws, so the survivors were whatever squeaked through rather than a
+fair spread; no draw ever failed to factorize without it; and the sag floor
+keeps every shape a dome regardless. What the guard excludes is 23 to 42 of the
+256 radials going into tension — real mixed nets that happen to look like domes.
+The height limits, by contrast, refuse almost nothing: of the twelve draws that
+survived the cone, seven failed a bound.
+
 ### The descent was stopping on a rule that could not be met
 
 `descend_route` hands SLSQP the objective divided by its value at the start.
