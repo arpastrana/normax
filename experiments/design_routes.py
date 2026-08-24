@@ -131,6 +131,38 @@ FLOOR_SLACK = 1e-6
 # enormous against the order-one slack rows, so the line search recoils.
 RECOIL_SLACK = 1e3
 
+METHOD_SLSQP = "slsqp"
+METHOD_AUGMENTED = "augmented"
+METHOD_ORDER = (METHOD_SLSQP, METHOD_AUGMENTED)
+
+# What the polish after an augmented descent is allowed. A landing that is
+# already stationary needs a handful of iterations; the cap is what stops a
+# polish with real work left from quietly becoming the descent.
+POLISH_ITERATIONS = 300
+POLISH_ROUNDS = 2
+
+# Violation above which an augmented landing is refused rather than polished. A
+# constrained solver started from a grossly infeasible point does not repair
+# it — it wanders, and reports where it wandered to.
+POLISH_ADMISSION = 1e-3
+
+# What an augmented descent runs on when a run description names the method and
+# no budget. The opening penalty is the one setting that decides the answer
+# rather than the speed, and no value is safe on every structure: 0.01 wins on
+# the 16x16 cap and leaves a nine-member Vierendeel overstressed. The default
+# is the conservative end, so a file wanting the fast one says so.
+AUGMENTED_DEFAULT = AugmentedBudget(
+    rounds=10,
+    iterations=400,
+    settled=100,
+    opening=3,
+    penalty=0.1,
+    growth=10.0,
+    ceiling=1.0e8,
+    tolerance=1.0e-6,
+    quiet=1.0e-6,
+)
+
 # Fixed, so a multi-start run is a measurement rather than a lottery.
 SCATTER_SEED = 20260820
 
@@ -445,6 +477,11 @@ class DescentConfig(NamedTuple):
         again, where one is held for this same run description. Every run
         writes its answers whatever this says; only reading them is a
         decision.
+    method :
+        Which search descends every route. `slsqp` holds the rows as explicit
+        constraints and pays a Jacobian per iteration; `augmented` folds them
+        into the objective and pays one reverse pass, then polishes with the
+        first for its certificate.
     sag_factor :
         The floor, as a multiple of the drawn depth below zero: at 1.0 on a
         1000 mm truss no vertex may hang under -1000 mm — the mirror of the
@@ -463,6 +500,7 @@ class DescentConfig(NamedTuple):
     starts: int
     scatter: float
     reuse_answers: bool = False
+    method: str = METHOD_SLSQP
 
 
 class ViewerConfig(NamedTuple):
@@ -532,12 +570,16 @@ class TaskConfig(NamedTuple):
         The budgets the searches share.
     viewer :
         Whether the run ends in a viewer.
+    augmented :
+        Budgets for the augmented method, or None to take the defaults. Read
+        whatever the method is, so that switching to it and back does not
+        change what a file says.
 
     Notes
     -----
     The first three sections are the profile's to parse and the profile's to
-    read; nothing in the shared flow touches a field of them. The last four
-    are family-blind, which is what lets one flow run a truss and a shell.
+    read; nothing in the shared flow touches a field of them. The rest are
+    family-blind, which is what lets one flow run a truss and a shell.
     """
 
     structure: TrussConfig | ShellConfig
@@ -547,6 +589,7 @@ class TaskConfig(NamedTuple):
     analysis: AnalysisConfig
     descent: DescentConfig
     viewer: ViewerConfig
+    augmented: AugmentedBudget | None = None
 
 
 def shared_sections(document: dict[str, object]) -> dict[str, object]:
@@ -566,30 +609,82 @@ def shared_sections(document: dict[str, object]) -> dict[str, object]:
     Raises
     ------
     ValueError
-        If the basis or the viewer's route is not one this flow serves.
+        If the basis, the viewer's route or the descent method is not one this
+        flow serves.
     TypeError
         If a section names a field that does not exist, or omits one it does.
 
     Notes
     -----
-    No container carries a default, so a file missing a field is refused
-    rather than quietly completed.
+    Only the two sections a file may leave out carry defaults — the descent
+    method, and the budgets belonging to it — so a file missing anything else
+    is refused rather than quietly completed.
+
+    **The augmented budget is read whatever the method is**, so that switching
+    a file's method and switching it back leaves the file saying the same
+    thing. Whether it counts towards the answer store's fingerprint is a
+    separate question, settled by `descent_digest`: a budget the run does not
+    use decides nothing and is not counted.
     """
     subspace = SubspaceConfig(**document["subspace"])
     viewer = ViewerConfig(**document["viewer"])
+    descent = DescentConfig(**document["descent"])
 
     if subspace.basis not in ("svd", "pivoted"):
         raise ValueError(f"basis must be svd or pivoted, got {subspace.basis}")
     if viewer.route not in ROUTE_ORDER:
         named = ", ".join(ROUTE_ORDER)
         raise ValueError(f"viewer route must be one of {named}, got {viewer.route}")
+    if descent.method not in METHOD_ORDER:
+        named = ", ".join(METHOD_ORDER)
+        raise ValueError(f"method must be one of {named}, got {descent.method}")
 
     return {
         "subspace": subspace,
         "analysis": AnalysisConfig(**document["analysis"]),
-        "descent": DescentConfig(**document["descent"]),
+        "descent": descent,
         "viewer": viewer,
+        "augmented": augmented_budget(document),
     }
+
+
+def augmented_budget(document: dict[str, object]) -> AugmentedBudget | None:
+    """
+    The augmented budget a run description names, cast, or None for none.
+
+    Parameters
+    ----------
+    document :
+        The loaded YAML document.
+
+    Returns
+    -------
+    budget :
+        Rounds, inner iterations, the penalty schedule and the stopping rules,
+        or None where the file names none and the defaults apply.
+
+    Raises
+    ------
+    TypeError
+        If the section names a field that does not exist, or omits one it does.
+
+    Notes
+    -----
+    Every field is cast on the way in. YAML reads an exponent without a signed
+    power as a string, so a ceiling written `1.0e8` would arrive as text and
+    first be noticed several rounds into a descent, where it is compared
+    against a penalty.
+    """
+    named = document.get("augmented")
+    if named is None:
+        return None
+
+    counts = ("rounds", "iterations", "settled", "opening")
+    read = {key: int(value) for key, value in named.items() if key in counts}
+    scales = {key: float(value) for key, value in named.items() if key not in counts}
+    read.update(scales)
+
+    return AugmentedBudget(**read)
 
 
 def parse_truss(text: str) -> TaskConfig:
@@ -2751,6 +2846,105 @@ def descend_augmented_route(
     )
 
 
+class DescentPlan(NamedTuple):
+    """
+    Which search descends a route, and on what budgets.
+
+    Attributes
+    ----------
+    budget :
+        The budgets every method shares — bounds, floors, starts, and the
+        iteration and tolerance settings the constrained solver reads.
+    augmented :
+        Budgets belonging to the augmented method, or None for the defaults.
+    """
+
+    budget: DescentConfig
+    augmented: AugmentedBudget | None = None
+
+
+def descent_plan(config: TaskConfig) -> DescentPlan:
+    """
+    How the run description says its routes are to be descended.
+
+    Parameters
+    ----------
+    config :
+        The run description.
+
+    Returns
+    -------
+    plan :
+        The method's budgets alongside the shared ones.
+    """
+    return DescentPlan(config.descent, config.augmented)
+
+
+def descend_started(
+    maps: RouteMaps,
+    start: Float[np.ndarray, "variables"],
+    boxes: list[tuple[float | None, float | None]],
+    plan: DescentPlan,
+) -> RouteAnswer | None:
+    """
+    One start descended by whichever method the run description names.
+
+    Parameters
+    ----------
+    maps :
+        The route's compiled maps.
+    start :
+        The variable vector to leave from.
+    boxes :
+        One bound pair per variable.
+    plan :
+        The method and its budgets.
+
+    Returns
+    -------
+    answer :
+        The landing, or None where an augmented descent never approached
+        feasibility and the polish was refused.
+
+    Notes
+    -----
+    **An augmented descent is always polished, and the polish is not optional.**
+    The outer loop stops on its own round budget and says nothing about
+    stationarity; a short constrained run from the landing is the cheapest
+    certificate that the answer is a stationary point rather than the place the
+    rounds ran out. It also supplies the exact feasibility the reported
+    utilization is asserted against.
+
+    **A landing the polish is refused for is returned as nothing, not as a
+    mass.** An opening penalty too weak for the structure leaves the descent
+    inside its own infeasible dive, holding a mass no design supports, and
+    handing that to a constrained solver produces a number with no meaning.
+    Refusing keeps a start that failed distinguishable from one that landed
+    heavy.
+
+    The reported iteration count sums the augmented descent's evaluations and
+    the polish's iterations, which are not the same currency. It prices the
+    landing rather than comparing it with an SLSQP row.
+    """
+    if plan.budget.method == METHOD_SLSQP:
+        return descend_route(maps, start, boxes, plan.budget)
+
+    relaxed = plan.augmented or AUGMENTED_DEFAULT
+    answer = descend_augmented_route(maps, start, boxes, relaxed)
+    if float(answer.violations[-1]) > POLISH_ADMISSION:
+        return None
+
+    polish = plan.budget._replace(iterations=POLISH_ITERATIONS, rounds=POLISH_ROUNDS)
+    found = descend_route(maps, answer.variables, boxes, polish)
+    trail = np.concatenate([answer.masses, found.masses])
+
+    return found._replace(
+        masses=trail,
+        iterations=answer.iterations + found.iterations,
+        violations=answer.violations,
+    )
+
+
 def scattered_points(
     start: Float[np.ndarray, "variables"],
     boxes: list[tuple[float | None, float | None]],
@@ -2801,7 +2995,7 @@ def descend_best(
     report: Report,
     maps: RouteMaps,
     seed: StartScatter,
-    budget: DescentConfig,
+    plan: DescentPlan,
 ) -> RouteAnswer:
     """
     Descend from every scattered start and keep the lightest feasible landing.
@@ -2814,8 +3008,9 @@ def descend_best(
         The route's compiled maps.
     seed :
         The nominal variable vector to scatter around, and its bounds.
-    budget :
-        The budgets, read for the start count as well as the descent.
+    plan :
+        The method and its budgets, read for the start count as well as the
+        descent.
 
     Returns
     -------
@@ -2847,13 +3042,20 @@ def descend_best(
     section answers to — is refused exactly as before, and the line says what
     it missed by either way.
     """
+    budget = plan.budget
     start, boxes = seed
     best = None
     points = scattered_points(start, boxes, budget)
     for index, point in enumerate(points):
         named = "nominal" if index == 0 else f"scattered {index}"
         try:
-            answer = descend_route(maps, point, boxes, budget)
+            answer = descend_started(maps, point, boxes, plan)
+            if answer is None:
+                report.write_line(
+                    f"  start {index + 1}/{len(points)} ({named}): refused, the "
+                    f"descent never approached feasibility"
+                )
+                continue
             slack = float(np.min(np.asarray(maps.slack(jnp.asarray(answer.variables)))))
         except (ValueError, FloatingPointError, RuntimeError):
             report.write_line(
@@ -2912,13 +3114,23 @@ def descent_digest(config: TaskConfig) -> str:
     **The viewer is left out on purpose.** Which route to draw, which case to
     draw it under, and whether to open a window at all decide nothing about
     the descent, and a stored answer that a change of camera invalidated would
-    be worthless for the one thing it is for. Everything else is in: change a
-    ring, a pressure, a bound or a budget and the stored answer stops being an
-    answer to the question being asked.
-    """
-    described = repr(config._replace(viewer=None))
+    be worthless for the one thing it is for. Everything else that decides the
+    landing is in: change a ring, a pressure, a bound, a budget or the method
+    and the stored answer stops being an answer to the question being asked.
 
-    return hashlib.sha256(described.encode()).hexdigest()
+    **A budget belonging to a method the run does not use is left out for the
+    same reason.** It decides nothing here, and counting it would make a file
+    that carries one describe a different question from a file that does not —
+    so a viewer beside a run would have to repeat the whole block verbatim to
+    find the answer that run stored, and would silently find nothing when it
+    drifted. The budget is still read and still travels on the description; it
+    is only the fingerprint that ignores it.
+    """
+    described = config._replace(viewer=None)
+    if described.descent.method != METHOD_AUGMENTED:
+        described = described._replace(augmented=None)
+
+    return hashlib.sha256(repr(described).encode()).hexdigest()
 
 
 def answers_stored(config: TaskConfig) -> Path:
@@ -3039,7 +3251,7 @@ def descend_all(
     maps: dict[str, RouteMaps],
     starts: dict[str, Float[np.ndarray, "variables"]],
     boxes: dict[str, list[tuple[float | None, float | None]]],
-    budget: DescentConfig,
+    plan: DescentPlan,
 ) -> dict[str, RouteAnswer]:
     """
     Descend every route in the shared order, reporting each landing.
@@ -3054,8 +3266,8 @@ def descend_all(
         Every route's starting variable vector.
     boxes :
         Every route's bound pairs.
-    budget :
-        The budgets the routes share.
+    plan :
+        The method the routes are descended by, and its budgets.
 
     Returns
     -------
@@ -3064,9 +3276,11 @@ def descend_all(
     """
     answers = {}
     for route in routes_present(starts):
-        report.write_line(f"{route}, from {budget.starts} starts")
+        report.write_line(
+            f"{route}, from {plan.budget.starts} starts by {plan.budget.method}"
+        )
         seed = StartScatter(starts[route], boxes[route])
-        answer = descend_best(report, maps[route], seed, budget)
+        answer = descend_best(report, maps[route], seed, plan)
         answers[route] = answer
         report.write_line(
             f"{route}: {answer.masses[-1]:.6f} t in {answer.iterations} iterations"
@@ -4096,7 +4310,7 @@ def run_routes(profile: RouteProfile, path: Path) -> None:
         descended = {route: maps[route] for route in routes}
         seeds = {route: starts[route] for route in routes}
         bounds = {route: boxes[route] for route in routes}
-        answers = descend_all(report, descended, seeds, bounds, budget)
+        answers = descend_all(report, descended, seeds, bounds, descent_plan(config))
         save_answers(path, config, answers)
 
     reads = route_reads(problem, answers, budget)
