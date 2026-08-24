@@ -886,6 +886,13 @@ def descend_augmented(
     solver that reports a NaN rather than raising would otherwise poison every
     curvature estimate after it.
 
+    **`RuntimeError` is caught alongside the value errors, and has to be.** A
+    solver whose failure is detected inside a compiled program reports it
+    through a host callback, and the exception that surfaces from one is a
+    runtime error rather than anything about a value. Catching only the value
+    errors leaves the commonest way for a frame to fail unhandled, which is not
+    a crash but a finite and meaningless number carried forward.
+
     The loop is deterministic. Nothing here is sampled, so a landing is a
     measurement and two runs of one budget agree bit for bit.
     """
@@ -919,7 +926,7 @@ def descend_augmented(
             value, slope = maps.augmented(jnp.asarray(z), carried, charged, scale)
             value = float(value)
             slope = np.asarray(slope, dtype=np.float64)
-        except (ValueError, FloatingPointError):
+        except (ValueError, FloatingPointError, RuntimeError):
             return strayed_point(z, anchor, held)
         if not np.isfinite(value) or not np.all(np.isfinite(slope)):
             return strayed_point(z, anchor, held)

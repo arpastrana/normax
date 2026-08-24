@@ -601,6 +601,29 @@ def test_a_trial_point_outside_the_model_is_walked_back_in():
     assert np.isfinite(answer.masses[-1])
 
 
+def test_a_runtime_error_from_a_compiled_solver_is_caught_too():
+    # The commonest way a frame fails is detected inside a compiled program and
+    # reported through a host callback, which surfaces as a runtime error and
+    # not as anything about a value. Catching the value errors alone left the
+    # real failure mode unhandled.
+    refused = {"count": 0}
+    inside = constrained_maps(summed, hyperbola)
+
+    def failing(x, multipliers, penalty, reference):
+        if float(x[0]) < 0.9:
+            refused["count"] += 1
+            raise RuntimeError("the linear solve returned a non-finite solution")
+
+        return inside.augmented(x, multipliers, penalty, reference)
+
+    maps = inside._replace(augmented=failing)
+    answer = descend_augmented(maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET)
+
+    assert refused["count"] > 0
+    assert float(answer.variables[0]) >= 0.9
+    assert np.isfinite(answer.masses[-1])
+
+
 def test_a_non_finite_objective_is_treated_as_outside_the_model():
     # A solver that reports a NaN rather than raising would otherwise poison
     # every curvature estimate taken after it.
