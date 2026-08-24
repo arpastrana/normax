@@ -20,25 +20,31 @@ makes that call cheaper, so a solver is worth swapping only if it asks for the
 call fewer times. SLSQP asked 4060 times on the 16x16 cap and still stopped at
 its iteration limit, which is the measurement this spike answers.
 
-Four drivers over the identical maps, from the identical start:
+Two drivers over the identical maps, from the identical start:
 
     SLSQP       scipy's dense active-set sequential quadratic program, the
                 incumbent every route in experiment 23 is descended by.
-    MMA         nlopt's method of moving asymptotes, the separable convex
-                approximation structural sizing is usually written against.
-    CCSA        nlopt's conservative convex separable approximation, MMA's
-                globally convergent sibling.
     augmented   an augmented Lagrangian whose rows are folded into the
                 objective before it is differentiated, so a gradient is one
                 reverse pass rather than a forward tangent per variable, then
                 a short SLSQP run from its landing for the certificate.
 
-The fourth is the only one that changes what is asked of the maps rather than
-how the answers are used. The other three all read `jacobian`, so none of them
-can be cheaper per iteration than the call that dominates the clock; folding
-the rows into the objective deletes the call instead. What it gives up is the
-solver's own stopping certificate, which the polish restores for the price of
-a handful of iterations.
+The second is the only one that changes what is asked of the maps rather than
+how the answers are used. Everything that reads `jacobian` is bounded below by
+the call that dominates the clock; folding the rows into the objective deletes
+the call instead. What it gives up is the solver's own stopping certificate,
+which the polish restores for the price of a handful of iterations.
+
+Two more are available behind `--separable`, and are off by default because
+the question they answered is closed:
+
+    MMA         nlopt's method of moving asymptotes, the separable convex
+                approximation structural sizing is usually written against.
+    CCSA        nlopt's conservative convex separable approximation, MMA's
+                globally convergent sibling.
+
+Both converge strictly inside the feasible region, which a fully-stressed
+optimum is not in.
 
 What is reported per driver: how many times each map was called, the wall
 clock, the mass reached, and the worst utilization the answer shows when it is
@@ -50,8 +56,15 @@ Only the end-to-end route is driven, and only from the nominal start. A
 multi-start comparison prices the landscape, and the landscape is not what is
 in question here.
 
+Any structural family can be driven, the profile being read out of whichever
+experiment exports one. The four drivers are not equally worth measuring on
+every family: the augmented one buys its advantage on the constraint Jacobian,
+which is the whole clock on a shell of five hundred members and a fraction of
+it on a truss of thirty, so a truss race prices the answer rather than the
+seconds.
+
 Run with `uv run --group pipeline --extra spike python
-experiments/24_mma_spike.py [gridshell_16.yaml]`.
+experiments/24_mma_spike.py [run.yaml] [profile.py]`.
 """
 
 import importlib.util
@@ -66,6 +79,7 @@ import nlopt
 import numpy as np
 import yaml
 from design_routes import ROUTE_FORMFOUND
+from design_routes import RouteProfile
 from design_routes import folding_maps
 from design_routes import prepare_problem
 from design_routes import read_answer
@@ -81,7 +95,7 @@ from normax.optimization import descend_augmented
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 
-# Where experiment 23 keeps the profile this spike drives.
+# The profile driven when a run names no other.
 EXPERIMENT = Path(__file__).with_name("23_gridshell_optimize.py")
 
 # Budgets the three drivers share. Evaluations rather than iterations, which
@@ -98,15 +112,21 @@ TOLERANCE_FEASIBILITY = 1.0e-6
 # turns out to have real work left from becoming the descent.
 POLISH_ITERATIONS = 300
 
+# Violation above which an augmented landing is refused rather than polished.
+POLISH_ADMISSION = 1.0e-3
+
 # What the run description is read for when it names no augmented budget. The
 # opening penalty is the one setting that decides the answer rather than the
-# speed, and a small one is what lets the search cross the infeasible region.
+# speed: a small one lets the search cross the infeasible region, and too small
+# a one leaves it there. **There is no value safe on every structure** — 0.01
+# wins on the 16x16 cap and lands the Vierendeel 75% overstressed — so the
+# default is the conservative end and a file wanting the fast one says so.
 AUGMENTED_DEFAULT = AugmentedBudget(
     rounds=10,
     iterations=400,
     settled=100,
     opening=3,
-    penalty=0.01,
+    penalty=0.1,
     growth=10.0,
     ceiling=1.0e8,
     tolerance=1.0e-6,
@@ -362,6 +382,45 @@ def drive_nlopt(
     return DriverCall(name, np.asarray(landed), seconds, dict(maps.calls), note)
 
 
+def named_profile(path: Path) -> RouteProfile:
+    """
+    The route profile an experiment exports, whichever family it describes.
+
+    Parameters
+    ----------
+    path :
+        The experiment script owning the profile.
+
+    Returns
+    -------
+    profile :
+        The structural family to drive.
+
+    Raises
+    ------
+    ValueError
+        If the script exports no profile, or more than one.
+
+    Notes
+    -----
+    Found by type rather than by name, so a spike driving a new family needs no
+    edit here and cannot be pointed at the wrong constant by a typo. A script
+    exporting two would make the choice silent, which is why it is refused.
+    """
+    spec = importlib.util.spec_from_file_location("profiled", path)
+    experiment = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(experiment)
+    exported = [
+        found for found in vars(experiment).values() if isinstance(found, RouteProfile)
+    ]
+    if len(exported) != 1:
+        raise ValueError(
+            f"{path.name} must export exactly one route profile, found {len(exported)}"
+        )
+
+    return exported[0]
+
+
 def augmented_budget(text: str) -> AugmentedBudget:
     """
     The augmented budget a run description names, or the measured default.
@@ -440,13 +499,22 @@ def drive_augmented(
     -----
     **The polish is part of the driver, not a second driver.** An augmented
     landing is stationary to whatever the outer loop reached and carries no
-    statement about it, where the other three stop on a criterion of their own;
-    running a constrained solver from the landing is what makes the four
+    statement about it, where the others stop on a criterion of their own;
+    running a constrained solver from the landing is what makes them
     comparable, and it is charged to this driver's clock and call counts.
 
     A polish that finds real work left to do is a signal about the outer loop
     rather than a rescue, so its iteration count is worth reading beside the
     round count in the note.
+
+    **A landing that never approached feasibility is refused, not polished.**
+    An opening penalty too weak for the structure leaves the descent inside
+    its own infeasible dive, holding a mass that no design supports, and a
+    constrained solver started from such a point does not repair it — it
+    wanders, and reports whatever it wandered to. Refusing keeps the driver's
+    row a statement about the augmented descent rather than about how far a
+    rescue happened to get, and the note says what was refused and by how
+    much.
     """
     start, boxes = seed
     programs = ConstrainedMaps(maps.augmented, maps.mass, maps.slack)
@@ -457,24 +525,29 @@ def drive_augmented(
     clock = time.perf_counter()
     try:
         found = descend_augmented(programs, opened, boxes, budget)
-        polished = minimize(
-            maps.weigh,
-            found.variables,
-            jac=True,
-            method="SLSQP",
-            bounds=boxes,
-            constraints=[held],
-            options=options,
-        )
-        landed = np.asarray(polished.x)
         rounds = int(found.violations.size) - 1
         stopped = "converged" if found.converged else "round budget"
-        note = (
-            f"{stopped} after {rounds} rounds, worst violation "
-            f"{found.violations[-1]:.1e}; polish {polished.nit} iterations, "
-            f"{polished.message}"
-        )
-    except (ValueError, FloatingPointError) as complaint:
+        reached = float(found.violations[-1])
+        opening = f"{stopped} after {rounds} rounds, worst violation {reached:.1e}"
+        if reached > POLISH_ADMISSION:
+            landed = np.asarray(found.variables)
+            note = (
+                f"{opening}; REFUSED, over the {POLISH_ADMISSION:.0e} the polish "
+                f"is admitted at — the opening penalty is too weak here"
+            )
+        else:
+            polished = minimize(
+                maps.weigh,
+                found.variables,
+                jac=True,
+                method="SLSQP",
+                bounds=boxes,
+                constraints=[held],
+                options=options,
+            )
+            landed = np.asarray(polished.x)
+            note = f"{opening}; polish {polished.nit} iterations, {polished.message}"
+    except (ValueError, FloatingPointError, RuntimeError) as complaint:
         landed = opened
         note = f"raised: {complaint}"
     seconds = time.perf_counter() - clock
@@ -488,7 +561,7 @@ def report_drivers(
     reads: dict[str, object],
 ) -> None:
     """
-    The four landings side by side, each read against every load case.
+    Every landing side by side, each read against every load case.
 
     Parameters
     ----------
@@ -531,7 +604,7 @@ def report_drivers(
     report.write_table(columns, rows)
 
 
-def main(path: Path) -> None:
+def main(path: Path, experiment: Path, separable: bool) -> None:
     """
     Prepare the end-to-end route once and hand it to each driver in turn.
 
@@ -539,14 +612,16 @@ def main(path: Path) -> None:
     ----------
     path :
         The YAML file describing the run.
+    experiment :
+        The experiment script exporting the profile to drive.
+    separable :
+        Whether to drive nlopt's two separable-approximation methods as well.
     """
-    spec = importlib.util.spec_from_file_location("experiment", EXPERIMENT)
-    experiment = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(experiment)
-    profile = experiment.GRIDSHELL_PROFILE
+    profile = named_profile(experiment)
 
+    family = profile.banner.split(" — ")[0]
     report = Report()
-    report.write_banner("Which solver reaches the end-to-end answer soonest")
+    report.write_banner(f"{family}: which solver reaches the end-to-end answer soonest")
 
     described = path.read_text()
     config = profile.parse_task(described)
@@ -557,7 +632,10 @@ def main(path: Path) -> None:
     problem = prepare_problem(structure, config, plan, folding_by)
 
     start = profile.signed_start(problem, config)
-    guard = profile.sign_guard(config, start)
+    if profile.sign_guard is None:
+        guard = None
+    else:
+        guard = profile.sign_guard(config, start)
     limits = profile.height_limits(config)
     maps = route_maps(problem, limits, config.descent.length_floor, guard)
     finder = problem.pipeline.formfinder
@@ -577,6 +655,8 @@ def main(path: Path) -> None:
         ("variables", f"{seed.size}"),
         ("inequality rows", f"{rows}"),
         ("load cases with rows", f"{len(held)} of {len(problem.case_names)}"),
+        ("described by", f"{path.name} through {experiment.name}"),
+        ("chord sign guard", "none" if guard is None else f"{guard.chords.size} rows"),
         ("evaluation budget", f"{EVALUATIONS}"),
         (
             "augmented budget",
@@ -584,16 +664,17 @@ def main(path: Path) -> None:
             f"{relaxed.iterations} inner iterations for {relaxed.opening}",
         ),
     )
-    report.write_heading("The problem all three are handed")
+    report.write_heading("The problem every driver is handed")
     report.write_entries(entries)
 
     resting = {"weigh": 0, "slack": 0, "jacobian": 0, "augmented": 0}
     drivers = []
     counted.calls.update(resting)
     drivers.append(drive_slsqp(counted, seed, box))
-    for name, algorithm in (("MMA", nlopt.LD_MMA), ("CCSA", nlopt.LD_CCSAQ)):
-        counted.calls.update(resting)
-        drivers.append(drive_nlopt(name, algorithm, counted, (seed, box)))
+    if separable:
+        for name, algorithm in (("MMA", nlopt.LD_MMA), ("CCSA", nlopt.LD_CCSAQ)):
+            counted.calls.update(resting)
+            drivers.append(drive_nlopt(name, algorithm, counted, (seed, box)))
     counted.calls.update(resting)
     drivers.append(drive_augmented(counted, (seed, box), relaxed))
 
@@ -609,7 +690,7 @@ def main(path: Path) -> None:
             problem, found.xyz, np.asarray(diameters), config.descent
         )
 
-    report.write_heading("The four drivers, from the same start")
+    report.write_heading(f"The {len(drivers)} drivers, from the same start")
     report_drivers(report, drivers, reads)
 
     report.write_heading("What each solver said")
@@ -618,5 +699,10 @@ def main(path: Path) -> None:
 
 if __name__ == "__main__":
     jnp.set_printoptions(precision=12)
-    described = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    main(described or Path(__file__).with_name("gridshell_16.yaml"))
+    given = [word for word in sys.argv[1:] if not word.startswith("-")]
+    asked = "--separable" in sys.argv[1:]
+    described = (
+        Path(given[0]) if given else Path(__file__).with_name("gridshell_16.yaml")
+    )
+    profiled = Path(given[1]) if len(given) > 1 else EXPERIMENT
+    main(described, profiled, asked)

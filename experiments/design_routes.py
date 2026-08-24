@@ -1102,12 +1102,26 @@ class RouteAnswer(NamedTuple):
         Iterations spent over every round.
     converged :
         Whether the last round reported clean convergence.
+    violations :
+        Worst violation over the rows at the end of every round, from a search
+        that reports one. None from a constrained solver, which holds the rows
+        itself and has none to report.
+
+    Notes
+    -----
+    **A mass without the violation beside it is not a design.** An augmented
+    descent reads its mass at points that may be far outside the constraints,
+    and a landing there can look far cheaper than any feasible answer — half
+    the mass, on a truss measured at a weak penalty. Carrying the column is
+    what lets a caller refuse such a landing instead of handing it on to
+    something that will treat it as a starting point.
     """
 
     variables: Float[np.ndarray, "variables"]
     masses: Float[np.ndarray, "steps"]
     iterations: int
     converged: bool
+    violations: Float[np.ndarray, "steps"] | None = None
 
 
 class RouteRead(NamedTuple):
@@ -2609,6 +2623,11 @@ def descend_route(
     instead — infeasible is the truthful reading of a structure that cannot
     stand — and the merit function walks the search back into the domain.
     Accepted iterates never sit there, so the Jacobian stays unguarded.
+
+    A failure detected inside a compiled program arrives through a host
+    callback and surfaces as a runtime error rather than as anything about a
+    value, so both are caught. Catching the value error alone leaves a frame
+    that will not factorize to return a finite and meaningless number.
     """
 
     def weighed(x):
@@ -2634,7 +2653,7 @@ def descend_route(
     def guarded_slack(x):
         try:
             return feasible(x)
-        except ValueError:
+        except (ValueError, RuntimeError):
             return np.full(rows, -RECOIL_SLACK)
 
     masses = [weighed(start)[0]]
@@ -2711,6 +2730,11 @@ def descend_augmented_route(
     mass in charge, and the search dives below every feasible design before
     the multipliers pull it back onto the surface. Only the last entry, with
     the violation beside it, is a design.
+
+    **The violation column travels with it, and a caller must read it.** An
+    opening penalty too weak for the structure leaves the descent inside that
+    dive rather than bringing it back, and the mass it reports there is a
+    design that does not stand. Nothing in the mass column says so.
     """
     if maps.augmented is None:
         raise ValueError("this route was built without an augmented map")
@@ -2719,7 +2743,11 @@ def descend_augmented_route(
     found = descend_augmented(programs, start, boxes, budget)
 
     return RouteAnswer(
-        found.variables, found.masses, found.evaluations, found.converged
+        found.variables,
+        found.masses,
+        found.evaluations,
+        found.converged,
+        found.violations,
     )
 
 
@@ -2827,7 +2855,7 @@ def descend_best(
         try:
             answer = descend_route(maps, point, boxes, budget)
             slack = float(np.min(np.asarray(maps.slack(jnp.asarray(answer.variables)))))
-        except (ValueError, FloatingPointError):
+        except (ValueError, FloatingPointError, RuntimeError):
             report.write_line(
                 f"  start {index + 1}/{len(points)} ({named}): left the domain"
             )

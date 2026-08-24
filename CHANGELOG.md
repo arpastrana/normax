@@ -2,6 +2,101 @@
 
 ## Unreleased
 
+### The trusses re-measured, and the opening penalty does not travel
+
+`experiments/24_mma_spike.py` reads its profile out of whichever experiment
+exports one, found by type rather than by name, so any structural family can be
+driven. nlopt's two separable methods moved behind `--separable` and are off by
+default, the question they answered being closed.
+
+**Experiment 18 had never been rerun after the objective was normalized, and
+its numbers move.** Experiment 19 had, and reproduces exactly.
+
+| Warren route | recorded | re-measured |
+|---|---|---|
+| end to end | 0.062123 | **0.061295** |
+| free heights | 0.067785 | **0.062401** |
+| sizing only | 0.111808 | 0.111808 |
+
+Both PASS. **The Warren headline is 45.2%, not the 44-48% on record**, and free
+heights trails end to end by **+1.81%** where it used to trail by nine. The
+whole of the movement is on the route with the longest tail and none of it on
+the route with no geometry to move, which is the same signature experiment 19
+showed. The Vierendeel stands at 0.122263 / 0.144921 / 0.430475 and 71.6%.
+
+**The augmented Lagrangian buys nothing on a truss, and this was predicted from
+the shapes before it was run.** Its advantage is the constraint Jacobian, and
+that call is the whole clock only when the frame is large:
+
+| | nodes | members | variables | rows | jacobian / augmented |
+|---|---|---|---|---|---|
+| Warren | 17 | 31 | 25 | 123 | 2.5x |
+| Vierendeel | 18 | 23 | 18 | 120 | 1.9x |
+| gridshell 16x16 | 257 | 496 | 54 | 1730 | 6.8x |
+
+At two to three times per evaluation against roughly twice the evaluations, it
+is 2-3x **slower** on both trusses. A truss race prices the answer, not the
+seconds.
+
+**The answer it reaches is the shipped answer, and cheaply.** At the settled
+penalty, the descent plus a 34-to-43 iteration polish reproduces experiment
+19's Vierendeel landing of **0.122263 t bit for bit in under a second**, and
+comes within 0.00% of experiment 18's Warren landing. Two Jacobian calls on the
+Warren against SLSQP's 174.
+
+**But the opening penalty does not travel, and there is no value that does.**
+Sweeping it from 1.0 to 0.003 against each shipped landing:
+
+| penalty | Warren, final | Vierendeel, final |
+|---|---|---|
+| 1.0 | 0.061327 | 0.122263 |
+| 0.3 | 0.061293 | 0.122263 |
+| 0.1 | 0.061297 | 0.122263 |
+| 0.03 | 0.061296 | refused, violation 9.9e-01 |
+| 0.01 | 0.061304 | refused, violation 9.9e-01 |
+| 0.003 | 0.061290 | refused, violation 9.8e-01 |
+
+The Warren is flat across the whole range, within 0.05% everywhere. The
+Vierendeel has a cliff between 0.1 and 0.03: below it the descent settles
+inside its own infeasible dive, holding a mass of 0.062 t — half the feasible
+answer — at a worst utilization of **1.75**. **The mechanism that wins on the
+shell is the mechanism that fails here**, and the same 0.01 that lands the
+16x16 cap at 0.073 t leaves a nine-member truss 75% overstressed. The default
+is now the conservative 0.1 and `gridshell_16.yaml` names its own 0.01, so the
+fast setting is opted into rather than inherited.
+
+**Three guard defects, found by running it rather than by reading it.** The
+sweep first reported a Vierendeel landing of 2.07e+12 t, and it took all three
+to produce that number.
+
+- **`RuntimeError` was not caught.** A frame that will not factorize is
+  detected inside a compiled program and reported through a host callback, and
+  what surfaces from one is a runtime error, not anything about a value. Both
+  guards caught `ValueError` alone, so the commonest failure mode reached
+  neither of them — and the value it left behind was finite, so the non-finite
+  check had nothing to catch either.
+- **The violation column was dropped at the adapter.** `AugmentedAnswer`
+  carried it and `RouteAnswer` did not, so nothing downstream could see that a
+  landing was 99% infeasible before treating it as a starting point.
+  `RouteAnswer.violations` now carries it, `None` from a constrained solver
+  which has none to report.
+- **The polish was handed a start it could not use.** A constrained solver run
+  from a grossly infeasible point does not repair it, it wanders and reports
+  where it wandered to. A landing above `POLISH_ADMISSION` is now refused, and
+  the driver's row states the infeasibility instead of concealing it behind the
+  rescue.
+
+None of this moves the gridshell, whose landing never sat outside the
+constraints: 0.073017 t at max U 1.000000226 and 79 Jacobian calls, unchanged.
+
+**What is not established.** Only the end-to-end route has been driven this way
+on any structure; the other two carry augmented maps nothing has called. The
+settled penalty is bracketed between 0.1 and 0.03 on one truss and unbracketed
+on the other, and nothing here explains what sets it — a structure of 120 rows
+wanting ten times the penalty of one with 1730 is the opposite of what a sum
+over rows would suggest. Whether the cliff is the row count, the constraint
+families in play, or the length floor is unmeasured.
+
 ### The rows fold into the objective, and the descent stops needing a Jacobian
 
 The 16x16 end-to-end route is 54 variables against 1730 inequality rows — 992
