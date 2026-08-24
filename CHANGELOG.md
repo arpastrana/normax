@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+### The shell's free heights, run properly, and two things I wrote about it
+
+Two statements in *Free heights was losing to a single start* are wrong and are
+corrected here.
+
+**Wrong: "the gridshell's free-heights route has never been descended from five
+starts."** `gridshell_16.yaml` has carried `starts: 5` throughout. The stored
+0.125196 t was already the best of five, and the per-start lines were invisible
+only because a recalled answer prints none.
+
+**Wrong: the shell's advantage is "unquantified."** It was quantified at
++71.47% and flagged as under-converged, which is a different thing.
+
+**What the route actually does, five starts, three settings.** Free heights
+converged on all five starts in every setting; end to end converged on three of
+five in the two tight ones and had the rest repaired.
+
+| setting | end to end | free heights | sizing only | trails by | geometry |
+|---|---|---|---|---|---|
+| SLSQP, 1e-6 (shipped) | 0.073013 | 0.125196 | 0.126868 | +71.5% | 42.45% |
+| augmented, 1e-6 | 0.072971 | 0.121516 | 0.126626 | +66.5% | 42.37% |
+| SLSQP, 1e-9 | **0.072915** | **0.114312** | 0.126847 | **+56.8%** | 42.52% |
+
+**The trusses' conclusion does not transfer, and the shell's direction is not
+in doubt.** Given equal starts and a converged landing, free heights on the cap
+trails the form finder by **+56.8%** where on either truss it ties to within
+0.3%. The recorded +71.47% is the loose end of a range and overstates the gap
+by a quarter; +56.8% is the number the two routes reach when each is descended
+as far as it will go.
+
+**No single stopping rule converges both routes**, which is why the figure
+moves at all. Tightening from 1e-6 to 1e-9 takes free heights from 0.125196 to
+0.114312 — **8.7% it was leaving behind after stopping in 287 iterations** —
+and simultaneously costs end to end its nominal start, which lands 0.083263 t
+without converging and has to be repaired. The tight rule only reaches
+0.072915 t there because a scattered start does, in 3492 iterations. Two routes
+with tails of different length under one threshold, exactly as *The descent was
+stopping on a rule that could not be met* found for two problem sizes.
+
+**42.4% survives all of it, to a seventh of a point.** End to end against
+sizing only reads **42.45%**, **42.37%** and **42.52%** across the three
+settings, and 42.42% again taking each route's best landing from whichever
+setting found it. Two stopping rules and two methods span 0.14 points. That is
+the comparison the submission rests on, and it is now the best-tested number in
+the project.
+
+**Sizing only barely moves, and that is why the column holds.** Its geometry is
+written down and never varies, so the route is a pure sizing problem with a
+near-unique answer: 0.126626 to 0.126868 across everything, a spread of 0.19%,
+converging on every start in every setting and needing 151 to 306 iterations to
+do it. Whatever the stopping rule costs the two shaped routes, it costs the
+baseline nothing, so the ratio moves only as far as its numerator does.
+
+**The augmented method converged every start on all three shell routes**, which
+is the first time it has been asked for more than the end-to-end one. Its free
+heights is 2.9% lighter than the shipped SLSQP's and 6.3% heavier than the
+tight SLSQP's, so it is not the last word on that route either.
+
 ### Free heights was losing to a single start
 
 Both trusses are descended from five scattered starts instead of one, every
