@@ -78,8 +78,12 @@ import jax.numpy as jnp
 import nlopt
 import numpy as np
 import yaml
+from design_routes import AUGMENTED_DEFAULT
+from design_routes import POLISH_ADMISSION
+from design_routes import POLISH_ITERATIONS
 from design_routes import ROUTE_FORMFOUND
 from design_routes import RouteProfile
+from design_routes import augmented_budget
 from design_routes import folding_maps
 from design_routes import prepare_problem
 from design_routes import read_answer
@@ -106,32 +110,6 @@ TOLERANCE_RELATIVE = 1.0e-6
 # How far under one a converged answer must hold every utilization. The shared
 # flow's own feasibility bound, so a spike answer is judged as a run's is.
 TOLERANCE_FEASIBILITY = 1.0e-6
-
-# Iterations the polish after the augmented descent is allowed. A landing that
-# is already stationary needs a handful; the cap is what stops a polish that
-# turns out to have real work left from becoming the descent.
-POLISH_ITERATIONS = 300
-
-# Violation above which an augmented landing is refused rather than polished.
-POLISH_ADMISSION = 1.0e-3
-
-# What the run description is read for when it names no augmented budget. The
-# opening penalty is the one setting that decides the answer rather than the
-# speed: a small one lets the search cross the infeasible region, and too small
-# a one leaves it there. **There is no value safe on every structure** — 0.01
-# wins on the 16x16 cap and lands the Vierendeel 75% overstressed — so the
-# default is the conservative end and a file wanting the fast one says so.
-AUGMENTED_DEFAULT = AugmentedBudget(
-    rounds=10,
-    iterations=400,
-    settled=100,
-    opening=3,
-    penalty=0.1,
-    growth=10.0,
-    ceiling=1.0e8,
-    tolerance=1.0e-6,
-    quiet=1.0e-6,
-)
 
 
 class DriverCall(NamedTuple):
@@ -421,56 +399,6 @@ def named_profile(path: Path) -> RouteProfile:
     return exported[0]
 
 
-def augmented_budget(text: str) -> AugmentedBudget:
-    """
-    The augmented budget a run description names, or the measured default.
-
-    Parameters
-    ----------
-    text :
-        Text of the file describing the run.
-
-    Returns
-    -------
-    budget :
-        Rounds, inner iterations, the penalty schedule and the stopping rules.
-
-    Raises
-    ------
-    TypeError
-        If the section names a field that does not exist, or omits one it does.
-
-    Notes
-    -----
-    Read straight from the document rather than through `TaskConfig`, and this
-    is deliberate. A run description fingerprints the answers it is descended
-    to, and the fingerprint is taken over the parsed configuration; a section
-    the parser never sees therefore cannot orphan an answer already stored
-    against the same file by a different driver.
-
-    A section that is absent is not an error. This is a spike beside a shipped
-    flow, and a description written for that flow has no reason to carry a
-    budget for a driver it never calls.
-
-    Every field is cast on the way in. YAML reads an exponent without a signed
-    power as a string, so a ceiling written `1.0e8` would arrive as text and
-    first be noticed several rounds into a descent, where it is compared
-    against a penalty.
-    """
-    document = yaml.safe_load(text)
-    named = document.get("augmented")
-    if named is None:
-        return AUGMENTED_DEFAULT
-
-    counts = ("rounds", "iterations", "settled", "opening")
-    read = {key: int(value) for key, value in named.items() if key in counts}
-    read.update(
-        {key: float(value) for key, value in named.items() if key not in counts}
-    )
-
-    return AugmentedBudget(**read)
-
-
 def drive_augmented(
     maps: CountedMaps,
     seed: tuple[
@@ -625,7 +553,7 @@ def main(path: Path, experiment: Path, separable: bool) -> None:
 
     described = path.read_text()
     config = profile.parse_task(described)
-    relaxed = augmented_budget(described)
+    relaxed = augmented_budget(yaml.safe_load(described)) or AUGMENTED_DEFAULT
     structure = profile.build_structure(config)
     plan = profile.build_loads(structure, config)
     folding_by = folding_maps(profile, config, structure)

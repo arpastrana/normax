@@ -41,3 +41,19 @@ viewer:
   # Descend that one route alone, for iterating rather than reporting:
   # every comparison entry needs the routes it compares.
   solo_route: false
+
+# Budgets for `method: augmented`, read whether or not the method names it.
+# The opening penalty is the one setting that decides the answer rather than
+# the speed, and no value is safe on every structure — this truss is flat from
+# 1.0 to 0.003 where the Vierendeel is not, so the conservative end is kept.
+augmented:
+  rounds: 10
+  iterations: 400
+  settled: 100
+  opening: 3
+  penalty: 0.1
+  growth: 10.0
+  # Signed exponent, or YAML reads this as a string.
+  ceiling: 1.0e+8
+  tolerance: 1.0e-6
+  quiet: 1.0e-6
