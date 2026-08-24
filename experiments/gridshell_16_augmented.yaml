@@ -1,0 +1,74 @@
+# The 16x16 gridshell descended by the augmented Lagrangian, all three
+# routes from five starts. Backs the `augmented, 1e-6` row of the shell's
+# three-setting table and both gridshell landing spreads.
+structure:
+  num_rings: 16
+  num_spokes: 16
+  radius: 5000.0
+  rise: 2000.0
+  oculus: false
+  braced: false
+  # Fold the sections by the polar symmetry as well as the mirror: one
+  # diameter per ring per family, a fabrication constraint the drift cases
+  # cannot argue with.
+  polar_diameters: true
+  polar_heights: true
+  guard_hoops: false
+
+loads:
+  pressure: 1.0e-3
+  sector_spokes: 3
+  sector_center: 3
+  drift_factor: 0.5
+  asymmetric_cases: true
+
+subspace:
+  symmetric: true
+  basis: svd
+  margin_fraction: 0.01
+
+analysis:
+  diameter: 100.0
+
+descent:
+  method: augmented
+  iterations: 1000
+  rounds: 5
+  # Relative to the mass at the start, which is what SLSQP's own test
+  # compares against once the objective is normalized.
+  tolerance: 1.0e-6
+  diameter_floor: 21.3
+  length_floor: 0.0
+  starts: 5
+  scatter: 0.15
+  # Read a stored answer back instead of descending to it again. Every run
+  # writes its answers whatever this says; only reading them is a decision.
+  reuse_answers: false
+  limit_rise: true
+  rise_factor: 1.0
+  limit_sag: true
+  sag_factor: 0.0
+
+viewer:
+  enabled: false
+  route: end to end
+  solo_route: false
+
+# Read by experiment 24's augmented driver alone, and deliberately outside the
+# sections `parse_shell` reads: an answer already stored against this file
+# stays findable, its fingerprint being taken over the parsed configuration.
+augmented:
+  rounds: 10
+  # Inner iterations while the search is still choosing a basin.
+  iterations: 400
+  # And once it is only repairing the rows.
+  settled: 100
+  opening: 3
+  # The one setting that decides the answer rather than the speed. Small, so
+  # the mass leads and the search crosses the infeasible region.
+  penalty: 0.01
+  growth: 10.0
+  # Signed exponent, or YAML reads this as a string.
+  ceiling: 1.0e+8
+  tolerance: 1.0e-6
+  quiet: 1.0e-6

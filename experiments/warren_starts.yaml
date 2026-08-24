@@ -1,0 +1,61 @@
+# The Warren from five scattered starts rather than one, every
+# route. Backs the landing spreads, and the fact that giving free heights
+# five times the compute is what turns the form finder's margin into a tie.
+structure:
+  num_bays: 8
+  span: 10000.0
+  depth: 1000.0
+
+loads:
+  total: 180000.0
+  half_factor: 0.5
+  point_factor: 0.5
+  mirrored_case: false
+
+sketch:
+  sag_lens: 600.0
+  rise_lens: 800.0
+
+subspace:
+  symmetric: true
+  basis: svd
+  margin_fraction: 0.1
+
+analysis:
+  diameter: 100.0
+
+descent:
+  iterations: 1000
+  rounds: 5
+  tolerance: 1.0e-9
+  diameter_floor: 21.3
+  length_floor: 500.0
+  starts: 5
+  scatter: 0.15
+  limit_rise: true
+  rise_factor: 2.0
+  limit_sag: true
+  sag_factor: 1.0
+
+viewer:
+  enabled: false
+  route: end to end
+  # Descend that one route alone, for iterating rather than reporting:
+  # every comparison entry needs the routes it compares.
+  solo_route: false
+
+# Budgets for `method: augmented`, read whether or not the method names it.
+# The opening penalty is the one setting that decides the answer rather than
+# the speed, and no value is safe on every structure — this truss is flat from
+# 1.0 to 0.003 where the Vierendeel is not, so the conservative end is kept.
+augmented:
+  rounds: 10
+  iterations: 400
+  settled: 100
+  opening: 3
+  penalty: 0.1
+  growth: 10.0
+  # Signed exponent, or YAML reads this as a string.
+  ceiling: 1.0e+8
+  tolerance: 1.0e-6
+  quiet: 1.0e-6
