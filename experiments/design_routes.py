@@ -67,6 +67,10 @@ from normax.loads import assemble_load_cases
 from normax.loads import create_loads_point
 from normax.loads import create_loads_tributary
 from normax.materials import Steel355
+from normax.optimization import AugmentedBudget
+from normax.optimization import ConstrainedMaps
+from normax.optimization import augmented_penalty
+from normax.optimization import descend_augmented
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
@@ -1046,9 +1050,23 @@ class RouteMaps(NamedTuple):
     repair :
         Grower of the diameters of a landing that missed feasibility, or None
         from a route that offers no repair.
+    augmented :
+        The mass and the rows as one scalar, with its gradient — the same
+        route read by an augmented Lagrangian instead of by a constrained
+        solver, and the multipliers, the penalty and the reference mass are
+        arguments of it rather than constants inside it.
 
     Notes
     -----
+    **The augmented map is the same route at a different derivative price.**
+    A constrained solver reads `slack` and `jacobian`, which is one forward
+    tangent per variable through the whole pipeline; the augmented map folds
+    the rows into the objective before anything is differentiated, so a
+    gradient is one reverse pass whatever the constraint set. On a frame with
+    a row per member per load case that is most of the cost of a search. What
+    it gives up is the solver's own convergence certificate, which a short run
+    of `descend_route` from its landing restores.
+
     **A repair is not a relaxation.** A landing that stops short of the
     constraints is cheaper than a feasible one by construction, so accepting
     it would bias every reported mass downward by an amount nothing bounds.
@@ -1067,6 +1085,7 @@ class RouteMaps(NamedTuple):
     slack: object
     jacobian: object
     repair: object = None
+    augmented: object = None
 
 
 class RouteAnswer(NamedTuple):
@@ -2024,6 +2043,48 @@ def envelope_diameters(
     return np.maximum(diameters, floor)
 
 
+def augmented_route(
+    weigh: Callable[[Float[Array, "variables"]], Float[Array, ""]],
+    slack: Callable[[Float[Array, "variables"]], Float[Array, "constraints"]],
+) -> object:
+    """
+    A route's mass and rows as one scalar, compiled with its gradient.
+
+    Parameters
+    ----------
+    weigh :
+        The mass at a variable vector, untraced and unjitted.
+    slack :
+        How far above zero every inequality row sits, untraced and unjitted.
+
+    Returns
+    -------
+    augmented :
+        Value and gradient of the augmented objective, taking the multipliers,
+        the penalty and the reference mass beside the variables.
+
+    Notes
+    -----
+    Built from the two maps before either is compiled, because the whole saving
+    is that the aggregation happens inside one traced program: a jitted `slack`
+    handed to an outer loop that penalizes it afterwards is differentiated row
+    by row again.
+
+    The mass is divided through by a reference so that the penalty and the
+    objective share a scale. Without it the penalty parameter would have to be
+    quoted in tonnes and would mean something different on every structure.
+    """
+
+    def augmented(x, multipliers, penalty, reference):
+        mass = weigh(x)
+        rows = slack(x)
+        penalized = augmented_penalty(rows, multipliers, penalty)
+
+        return mass / reference + penalized
+
+    return jax.jit(jax.value_and_grad(augmented))
+
+
 def formfound_maps(
     problem: RouteProblem,
     limits: HeightTruss,
@@ -2158,6 +2219,7 @@ def formfound_maps(
         jax.jit(slack),
         jax.jit(jax.jacfwd(slack)),
         repair,
+        augmented_route(weigh, slack),
     )
 
     return maps
@@ -2247,6 +2309,8 @@ def heights_maps(problem: RouteProblem, length_floor: float) -> RouteMaps:
         jax.jit(jax.value_and_grad(weigh)),
         jax.jit(slack),
         jax.jit(jax.jacfwd(slack)),
+        None,
+        augmented_route(weigh, slack),
     )
 
     return maps
@@ -2295,6 +2359,8 @@ def drawn_maps(problem: RouteProblem) -> RouteMaps:
         jax.jit(jax.value_and_grad(weigh)),
         jax.jit(slack),
         jax.jit(jax.jacfwd(slack)),
+        None,
+        augmented_route(weigh, slack),
     )
 
     return maps
@@ -2600,6 +2666,61 @@ def descend_route(
             break
 
     return RouteAnswer(x, np.asarray(masses), spent, converged)
+
+
+def descend_augmented_route(
+    maps: RouteMaps,
+    start: Float[np.ndarray, "variables"],
+    boxes: list[tuple[float | None, float | None]],
+    budget: AugmentedBudget,
+) -> RouteAnswer:
+    """
+    An augmented Lagrangian descent of one route, in the shared record.
+
+    Parameters
+    ----------
+    maps :
+        The route's compiled maps, whose augmented program is the one called.
+    start :
+        The variable vector to leave from.
+    boxes :
+        One bound pair per variable.
+    budget :
+        Rounds, inner iterations, the penalty schedule and the stopping rules.
+
+    Returns
+    -------
+    answer :
+        The variables, the mass at the end of every round, and how it ended.
+
+    Raises
+    ------
+    ValueError
+        If the route was built without an augmented map.
+
+    Notes
+    -----
+    **The iteration count is objective evaluations, not solver iterations.**
+    An outer round is not comparable with an SLSQP iteration — it costs one
+    reverse pass per evaluation where an SLSQP iteration costs a forward
+    tangent per variable — so the record carries the number that prices the
+    descent rather than the one that would flatter it.
+
+    The mass column is one entry per round, not per iterate, and its early
+    entries are read at infeasible points: a small opening penalty leaves the
+    mass in charge, and the search dives below every feasible design before
+    the multipliers pull it back onto the surface. Only the last entry, with
+    the violation beside it, is a design.
+    """
+    if maps.augmented is None:
+        raise ValueError("this route was built without an augmented map")
+
+    programs = ConstrainedMaps(maps.augmented, maps.weigh, maps.slack)
+    found = descend_augmented(programs, start, boxes, budget)
+
+    return RouteAnswer(
+        found.variables, found.masses, found.evaluations, found.converged
+    )
 
 
 def scattered_points(

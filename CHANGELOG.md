@@ -2,6 +2,121 @@
 
 ## Unreleased
 
+### The rows fold into the objective, and the descent stops needing a Jacobian
+
+The 16x16 end-to-end route is 54 variables against 1730 inequality rows — 992
+utilization, 241 rise, 241 sag, 256 chord signs. Instrumented from the nominal
+start, the shipped SLSQP descent spends 463 s over 1337 iterations to reach
+0.101439 t, and the constraint Jacobian is **82.5% of that clock**: 1329 calls
+at 288 ms each, against 31 ms for the rows themselves and 5 ms for the mass and
+its gradient. The forward pass is one dense Cholesky of a 1500-square frame;
+form finding is 1.5 ms of it and the code check 0.01 ms.
+
+**Three cheaper explanations were measured and are not the problem.**
+
+- *Rescaling.* At the start the Jacobian's column norms spread 5.2x, its
+  condition number is 24, and the variables run 2.4 to 88. There is nothing to
+  fix. Normalizing the objective was the scaling that mattered and it already
+  landed.
+- *Tolerances.* SLSQP does not stop early or late, it breaks down: rounds of
+  606 and 700 iterations exit on `Positive directional derivative for
+  linesearch`, the quadratic subproblem handing back an uphill direction.
+- *Restart cadence.* Restarting more often does not rescue it. `iterations 100`
+  over `rounds 12` spends 492 s and ends **infeasible by 3.2e-3**, worse than
+  the shipped setting on both counts.
+
+**The Jacobian is not expensive because of the solver, it is expensive because
+of what is asked for.** Forward mode over 54 variables materializes 54 dense
+stiffness tangents; a scalar objective over the same graph needs one reverse
+pass. Folding the rows into the objective before anything is differentiated
+therefore prices a gradient at **26 ms against 288 ms**, and the price stops
+depending on the variable count at all.
+
+**A plain penalty cannot be used here and an augmented Lagrangian can.** A
+fully-stressed optimum sits entirely on `U = 1`, and a penalty reaches a
+boundary only in the limit — the same objection recorded under *MMA and CCSA
+are the wrong shape for a fully-stressed design*. The shift removes it: at zero
+slack the derivative in a row is minus its own multiplier whatever the penalty,
+so first-order optimality of the original problem is recovered at a finite one.
+`augmented_penalty`, `shifted_multipliers` and `descend_augmented` live in
+`normax.optimization`; `RouteMaps` carries an `augmented` program built by
+`augmented_route` from the un-jitted `weigh` and `slack`, because the whole
+saving is that the aggregation happens inside one traced program.
+
+**Experiment 24 gains it as a fourth driver**, one shot each over identical maps
+from the identical start, every landing read back against every load case.
+
+| driver | seconds | jacobian calls | mass [t] | max U | feasible |
+|---|---|---|---|---|---|
+| SLSQP | 58.3 | 602 | 0.104553 | 1.001108549 | NO |
+| MMA | 319.7 | 3000 | 0.132966 | 0.993881778 | yes |
+| CCSA | 47.7 | 508 | 0.131758 | 0.993645903 | yes |
+| augmented | 60.1 | 79 | **0.073017** | 1.000000226 | yes |
+
+The 79 are the polish. The descent itself asks for no Jacobian, and the
+landing matches the shipped five-round five-start record of 0.073013 t to
+0.005% from one start.
+
+**Which overturns that section's closing line, *not pursued further*.** The
+case for a solver swap did rest on the iteration count, and the iteration count
+was the stopping rule — but nothing there asked whether the call itself was
+necessary. It is not.
+
+**Single nominal start, descent plus a two-round polish**, against the shipped
+descent from the same point:
+
+| | mass [t] | wall | feasibility |
+|---|---|---|---|
+| SLSQP, five rounds | 0.101439 | 463 s | 6.4e-08 |
+| augmented, ten rounds + polish | **0.072971** | 55-83 s | 2.9e-07 |
+
+**Scattering earns nothing here.** Five starts under the same budget land
+0.072971, 0.075172, 0.075242, 0.075710, 0.075714, and the nominal is the best
+of them by 3.0% — where SLSQP from the nominal alone is 39% off its own
+best-of-five. The infeasible path is what does the work a scattered start was
+standing in for: at an opening penalty of 0.01 the first round dives to 0.069
+t at a violation of 0.744 before the multipliers pull it back, and a method
+confined to near-feasible points never sees that basin. Only the utilization
+rows are violated on the excursion — the rise, sag and chord-sign rows hold
+throughout, and the rows never failed to evaluate — but the form-finding
+stiffness does degrade there, from 241 of 241 negative at condition 4.7e2 to
+238 of 241 at 1.8e4, because the guard covers the 256 chords and not the hoops.
+
+**The driver is hardened against that rather than trusting it.** A trial point
+that cannot be evaluated — a frame that will not factorize, a form-finding
+system gone indefinite — is charged a distant quadratic centred on the last
+point that could, which no line search prefers and whose descent direction
+points back inside; a non-finite value or gradient is treated identically,
+since a solver reporting NaN rather than raising would poison every curvature
+estimate after it. Multipliers are floored at zero by the sign condition and
+capped at a ceiling against one badly conditioned round. Opening rounds are
+solved to precision and later ones only as accurately as the violation they
+inherited, which is where 25 s of a 74 s prototype went.
+
+**`DescentConfig` is deliberately untouched.** `descent_digest` fingerprints
+the parsed configuration, so one new key would orphan every stored answer,
+`designs/492e4e30a7606d37.npz` included. The budget is a top-level `augmented:`
+section the shell parser never reads; the 16x16 digest is unchanged and its
+stored answer still resolves. Wiring the choice into the run descriptions as a
+`method` key does move the digest and is not done here.
+
+**One YAML trap, caught in the build.** `ceiling: 1.0e8` loads as a string —
+YAML 1.1 wants a signed exponent — and would have surfaced several rounds into
+a descent as a comparison between a penalty and a piece of text. The file says
+`1.0e+8` and `augmented_budget` casts every field on the way in.
+
+**What is not yet established.** The augmented descent stops on its round
+budget rather than its own convergence test, worst violation 2.5e-5 against a
+1e-6 tolerance, and the polish then does real work — 147 iterations for 0.23%
+of the mass — so the split between the two is a budget decision and not yet a
+certificate. Two of the five scattered starts land infeasible at 3.8e-5 and
+7.4e-4 because the polish reaches its 300-iteration cap. Only the end-to-end
+route on the 16x16 cap has been descended this way; the other two routes carry
+augmented maps that nothing has called, and the truss profiles are untested
+under it. Wall clock for one identical descent measured 55 s and 83 s in two
+runs that agree on the landing to six decimals, which is the timing variance
+already on record rather than a new one.
+
 ### Why free heights loses, in three wrong answers and one right one
 
 The free-heights route, given a strict superset of the search space, eight times

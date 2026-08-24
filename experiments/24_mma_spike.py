@@ -20,7 +20,7 @@ makes that call cheaper, so a solver is worth swapping only if it asks for the
 call fewer times. SLSQP asked 4060 times on the 16x16 cap and still stopped at
 its iteration limit, which is the measurement this spike answers.
 
-Three drivers over the identical maps, from the identical start:
+Four drivers over the identical maps, from the identical start:
 
     SLSQP       scipy's dense active-set sequential quadratic program, the
                 incumbent every route in experiment 23 is descended by.
@@ -28,6 +28,17 @@ Three drivers over the identical maps, from the identical start:
                 approximation structural sizing is usually written against.
     CCSA        nlopt's conservative convex separable approximation, MMA's
                 globally convergent sibling.
+    augmented   an augmented Lagrangian whose rows are folded into the
+                objective before it is differentiated, so a gradient is one
+                reverse pass rather than a forward tangent per variable, then
+                a short SLSQP run from its landing for the certificate.
+
+The fourth is the only one that changes what is asked of the maps rather than
+how the answers are used. The other three all read `jacobian`, so none of them
+can be cheaper per iteration than the call that dominates the clock; folding
+the rows into the objective deletes the call instead. What it gives up is the
+solver's own stopping certificate, which the polish restores for the price of
+a handful of iterations.
 
 What is reported per driver: how many times each map was called, the wall
 clock, the mass reached, and the worst utilization the answer shows when it is
@@ -53,6 +64,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import nlopt
 import numpy as np
+import yaml
 from design_routes import ROUTE_FORMFOUND
 from design_routes import folding_maps
 from design_routes import prepare_problem
@@ -63,6 +75,9 @@ from design_routes import route_starts
 from jaxtyping import Float
 from scipy.optimize import minimize
 
+from normax.optimization import AugmentedBudget
+from normax.optimization import ConstrainedMaps
+from normax.optimization import descend_augmented
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 
@@ -77,6 +92,26 @@ TOLERANCE_RELATIVE = 1.0e-6
 # How far under one a converged answer must hold every utilization. The shared
 # flow's own feasibility bound, so a spike answer is judged as a run's is.
 TOLERANCE_FEASIBILITY = 1.0e-6
+
+# Iterations the polish after the augmented descent is allowed. A landing that
+# is already stationary needs a handful; the cap is what stops a polish that
+# turns out to have real work left from becoming the descent.
+POLISH_ITERATIONS = 300
+
+# What the run description is read for when it names no augmented budget. The
+# opening penalty is the one setting that decides the answer rather than the
+# speed, and a small one is what lets the search cross the infeasible region.
+AUGMENTED_DEFAULT = AugmentedBudget(
+    rounds=10,
+    iterations=400,
+    settled=100,
+    opening=3,
+    penalty=0.01,
+    growth=10.0,
+    ceiling=1.0e8,
+    tolerance=1.0e-6,
+    quiet=1.0e-6,
+)
 
 
 class DriverCall(NamedTuple):
@@ -116,13 +151,29 @@ class CountedMaps(NamedTuple):
         How far under one every utilization sits, and the other held rows.
     jacobian :
         The slack's derivative in every variable.
+    augmented :
+        The mass and the rows as one scalar, with its gradient.
+    mass :
+        The mass and its gradient in the structure's own units, which is what
+        an augmented objective is scaled by and what a round of it reports.
     calls :
-        The running count, shared by all three and reset between drivers.
+        The running count, shared by all five and reset between drivers.
+
+    Notes
+    -----
+    **`weigh` is normalized and `mass` is not, and both are counted the same.**
+    The three solvers that read a Jacobian are all held to one relative
+    tolerance, which needs a normalized objective; an augmented objective does
+    its own scaling inside the traced program and needs the real mass to scale
+    by. They are two readings of one call, so both count under `weigh` and no
+    driver is charged for a conversion another was spared.
     """
 
     weigh: Callable[[Float[np.ndarray, "variables"]], tuple[float, np.ndarray]]
     slack: Callable[[Float[np.ndarray, "variables"]], np.ndarray]
     jacobian: Callable[[Float[np.ndarray, "variables"]], np.ndarray]
+    augmented: Callable[..., tuple[float, np.ndarray]]
+    mass: Callable[[Float[np.ndarray, "variables"]], tuple[float, np.ndarray]]
     calls: dict[str, int]
 
 
@@ -152,7 +203,7 @@ def counted_maps(maps, start: Float[np.ndarray, "variables"]) -> CountedMaps:
     three and none of them is measured against a stopping rule the others were
     not held to.
     """
-    calls = {"weigh": 0, "slack": 0, "jacobian": 0}
+    calls = {"weigh": 0, "slack": 0, "jacobian": 0, "augmented": 0}
     reference = abs(float(maps.weigh(jnp.asarray(start))[0])) or 1.0
 
     def weigh(x):
@@ -172,7 +223,19 @@ def counted_maps(maps, start: Float[np.ndarray, "variables"]) -> CountedMaps:
 
         return np.asarray(maps.jacobian(jnp.asarray(x)), dtype=np.float64)
 
-    return CountedMaps(weigh, slack, jacobian, calls)
+    def mass(x):
+        calls["weigh"] += 1
+        value, slope = maps.weigh(jnp.asarray(x))
+
+        return float(value), np.asarray(slope, dtype=np.float64)
+
+    def augmented(x, multipliers, penalty, scale):
+        calls["augmented"] += 1
+        value, slope = maps.augmented(jnp.asarray(x), multipliers, penalty, scale)
+
+        return float(value), np.asarray(slope, dtype=np.float64)
+
+    return CountedMaps(weigh, slack, jacobian, augmented, mass, calls)
 
 
 def drive_slsqp(
@@ -299,13 +362,133 @@ def drive_nlopt(
     return DriverCall(name, np.asarray(landed), seconds, dict(maps.calls), note)
 
 
+def augmented_budget(text: str) -> AugmentedBudget:
+    """
+    The augmented budget a run description names, or the measured default.
+
+    Parameters
+    ----------
+    text :
+        Text of the file describing the run.
+
+    Returns
+    -------
+    budget :
+        Rounds, inner iterations, the penalty schedule and the stopping rules.
+
+    Raises
+    ------
+    TypeError
+        If the section names a field that does not exist, or omits one it does.
+
+    Notes
+    -----
+    Read straight from the document rather than through `TaskConfig`, and this
+    is deliberate. A run description fingerprints the answers it is descended
+    to, and the fingerprint is taken over the parsed configuration; a section
+    the parser never sees therefore cannot orphan an answer already stored
+    against the same file by a different driver.
+
+    A section that is absent is not an error. This is a spike beside a shipped
+    flow, and a description written for that flow has no reason to carry a
+    budget for a driver it never calls.
+
+    Every field is cast on the way in. YAML reads an exponent without a signed
+    power as a string, so a ceiling written `1.0e8` would arrive as text and
+    first be noticed several rounds into a descent, where it is compared
+    against a penalty.
+    """
+    document = yaml.safe_load(text)
+    named = document.get("augmented")
+    if named is None:
+        return AUGMENTED_DEFAULT
+
+    counts = ("rounds", "iterations", "settled", "opening")
+    read = {key: int(value) for key, value in named.items() if key in counts}
+    read.update(
+        {key: float(value) for key, value in named.items() if key not in counts}
+    )
+
+    return AugmentedBudget(**read)
+
+
+def drive_augmented(
+    maps: CountedMaps,
+    seed: tuple[
+        Float[np.ndarray, "variables"], list[tuple[float | None, float | None]]
+    ],
+    budget: AugmentedBudget,
+) -> DriverCall:
+    """
+    The augmented Lagrangian, then a short constrained polish.
+
+    Parameters
+    ----------
+    maps :
+        The counted maps.
+    seed :
+        The variable vector to leave from, and one bound pair per variable.
+    budget :
+        Rounds, inner iterations, the penalty schedule and the stopping rules.
+
+    Returns
+    -------
+    call :
+        Where it landed and what it spent, the polish included.
+
+    Notes
+    -----
+    **The polish is part of the driver, not a second driver.** An augmented
+    landing is stationary to whatever the outer loop reached and carries no
+    statement about it, where the other three stop on a criterion of their own;
+    running a constrained solver from the landing is what makes the four
+    comparable, and it is charged to this driver's clock and call counts.
+
+    A polish that finds real work left to do is a signal about the outer loop
+    rather than a rescue, so its iteration count is worth reading beside the
+    round count in the note.
+    """
+    start, boxes = seed
+    programs = ConstrainedMaps(maps.augmented, maps.mass, maps.slack)
+    held = {"type": "ineq", "fun": maps.slack, "jac": maps.jacobian}
+    options = {"maxiter": POLISH_ITERATIONS, "ftol": TOLERANCE_RELATIVE}
+    opened = np.asarray(start, dtype=np.float64)
+
+    clock = time.perf_counter()
+    try:
+        found = descend_augmented(programs, opened, boxes, budget)
+        polished = minimize(
+            maps.weigh,
+            found.variables,
+            jac=True,
+            method="SLSQP",
+            bounds=boxes,
+            constraints=[held],
+            options=options,
+        )
+        landed = np.asarray(polished.x)
+        rounds = int(found.violations.size) - 1
+        stopped = "converged" if found.converged else "round budget"
+        note = (
+            f"{stopped} after {rounds} rounds, worst violation "
+            f"{found.violations[-1]:.1e}; polish {polished.nit} iterations, "
+            f"{polished.message}"
+        )
+    except (ValueError, FloatingPointError) as complaint:
+        landed = opened
+        note = f"raised: {complaint}"
+    seconds = time.perf_counter() - clock
+
+    return DriverCall("augmented", landed, seconds, dict(maps.calls), note)
+
+
 def report_drivers(
     report: Report,
     calls: list[DriverCall],
     reads: dict[str, object],
 ) -> None:
     """
-    The three landings side by side, each read against every load case.
+    The four landings side by side, each read against every load case.
 
     Parameters
     ----------
@@ -322,6 +505,7 @@ def report_drivers(
         ReportColumn("weigh"),
         ReportColumn("slack"),
         ReportColumn("jacobian"),
+        ReportColumn("augmented"),
         ReportColumn("mass [t]", ".6f"),
         ReportColumn("max U", ".9f"),
         ReportColumn("feasible", align="<"),
@@ -337,6 +521,7 @@ def report_drivers(
                 call.calls["weigh"],
                 call.calls["slack"],
                 call.calls["jacobian"],
+                call.calls["augmented"],
                 read.mass,
                 float(read.utilization.max()),
                 "yes" if violation <= TOLERANCE_FEASIBILITY else "NO",
@@ -363,7 +548,9 @@ def main(path: Path) -> None:
     report = Report()
     report.write_banner("Which solver reaches the end-to-end answer soonest")
 
-    config = profile.parse_task(path.read_text())
+    described = path.read_text()
+    config = profile.parse_task(described)
+    relaxed = augmented_budget(described)
     structure = profile.build_structure(config)
     plan = profile.build_loads(structure, config)
     folding_by = folding_maps(profile, config, structure)
@@ -391,16 +578,24 @@ def main(path: Path) -> None:
         ("inequality rows", f"{rows}"),
         ("load cases with rows", f"{len(held)} of {len(problem.case_names)}"),
         ("evaluation budget", f"{EVALUATIONS}"),
+        (
+            "augmented budget",
+            f"{relaxed.rounds} rounds, opening penalty {relaxed.penalty:g}, "
+            f"{relaxed.iterations} inner iterations for {relaxed.opening}",
+        ),
     )
     report.write_heading("The problem all three are handed")
     report.write_entries(entries)
 
+    resting = {"weigh": 0, "slack": 0, "jacobian": 0, "augmented": 0}
     drivers = []
-    counted.calls.update({"weigh": 0, "slack": 0, "jacobian": 0})
+    counted.calls.update(resting)
     drivers.append(drive_slsqp(counted, seed, box))
     for name, algorithm in (("MMA", nlopt.LD_MMA), ("CCSA", nlopt.LD_CCSAQ)):
-        counted.calls.update({"weigh": 0, "slack": 0, "jacobian": 0})
+        counted.calls.update(resting)
         drivers.append(drive_nlopt(name, algorithm, counted, (seed, box)))
+    counted.calls.update(resting)
+    drivers.append(drive_augmented(counted, (seed, box), relaxed))
 
     width = int(finder.basis.shape[1])
     spread = problem.folding.diameters
@@ -414,7 +609,7 @@ def main(path: Path) -> None:
             problem, found.xyz, np.asarray(diameters), config.descent
         )
 
-    report.write_heading("The three drivers, from the same start")
+    report.write_heading("The four drivers, from the same start")
     report_drivers(report, drivers, reads)
 
     report.write_heading("What each solver said")

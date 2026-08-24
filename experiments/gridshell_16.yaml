@@ -50,3 +50,22 @@ viewer:
   enabled: false
   route: end to end
   solo_route: false
+
+# Read by experiment 24's augmented driver alone, and deliberately outside the
+# sections `parse_shell` reads: an answer already stored against this file
+# stays findable, its fingerprint being taken over the parsed configuration.
+augmented:
+  rounds: 10
+  # Inner iterations while the search is still choosing a basin.
+  iterations: 400
+  # And once it is only repairing the rows.
+  settled: 100
+  opening: 3
+  # The one setting that decides the answer rather than the speed. Small, so
+  # the mass leads and the search crosses the infeasible region.
+  penalty: 0.01
+  growth: 10.0
+  # Signed exponent, or YAML reads this as a string.
+  ceiling: 1.0e+8
+  tolerance: 1.0e-6
+  quiet: 1.0e-6
