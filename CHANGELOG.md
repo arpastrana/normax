@@ -2,6 +2,107 @@
 
 ## Unreleased
 
+### Free heights was losing to a single start
+
+Both trusses are descended from five scattered starts instead of one, every
+route, both methods. The routes' masses barely move. The **gap between** them
+collapses.
+
+| Warren | SLSQP, 5 starts | augmented, 5 starts | shipped, 1 start |
+|---|---|---|---|
+| end to end | 0.061295 | 0.061292 | 0.061295 |
+| free heights | 0.061490 | 0.061296 | 0.062401 |
+| sizing only | 0.111808 | 0.111808 | 0.111808 |
+
+| Vierendeel | SLSQP, 5 starts | augmented, 5 starts | shipped, 1 start |
+|---|---|---|---|
+| end to end | 0.122263 | 0.122263 | 0.122263 |
+| free heights | **0.122467** | 0.151732 | 0.144921 |
+| sizing only | 0.430472 | 0.421942 | 0.430475 |
+
+**The Vierendeel's recorded `free heights vs end to end +18.53%` is an
+artifact of descending from one point.** Its fifth start lands free heights at
+0.122467 t, which trails the form finder by **+0.17%**. On the Warren the
+recorded +1.81% becomes **+0.32%**, and under the augmented method **+0.01%**.
+On these two trusses, given equal starts, writing the geometry down and
+form-finding it reach the same design.
+
+**What does not move is the ratio the submission rests on.** End to end
+against sizing only is **45.2%** on the Warren under either method and either
+start count, and 71.6% on the Vierendeel under SLSQP. That comparison is
+between a route that may move the geometry and one that may not, and it
+survives everything here. The route-against-route comparison does not.
+
+**This is measured on the trusses and says nothing yet about the shell.** The
+gridshell's free-heights route has never been descended from five starts, and
+the walk recorded under *Why free heights loses* is a statement about its
+landscape at one start. Until that run exists, the honest reading is that the
+form finder's advantage over free heights is **unquantified on the shell and
+about 0.2% on the trusses** — not the 10 to 15% on record.
+
+### The augmented method is a choice a file makes
+
+`descent.method` selects `slsqp` or `augmented`, defaulting to the first so
+that every existing file describes the run it always did. An `augmented:`
+section carries that method's budgets and is read whatever the method says, so
+switching a file's method and switching it back leaves the file saying the
+same thing. `DescentPlan` carries the pair, `descend_started` dispatches on it
+and always polishes an augmented landing with a short constrained run — the
+outer loop stops on its round budget and says nothing about stationarity, and
+the polish is the cheapest certificate that it did. A landing above
+`POLISH_ADMISSION` is returned as nothing rather than polished, so a start
+that failed stays distinguishable from one that landed heavy.
+
+**A budget belonging to a method the run does not use is left out of the
+answer store's fingerprint.** Counting it would make a file that carries one
+describe a different question from a file that does not, so a viewer beside a
+run would have to repeat the block verbatim to find that run's answer and
+would silently find nothing when it drifted. The first migration attempt did
+exactly that, splitting `gridshell_16.yaml` from its own viewer; excluding an
+unused budget is what keeps the two together.
+
+**Every stored answer was migrated rather than re-descended.** Adding the
+field moves every digest, so the nine answers reachable from a live run
+description were renamed onto the digest their description now hashes to, one
+to one, with their contents untouched. Cost: one script, seconds. The 16x16
+answer reads back as 0.073013 t and 42.4%, and the geometry ratio is
+unchanged. One pre-existing orphan, written by a description that no longer
+exists, stays orphaned as it already was.
+
+**What the trusses say about when to choose it.** Sweeping the opening penalty
+from 0.3 to 0.003 and recording both the smallest value that still lands
+feasible and the largest that fails:
+
+| Vierendeel | rows | safe down to | largest failure |
+|---|---|---|---|
+| as shipped | 120 | 0.070 | 0.050 |
+| no chord sign guard | 104 | 0.100 | 0.300 |
+| no length floor | 113 | 0.010 | 0.200 |
+| no rise ceiling | 106 | 0.070 | 0.100 |
+| no sag floor | 106 | 0.003 | 0.300 |
+| no geometric rows at all | 69 | 0.050 | 0.300 |
+| Warren, as shipped | 123 | 0.003 | none failed |
+
+**Read the two columns together: the largest failure is usually *above* the
+smallest success, so this is not a cliff.** Success is not monotone in the
+penalty. Removing the sag floor lets 0.003 land and still fails at 0.300.
+Calling it a threshold, as the previous section did, was reading a single
+well-behaved column and generalizing it.
+
+Size tells the same story. On the Vierendeel: 6 bays safe to 0.003, 8 bays
+only to 0.070, **12 bays with no safe value in the grid at all**, 16 bays safe
+to 0.200. On the Warren, 4 through 16 bays are all safe to 0.003. Row count
+does not order it, no single constraint family accounts for it, and removing
+the chord sign guard makes the Vierendeel *worse* — the opposite of what its
+absence on the Warren suggested.
+
+**So the method is offered and not defaulted to.** On the 16x16 cap it is 6-8x
+faster and finds a better basin from one start. On a truss it is 2-3x slower,
+and on one truss in this family there is a size at which no setting in a
+two-decade sweep produces a feasible answer. What decides that is unmeasured,
+and until it is, `augmented` is a choice a file makes about a structure
+someone has checked it on.
+
 ### The trusses re-measured, and the opening penalty does not travel
 
 `experiments/24_mma_spike.py` reads its profile out of whichever experiment
