@@ -30,6 +30,13 @@ The gradient comes from the pipeline and costs one reverse pass whatever the
 number of force densities, which is what makes a per-member design variable
 affordable. The optimizer itself is L-BFGS-B, because the bounds are boxes and
 the objective is smooth between the branches of the standard.
+
+A second search lives here for the formulation where the sizes are variables
+too and the check is an inequality per member and load case. It keeps the one
+reverse pass by aggregating the rows inside the traced program — an augmented
+Lagrangian, whose shift is what still leaves the answer on the constraint
+surface where a plain penalty would stop a little inside it. Only the box
+bounds reach the inner solver as bounds; everything else is in the objective.
 """
 
 from collections.abc import Callable
@@ -525,3 +532,452 @@ def optimize_annealed(
     )
 
     return SearchResult(found.value, found.aux, trajectory)
+
+
+def augmented_penalty(
+    slack: Float[Array, "constraints"],
+    multipliers: Float[Array, "constraints"],
+    penalty: float | Float[Array, ""],
+) -> Float[Array, ""]:
+    """
+    Shifted quadratic penalty of a set of inequality rows.
+
+    Parameters
+    ----------
+    slack :
+        How far above zero every row sits. A negative entry is a violation.
+    multipliers :
+        Current estimate of the multiplier of every row, never negative.
+    penalty :
+        Penalty parameter of the round.
+
+    Returns
+    -------
+    penalized :
+        What the rows add to the objective at this multiplier estimate.
+
+    Notes
+    -----
+    **The shift is what makes this an augmented Lagrangian rather than a
+    penalty.** At a stationary point of the sum an active row sits at zero
+    slack, so its shifted argument is the multiplier over the penalty and the
+    term contributes exactly minus the multiplier times the row's gradient.
+    First-order optimality of the original problem is then recovered at a
+    finite penalty, where a plain penalty reaches it only in the limit and so
+    always stops a little inside the feasible region.
+
+    That matters wherever the answer is known to sit on the constraint
+    surface. A fully-stressed design is such an answer: every governing member
+    is at utilization one, and a method that stops short of the surface
+    reports a heavier structure for a reason that has nothing to do with the
+    standard.
+
+    Aggregating the rows here, inside the traced program, is what leaves the
+    whole constraint set costing one reverse pass. Handing the rows to a solver
+    that builds its own penalty costs a Jacobian row per constraint instead,
+    which for a frame checked member by member and case by case is the whole
+    expense of a search.
+    """
+    shifted = jnp.minimum(slack - multipliers / penalty, 0.0)
+
+    return 0.5 * penalty * jnp.sum(shifted**2)
+
+
+def shifted_multipliers(
+    multipliers: Float[np.ndarray, "constraints"],
+    slack: Float[np.ndarray, "constraints"],
+    penalty: float,
+    ceiling: float,
+) -> Float[np.ndarray, "constraints"]:
+    """
+    The multiplier estimates a round of the outer loop leaves behind.
+
+    Parameters
+    ----------
+    multipliers :
+        Estimate the round was solved at.
+    slack :
+        How far above zero every row sits at the round's answer.
+    penalty :
+        Penalty parameter the round was solved at.
+    ceiling :
+        Largest value any multiplier may take.
+
+    Returns
+    -------
+    shifted :
+        The estimate the next round is solved at.
+
+    Notes
+    -----
+    A row that is satisfied with room to spare has its multiplier driven to
+    zero, and a row that is violated has it raised in proportion to the
+    violation. The floor at zero is the sign condition an inequality's
+    multiplier must satisfy, and is not a safeguard.
+
+    **The ceiling is a safeguard.** One badly conditioned round can hand back
+    an estimate orders of magnitude past anything the answer will support, and
+    an unbounded estimate turns the next subproblem into a barrier whose
+    minimum sits nowhere near the constraint surface. Capping costs nothing at
+    a well-behaved point, where no multiplier approaches it.
+    """
+    raised = multipliers - penalty * slack
+
+    return np.clip(raised, 0.0, ceiling)
+
+
+class AugmentedBudget(NamedTuple):
+    """
+    What an augmented Lagrangian descent is allowed to spend, and when it stops.
+
+    Attributes
+    ----------
+    rounds :
+        Most multiplier updates to spend.
+    iterations :
+        Most inner iterations in each opening round.
+    settled :
+        Most inner iterations in every round after the opening ones.
+    opening :
+        How many rounds count as opening ones.
+    penalty :
+        Penalty parameter of the first round.
+    growth :
+        What the penalty is multiplied by when a round fails to earn its share
+        of the violation it inherited.
+    ceiling :
+        Largest penalty the loop may reach, and the largest multiplier with it.
+    tolerance :
+        Violation at or under which the rows count as satisfied.
+    quiet :
+        Relative movement of the mass, between consecutive rounds, that the
+        loop treats as no movement.
+
+    Notes
+    -----
+    **A small opening penalty is the setting that decides the answer, not the
+    speed.** It leaves the mass in charge of the first rounds, so the search
+    crosses the infeasible region rather than skirting it, and comes back to
+    the constraint surface somewhere a method confined to feasible points
+    cannot reach. Raising it to where feasibility leads from the start turns
+    the same machinery into an expensive way of reproducing a worse answer.
+
+    The inner budget falls after the opening rounds because by then the mass is
+    nearly decided and the remaining rounds are buying feasibility, which is a
+    much shorter walk than the one that found the basin.
+    """
+
+    rounds: int
+    iterations: int
+    settled: int
+    opening: int
+    penalty: float
+    growth: float
+    ceiling: float
+    tolerance: float
+    quiet: float
+
+
+class AugmentedAnswer(NamedTuple):
+    """
+    What an augmented Lagrangian descent arrived at, and the road there.
+
+    Attributes
+    ----------
+    variables :
+        The variable vector the loop stopped on.
+    masses :
+        Objective at the end of every round, the starting value first.
+    violations :
+        Worst violation over the rows at the end of every round.
+    evaluations :
+        Objective evaluations spent over every round.
+    converged :
+        Whether the loop stopped because the rows were satisfied and the mass
+        had stopped moving, rather than on its round budget.
+
+    Notes
+    -----
+    The two columns are read together or not at all. A mass falling while the
+    violation is still large is not an improvement — it is the search spending
+    the infeasible region — and only the last row, where the violation is under
+    the tolerance, is a design.
+    """
+
+    variables: Float[np.ndarray, "variables"]
+    masses: Float[np.ndarray, "rounds"]
+    violations: Float[np.ndarray, "rounds"]
+    evaluations: int
+    converged: bool
+
+
+# How much worse than the last point that evaluated a point outside the model's
+# domain is reported as, so that no line search prefers one.
+RECOIL_GROWTH = 1e3
+
+# A round need only be solved as accurately as the violation it inherited, and
+# never more accurately than this.
+INNER_SHARE = 0.1
+INNER_FLOOR = 1e-10
+
+# A round has earned its keep if it took this share off the worst violation.
+EARNED_SHARE = 0.25
+
+
+def strayed_point(
+    x: Float[np.ndarray, "variables"],
+    anchor: Float[np.ndarray, "variables"],
+    held: float,
+) -> tuple[float, Float[np.ndarray, "variables"]]:
+    """
+    A value and a gradient that walk a line search back into the model's domain.
+
+    Parameters
+    ----------
+    x :
+        The trial point that could not be evaluated.
+    anchor :
+        The last point that could be, which the walk heads back towards.
+    held :
+        Objective at that anchor.
+
+    Returns
+    -------
+    strayed :
+        The value to report, and the gradient to report with it.
+
+    Notes
+    -----
+    A geometry whose frame cannot be factorized, or whose form-finding system
+    has gone indefinite, has no objective at all — the truthful reading is not
+    a number but a refusal. Reporting a refusal to a line search stops the
+    search, so instead the point is charged the value of a distant quadratic
+    centred on the anchor: strictly worse than the anchor by construction, and
+    with a gradient whose descent direction points home. The search then steps
+    back inside on its own, and no accepted iterate ever sits out here.
+
+    **The quadratic is not a barrier and does not shape the answer.** It is
+    only ever evaluated at points the search goes on to reject, so it enters no
+    accepted step and no curvature estimate built from accepted steps.
+    """
+    strayed = np.asarray(x, dtype=np.float64) - anchor
+    scale = max(abs(held), 1.0)
+    value = RECOIL_GROWTH * scale + 0.5 * float(strayed @ strayed)
+
+    return value, strayed
+
+
+class ConstrainedMaps(NamedTuple):
+    """
+    The three compiled programs a constrained descent calls.
+
+    Attributes
+    ----------
+    augmented :
+        Value and gradient of the augmented objective, in the variables, taking
+        the multipliers, the penalty and the objective's reference value as
+        arguments beside them.
+    weigh :
+        Value and gradient of the objective alone, read for the reference the
+        augmented objective is scaled by and for the mass a round reports.
+    slack :
+        How far above zero every inequality row sits.
+
+    Notes
+    -----
+    **The multipliers, the penalty and the reference are arguments of the
+    augmented program rather than constants captured in it.** A round is then
+    the same program as its neighbour at different values, so one compilation
+    covers the whole outer loop; capturing them instead retraces a program of
+    the size of the constraint set once per round.
+    """
+
+    augmented: object
+    weigh: object
+    slack: object
+
+
+def worst_violation(
+    slack: Callable[[Float[Array, "variables"]], Float[Array, "constraints"]],
+    x: Float[np.ndarray, "variables"],
+) -> tuple[float, Float[np.ndarray, "constraints"]]:
+    """
+    How far the worst row falls below zero, and every row with it.
+
+    Parameters
+    ----------
+    slack :
+        How far above zero every inequality row sits.
+    x :
+        The point to read the rows at.
+
+    Returns
+    -------
+    read :
+        The worst violation, never negative, and the rows themselves.
+    """
+    rows = np.asarray(slack(jnp.asarray(x)), dtype=np.float64)
+    violation = -min(float(rows.min()), 0.0)
+
+    return violation, rows
+
+
+def descend_augmented(
+    maps: ConstrainedMaps,
+    start: Float[np.ndarray, "variables"],
+    boxes: list[tuple[float | None, float | None]],
+    budget: AugmentedBudget,
+) -> AugmentedAnswer:
+    """
+    Minimize under inequality rows by an augmented Lagrangian, in box bounds.
+
+    Parameters
+    ----------
+    maps :
+        The route's compiled programs.
+    start :
+        The variable vector to leave from, which must be inside the model's
+        domain.
+    boxes :
+        One bound pair per variable, held natively by the inner solver rather
+        than penalized.
+    budget :
+        Rounds, inner iterations, the penalty schedule, and what counts as
+        satisfied and as no longer moving.
+
+    Returns
+    -------
+    answer :
+        The variables, the mass and violation of every round, and how it ended.
+
+    Raises
+    ------
+    ValueError
+        If a budget is not usable, or if the objective at the start is not a
+        positive finite number.
+
+    Notes
+    -----
+    **One reverse pass per gradient, whatever the constraint set.** The rows are
+    aggregated inside the traced program by `augmented_penalty`, so the whole
+    set costs one adjoint rather than a Jacobian row apiece. On a frame checked
+    member by member and case by case that is the difference between a search
+    that fits in a working session and one that does not, and it is what lets
+    the same objective cross a remote boundary as a single cotangent.
+
+    **The answer lands on the constraint surface.** The shift in the penalty
+    recovers first-order optimality at a finite penalty, so a row that governs
+    ends at zero slack rather than a little inside it. A short run of a
+    constrained method from here confirms it and costs a handful of iterations,
+    which is also the cheapest available certificate that the landing is a
+    stationary point and not somewhere the outer loop ran out of rounds.
+
+    **The opening rounds are solved to precision and the later ones are not.**
+    A round is only ever trying to remove the violation it inherited, so asking
+    it for more accuracy than that buys nothing; the opening rounds are the
+    exception because they are choosing the basin rather than repairing the
+    rows, and there the inner iteration budget is what stops them.
+
+    A trial point can leave the model's domain entirely — a geometry whose
+    frame will not factorize, or whose form-finding system has gone indefinite.
+    Such a point is charged a distant quadratic centred on the last point that
+    evaluated, which no line search prefers and whose descent direction points
+    back inside. A non-finite value or gradient is treated identically, since a
+    solver that reports a NaN rather than raising would otherwise poison every
+    curvature estimate after it.
+
+    The loop is deterministic. Nothing here is sampled, so a landing is a
+    measurement and two runs of one budget agree bit for bit.
+    """
+    if budget.rounds < 1 or budget.iterations < 1 or budget.settled < 1:
+        raise ValueError(f"rounds and iterations must be positive, got {budget}")
+    if budget.penalty <= 0.0 or budget.ceiling < budget.penalty:
+        raise ValueError(
+            f"the penalty must be positive and under its ceiling, {budget}"
+        )
+    if budget.growth <= 1.0:
+        raise ValueError(f"the penalty must grow, got {budget.growth}")
+
+    x = np.asarray(start, dtype=np.float64)
+    reference = abs(float(maps.weigh(jnp.asarray(x))[0]))
+    if not np.isfinite(reference) or reference == 0.0:
+        raise ValueError(f"the objective at the start is not usable: {reference}")
+
+    scale = jnp.asarray(reference)
+    violation, rows = worst_violation(maps.slack, x)
+    multipliers = np.zeros(rows.size)
+    penalty = float(budget.penalty)
+
+    resting = jnp.zeros(rows.size)
+    opened = maps.augmented(jnp.asarray(x), resting, scale, scale)[0]
+    anchor = x.copy()
+    held = float(opened)
+
+    def evaluate_augmented(z, carried, charged):
+        nonlocal anchor, held
+        try:
+            value, slope = maps.augmented(jnp.asarray(z), carried, charged, scale)
+            value = float(value)
+            slope = np.asarray(slope, dtype=np.float64)
+        except (ValueError, FloatingPointError):
+            return strayed_point(z, anchor, held)
+        if not np.isfinite(value) or not np.all(np.isfinite(slope)):
+            return strayed_point(z, anchor, held)
+        anchor = np.asarray(z, dtype=np.float64).copy()
+        held = value
+
+        return value, slope
+
+    masses = [reference]
+    violations = [violation]
+    spent = 0
+    converged = False
+    inherited = violation
+
+    for round_index in range(budget.rounds):
+        carried = jnp.asarray(multipliers)
+        charged = jnp.asarray(penalty)
+        if round_index < budget.opening:
+            inner = budget.iterations
+            precision = INNER_FLOOR
+        else:
+            inner = budget.settled
+            precision = max(INNER_FLOOR, INNER_SHARE * inherited)
+
+        def round_objective(z, carried=carried, charged=charged):
+            return evaluate_augmented(z, carried, charged)
+
+        found = minimize(
+            round_objective,
+            x,
+            jac=True,
+            method="L-BFGS-B",
+            bounds=boxes,
+            options={
+                "maxiter": inner,
+                "maxfun": 3 * inner,
+                "ftol": 0.0,
+                "gtol": precision,
+            },
+        )
+        x = np.asarray(found.x, dtype=np.float64)
+        spent += int(found.nfev)
+
+        violation, rows = worst_violation(maps.slack, x)
+        mass = abs(float(maps.weigh(jnp.asarray(x))[0]))
+        moved = abs(mass - masses[-1]) / max(mass, reference)
+        masses.append(mass)
+        violations.append(violation)
+
+        multipliers = shifted_multipliers(multipliers, rows, penalty, budget.ceiling)
+        if violation > EARNED_SHARE * inherited:
+            penalty = min(penalty * budget.growth, budget.ceiling)
+        inherited = violation
+
+        if violation <= budget.tolerance and moved <= budget.quiet:
+            converged = True
+            break
+
+    return AugmentedAnswer(
+        x, np.asarray(masses), np.asarray(violations), spent, converged
+    )
