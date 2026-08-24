@@ -2,6 +2,79 @@
 
 ## Unreleased
 
+### The three the writeup will show, and a baseline that was not the best one
+
+The submission narrows to three experiments — the arch for robustness under
+initialization, the Vierendeel for multiple load cases over the
+horizontal-projection basis, the gridshell for all of it in three dimensions.
+Hardening those three is what the numbers below are for. Everything else is
+outlook: the snap-to-catalog gap, mesh convergence of the ratio, self-weight
+coupling, and pinning free heights below 0.114312.
+
+**Experiment 15 had never been rerun after the objective was normalized**, and
+it shares `descend_route` with 18 and 19, which had. It reproduces, PASS.
+
+| arch, one density against free heights | |
+|---|---|
+| spread over starts, density route | **1.84e-04** |
+| spread over starts, height route | **2.95** |
+| free heights from a flat line | 0.478034 t, **3.9x** the funicular answer |
+| free heights from a random start | 0.141565 t, 17% above its own best |
+| free heights from the form-found start | +2.33% |
+| free heights given its **best** start | **0.95% lighter than one density** |
+| peak bending, density against matched heights | 6.1e-03 against 6.8e-02 |
+
+**The arch is not a mass result and should not be presented as one.** Given the
+start that suits it, free heights wins by 0.95%. What it cannot do is find that
+start: its landings span 2.95 where the density route's span 1.84e-04, four
+orders apart. One parametrization is start-proof and the other is start-ruled,
+and conceding the 0.95% is what makes the rest of it credible.
+
+The bending column says something the mass column cannot. Iterates on the
+density route bend **11x less** than the height route's matched iterates, so
+the form finder is not only a smaller parametrization — it holds funicularity
+along the whole descent, where writing heights down abandons it at the first
+step and pays for the bending in section.
+
+**The Vierendeel's sizing-only baseline was under-optimized by 3%.** Eight
+starts under each method, geometry fixed, diameters the only variables:
+
+| method | landings | best |
+|---|---|---|
+| SLSQP | 0.430472 to 0.430481, all eight converged | 0.430472 |
+| augmented | 0.417633 (x3), 0.421942 (x2), 0.430472 (x3) | **0.417633** |
+
+**A route with no geometry to move is still multi-modal.** Three distinct
+converged optima, each feasible — 0.417633 to 7.3e-14 — and SLSQP reaches none
+of the better two from any of eight starts. The coupling is what does it: a
+fatter member is a stiffer one and draws more force, so the feasible set the
+check defines is not convex even at frozen geometry.
+
+**So the Vierendeel headline is 70.7%, not 71.6%.** Against the best baseline
+anyone here has found, the geometry buys `1 - 0.122263/0.417633`. Quoting the
+larger figure would rest it on a baseline a better optimizer beats by 3%, which
+is the first thing worth attacking about it. The Warren is unaffected —
+0.111808 under both methods — and so is the gridshell, whose 42.4% already
+divides by the best sizing-only landing of the three settings.
+
+**What the three acts carry, at equal budget.** One start each, which is the
+shipped setting and the fair fixed-compute comparison:
+
+| | against sizing only | against free heights |
+|---|---|---|
+| arch | — | start-proof against start-ruled |
+| Vierendeel | **70.7%** | +18.53% |
+| gridshell | **42.4%** | +56.8% |
+
+**Free heights is a lottery, and that is the finding the tie conceals.** Over
+five scattered starts the end-to-end route's landings span 0.3% on the Warren,
+3.8% on the gridshell, and 19.1% on the Vierendeel where it reaches its best
+from three starts of five. Free heights spans 1.5%, 20.9%, and 49.0%, reaching
+its best from one start of five. Four to five times looser everywhere, which is
+experiment 15's arch result surviving into two and three dimensions. Given five
+starts the two routes tie on both trusses; given one, the form finder wins by
+18.53% and always lands in the same place.
+
 ### The shell's free heights, run properly, and two things I wrote about it
 
 Two statements in *Free heights was losing to a single start* are wrong and are
