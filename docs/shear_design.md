@@ -9,42 +9,69 @@ in every truss and arch run, and the exclusion stated in the README, in
 `normax/sizing/blueprint.py` and in ec3x's `docs/clauses.md`.
 
 **This file is the record of what building it would take**, kept so the decision
-reads as a decision rather than an omission. It is accurate as of the audit below;
-the two repos change together, in the order given, if a structure ever crosses the
-threshold.
+reads as a decision rather than an omission. The two repos change together, in the
+order given, if a structure ever crosses the threshold.
+
+**Revised 2026-08-24.** The decision stands and no diameter is designed for shear.
+What changed is the plumbing under it: fork (A) below — shear crossing the
+analysis schema — **has landed**, for the audit rather than for the check, and it
+cost far less than this file predicted. Every gap the "Why" section named has
+since been closed. Both are corrected in place below rather than appended, so the
+file reads as the current position.
 
 ## Why
 
 `normax/sizing/blueprint.py` imports two Blueprints formulas — `Form6Dot10NcRdClass1And2And3`
-and `Form6Dot14MCRdClass3` (`:42-47`) — and justifies that scope like this (`:24-26`):
+and `Form6Dot14MCRdClass3` — and used to justify that scope like this:
 
 > The check is cross-section resistance alone, because that is all Blueprints
 > implements — it has no §6.3 member buckling and no classification.
 
-The claim about §6.3 is true. The sentence around it is not. Shear (§6.2.6),
-torsion (§6.2.7) and bending-with-shear (§6.2.8) *are* cross-section resistance,
-and Blueprints ships all three, including `6.18subg`'s `A_v` for a circular hollow
-section and `6.28`'s `V_pl,T,Rd` — the two entries that would matter here. So the
-docstring attributes an authored scope decision to a limitation that does not
-exist. That is the defect to fix whether or not shear is ever checked.
+Quoted as it stood when this file was written; both of its claims have since been
+corrected in place.
 
-What is *not* wrong, and was verified before writing this: the audit
-infrastructure is in place and honest — **as uncommitted work in the tree, not as
-committed state.** `normax/analysis/__init__.py`, both backends, three test files
-and exp 05 all carry it, and this plan assumes it lands as written. `SecondaryForces` carries `shear_major`,
-`shear_minor` and `torsion_moment` (`normax/analysis/__init__.py:74-102`); both
-backends fill it and agree to `1e-11`; and three test files read it — the shear
-equals the solver's own `vz` at `rtol=1e-15` and equals `ΔM/L` at `rtol=1e-10`
-(`tests/test_equilibrium_consistency.py:290-304`), the backends agree
-(`tests/test_backend_opensees.py:206-235`), and the crossed boundary's blindness
-is pinned deliberately rather than left silent
-(`tests/test_tesseract_parity.py:355`). ec3x's `docs/clauses.md` open item 0d
-records the whole position, and corrects the old 0.12 bound to **0.059** by the
-right mechanism (`V = 2M/L` antisymmetric, not a span-loaded `4M/L`).
+The sentence around it was not true. Shear (§6.2.6), torsion (§6.2.7) and
+bending-with-shear (§6.2.8) *are* cross-section resistance, and Blueprints ships
+all three, including `6.18subg`'s `A_v` for a circular hollow section and `6.28`'s
+`V_pl,T,Rd` — the two entries that would matter here. The docstring attributed an
+authored scope decision to a limitation that does not exist.
 
-The one place a reader of the submission would look has nothing: README's
-`## Limitations` lists `∂d/∂q` and global stability and says nothing about shear
-or torsion, and CLAUDE.md §3's scope decisions do not mention them either.
+**Fixed since.** `normax/sizing/blueprint.py` now states that Blueprints
+implements all three and that the module declines them by choice.
+
+**The claim about §6.3 needs its own correction, made 2026-08-24 against the
+installed package.** Blueprints does implement §6.3.2.1 — `Form6Dot54BucklingResistanceOfMembersInBending`
+and `Form6Dot55DesignBucklingResistanceMoment`. What it has no trace of is
+**§6.3.1 flexural buckling**: 6.46–6.53 are absent, which is the jump from
+`formula_6_45` to `formula_6_54`, and the 2022 tree stops at `formula_8_60` before
+its own §8.3. So "no §6.3 member buckling" is too broad wherever it appears; the
+true statement is "no §6.3.1 flexural buckling". A CHS has no lateral-torsional
+buckling to check, so the clause Blueprints *does* carry is the one this repo
+never needs, and the one it needs is the one absent.
+
+The audit infrastructure is in place and honest. `MemberForces` states all six
+components as direct fields — `shear_major`, `shear_minor` and `torsion_moment`
+beside the axial force and the two moments — every solver fills them, and the
+tests read them: the shear equals the solver's own `vz` and equals `ΔM/L`
+(`tests/test_equilibrium_consistency.py`), and the backends agree
+(`tests/test_backend_opensees.py`). ec3x's `docs/clauses.md` open item 0d records
+the whole position, and corrects the old 0.12 bound to **0.059** by the right
+mechanism (`V = 2M/L` antisymmetric, not a span-loaded `4M/L`).
+
+**The crossed boundary is no longer blind, changed 2026-08-24.** It used to be,
+and the blindness was pinned by a test asserting the absence. That test now
+asserts parity instead, because the schema carries the three components. The
+reason for the change is worth keeping: **the exclusion is conditional, so it has
+to be measured, and a stage that cannot report its shear cannot show it is
+entitled to the exemption.** Before the widening a crossed design read back a
+scalar `0.0` default that the load case stacking had shaped like data, so the
+audit — including exp 20's assertion that the torsion is zero — would have passed
+by reading a zero nobody computed. Because shear moves no diameter, that audit is
+the *only* evidence behind the exclusion, which is precisely why it must not be
+vacuous.
+
+Both places a reader of the submission would look now state the exclusion:
+README's `## Limitations` and CLAUDE.md §3.
 
 ## Audit of what landed in ec3x, 2026-08-19
 
@@ -66,11 +93,10 @@ package. Suite 1599 pass.
 So the verification half of §1 below has landed and the design half has not. Every
 insertion point named in §1 is still ahead.
 
-**One container change to fold in, from normax's tree:** `SecondaryForces` is gone.
-`MemberForces` now states all six components as direct fields — `shear_major`,
-`shear_minor`, `torsion_moment` beside the axial force and the two moments — with
-scalar `0.0` defaults, and `DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)`.
-Flatter, and it removes a container that existed only to hold three fields apart.
+**The container that held the three apart is gone.** `MemberForces` states all six
+components as direct fields, with scalar `0.0` defaults so a caller stating a
+demand by hand states what it means, and `DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)`
+leaves the three unmapped because the check does not read them.
 
 ## What the standard actually asks for
 
@@ -90,15 +116,29 @@ during implementation and recorded in `clauses.md`, not taken from this file.
 So the reading is `U = max(U_axial+bending, V_Ed/V_pl,Rd)`, with the bending term's
 `f_y` reduced only above the threshold.
 
-## The one real fork: where the shear demand comes from
+## The fork, narrowed: where the shear demand comes from
 
-The sizers receive `MemberForces` and a buckling length. Neither carries a shear
-the check may read.
+**(A) has landed, 2026-08-24, and it cost far less than the estimate below.** The
+analysis schema now serves `shear_major`, `shear_minor` and `torsion_moment`, both
+backends fill them, and the crossed client passes them through. What made it cheap
+was that neither backend needed new arithmetic — both already computed all three
+and the schema was dropping them — and that the three are declared
+**non-differentiable**, so the OpenSees sensitivity path was never touched. That
+declaration is the right one on its own terms: `MemberActions` has no shear field,
+so `d(mass)/d(shear)` is identically zero, and a differentiable output advertising
+a provably zero derivative would be worse than none.
 
-**(A) Add shear to T2's output schema.** Honest — the analysis computes it — but it
+**What (A) did not do is let the check read it.** The demand crosses for the audit;
+`design_actions` still builds `MemberActions(axial_force, moment_major,
+moment_minor, moment_factor_major, moment_factor_minor)` and there is no field to
+put a shear in. So the fork below is narrowed rather than closed: the transport
+question is settled and only the check-side question remains.
+
+**(A) Add shear to T2's output schema.** ~~Honest — the analysis computes it — but it
 unfreezes the analysis Tesseract's schema, needs both backends extended (including
 the OpenSees sensitivity path, `opensees.py:578-604`, which is not traced), and
-inverts `test_the_boundary_does_not_carry_the_secondary_forces`.
+inverts `test_the_boundary_does_not_carry_the_secondary_forces`.~~ **Done.** The
+sensitivity path was untouched, and the test was inverted to assert parity.
 
 **(B) Derive `V = ΔM/L` inside the check.** Exact under nodal loading, works
 identically in process and crossed, no schema change. But `ΔM/L` needs the
@@ -109,15 +149,20 @@ length is a braced-node assumption. Using it for shear would smuggle in a second
 unrelated assumption.
 
 **(C) Derive it, and give the sizer the member length as its own argument.**
-Recommended. `AbstractMemberSizer.__call__(forces, buckling_length, member_length)`
-makes both lengths explicit, T2 stays frozen, the crossed path stops being blind
-to shear, and the derivation follows the precedent already written down in
-`ec3x/actions.py:44-49`: the reduction from two end moments to a design quantity
+`AbstractMemberSizer.__call__(forces, buckling_length, member_length)` makes both
+lengths explicit, and the derivation follows the precedent written down in
+`ec3x/actions.py`: the reduction from two end moments to a design quantity
 "belongs to the check", which is why `end_moments` lives in `ec3x.sizing`.
 
-Under (C), `MemberForces.secondary` becomes the **oracle for the derived demand**
-rather than dead weight: a test asserts derived-equals-analyzed, which is the
-identity already pinned at `rtol=1e-10`.
+**Two of (C)'s three arguments have expired.** T2 no longer needs to stay frozen —
+it has been widened — and the crossed path is no longer blind. What survives is
+the separation of the two lengths, which is worth having for its own sake.
+
+**So (A) is now the route**, the transport being already paid for: give
+`MemberActions` a shear field, carry it through `design_actions`, and read it in
+the check. `MemberForces`' analyzed shear then serves as the **oracle** for
+whatever the check derives, the derived-equals-analyzed identity being pinned at
+`rtol=1e-10` already.
 
 ## What this buys — measured, not bounded
 

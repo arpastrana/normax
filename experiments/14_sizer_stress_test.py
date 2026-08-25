@@ -16,7 +16,7 @@ Two implementations of one standard, stress-tested against each other.
 
 The blueprints sizer and the EC3 sizer disagree by up to a quarter of a
 diameter on a compressed member, and the whole disagreement is one clause:
-Blueprints implements no §6.3 member buckling. This experiment makes that
+Blueprints implements no §6.3.1 flexural buckling. This experiment makes that
 attribution quantitative by driving the EC3 sizer toward the cross-section
 regime — the buckling length toward zero, so chi rides its cap at one, and
 the moment combination set linear to match — and measuring what remains.

@@ -436,7 +436,8 @@ def report_philosophy(report: Report, local: Design, params, loads) -> None:
     report.write_table(GAP_COLUMNS, rows)
     report.write_note(
         "Same family, same forces: the ratio prices the member check. "
-        "Blueprints implements no section 6.3, and this gap is that absence."
+        "Blueprints implements no 6.3.1 flexural buckling, and this gap is "
+        "that absence."
     )
 
 

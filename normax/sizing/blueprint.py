@@ -23,8 +23,10 @@ derivative coefficients are restated here.
 
 The check is **axial force with bending, at cross-section level, and nothing
 else**. Two of those boundaries are the library's and one is this module's, and
-they are worth keeping apart. Blueprints implements no §6.3 member buckling and
-no cross-section classification, so neither could be had from it. It does
+they are worth keeping apart. Blueprints implements no §6.3.1 flexural buckling
+and no cross-section classification, so neither could be had from it. It does
+carry §6.3.2.1, the lateral-torsional check, which a doubly symmetric tube never
+needs — so the one member clause it offers is the one this repo has no use for. It does
 implement shear (§6.2.6), torsion (§6.2.7) and bending with shear (§6.2.8) —
 including Eq. 6.18's `A_v` for a circular hollow section and Eq. 6.28's
 `V_pl,T,Rd` for a hollow one — and **this module declines all three by choice**.

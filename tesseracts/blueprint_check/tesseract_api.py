@@ -24,9 +24,11 @@ exact adjoint across the boundary, because the boundary asks only for the
 numbers, never for the machinery.
 
 The check is cross-section resistance alone: EN 1993-1-1 eq. (6.2) with the
-(6.10) and (6.14) resistances. Blueprints implements no §6.3 member buckling
-and no classification, so no buckling length crosses this schema — a schema
-field the check would ignore invites the belief that it participates.
+(6.10) and (6.14) resistances. Blueprints implements no §6.3.1 flexural
+buckling and no classification, so no buckling length crosses this schema — a
+schema field the check would ignore invites the belief that it participates.
+The §6.3.2.1 lateral-torsional check it does carry is the one a doubly
+symmetric tube never needs.
 
 The schema carries both questions the pipeline asks of a check: what size
 these actions demand (`diameter`, `utilization`), and how hard they work the
