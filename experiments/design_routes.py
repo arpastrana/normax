@@ -30,6 +30,7 @@ signed. Everything here is topology-blind — it reads the truss through a
 """
 
 import hashlib
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -50,9 +51,11 @@ from jaxtyping import Int
 from scipy.optimize import minimize
 from smax import LoadCase
 
+from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.analysis import SmaxAnalyzer
 from normax.analysis import frame_model
+from normax.analysis import normal_axis
 from normax.design import Design
 from normax.design import StructuralDesignPipeline
 from normax.design import design_envelope
@@ -77,10 +80,16 @@ from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
+from normax.sizing import AbstractMemberSizer
 from normax.sizing import Ec3Sizer
 from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import member_lengths
+from normax.tesseract import BACKEND_VARIABLE
+from normax.tesseract import BlueprintClient
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import blueprint_tesseract
+from normax.tesseract import local_chain
 from normax.visualization import DescentTrace
 from normax.visualization import UtilizationForm
 from normax.visualization import figure_mass_descent
@@ -425,6 +434,21 @@ class SubspaceConfig(NamedTuple):
     margin_fraction: float
 
 
+# What the analysis stage may be answered by, and what a file gets unasked.
+ANALYSIS_SMAX = "smax"
+ANALYSIS_SMAX_CROSSED = "smax_tesseract"
+ANALYSIS_OPENSEES = "opensees"
+ANALYSIS_BACKENDS = (ANALYSIS_SMAX, ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES)
+
+# Which of them reach the solver across a boundary rather than in process.
+ANALYSIS_CROSSED = (ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES)
+
+# What the check may be answered by. Blueprints is reachable only crossed.
+SIZING_EC3 = "ec3"
+SIZING_BLUEPRINT = "blueprint_tesseract"
+SIZING_BACKENDS = (SIZING_EC3, SIZING_BLUEPRINT)
+
+
 class AnalysisConfig(NamedTuple):
     """
     What the frame is analyzed with, before either search has spoken.
@@ -433,9 +457,33 @@ class AnalysisConfig(NamedTuple):
     ----------
     diameter :
         Outer diameter every member is seeded with.
+    backend :
+        Which solver answers the stage. `smax` traces in process,
+        `smax_tesseract` is the same solver across a Tesseract boundary, and
+        `opensees` is a second solver across that same schema. The planar
+        solver is the two-dimensional demo alone — it refuses a geometry that
+        leaves its plane, so a shell may only ask for the other two.
     """
 
     diameter: float
+    backend: str = ANALYSIS_SMAX
+
+
+class SizingConfig(NamedTuple):
+    """
+    Which implementation of the standard the members are sized against.
+
+    Attributes
+    ----------
+    backend :
+        `ec3` traces EN 1993-1-1 in process, `blueprint_tesseract` reaches
+        Blueprints' cross-section check across a Tesseract boundary. The two
+        answer different questions: Blueprints implements no 6.3.1 flexural
+        buckling, so a design sized through it is not a design sized to the
+        member check.
+    """
+
+    backend: str = SIZING_EC3
 
 
 class DescentConfig(NamedTuple):
@@ -565,7 +613,9 @@ class TaskConfig(NamedTuple):
     subspace :
         Which held-plan basis the geometry variables span.
     analysis :
-        What the frame is seeded with.
+        What the frame is seeded with, and which solver answers it.
+    sizing :
+        Which implementation of the standard the members are sized against.
     descent :
         The budgets the searches share.
     viewer :
@@ -589,6 +639,7 @@ class TaskConfig(NamedTuple):
     analysis: AnalysisConfig
     descent: DescentConfig
     viewer: ViewerConfig
+    sizing: SizingConfig = SizingConfig()
     augmented: AugmentedBudget | None = None
 
 
@@ -639,9 +690,20 @@ def shared_sections(document: dict[str, object]) -> dict[str, object]:
         named = ", ".join(METHOD_ORDER)
         raise ValueError(f"method must be one of {named}, got {descent.method}")
 
+    analysis = AnalysisConfig(**document["analysis"])
+    if analysis.backend not in ANALYSIS_BACKENDS:
+        named = ", ".join(ANALYSIS_BACKENDS)
+        raise ValueError(f"analysis backend must be one of {named}")
+
+    sizing = SizingConfig(**document.get("sizing", {}))
+    if sizing.backend not in SIZING_BACKENDS:
+        named = ", ".join(SIZING_BACKENDS)
+        raise ValueError(f"sizing backend must be one of {named}")
+
     return {
         "subspace": subspace,
-        "analysis": AnalysisConfig(**document["analysis"]),
+        "analysis": analysis,
+        "sizing": sizing,
         "descent": descent,
         "viewer": viewer,
         "augmented": augmented_budget(document),
@@ -1847,6 +1909,84 @@ def cases_constrained(
     return np.asarray(held)
 
 
+def built_analyzer(
+    structure: Structure,
+    family: TubeFamily,
+    config: TaskConfig,
+) -> AbstractFrameAnalyzer:
+    """
+    The frame analysis a run description asked for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the stage is built on.
+    family :
+        The tube family the seed section is drawn from.
+    config :
+        The run description, read for the backend and the seed diameter.
+
+    Returns
+    -------
+    analyzer :
+        The stage, in process or across a boundary.
+
+    Notes
+    -----
+    The crossed backend reads its solver from the environment, so an experiment
+    picks once for the whole process rather than once per block. Its solver is
+    planar, and the spike ruling holds it to two dimensions.
+    """
+    section = family(config.analysis.diameter)
+    if config.analysis.backend == ANALYSIS_SMAX:
+        return SmaxAnalyzer(structure, section)
+
+    os.environ[BACKEND_VARIABLE] = config.analysis.backend.removesuffix("_tesseract")
+    chain = local_chain()
+
+    # The traced solver measures the plane itself and needs no axis; the planar
+    # one is told which, and refuses a geometry that leaves it.
+    if config.analysis.backend == ANALYSIS_SMAX_CROSSED:
+        normal = None
+    else:
+        normal = normal_axis(structure)
+
+    return TesseractAnalyzer(structure, chain.analysis, family, normal)
+
+
+def built_sizer(
+    structure: Structure,
+    family: TubeFamily,
+    config: TaskConfig,
+) -> AbstractMemberSizer:
+    """
+    The code check a run description asked for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the stage is built on.
+    family :
+        The tube family every size is drawn from.
+    config :
+        The run description, read for the backend.
+
+    Returns
+    -------
+    sizer :
+        The stage, in process or across a boundary.
+
+    Notes
+    -----
+    Both backends draw from the same family, so what differs downstream is the
+    check rather than the geometry it is asked about.
+    """
+    if config.sizing.backend == SIZING_EC3:
+        return Ec3Sizer(structure, family)
+
+    return BlueprintClient(structure, blueprint_tesseract(), family)
+
+
 def prepare_problem(
     structure: Structure,
     config: TaskConfig,
@@ -1906,8 +2046,8 @@ def prepare_problem(
     family = build_section_family(GRADE, SECTION_CLASS)
     blocks = StructuralDesignPipeline(
         finder,
-        SmaxAnalyzer(structure, family(config.analysis.diameter)),
-        Ec3Sizer(structure, family),
+        built_analyzer(structure, family, config),
+        built_sizer(structure, family, config),
     )
 
     everyone = np.arange(structure.num_nodes)
@@ -3333,6 +3473,60 @@ def shear_fraction(
     return float(np.max(np.maximum(major, minor)))
 
 
+def sheared_forces(
+    problem: RouteProblem,
+    xyz: Float[Array, "nodes 3"],
+    diameters: Float[Array, "members"],
+    forces: MemberForces,
+) -> MemberForces:
+    """
+    An analysis carrying shear member by member, re-solved if the one given does not.
+
+    Parameters
+    ----------
+    problem :
+        The prepared structure, read for the frame the re-solve is built on.
+    xyz :
+        The answer's geometry.
+    diameters :
+        The answer's sections.
+    forces :
+        The analysis already read at that answer.
+
+    Returns
+    -------
+    sheared :
+        The same analysis where it already carries shear per member, and an
+        in-process re-solve where it does not.
+
+    Notes
+    -----
+    **A stage is entitled to carry less than the container it fills.** A
+    `MemberForces` defaults its shear to a scalar zero, so a stage answering
+    only axial force and end moments leaves that default in place, and the
+    load-case stacking then makes three scalars into an array shaped like a
+    load case axis and nothing else. Dividing that by a per-member resistance
+    is what raises rather than what lies, which is the good outcome.
+
+    The re-solve is the viewer's own fallback, for the viewer's own reason: a
+    stage that does not carry a quantity cannot be asked for it, so the
+    quantity is recomputed in process at the answer's own geometry and
+    sections. It is a retelling, and the backend-agreement suite bounds it.
+
+    **The test is what arrived, not which stage sent it.** A stage whose
+    schema grows shear stops falling back here without this reading changing,
+    and a stage that never carries it is covered whether or not it crosses a
+    boundary.
+    """
+    members = int(problem.structure.num_edges)
+    if np.ndim(forces.shear_major) > 1 and np.shape(forces.shear_major)[-1] == members:
+        return forces
+
+    analyzer = SmaxAnalyzer(problem.structure, problem.pipeline.sizer.family(100.0))
+
+    return analyzer(xyz, diameters, problem.loads.analysis)
+
+
 def read_answer(
     problem: RouteProblem,
     xyz: Float[Array, "nodes 3"],
@@ -3376,7 +3570,8 @@ def read_answer(
     reflected = diameters[problem.edges_mirrored]
     mirror = float(np.max(np.abs(diameters - reflected)) / np.max(diameters))
 
-    shear = shear_fraction(family, sections, forces)
+    sheared = sheared_forces(problem, xyz, sized, forces)
+    shear = shear_fraction(family, sections, sheared)
 
     read = RouteRead(
         mass,

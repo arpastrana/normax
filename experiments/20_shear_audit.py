@@ -326,7 +326,8 @@ def read_a_truss(profile: RouteProfile, stem: str) -> tuple[ShearReading, ...]:
     maps = routes.route_maps(problem, limits, budget.length_floor, guard)
     starts = routes.route_starts(problem, start, shape.xyz, budget.diameter_floor)
     boxes = routes.route_boxes(problem, budget.diameter_floor, limits)
-    answers = routes.descend_all(Report(verbose=False), maps, starts, boxes, budget)
+    plan = routes.descent_plan(config)
+    answers = routes.descend_all(Report(verbose=False), maps, starts, boxes, plan)
     reads = routes.route_reads(problem, answers, budget)
 
     families = profile.member_families(config)
