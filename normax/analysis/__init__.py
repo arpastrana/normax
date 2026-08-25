@@ -131,8 +131,12 @@ class MemberForces(NamedTuple):
     torsion_moment: float | Float[Array, "*load_cases members"] = 0.0
 
 
-# The load case axis of `MemberForces` as a check maps over it: the three fields
-# a check reads, and never the shear and torsion it audits with instead.
+# The load case axis of `MemberForces` as a check maps over it. The last three are
+# unmapped because no check reads them, not because they lack the axis — every
+# solver fills them per load case and per member. Mapping them would forbid the
+# scalar defaults a hand-stated demand relies on; reading them under this spec
+# would hand each case the whole stack, so a check that ever wants them must
+# change this line rather than trust it.
 DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)
 
 

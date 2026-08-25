@@ -46,6 +46,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from ec3x.actions import MemberActions
 from ec3x.material import Steel
 from ec3x.section import TubeCatalogue
@@ -274,6 +275,37 @@ def _forward_pass(
     return outputs
 
 
+def plain_arrays(mapping: dict[str, Any]) -> dict[str, Any]:
+    """
+    The same mapping with every array plain rather than traced.
+
+    Parameters
+    ----------
+    mapping :
+        What an endpoint computed, one level deep or two.
+
+    Returns
+    -------
+    plain :
+        The same keys, every leaf a NumPy array.
+
+    Notes
+    -----
+    An endpoint is called from inside an FFI callback, where the wrapper that
+    calls it forbids allocating a JAX array. What this stage computes is traced
+    and cannot be otherwise; the conversion happens on the way out, which is the
+    part that escapes into the caller.
+    """
+    plain = {}
+    for name, value in mapping.items():
+        if isinstance(value, dict):
+            plain[name] = {inner: np.asarray(leaf) for inner, leaf in value.items()}
+        else:
+            plain[name] = np.asarray(value)
+
+    return plain
+
+
 def apply(inputs: InputSchema) -> OutputSchema:
     """
     Run the check.
@@ -288,7 +320,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     outputs :
         The required sizes, the utilization and the diagnostics.
     """
-    return _forward_pass(inputs.model_dump(), diagnostics=True)
+    return plain_arrays(_forward_pass(inputs.model_dump(), diagnostics=True))
 
 
 def abstract_eval(abstract_inputs):
@@ -412,7 +444,7 @@ def vector_jacobian_product(
         {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
     )
 
-    return dict(zip(vjp_inputs, cotangents))
+    return plain_arrays(dict(zip(vjp_inputs, cotangents)))
 
 
 def jacobian_vector_product(
@@ -450,4 +482,4 @@ def jacobian_vector_product(
     tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
     _, pushed = jax.jvp(restricted_map, tuple(primals), tangents)
 
-    return pushed
+    return plain_arrays(pushed)

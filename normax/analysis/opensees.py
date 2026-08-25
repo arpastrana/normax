@@ -276,6 +276,72 @@ def prepare_model(
     )
 
 
+def _refuse_unusable(
+    coordinates: Float[np.ndarray, "nodes 2"],
+    areas: Float[np.ndarray, "members"],
+    inertias: Float[np.ndarray, "members"],
+) -> None:
+    """
+    Refuse what the solver accepts silently and fails on later.
+
+    Parameters
+    ----------
+    coordinates :
+        In-plane position of every node, in meters.
+    areas :
+        Cross-sectional area of every member, in square meters.
+    inertias :
+        Second moment of every member, in meters to the fourth.
+
+    Raises
+    ------
+    ValueError
+        If any value is not finite, or any section property is not positive.
+
+    Notes
+    -----
+    `section("Elastic", ...)` validates none of its arguments in the shipped
+    build, so a zero, a negative or a nan is taken and only surfaces as a solve
+    that quietly does not converge. Refusing here names the value instead.
+    """
+    if not np.all(np.isfinite(coordinates)):
+        raise ValueError("node coordinates are not all finite")
+
+    for label, values in (("areas", areas), ("second moments", inertias)):
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"section {label} are not all finite")
+        if np.any(values <= 0.0):
+            smallest = float(np.min(values))
+            raise ValueError(f"section {label} must be positive, smallest {smallest}")
+
+
+def _refuse_unregistered(count: int) -> None:
+    """
+    Refuse a sweep over tags the domain does not hold.
+
+    Parameters
+    ----------
+    count :
+        How many times a parameter was registered.
+
+    Raises
+    ------
+    RuntimeError
+        If the domain holds anything other than exactly those tags.
+
+    Notes
+    -----
+    Registering counts calls, not successes: the domain may decline one and say
+    nothing. A tag the sweep then reads terminates the process with no
+    traceback, so the cheap assertion is worth its call.
+    """
+    registered = sorted(int(tag) for tag in ops.getParamTags())
+    if registered != list(range(1, count + 1)):
+        raise RuntimeError(
+            f"registered {count} parameters but the domain holds {len(registered)}"
+        )
+
+
 def _build_model(
     model: Model,
     xyz: Float[Array, "nodes 3"],
@@ -353,6 +419,11 @@ def _build_model(
     num_nodes = coordinates.shape[0]
     num_members = edges.shape[0]
 
+    _refuse_unusable(coordinates, areas, inertias)
+
+    # The analysis owns the sensitivity algorithm, and only wiping the domain
+    # would leave it pointing at what was torn down.
+    ops.wipeAnalysis()
     ops.wipe()
     ops.model("basic", "-ndm", 2, "-ndf", DOF_PER_NODE_PLANAR)
 
@@ -391,6 +462,7 @@ def _build_model(
         for spec in _parameter_specifications(num_nodes, num_members):
             count += 1
             ops.parameter(count, *spec)
+        _refuse_unregistered(count)
 
     ops.system("FullGeneral")
     ops.numberer("Plain")
@@ -400,7 +472,13 @@ def _build_model(
     ops.analysis("Static")
     if count:
         ops.sensitivityAlgorithm("-computeAtEachStep")
-    ops.analyze(1)
+
+    status = ops.analyze(1)
+    if status != 0:
+        raise RuntimeError(
+            f"the static solve failed, ops.analyze returned {status}; the "
+            "sensitivity storage the sweep reads is not filled"
+        )
 
     return count
 
@@ -557,15 +635,18 @@ def member_forces(
     _build_model(model, xyz, diameters, catalogue, loads=loads, parameters=False)
 
     read = _read_forces(model.structure.num_edges)
-    in_plane = jnp.asarray(read.shear)
+    in_plane = np.asarray(read.shear)
+    bending = np.asarray(to_newton_millimeters(read.moments))
 
+    # Plain arrays, never `jnp`: this runs inside an FFI callback, where the
+    # wrapper it is called from forbids allocating a JAX array.
     return MemberForces(
-        axial_force=jnp.asarray(read.axial),
-        moment_major=jnp.asarray(to_newton_millimeters(read.moments)),
-        moment_minor=jnp.zeros_like(jnp.asarray(read.moments)),
+        axial_force=np.asarray(read.axial),
+        moment_major=bending,
+        moment_minor=np.zeros_like(bending),
         shear_major=in_plane,
-        shear_minor=jnp.zeros_like(in_plane),
-        torsion_moment=jnp.zeros_like(in_plane),
+        shear_minor=np.zeros_like(in_plane),
+        torsion_moment=np.zeros_like(in_plane),
     )
 
 

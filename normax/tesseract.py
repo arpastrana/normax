@@ -40,10 +40,15 @@ holding an `Ec3Sizer` for exactly that. An asymmetry worth naming rather than
 hiding, and the reason it is a field rather than a private detail.
 """
 
+import functools
 import os
+import threading
+from collections.abc import Callable
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from typing import NamedTuple
 
 import equinox as eqx
@@ -53,6 +58,7 @@ from jaxtyping import Float
 from jaxtyping import Int
 from tesseract_core import Tesseract
 from tesseract_jax import apply_tesseract
+from tesseract_jax.tesseract_compat import Jaxeract
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
@@ -74,7 +80,101 @@ from normax.structures import Structure
 from normax.structures import member_lengths
 
 # Where the three Tesseract API modules live, relative to the package.
+# Endpoints whose work must not move between threads, in dispatch order.
+PINNED_ENDPOINTS = (
+    "apply",
+    "jacobian",
+    "jacobian_vector_product",
+    "vector_jacobian_product",
+)
+
+# One worker owning every dispatch across the process, and a re-entrancy flag.
+_DISPATCH_OWNER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tesseract")
+_DISPATCHING = threading.local()
+
+
+def _dispatch_owned(work: Callable[..., Any], args: tuple, kwargs: dict) -> Any:
+    """
+    Run one dispatch with the owner thread marked as claimed.
+    """
+    _DISPATCHING.held = True
+    try:
+        return work(*args, **kwargs)
+    finally:
+        _DISPATCHING.held = False
+
+
+def pinned_dispatch(work: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Run one Tesseract endpoint on the thread that owns every dispatch.
+
+    Parameters
+    ----------
+    work :
+        The client method to pin.
+
+    Returns
+    -------
+    pinned :
+        The same method, run on the owning thread and nowhere else.
+    """
+
+    @functools.wraps(work)
+    def pinned(*args: Any, **kwargs: Any) -> Any:
+        if getattr(_DISPATCHING, "held", False):
+            return work(*args, **kwargs)
+        submitted = _DISPATCH_OWNER.submit(_dispatch_owned, work, args, kwargs)
+
+        return submitted.result()
+
+    return pinned
+
+
+def pin_dispatch_thread() -> None:
+    """
+    Make every Tesseract endpoint run on one thread, for the whole process.
+
+    Notes
+    -----
+    **Tesseract-JAX lowers a call to an XLA host callback that carries no
+    ordering and no thread affinity.** It emits the callback with no token and
+    no sharding, which is `pure_callback` semantics: under `jit` the runtime is
+    free to run several dispatches at once, on whichever workers are free, and
+    it does. Outside `jit` the primitive's own eager rule runs inline on the
+    calling thread, which is why disabling compilation looks like a fix.
+
+    Two things in the path cannot take that. A local Tesseract runs the API in
+    this process, so a backend holding global state — a solver owning one
+    mutable domain — is entered concurrently and corrupted. And the local
+    client redirects file descriptors 1 and 2 around every call, which is
+    process-wide: two dispatches racing there interleave the redirect and its
+    restore, and output goes missing for the rest of the run.
+
+    Pinning rather than locking, because mutual exclusion still lets the work
+    migrate, and a library with thread-affine state needs one owner rather than
+    one at a time. The cost is a queue hop per dispatch.
+
+    **This belongs upstream**, as an opt-in on the client rather than a patch
+    applied from outside; it is written here because the boundary is otherwise
+    unusable with the planar solver behind it.
+
+    Set `NORMAX_PIN_DISPATCH=0` to leave the endpoints alone, which is how the
+    behavior it corrects is measured.
+    """
+    if os.environ.get("NORMAX_PIN_DISPATCH") == "0":
+        return
+
+    for name in PINNED_ENDPOINTS:
+        work = getattr(Jaxeract, name, None)
+        if work is None or getattr(work, "__wrapped__", None) is not None:
+            continue
+        setattr(Jaxeract, name, pinned_dispatch(work))
+
+
 TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
+
+# Armed on import: a crossed call is unsafe before it, so there is no window.
+pin_dispatch_thread()
 
 STAGES = ("formfinding", "analysis", "ec3_check")
 
@@ -400,6 +500,9 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
                 forces["axial_force"],
                 forces["end_moments_major"],
                 forces["end_moments_minor"],
+                forces["shear_major"],
+                forces["shear_minor"],
+                forces["torsion_moment"],
             )
             for forces in analyzed
         ]

@@ -127,6 +127,33 @@ class OutputSchema(BaseModel):
     lossy contract rather than a convenient one.
     """
 
+    shear_major: Array[(None,), Float64]
+    """Major-axis shear of every member, in newtons.
+
+    **Non-differentiable.** A concrete cotangent on this raises `ValueError`, so
+    drop it before differentiating; only a symbolic zero is accepted. No size is
+    designed for shear here — EN 1993-1-1 6.2.10 permits the exclusion under
+    half the plastic shear resistance — so it crosses to be audited against that
+    permission rather than to be optimized against.
+
+    One number per member for the reason the axial force is: nodal loading
+    leaves it constant along the span.
+    """
+
+    shear_minor: Array[(None,), Float64]
+    """Minor-axis shear of every member, in newtons.
+
+    **Non-differentiable**, as `shear_major`. A planar solver returns exact
+    zeros, carrying no such component.
+    """
+
+    torsion_moment: Array[(None,), Float64]
+    """Torsional moment of every member, in newton-millimeters.
+
+    **Non-differentiable**, as `shear_major`. A planar solver returns exact
+    zeros.
+    """
+
 
 def _selected_backend() -> Any:
     """
@@ -212,7 +239,43 @@ def abstract_eval(abstract_inputs):
         "axial_force": {"shape": (members,), "dtype": "float64"},
         "end_moments_major": {"shape": (members, 2), "dtype": "float64"},
         "end_moments_minor": {"shape": (members, 2), "dtype": "float64"},
+        "shear_major": {"shape": (members,), "dtype": "float64"},
+        "shear_minor": {"shape": (members,), "dtype": "float64"},
+        "torsion_moment": {"shape": (members,), "dtype": "float64"},
     }
+
+
+# What the frame reports but designs nothing for, and so differentiates nothing.
+DIAGNOSTICS = ("shear_major", "shear_minor", "torsion_moment")
+
+
+def refuse_diagnostics(outputs) -> None:
+    """
+    Refuse a derivative of an output the stage reports without designing for.
+
+    Parameters
+    ----------
+    outputs :
+        Names of the output fields a derivative is being asked of.
+
+    Raises
+    ------
+    ValueError
+        If any diagnostic is among them.
+
+    Notes
+    -----
+    Refused rather than answered with a zero, because a cotangent on one means
+    the caller left a non-differentiable output in the loss and would otherwise
+    get a wrong answer quietly. The sibling check refuses its governing limit
+    state the same way and for the same reason.
+    """
+    asked = sorted(set(outputs) & set(DIAGNOSTICS))
+    if asked:
+        named = ", ".join(f"`{name}`" for name in asked)
+        raise ValueError(
+            f"{named} is non-differentiable; drop it before differentiating"
+        )
 
 
 def vector_jacobian_product(
@@ -249,6 +312,8 @@ def vector_jacobian_product(
     differently they pay for it is a result rather than an implementation
     detail.
     """
+    refuse_diagnostics(vjp_outputs)
+
     return _selected_backend().forces_vjp(
         inputs.model_dump(), vjp_inputs, vjp_outputs, cotangent_vector
     )
@@ -285,6 +350,8 @@ def jacobian_vector_product(
     differentiation backend, which computes a tangent per parameter directly.
     The two backends therefore meet here first, before the reverse rule.
     """
+    refuse_diagnostics(jvp_outputs)
+
     return _selected_backend().forces_jvp(
         inputs.model_dump(), jvp_inputs, jvp_outputs, tangent_vector
     )
@@ -323,6 +390,8 @@ def jacobian(
 
     The name sets arrive unordered and are fixed sorted, once, here.
     """
+    refuse_diagnostics(jac_outputs)
+
     return _selected_backend().forces_jacobian(
         inputs.model_dump(), sorted(jac_inputs), sorted(jac_outputs)
     )

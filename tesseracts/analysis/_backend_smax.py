@@ -35,6 +35,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from ec3x.section import DIAMETER_MINIMUM
 from jaxtyping import Array
 from jaxtyping import Float
@@ -222,10 +223,44 @@ def solve_assembled(
         "axial_force": member.axial_force,
         "end_moments_major": member.moment_major,
         "end_moments_minor": member.moment_minor,
+        "shear_major": member.shear_major,
+        "shear_minor": member.shear_minor,
+        "torsion_moment": member.torsion_moment,
     }
 
 
-def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
+def plain_arrays(mapping: dict[str, Any]) -> dict[str, Any]:
+    """
+    The same mapping with every array plain rather than traced.
+
+    Parameters
+    ----------
+    mapping :
+        What an endpoint computed, one level deep or two.
+
+    Returns
+    -------
+    plain :
+        The same keys, every leaf a NumPy array.
+
+    Notes
+    -----
+    An endpoint is called from inside an FFI callback, where the wrapper that
+    calls it forbids allocating a JAX array. The solve itself is traced and
+    cannot be otherwise — that is what this backend is — so the conversion
+    happens on the way out, which is the part that escapes into the caller.
+    """
+    plain = {}
+    for name, value in mapping.items():
+        if isinstance(value, dict):
+            plain[name] = {inner: np.asarray(leaf) for inner, leaf in value.items()}
+        else:
+            plain[name] = np.asarray(value)
+
+    return plain
+
+
+def solve_forces(inputs: dict[str, Any]) -> dict[str, np.ndarray]:
     """
     Internal forces of the frame the inputs describe.
 
@@ -244,7 +279,7 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
     The two halves of a crossing in order: the assembly compiled from the
     topology, then the solve the design variables reach.
     """
-    return solve_assembled(inputs, prepare_assembly(inputs))
+    return plain_arrays(solve_assembled(inputs, prepare_assembly(inputs)))
 
 
 def _restricted_solve(
@@ -326,7 +361,7 @@ def forces_jvp(
     tangents = tuple(jnp.asarray(tangent_vector[name]) for name in jvp_inputs)
     _, pushed = jax.jvp(restricted_solve, tuple(primals), tangents)
 
-    return pushed
+    return plain_arrays(pushed)
 
 
 def forces_vjp(
@@ -366,7 +401,7 @@ def forces_vjp(
         {name: jnp.asarray(value) for name, value in cotangent_vector.items()}
     )
 
-    return dict(zip(vjp_inputs, cotangents))
+    return plain_arrays(dict(zip(vjp_inputs, cotangents)))
 
 
 def forces_jacobian(
@@ -404,4 +439,4 @@ def forces_jacobian(
     computed = jax.jacrev(restricted_solve, argnums=argnums)(*primals)
     blocks = {name: dict(zip(jac_inputs, computed[name])) for name in jac_outputs}
 
-    return blocks
+    return plain_arrays(blocks)

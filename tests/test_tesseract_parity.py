@@ -356,19 +356,23 @@ def test_every_field_of_the_design_survives_the_boundary(arch, one_case, section
         assert relative(left, right) < limit, label
 
 
-def test_the_boundary_does_not_carry_the_secondary_forces(arch, one_case):
-    # Recorded rather than hidden. The analysis tesseract serves three fields,
-    # so a design taken across it cannot audit the shear its in-process twin
-    # reports, and widening that schema is what would change this.
+def test_the_boundary_carries_the_secondary_forces(arch, one_case):
+    # The schema was widened, so a design taken across the boundary can audit
+    # the shear 6.2.10 excludes sizes from rather than reading a default zero
+    # the load case stacking had shaped like data.
     oracle, composed = both(arch, one_case, 2)
 
     assert float(np.max(np.abs(oracle.forces.shear_major))) > 0.0
-    for unserved in (
-        composed.forces.shear_major,
-        composed.forces.shear_minor,
-        composed.forces.torsion_moment,
+    for served, reported in (
+        (oracle.forces.shear_major, composed.forces.shear_major),
+        (oracle.forces.shear_minor, composed.forces.shear_minor),
+        (oracle.forces.torsion_moment, composed.forces.torsion_moment),
     ):
-        assert float(np.max(np.abs(unserved))) == 0.0
+        expected = np.asarray(served)
+        crossed = np.asarray(reported)
+        assert crossed.shape == expected.shape
+        scale = max(float(np.max(np.abs(expected))), 1.0)
+        assert float(np.max(np.abs(crossed - expected))) / scale < 1e-11
 
 
 @pytest.mark.parametrize("section_class", [2, 3])
@@ -537,6 +541,9 @@ def test_the_analysis_never_reports_a_critical_load_factor(chain):
         "axial_force",
         "end_moments_major",
         "end_moments_minor",
+        "shear_major",
+        "shear_minor",
+        "torsion_moment",
     }
 
 
@@ -789,3 +796,19 @@ def test_the_composed_envelope_covers_every_load_case(arch, three_cases):
         np.asarray(composed.sizes.sections.diameter)
         >= np.asarray(jnp.max(demanded.sizes.sections.diameter, axis=0)) - 1e-9
     )
+
+
+def test_a_secondary_force_refuses_a_cotangent(arch, one_case):
+    # Non-differentiable by declaration, so a caller who leaves one in a loss
+    # is told rather than handed a zero that looks like an answer.
+    family = build_section_family(neutral_grade(arch.steel), 2)
+    analyzer = TesseractAnalyzer(arch.structure, arch.chain.analysis, family, NORMAL)
+    diameters = jnp.full((arch.structure.num_edges,), SEED)
+
+    def shear_loss(nodes):
+        forces = analyzer(nodes, diameters, one_case.analysis)
+
+        return jnp.sum(forces.shear_major**2)
+
+    with pytest.raises(ValueError, match="shear_major"):
+        jax.grad(shear_loss)(arch.structure.nodes)

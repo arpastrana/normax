@@ -27,7 +27,7 @@ the parameter registration and the reasons.
 
 from typing import Any
 
-import jax.numpy as jnp
+import numpy as np
 
 from normax.analysis import opensees
 from normax.materials import SteelGrade
@@ -72,9 +72,9 @@ def _build_model(inputs: dict[str, Any]) -> tuple[opensees.Model, TubeFamily]:
     lies in.
     """
     structure = Structure(
-        nodes=jnp.asarray(inputs["xyz"]),
-        edges=jnp.asarray(inputs["edges"]),
-        supports=jnp.asarray(inputs["supports"]),
+        nodes=np.asarray(inputs["xyz"]),
+        edges=np.asarray(inputs["edges"]),
+        supports=np.asarray(inputs["supports"]),
     )
 
     # The schema carries no ultimate strength; a zero is loud if anything reads it.
@@ -93,7 +93,7 @@ def _build_model(inputs: dict[str, Any]) -> tuple[opensees.Model, TubeFamily]:
     )
 
 
-def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
+def solve_forces(inputs: dict[str, Any]) -> dict[str, np.ndarray]:
     """
     Internal forces of the frame the inputs describe.
 
@@ -117,16 +117,19 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, jnp.ndarray]:
 
     member = opensees.member_forces(
         model,
-        jnp.asarray(inputs["xyz"]),
-        jnp.asarray(inputs["diameter"]),
+        np.asarray(inputs["xyz"]),
+        np.asarray(inputs["diameter"]),
         catalogue,
-        jnp.asarray(inputs["loads"]),
+        np.asarray(inputs["loads"]),
     )
 
     return {
         "axial_force": member.axial_force,
         "end_moments_major": member.moment_major,
         "end_moments_minor": member.moment_minor,
+        "shear_major": member.shear_major,
+        "shear_minor": member.shear_minor,
+        "torsion_moment": member.torsion_moment,
     }
 
 
@@ -155,10 +158,10 @@ def _jacobian_blocks(inputs: dict[str, Any]) -> opensees.Jacobian:
 
     return opensees.force_jacobian(
         model,
-        jnp.asarray(inputs["xyz"]),
-        jnp.asarray(inputs["diameter"]),
+        np.asarray(inputs["xyz"]),
+        np.asarray(inputs["diameter"]),
         catalogue,
-        jnp.asarray(inputs["loads"]),
+        np.asarray(inputs["loads"]),
     )
 
 
@@ -167,7 +170,7 @@ def forces_jvp(
     jvp_inputs: list[str],
     jvp_outputs: list[str],
     tangent_vector: dict[str, Any],
-) -> dict[str, jnp.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Push a tangent on the inputs forward to the outputs.
 
@@ -198,13 +201,13 @@ def forces_jvp(
     tangents = {}
 
     for output in jvp_outputs:
-        total = jnp.zeros(_output_shape(blocks, output))
+        total = np.zeros(_output_shape(blocks, output))
         for field in jvp_inputs:
             if (output, field) not in BLOCKS:
                 continue
             block = getattr(blocks, BLOCKS[(output, field)])
-            tangent = jnp.asarray(tangent_vector[field])
-            total = total + jnp.tensordot(block, tangent, axes=tangent.ndim)
+            tangent = np.asarray(tangent_vector[field])
+            total = total + np.tensordot(block, tangent, axes=tangent.ndim)
         tangents[output] = total
 
     return tangents
@@ -215,7 +218,7 @@ def forces_vjp(
     vjp_inputs: list[str],
     vjp_outputs: list[str],
     cotangent_vector: dict[str, Any],
-) -> dict[str, jnp.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Pull a cotangent on the outputs back to the inputs.
 
@@ -246,13 +249,13 @@ def forces_vjp(
     cotangents = {}
 
     for field in vjp_inputs:
-        total = jnp.zeros(jnp.asarray(inputs[field]).shape)
+        total = np.zeros(np.asarray(inputs[field]).shape)
         for output in vjp_outputs:
             if (output, field) not in BLOCKS:
                 continue
             block = getattr(blocks, BLOCKS[(output, field)])
-            cotangent = jnp.asarray(cotangent_vector[output])
-            total = total + jnp.tensordot(cotangent, block, axes=OUTPUT_RANK[output])
+            cotangent = np.asarray(cotangent_vector[output])
+            total = total + np.tensordot(cotangent, block, axes=OUTPUT_RANK[output])
         cotangents[field] = total
 
     return cotangents
@@ -262,7 +265,7 @@ def forces_jacobian(
     inputs: dict[str, Any],
     jac_inputs: list[str],
     jac_outputs: list[str],
-) -> dict[str, dict[str, jnp.ndarray]]:
+) -> dict[str, dict[str, np.ndarray]]:
     """
     Hand over every requested derivative block the sweep already assembled.
 
@@ -298,8 +301,8 @@ def forces_jacobian(
             if (output, field) in BLOCKS:
                 per_input[field] = getattr(blocks, BLOCKS[(output, field)])
             else:
-                in_shape = jnp.asarray(inputs[field]).shape
-                per_input[field] = jnp.zeros(_output_shape(blocks, output) + in_shape)
+                in_shape = np.asarray(inputs[field]).shape
+                per_input[field] = np.zeros(_output_shape(blocks, output) + in_shape)
         jacobian[output] = per_input
 
     return jacobian
