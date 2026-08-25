@@ -93,6 +93,7 @@ CI = "https://github.com/arpastrana/normax/actions"
 spike = [
     "nlopt>=2.11.0",
     "openseespy>=3.8",
+    "pynitefea>=3.0.0",
 ]
 
 [tool.pytest.ini_options]
