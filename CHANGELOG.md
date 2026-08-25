@@ -2,6 +2,235 @@
 
 ## Unreleased
 
+### A crossed dispatch runs on whatever thread is free, and the solver cannot take it
+
+Composing the planar solver across the analysis schema with the check in
+process killed the process — `exit 139`, no traceback, at a different point
+every run. What it was: **tesseract-jax lowers a Tesseract to an XLA host
+callback emitted with no token and no sharding**, so `jit` is free to have
+several dispatches live at once, and asynchronous dispatch across two compiled
+programs means one callback is still open when the next begins. Measured with a
+ledger flushed before every entry: **10 of 24 dispatches overlap**, two threads
+inside the boundary at the same time. The solver is one global C++ domain that
+each call wipes and rebuilds, so two callers is a corrupted domain.
+
+The fix pins all four endpoints of the client wrapper to one owner thread,
+armed on import. It must be a **module-level** owner: a fresh wrapper is built
+per call, so a per-instance lock serializes nothing. Pinning rather than
+locking, because mutual exclusion still lets the work migrate. Set
+`NORMAX_PIN_DISPATCH=0` to measure the behavior it corrects.
+
+**What this is not.** Three checks that refuse the easy explanations. A toy
+Tesseract — no normax, no solver — runs every dispatch on the main thread under
+`jit`, so the framework does not multi-thread by itself. The solver survives
+twelve build-solve-sweep cycles alternating across three single-worker pools, so
+thread *migration* alone breaks nothing. And within one compiled program the
+callbacks are ordered, so the overlap is across programs rather than inside one.
+The cause is concurrency, and only concurrency.
+
+Four things hardened on the way, none of them the cause and all of them silent
+before: the solve's own status was discarded where a failed solve leaves the
+sensitivity storage unfilled and indistinguishable from an unregistered tag;
+coordinates and section properties reached the C++ layer with no finiteness or
+positivity check, which `ElasticSection2d` does not make either; the parameter
+count counted calls rather than registrations, where the domain may decline one
+silently; and the analysis was never wiped, so a sensitivity algorithm outlived
+the domain it pointed at.
+
+**No endpoint returns a traced array any more.** The wrapper the endpoints are
+called from forbids allocating one inside a callback, and every stage did it.
+The planar backend went from twenty-two to none, and the three traced stages now
+convert on the way out. What they compute is still traced — that is what they
+are — so the violation is narrowed rather than removed, and the remaining half
+is inherent.
+
+- The stress that died on the second call runs **200 of 200** under `jit`, and
+  with the pin disabled it still dies, so the reproducer carries none of our own
+  defects.
+- Both crossed Vierendeel runs pass every route: **0.122263 t** with the member
+  check, **0.120854 t** with the cross-section check, and the frozen-geometry
+  route at **0.430474 t** against the in-process **0.430475 t**.
+- The suite is **433**.
+
+### What the boundary costs, and why one method survives it
+
+Priced on the shell, one gradient at the same point, in process against crossed:
+
+| map | in process | crossed | |
+|---|---|---|---|
+| the slack, 1730 rows | 0.006 s | 0.666 s | 111x |
+| its Jacobian, 1730 by 54 | 0.086 s | **over 540 s** | **over 6000x** |
+| the augmented objective, one scalar | 0.012 s | 1.395 s | 116x |
+
+**A sequential-quadratic search cannot cross this boundary.** It forms its
+subproblem from the constraint Jacobian, and one of those costs over nine
+minutes where a descent needs hundreds. Folding the rows into the objective
+before differentiating asks for one adjoint instead, which crosses at the same
+111x as the primal it accompanies. The measurement is about the schema rather
+than the solver behind it: serializing 1730 rows is what costs, so it transfers
+to any backend.
+
+That settles the method question the augmented Lagrangian was built for. It is
+not a preference at the boundary; it is the difference between an hour and never.
+
+### The planar solver cannot analyze a shell, said plainly
+
+`jax-fdm` to the planar solver to the cross-section check does not exist for the
+gridshell, and the refusal arrives later than it looks. The stage builds without
+complaint — the axis is read from the drawn geometry, which has one — and then
+refuses on the first call, once form finding has lifted the nodes out of that
+plane: *the OpenSees backend is planar; give the normal axis*. The spike ruling
+already said anything three-dimensional goes elsewhere; this is that ruling
+meeting the schema.
+
+### The buckling clause binds everywhere, and hardest where the geometry was free
+
+`experiments/26_buckling_audit.py` reads the relative slenderness and the
+reduction factor off every converged design in `designs/`, because a clause that
+never binds prices nothing and a factor pinned at one would make the member check
+a cross-section check under a longer name. Slenderness is Eq. 6.50 by way of the
+radius of gyration at the buckling length the sizer was given; the imperfection
+factor is curve a.
+
+| design | members | compressed | reduced | median λ̄ | worst λ̄ | median χ | worst χ | capacity taken |
+|---|---|---|---|---|---|---|---|---|
+| arch, 103 optimum | 10 | 10 | 10 | 0.226 | 0.296 | 0.9942 | 0.9785 | 0.6% |
+| warren, end to end | 31 | 19 | 31 | 1.514 | 4.559 | 0.4482 | 0.2391 | **55.2%** |
+| warren, free heights | 31 | 19 | 31 | 1.326 | 3.339 | 0.5434 | 0.0966 | 45.7% |
+| warren, sizing only | 31 | 19 | 31 | 0.593 | 0.835 | 0.9203 | 0.7753 | 8.0% |
+| vierendeel, end to end | 23 | 16 | 23 | 1.227 | 3.410 | 0.7601 | 0.4299 | **24.0%** |
+| vierendeel, free heights | 23 | 14 | 23 | 0.365 | 2.194 | 0.9618 | 0.4557 | 3.8% |
+| vierendeel, sizing only | 23 | 12 | 15 | 0.264 | 0.313 | 0.9915 | 0.9744 | 0.8% |
+| gridshell, end to end | 496 | 262 | 496 | 0.568 | 3.438 | 0.9184 | 0.7038 | 8.2% |
+| gridshell, free heights | 496 | 494 | 496 | 0.552 | 2.586 | 0.9072 | 0.1376 | 9.3% |
+| gridshell, sizing only | 496 | 496 | 496 | 0.552 | 2.052 | 0.9072 | 0.2126 | 9.3% |
+
+**Freeing the geometry drives a structure toward the buckling limit.** The Warren
+goes from 8.0% of its capacity lost to buckling at a frozen geometry to **55.2%**
+once the search may move it, the Vierendeel from 0.8% to 24.0%. The optimizer
+trades area for length and keeps going until buckling stops it, which is the
+argument for the clause being inside the differentiated loop rather than applied
+after it.
+
+**Two claims recorded earlier are corrected.** The shell is the *mildest* of the
+four, not the sharpest: 496 short members, median χ 0.918, 8.2% taken. Its 42.4%
+end-to-end advantage is therefore not a buckling result and must not be written as
+one. And the 5.6–7.9% diameter gap experiment 12 reports belongs to *its* arch,
+sized at a form-found shape; the arch at 103's optimum sits at χ 0.9942, because a
+search free in both geometry and size chooses stocky.
+
+**The verdict asserts what the designs support and no more.** Every shaped design
+has every member reduced — 10/10, 31/31, 23/23, 496/496. A frozen geometry need
+not: `vierendeel, sizing only` holds 15 of 23, the other eight sitting under
+6.3.1.2(3)'s offset where the factor is exactly one. A structure drawn stocky is
+entitled to that, so it is reported rather than asserted. PASS.
+
+### The Vierendeel through OpenSees and Blueprints, and what the lighter answer costs
+
+`experiments/vierendeel_crossed.yaml` descends experiment 19's Vierendeel through
+**jax-fdm in process, OpenSees across the analysis schema and Blueprints across
+the check**, against the in-process `smax + ec3` baseline. Same optimizer, one
+nominal start, everything else equal. The gradient across the two boundaries
+agrees with central differences at **9.54e-10** end to end and **8.78e-11** on
+free heights.
+
+| route | crossed | in process | gap |
+|---|---|---|---|
+| end to end | 0.120854 | 0.122263 | −1.15% |
+| free heights | 0.143912 | 0.144921 | −0.70% |
+| sizing only | 0.430474 | 0.430475 | −0.00% |
+
+**The mass gap is the boring half.** Blueprints implements no §6.3.1, so the
+crossed answer is a design sized without member buckling. Put back through EN
+1993-1-1:
+
+| route | Blueprints max U | ec3 max U | members over 1.0 |
+|---|---|---|---|
+| sizing only | 1.0000 | **1.0000** | **0 / 23** |
+| end to end | 1.0000 | 1.0357 | 4 / 23 |
+| free heights | 1.0000 | **1.9100** | 8 / 23 |
+
+**Buckling costs nothing at a drawn geometry and everything once the geometry
+moves.** Frozen, the two checks agree exactly — no mass gap, no member over one —
+because the drawn Vierendeel is stocky. Freed, they diverge: a check without
+§6.3.1 hands the optimizer a shape the standard rejects, and free heights is the
+worst of it at 91% overstressed, having the most reach to make members long and
+slender and no term stopping it. Quote the pair; **−1.15% alone reads as a win.**
+
+**The two backends agree on everything the design reads.** Axial force to
+**1.001e-14**. The seven vertical members' end moments come back negated — a local
+axis convention for members parallel to the global vertical, `opensees` against
+`−smax` agreeing to **1.378e-14** while every chord agrees outright — and the same
+negation appears in their shear, where the magnitudes agree to **2.86e-13**. It is
+design-neutral, and that was measured rather than assumed: the same sizer fed both
+force sets returns utilization agreeing to **1.298e-14**, the check reading a
+resultant and a tube being axisymmetric. A funicular arch, whose moments are
+nearly zero, never exposed any of it.
+
+### Shear crosses the boundary, because the exclusion is conditional
+
+The analysis schema served three fields, so a crossed design could not audit its
+own shear. `MemberForces` defaults its shear to a scalar zero for callers stating a
+demand by hand, the client left that default in place, and the load case stacking
+turned three scalars into an array shaped like a load case axis and nothing else.
+Dividing it by a per-member resistance raised, which was the good outcome; a
+correctly shaped zero would have been a silent one.
+
+**That mattered more than a crash.** EN 1993-1-1 6.2.10 permits shear out of the
+bending and axial checks *while* the design shear stays under half the plastic
+shear resistance — a conditional permission, and because no diameter is designed
+for shear the audit is the only evidence behind it. Reading an uncomputed zero
+would have let the audit prove the exclusion by assuming it, exp 20's assertion
+that the torsion is zero included.
+
+Two changes, in that order. `design_routes.sheared_forces` re-solves in process
+when the analysis handed back carries no per-member shear, following the viewer's
+own fallback for the viewer's own reason. It tests **what arrived** rather than
+which stage sent it, so a schema that grows shear stops it falling back without
+the reading changing. Then the schema grew: `shear_major`, `shear_minor` and
+`torsion_moment` on the analysis stage, filled by both backends, declared
+**non-differentiable** beside the sibling check's governing limit state, and
+refused rather than zeroed at all three derivative endpoints.
+
+**Non-differentiable is the honest declaration, not a shortcut.** `design_actions`
+builds a five-field `MemberActions` with no shear in it, so scaling the shear a
+thousandfold moves no diameter by an ulp and `d(mass)/d(shear_major)` is
+identically zero. An output advertising a provably zero derivative is worse than
+none. Neither backend needed new arithmetic — both already computed all three —
+and the OpenSees sensitivity path was never touched.
+
+Crossed against in process, the served shear agrees at **3.634e-13**, a cotangent
+on it raises, and the design path is untouched. The widened run reproduces the
+fallback run to every digit, which is the two paths validating each other rather
+than a tautology: one re-solved the shear, the other carried it. The crossed
+Vierendeel now reports **9.67e-02**, **1.68e-01** and **3.56e-01** of the plastic
+shear resistance against the 0.5 of 6.2.10.
+
+### The backends are a key a file turns, and the standard is quoted precisely
+
+`design_routes` grew `analysis.backend` and `sizing.backend`, the two keys
+`arch.yaml` already had, dispatched at the single site where the pipeline is
+built. `TaskConfig` gaining a field moves every fingerprint, so the stored answers
+were migrated by deriving each one's former digest exactly — the change inserts two
+substrings into a repr and nothing else — rather than by trusting the source file
+each recorded. Keying on the recorded name would have orphaned seven answers whose
+descriptions had been renamed and attached two stale ones to fresh digests whose
+descriptions had been edited. **14 of 16 migrated, no collisions**, and the two
+left behind are genuinely stale. Experiment 20 had also been left calling
+`descend_all` with the wrong container since the method dispatch landed.
+
+**"Blueprints implements no §6.3 member buckling" is too broad, and it appeared in
+five places.** Checked against the installed package: 6.46–6.53 are absent, which
+is the jump from `formula_6_45` to `formula_6_54`, and the 2022 tree stops at
+`formula_8_60` before its own §8.3 — so there is no **§6.3.1 flexural buckling**.
+But §6.3.2.1 is there, `Form6Dot54BucklingResistanceOfMembersInBending` and
+`Form6Dot55DesignBucklingResistanceMoment`. The one member clause Blueprints
+offers is lateral-torsional buckling, which a doubly symmetric tube never needs,
+and the one this repo needs is the one absent. `docs/shear_design.md` is corrected
+in place with it: its fork (A) has landed and cost far less than it predicted, and
+every gap it named — a renamed container, a boundary blind by design, a docstring
+defect, a README silent on the exclusion — has since been closed.
+
 ### The three the writeup will show, and a baseline that was not the best one
 
 The submission narrows to three experiments — the arch for robustness under
