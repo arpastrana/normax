@@ -438,10 +438,19 @@ class SubspaceConfig(NamedTuple):
 ANALYSIS_SMAX = "smax"
 ANALYSIS_SMAX_CROSSED = "smax_tesseract"
 ANALYSIS_OPENSEES = "opensees"
-ANALYSIS_BACKENDS = (ANALYSIS_SMAX, ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES)
+ANALYSIS_PYNITE = "pynite"
+ANALYSIS_BACKENDS = (
+    ANALYSIS_SMAX,
+    ANALYSIS_SMAX_CROSSED,
+    ANALYSIS_OPENSEES,
+    ANALYSIS_PYNITE,
+)
 
 # Which of them reach the solver across a boundary rather than in process.
-ANALYSIS_CROSSED = (ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES)
+ANALYSIS_CROSSED = (ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES, ANALYSIS_PYNITE)
+
+# Which of them are restricted to a plane, and so must be told which one.
+ANALYSIS_PLANAR = (ANALYSIS_OPENSEES,)
 
 # What the check may be answered by. Blueprints is reachable only crossed.
 SIZING_EC3 = "ec3"
@@ -460,9 +469,11 @@ class AnalysisConfig(NamedTuple):
     backend :
         Which solver answers the stage. `smax` traces in process,
         `smax_tesseract` is the same solver across a Tesseract boundary, and
-        `opensees` is a second solver across that same schema. The planar
-        solver is the two-dimensional demo alone — it refuses a geometry that
-        leaves its plane, so a shell may only ask for the other two.
+        `opensees` and `pynite` are two further solvers across that same
+        schema, neither of which differentiates itself. `opensees` is the
+        two-dimensional demo alone — it refuses a geometry that leaves its
+        plane — so a shell asks for `pynite`, which is a space frame and whose
+        adjoint is this repository's.
     """
 
     diameter: float
@@ -1944,12 +1955,12 @@ def built_analyzer(
     os.environ[BACKEND_VARIABLE] = config.analysis.backend.removesuffix("_tesseract")
     chain = local_chain()
 
-    # The traced solver measures the plane itself and needs no axis; the planar
-    # one is told which, and refuses a geometry that leaves it.
-    if config.analysis.backend == ANALYSIS_SMAX_CROSSED:
-        normal = None
-    else:
+    # Only a planar solver is told which plane; the traced one measures its own
+    # and the space-frame one has no such restriction to state.
+    if config.analysis.backend in ANALYSIS_PLANAR:
         normal = normal_axis(structure)
+    else:
+        normal = None
 
     return TesseractAnalyzer(structure, chain.analysis, family, normal)
 
