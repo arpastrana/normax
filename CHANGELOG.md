@@ -2,6 +2,155 @@
 
 ## Unreleased
 
+### A size may not depend on the frame the analysis happened to pick
+
+Two solvers analyzing one frame reported bending about different axes, and the
+check believed them both. The consequence was a design that changed with the
+backend: on a frame no plane contains, the demanded diameters differed by
+**8.0e-3** under a vertical load and **1.1e-1** under a horizontal one, and the
+moment factor by **0.60** and **0.96** — not round-off, a different structure.
+
+Nothing was wrong with either solver. A local frame is a solver's own
+convention, and for a **circular** section it is not even determinate: the
+section has no weak axis for the choice to be a property of. So the check now
+reads the bending without naming an axis. `axisymmetric_bending` takes the ratio
+that Table B.3's first row wants from the two end moments as vectors,
+
+    psi = (M_first . M_second) / max(|M_first|, |M_second|)^2
+
+which is the magnitude ratio a plane frame always gave, signed by whether the
+ends bend the same way, and invariant to any rotation of the pair. Every field
+of `design_actions` now agrees across the two solvers to **3e-15** or better,
+and the **demanded diameters to between 0 and 4.3e-16**.
+
+**The obvious alternative was measured and rejected.** Reading magnitudes alone
+is provably conservative — `moment_factor_linear` is monotone in the ratio — but
+it forgets which members are in reversal, and **77% of Vierendeel members and
+82% of Warren members are**, inflating the factor by a median of 1.85 and 2.13.
+That is enough to corrupt the mass comparisons the submission rests on.
+
+**A limitation, stated rather than hidden**: a prescribed convention is a
+substitute for the right thing, which is for the moments to arrive already
+resolved in the local frames the analyzer itself defines, under a convention the
+schema states. Then a check could read an axis and mean it. Only an
+axisymmetric section lets this be read around.
+
+⚠ **Every mass on record predates this.** The moment factor moves wherever a
+member is in reversal, so the arch, Vierendeel and gridshell figures are all
+provisional until re-run.
+
+### A space frame solver with no derivative, given an exact one
+
+The three-dimensional analysis stage now has a backend that ships. `smax` will
+not be public before the deadline and is pinned as a local path, so nothing
+resting on it is reproducible — and reproducibility is judged. **PyNite** (MIT,
+published, pure Python) replaces it in that role, and it is a better argument
+than what it replaces: `smax` is JAX-native, which makes wrapping it the weakest
+possible motivation for a differentiation boundary. PyNite has no tape, no
+tangent and no sensitivity command, and no configuration produces one. The
+gradient that crosses the schema is one the solver on the far side cannot
+compute about its own answer.
+
+**What each side contributes, stated exactly, because the claim is only worth
+its honesty.** PyNite assembles the stiffness, partitions it, factors it, solves,
+and reports its matrices and displacements. This repository states the element in
+JAX, holds it against PyNite's own matrices by test, and differentiates
+equilibrium as an implicit function so that one factorization answers for every
+parameter.
+
+**Two measurements decided the design, and both are in
+`experiments/27_pynite_agreement.py`.**
+
+The element replica agrees with the solver's own matrices at **7.7e-18** locally
+and **5.7e-16** globally, over forty randomly oriented members. That is what
+licenses differentiating the replica: it is not a lookalike, it is the same
+element.
+
+The global element stiffness is **invariant to a roll of the transverse axes**
+when the two second moments are equal — measured at **1.7e-16** over four
+angles, against **8.7e-3** for a section with unequal moments. A circular hollow
+section is what makes that true, and three consequences follow. The frame used
+to build the stiffness may be chosen for conditioning alone and read by nobody.
+The frame used to *report* bending is a convention, not a fact, so two correct
+solvers report different components for one physical bending. And the adjoint
+needs only the global element stiffness, never the transformation's derivative —
+one object serves both the implicit term and the read-back.
+
+**The gradient is checked against an exact answer, not a finer approximation.**
+Against `smax`, which JAX differentiates end to end: **1.3e-14** over every node
+coordinate and **6.2e-14** over every diameter in process, and **6.2e-14** again
+across the analysis schema. A central difference cannot referee at that
+tolerance; it was used only to confirm the shape of the error, and a step sweep
+puts its own best agreement at 2.1e-10, minimizing at a step and worsening in
+both directions — the signature of an exact derivative being probed by an
+inexact one.
+
+**The rule is what makes a shell affordable**, and the reverse direction has
+its own rule rather than a slice of the forward one. One factorization is
+shared; a *forward* sweep then spends a back-substitution per parameter, while
+the *reverse* rule spends exactly one whatever the parameter count — the
+cotangent is pulled through each member's reading, gathered into a single
+adjoint load, solved once, and contracted element by element.
+
+Measured on the 16-by-16 diagrid — 129 nodes, 248 members, 635 parameters, one
+load case — with the same solver on both sides of the boundary where that
+isolates a cost:
+
+| route | seconds | against smax in process |
+|---|---|---|
+| smax, traced, in process | 0.259 | 1.00x |
+| smax, **same solver**, crossed | 0.290 | **1.12x** |
+| PyNite, dense Jacobian, no schema | 0.261 | 1.01x |
+| PyNite, **reverse rule**, no schema | **0.144** | **0.55x** |
+| PyNite, reverse rule, crossed | 0.204 | **0.79x** |
+
+Three readings, and they should not be quoted for each other. **The Tesseract
+boundary costs 12%** — that is the row with one solver on both sides, which is
+the only way to isolate it. **The reverse rule is 1.8x the dense route** here
+and the gap grows with the parameter count, since one is O(1) solves and the
+other O(parameters). And a hand-written adjoint over a Python solver, reached
+across a schema, is **cheaper than a traced JAX solver in process** — 0.79x.
+None of this is the pipeline-level 116x on record for a constraint Jacobian:
+that is a different measurement over 1730 rows.
+
+Differencing the same Jacobian would take **293 s**, a factor of **1050**.
+
+**Three guards, and what each is for.** A section of no area assembles a
+singular stiffness that PyNite solves anyway; a non-finite coordinate propagates
+through the whole solve; and a singular factorization is a *warning* in this
+library, returning a finite garbage number rather than raising. All three are
+promoted to errors before anything reads an answer. The fourth refusal is the
+reporting convention's own: it completes its transverse pair against the
+vertical, so a **vertical member has no pair** and is refused rather than
+reported about arbitrarily. No shell member is affected; a frame with columns
+wants the planar backend or a convention stated for it.
+
+**`normax/analysis/element.py` is new** and carries the frame element: the local
+stiffness, the two frames, and the vmapped assembly. `normax/analysis/pynite.py`
+gained the adjoint, and its read-back moved from PyNite's local components to
+global end forces projected onto the stated convention — which is why the
+demanded diameters from the two solvers now agree at **0 to 4.3e-16**, against
+4.3e-14 before. `tesseracts/analysis/_backend_pynite.py` serves the four
+endpoints, and unlike the planar backend **every one of its six Jacobian blocks
+is a derivative**: a space frame bends both ways, so nothing is a structural
+zero standing in for a block that went unreached. Its `vector_jacobian_product`
+takes the single-solve route and zero-fills any differentiable output that
+arrived without a cotangent, the pull-back being linear.
+
+**Where the accuracy and the timings were measured is not the same structure.**
+The element and gradient claims are taken on a six-node frame no plane contains
+and deliberately not funicular — a funicular geometry leaves its members almost
+free of bending, which is the one case in which a wrong reading of the bending
+would not show. The costs are taken on the shell, because that is what they have
+to hold for. Neither is the arch or the Vierendeel: those are planar, they stay
+on OpenSees, and the Vierendeel would be **refused** outright for its vertical
+members.
+
+**Not yet measured, and not to be quoted until it is**: the crossed shell's
+mass. Every recorded figure for the arch, the Vierendeel and the shell predates
+the frame-convention fix, which moves the moment factor wherever a member is in
+reversal.
+
 ### A crossed dispatch runs on whatever thread is free, and the solver cannot take it
 
 Composing the planar solver across the analysis schema with the check in
