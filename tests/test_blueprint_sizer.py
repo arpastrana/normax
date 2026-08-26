@@ -848,3 +848,23 @@ def test_the_host_coefficients_match_the_sections():
     assert float(unit.modulus_elastic) == pytest.approx(
         host.modulus_coefficient, rel=1e-15
     )
+
+
+def test_the_private_evaluator_is_the_public_clause():
+    # The check bisects through Blueprints' `_evaluate` rather than building a
+    # clause object per trial, which is a five-fold saving and a dependency on
+    # a private method of a third-party library. If a release ever moves it, or
+    # moves away from it, this fails here rather than silently changing what
+    # every size in the repository is solved against.
+    api = load_tesseract_api("blueprint_check")
+    family = api._host_family({"ratio": RATIO, "f_y": YIELD_SAMPLE, "gamma_m0": 1.0})
+
+    generator = np.random.default_rng(20260825)
+    for _ in range(200):
+        diameter = float(generator.uniform(30.0, 900.0))
+        axial = float(generator.uniform(-6.0e5, 6.0e5))
+        moment = float(generator.uniform(0.0, 3.0e7))
+        through_class = api._check_scalar(diameter, axial, moment, family)
+        through_evaluate = api._probe_scalar(diameter, axial, moment, family)
+
+        assert through_evaluate == pytest.approx(through_class, rel=1e-15, abs=0.0)
