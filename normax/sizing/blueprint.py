@@ -78,8 +78,11 @@ GAMMA_M0 = 1.0
 # Restates ec3x's catalogue floor; the cross-repo agreement is a test literal.
 DIAMETER_MINIMUM = 21.3
 
-# The bracket ratio is at most sqrt(2) + cbrt(2), so this is far below one ulp.
-BISECTION_HALVINGS = 55
+# Fifty halvings of a bracket at most sqrt(2) + cbrt(2) wide. Measured over
+# four thousand random members: the diameter lands within one ulp of what a
+# larger budget reaches, and the utilization read back at it is one to 2.8e-15,
+# against the 1e-9 the pipeline's invariant asks for.
+BISECTION_HALVINGS = 50
 
 
 class HostFamily(NamedTuple):

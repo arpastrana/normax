@@ -44,6 +44,7 @@ Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15: never on the
 Apache-2.0 submission path.
 """
 
+import hashlib
 import math
 from typing import Any
 from typing import NamedTuple
@@ -62,8 +63,11 @@ from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
-# The bracket ratio is at most sqrt(2) + cbrt(2), so this is far below one ulp.
-BISECTION_HALVINGS = 55
+# Fifty halvings of a bracket at most sqrt(2) + cbrt(2) wide. Measured over
+# four thousand random members: the diameter lands within one ulp of what a
+# larger budget reaches, and the utilization read back at it is one to 2.8e-15,
+# against the 1e-9 the pipeline's invariant asks for.
+BISECTION_HALVINGS = 50
 
 
 class InputSchema(BaseModel):
@@ -284,6 +288,118 @@ def _check_scalar(
     return abs(axial) / float(squashing) + moment / float(bending)
 
 
+# Whether the clause's own evaluator can be reached without building the clause.
+#
+# **A private method of a third-party library is a fast path, never a
+# correctness requirement.** It is checked once, here, for existing and for
+# agreeing with the public class it belongs to; if a release ever moves it or
+# changes it, this backend keeps answering by constructing the clause, slower
+# and identical. What must not happen is that a library upgrade quietly changes
+# what every size in this repository is solved against.
+#
+# The clause is a float subclass whose constructor calls this same evaluator and
+# wraps the result, so the fast path is the library's own arithmetic without the
+# object built around it — and no release can leave the evaluator unusable while
+# the class still works.
+PROBE_AREA = 1.2e3
+PROBE_MODULUS = 5.0e4
+PROBE_YIELD = 355.0
+PROBE_FACTOR = 1.0
+
+
+def _evaluator_agrees() -> bool:
+    """
+    Whether each clause's own evaluator can be called, and matches the class.
+
+    Returns
+    -------
+    agrees :
+        True when both clauses expose an evaluator that returns what
+        constructing them returns.
+    """
+    try:
+        squashing = Form6Dot10NcRdClass1And2And3._evaluate(
+            PROBE_AREA, PROBE_YIELD, PROBE_FACTOR
+        )
+        bending = Form6Dot14MCRdClass3._evaluate(
+            PROBE_MODULUS, PROBE_YIELD, PROBE_FACTOR
+        )
+        declared_squashing = float(
+            Form6Dot10NcRdClass1And2And3(
+                a=PROBE_AREA, f_y=PROBE_YIELD, gamma_m0=PROBE_FACTOR
+            )
+        )
+        declared_bending = float(
+            Form6Dot14MCRdClass3(
+                w_el_min=PROBE_MODULUS, f_y=PROBE_YIELD, gamma_m0=PROBE_FACTOR
+            )
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+    return squashing == declared_squashing and bending == declared_bending
+
+
+EVALUATOR_REACHED = _evaluator_agrees()
+
+
+def _probe_scalar(
+    diameter: float,
+    axial: float,
+    moment: float,
+    family: HostFamily,
+) -> float:
+    """
+    The same utilization, evaluated without building the clause objects.
+
+    Parameters
+    ----------
+    diameter :
+        Outer diameter of the trial tube.
+    axial :
+        Axial force the member carries, negative in compression.
+    moment :
+        Bending moment the member carries, unsigned.
+    family :
+        The tube family the trial section is drawn from.
+
+    Returns
+    -------
+    utilization :
+        Demand over resistance, one at the fully stressed diameter.
+
+    Notes
+    -----
+    **The same library, the same formulas, no object per evaluation.** Each
+    clause here is a class whose constructor validates its arguments and then
+    computes; a bisection asks for the same formula at fifty diameters per
+    member, so the validation is paid fifty times for one answer while the
+    arithmetic is paid once. This calls what the constructor calls.
+
+    **What is given up is stated rather than hidden**: the clause's input
+    validation does not run during the search. It runs on the answer —
+    `_check_scalar` reads every reported utilization through the class itself,
+    so any section this would have refused is refused where it is reported.
+    The search is ours; the number that leaves is the library's.
+
+    **And the saving is optional.** The evaluator is private to the library, so
+    it is checked once at import for existing and for agreeing with its own
+    class; where it does not, this falls through to constructing the clause and
+    the answer is unchanged.
+    """
+    if not EVALUATOR_REACHED:
+        return _check_scalar(diameter, axial, moment, family)
+
+    area = family.area_coefficient * diameter**2
+    modulus = family.modulus_coefficient * diameter**3
+    squashing = Form6Dot10NcRdClass1And2And3._evaluate(
+        area, family.f_y, family.gamma_m0
+    )
+    bending = Form6Dot14MCRdClass3._evaluate(modulus, family.f_y, family.gamma_m0)
+
+    return abs(axial) / squashing + moment / bending
+
+
 def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
     """
     The diameter one member's check is exactly satisfied at.
@@ -324,7 +440,7 @@ def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
     high = math.log(upper)
     for _ in range(BISECTION_HALVINGS):
         middle = 0.5 * (low + high)
-        used = _check_scalar(math.exp(middle), axial, moment, family)
+        used = _probe_scalar(math.exp(middle), axial, moment, family)
         if used > 1.0:
             low = middle
         else:
@@ -381,6 +497,89 @@ class SolvedState(NamedTuple):
     moment: Float[np.ndarray, "members"]
     unclamped: Float[np.ndarray, "members"]
     diameter: Float[np.ndarray, "members"]
+
+
+# One solved state, remembered between endpoint calls.
+#
+# **Both endpoints solve the same problem.** The forward pass bisects every
+# member, and the reverse rule recomputes that same forward state before it can
+# evaluate a single partial — so one gradient pays for two identical searches.
+# The bisection is the whole cost of this check, so remembering the last one
+# halves it.
+#
+# Keyed on every input the solve reads, by content: the schema rebuilds its
+# payload per call, so nothing survives between them to compare by reference.
+#
+# **More than one entry, and that is not a guess.** Reverse-mode differentiation
+# runs every forward call before any backward call, and one evaluation asks the
+# check about more than one point — so a single entry is overwritten by the next
+# forward pass before the matching reverse pass arrives, and never hits. The
+# room here is for the points one evaluation holds at once; a miss only costs
+# the search it would have saved, so being generous is free and being stingy is
+# silent.
+#
+# ⚠ Safe because dispatch is serialized onto one owner thread. A served runtime
+# would need a lock of its own.
+SOLVED_ROOM = 8
+
+_SOLVED: dict[bytes, SolvedState] = {}
+
+# What the solve reads. `diameter_held` is deliberately absent: the held check
+# consults it, the bisection never does.
+SOLVE_FIELDS = ("axial_force", "end_moments_major", "end_moments_minor")
+SOLVE_SCALARS = ("f_y", "gamma_m0", "ratio", "diameter_min")
+
+
+def _solve_fingerprint(inputs: dict[str, Any]) -> bytes:
+    """
+    What identifies the problem a solved state belongs to.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields.
+
+    Returns
+    -------
+    fingerprint :
+        A digest of everything the bisection reads.
+    """
+    digest = hashlib.blake2b(digest_size=32)
+    for field in SOLVE_FIELDS:
+        value = np.ascontiguousarray(inputs[field], dtype=np.float64)
+        digest.update(str(value.shape).encode())
+        digest.update(value.tobytes())
+    for field in SOLVE_SCALARS:
+        digest.update(repr(float(inputs[field])).encode())
+
+    return digest.digest()
+
+
+def _remembered_state(inputs: dict[str, Any]) -> SolvedState:
+    """
+    The solved state these inputs describe, searched for only once.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields.
+
+    Returns
+    -------
+    state :
+        The sized members, freshly if the last question asked was a different one.
+    """
+    fingerprint = _solve_fingerprint(inputs)
+    held = _SOLVED.get(fingerprint)
+    if held is not None:
+        return held
+
+    state = _solved_state(inputs)
+    if len(_SOLVED) >= SOLVED_ROOM:
+        _SOLVED.pop(next(iter(_SOLVED)))
+    _SOLVED[fingerprint] = state
+
+    return state
 
 
 def _solved_state(inputs: dict[str, Any]) -> SolvedState:
@@ -440,7 +639,7 @@ def _forward_pass(
     outputs :
         The output fields, the diagnostic included only when asked for.
     """
-    state = _solved_state(inputs)
+    state = _remembered_state(inputs)
 
     tripled = zip(state.diameter, state.axial, state.moment, strict=True)
     used = [
@@ -532,7 +731,7 @@ def _hand_partials(inputs: dict[str, Any]) -> HandPartials:
     image: pinned at one where the check decided, so its derivative is exactly
     zero there, and the bare partial at the floor where the clamp did.
     """
-    state = _solved_state(inputs)
+    state = _remembered_state(inputs)
     family = state.family
     axial = state.axial
     unclamped = state.unclamped
