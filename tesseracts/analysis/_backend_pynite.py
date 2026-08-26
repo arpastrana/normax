@@ -33,6 +33,7 @@ The schema above is untouched — three backends now disagree about how a
 derivative is obtained and agree about what one is.
 """
 
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -59,6 +60,92 @@ BLOCKS = {
 OUTPUT_RANK = {"axial_force": 1, "end_moments_major": 2, "end_moments_minor": 2}
 
 
+# One assembled and factorized frame, remembered between endpoint calls.
+#
+# **The expensive half of a solve does not depend on the loading.** Assembling
+# the stiffness and decomposing it costs almost the whole of a forward pass,
+# and every load case in one evaluation — and the adjoint that follows each —
+# asks for it at the same geometry and the same diameters. So one entry
+# suffices: the key deliberately excludes the loads, which is why nothing can
+# evict it midway through an evaluation and why it does not need to be sized
+# against the number of load cases.
+#
+# ⚠ **This makes the backend depend on serialized dispatch.** It is safe
+# because `normax.tesseract.pin_dispatch_thread` runs every endpoint on one
+# owner thread; a served runtime, or `NORMAX_PIN_DISPATCH=0`, would need a lock
+# of its own. A miss only costs the preparation this would have saved, so a
+# wrong guess is slow rather than wrong.
+_PREPARED: dict[bytes, Any] = {}
+
+
+def _fingerprint(inputs: dict[str, Any]) -> bytes:
+    """
+    What identifies the frame an assembly and a factorization belong to.
+
+    Parameters
+    ----------
+    inputs :
+        The validated input fields of the analysis schema.
+
+    Returns
+    -------
+    fingerprint :
+        A digest of everything the preparation reads.
+
+    Notes
+    -----
+    Content, not identity: the schema rebuilds its payload per call, so nothing
+    survives between them to compare by reference. Shape and dtype enter the
+    digest along with the bytes, since two arrays can share bytes and mean
+    different things. **The loads are deliberately absent** — the preparation
+    does not read them.
+    """
+    digest = hashlib.blake2b(digest_size=32)
+    for field in ("xyz", "diameter", "edges", "supports"):
+        value = np.ascontiguousarray(inputs[field])
+        digest.update(str(value.dtype).encode())
+        digest.update(str(value.shape).encode())
+        digest.update(value.tobytes())
+    for field in ("f_y", "e_mod", "density", "ratio"):
+        digest.update(repr(float(inputs[field])).encode())
+
+    return digest.digest()
+
+
+def _prepared_frame(
+    problem: pynite.FrameProblem,
+    inputs: dict[str, Any],
+) -> Any:
+    """
+    The assembled and factorized frame these inputs describe.
+
+    Parameters
+    ----------
+    problem :
+        The frame and its section family.
+    inputs :
+        The validated input fields of the analysis schema.
+
+    Returns
+    -------
+    prepared :
+        A frame prepared at this geometry and these diameters, freshly if the
+        last one asked for was a different frame.
+    """
+    fingerprint = _fingerprint(inputs)
+    held = _PREPARED.get(fingerprint)
+    if held is not None:
+        return held
+
+    prepared = pynite.prepared_frame(
+        problem, np.asarray(inputs["xyz"]), np.asarray(inputs["diameter"])
+    )
+    _PREPARED.clear()
+    _PREPARED[fingerprint] = prepared
+
+    return prepared
+
+
 def _build_model(inputs: dict[str, Any]) -> pynite.FrameProblem:
     """
     The frame the inputs describe, in the containers the backend takes.
@@ -76,10 +163,9 @@ def _build_model(inputs: dict[str, Any]) -> pynite.FrameProblem:
 
     Notes
     -----
-    There is nothing to prepare and nothing to cache. PyNite builds a fresh
-    model object per solve and holds no global state, so unlike the planar
-    backend this one has no domain to wipe and no ordering to respect — which
-    is also why it needs no pinning to survive being called concurrently.
+    The solver holds no global state of its own — it builds a fresh model per
+    solve — so unlike the planar backend there is no domain to wipe and no
+    ordering the solver itself imposes.
 
     The schema's normal axis is not read. It states which plane a planar solver
     should work in, and this one has no such restriction.
@@ -136,10 +222,11 @@ def solve_forces(inputs: dict[str, Any]) -> dict[str, np.ndarray]:
     diameters = np.asarray(inputs["diameter"])
 
     member = pynite.member_forces(
-        problem.structure,
+        problem,
         np.asarray(inputs["xyz"]),
-        problem.catalogue(diameters),
+        diameters,
         problem.loads,
+        _prepared_frame(problem, inputs),
     )
 
     return _plain_arrays(
@@ -274,8 +361,9 @@ def forces_vjp(
     for output in vjp_outputs:
         seeded[output] = np.asarray(cotangent_vector[output])
 
+    problem = _build_model(inputs)
     pulled = pynite.force_cotangents(
-        _build_model(inputs),
+        problem,
         np.asarray(inputs["xyz"]),
         np.asarray(inputs["diameter"]),
         pynite.ReadingCotangent(
@@ -283,6 +371,7 @@ def forces_vjp(
             moment_major=seeded["end_moments_major"],
             moment_minor=seeded["end_moments_minor"],
         ),
+        _prepared_frame(problem, inputs),
     )
 
     cotangents = {field: getattr(pulled, field) for field in vjp_inputs}
