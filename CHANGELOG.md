@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### The in-process sizer dissolved into a swappable sizing Tesseract
+
+`BlueprintSizer` was the one block in the transport grid with no analysis-side
+counterpart: analysis never had an in-process wrapper of its crossed backends,
+while sizing carried one for the historical reason that the class came first
+and the Tesseract wrapped it later. Dissolved 2026-08-26, with the constraints
+fixed by the same ruling: `Ec3Sizer` is never a Tesseract backend — it
+parallels `SmaxAnalyzer` as the in-process oracle — and commercial-check
+backends (SkyCiv-class) are the motivation, not hackathon work.
+
+**The sizing Tesseract now mirrors the analysis one.** `tesseracts/blueprint_check`
+became `tesseracts/sizing`, split into the schema plus a `_selected_backend()`
+dispatch on `NORMAX_SIZING_BACKEND` (default `blueprint`), the whole far side
+moved verbatim into `_backend_blueprint.py`. `sizing_tesseract(backend)`
+replaces `blueprint_tesseract()`, the config value `blueprint_tesseract`
+became `blueprint`, and the schema itself is unchanged — no buckling length
+crosses until a backend that reads one exists, and the module docstring
+records that deferral. The wire is unpublished, so widening it later is cheap.
+
+**`sizing/blueprint.py` is now host NumPy with no JAX anywhere** — the class
+and its two `pure_callback` `custom_vjp` wrappers are deleted (−291 lines),
+and the only way a trace reaches Blueprints is the boundary, which is the
+writeup's sentence made literal. `builders.py` stopped importing the oracles
+the same day: nothing selected `"smax"` or `"ec3"` by name, so the branches
+and imports went, `test_plan_basis.py` left the oracle gate, and the one
+remaining leak is the viewer's `SmaxAnalyzer`, tied to the smax deletion.
+
+**The parity suite now shares one `TesseractSizer` in both triples**, so
+parity isolates the analysis crossing — `Ec3Sizer` is not a substitute oracle
+there because §6.3.1 makes it differ by design. The sizer's own transport
+fidelity moved to `test_tesseract_sizer.py`, where the crossed answers and
+gradients are compared against direct host-function calls bit for bit.
+
+**The held check no longer pays for the solve it discards.** Measured on 50
+members with fresh actions per call (the solved-state memo defeated): the
+bisection was 1.55 ms of a 2.77 ms `compute_utilization` crossing, 56%. A
+static `solve` flag on the schema lets that question decline it — `False`
+echoes the held size and its utilization, with the echo's adjoint being the
+held rule — and the crossing drops from 2.80 to 1.20 ms. The naive first
+measurement read 10% because repeating identical actions hit the memo.
+
+**Not adapted:** `experiments/validation/12, 13, 14` still name
+`BlueprintSizer`; they sit in the unadapted experiments and get the new API
+when experiments do.
+
 ### The package condensed around one method and four examples
 
 The API was two APIs: `examples/arch.py` composed three blocks and descended a
