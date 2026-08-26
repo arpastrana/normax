@@ -28,12 +28,12 @@ import pytest
 
 from normax.analysis import opensees
 from normax.analysis import smax
+from normax.builders import build_section_family
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import equilibrium_graph
 from normax.form_finding import equilibrium_state
 from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 from normax.tesseract import BACKEND_VARIABLE
 from normax.tesseract import TesseractAnalyzer

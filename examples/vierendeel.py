@@ -35,8 +35,9 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Int
 
-from normax.blocks import build_pipeline
-from normax.blocks import design_constraints
+from normax.builders import build_design_constraints
+from normax.builders import build_pipeline
+from normax.builders import build_section_family
 from normax.config import RunConfig
 from normax.config import case_labels
 from normax.config import parse_run
@@ -56,7 +57,6 @@ from normax.reporting import Report
 from normax.reporting import report_descent
 from normax.reporting import report_design
 from normax.reporting import report_families
-from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.structures import build_vierendeel_2d
 from normax.symmetry import SignGuard
@@ -231,7 +231,7 @@ def main(config_path: Path) -> None:
     # The start, and the guard the descent runs under.
     q_start, guard = signed_start(structure, basis, loads, config)
     guarded = guard if config.subspace.margin_fraction > 0.0 else None
-    constraints = design_constraints(config.constraints, guarded)
+    constraints = build_design_constraints(config.constraints, guarded)
     problem = DesignProblem(structure, pipeline, loads, basis, spread, constraints)
     start = initial_variables(problem, q_start, config.analysis.diameter)
     initial = read_design(problem, start)

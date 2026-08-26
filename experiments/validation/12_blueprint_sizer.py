@@ -68,7 +68,7 @@ from normax.sizing import Ec3Sizer
 from normax.sizing import host_family
 from normax.sizing import sized_diameter
 from normax.structures import build_arch_2d
-from normax.tesseract import BlueprintClient
+from normax.tesseract import TesseractSizer
 from normax.tesseract import blueprint_tesseract
 
 TITLE = "One non-differentiable code library, differentiated two ways."
@@ -317,7 +317,7 @@ def arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
     crossed = StructuralDesignPipeline(
         formfinder,
         analyzer,
-        BlueprintClient(structure, blueprint_tesseract(), family),
+        TesseractSizer(structure, blueprint_tesseract(), family),
     )
 
     return local, crossed

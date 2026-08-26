@@ -14,9 +14,9 @@ from conftest import load_tesseract_api
 from jax.test_util import check_grads
 
 from normax.analysis import MemberForces
+from normax.builders import build_section_family
 from normax.materials import Steel355
 from normax.sections import TubeFamily
-from normax.sections import build_section_family
 from normax.sizing import MemberSizes
 from normax.sizing import blueprint as blueprint_module
 from normax.sizing.blueprint import DIAMETER_MINIMUM

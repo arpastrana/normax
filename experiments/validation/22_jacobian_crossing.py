@@ -59,7 +59,7 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
-from normax.tesseract import BlueprintClient
+from normax.tesseract import TesseractSizer
 from normax.tesseract import blueprint_tesseract
 
 # The two routes carry the same pulls, so their entries may differ only by
@@ -390,7 +390,7 @@ def route_problem(
         The compiled maps, the forward-mode Jacobian and the counters.
     """
     calls = counted_endpoints(client)
-    sizer = BlueprintClient(
+    sizer = TesseractSizer(
         scaffold.structure, client, scaffold.family, materialize_jacobian
     )
     pipeline = StructuralDesignPipeline(scaffold.formfinder, scaffold.analyzer, sizer)

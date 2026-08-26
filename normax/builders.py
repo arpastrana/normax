@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The blocks a run description names, built.
+Every builder in one file: the blocks a run description names, built.
 
 The one place every backend is imported side by side: the traced solver and the
 clause library that validate, and the two Tesseract crossings that ship. A
@@ -28,20 +28,61 @@ from normax.config import SizingConfig
 from normax.design import DesignConstraints
 from normax.design import StructuralDesignPipeline
 from normax.form_finding import FdmFormFinder
+from normax.materials import SteelGrade
 from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
 from normax.sizing.blueprint import BlueprintSizer
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.symmetry import SignGuard
-from normax.tesseract import BlueprintClient
 from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 from normax.tesseract import analysis_tesseract
 from normax.tesseract import blueprint_tesseract
 
 # The crossed solvers, and which of them is planar and must be told its plane.
 ANALYSIS_CROSSED = ("opensees", "pynite")
 ANALYSIS_PLANAR = ("opensees",)
+
+# EN 1993-1-1 Table 5.2 sheet 3: d/t limits of a tube in compression, per class,
+# in multiples of epsilon squared.
+CLASS_LIMITS = {1: 50.0, 2: 70.0, 3: 90.0}
+
+
+def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
+    """
+    The section family as thin as a given class allows.
+
+    Parameters
+    ----------
+    grade :
+        The steel as a certificate states it.
+    section_class :
+        Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
+
+    Returns
+    -------
+    family :
+        The family whose ratio sits exactly on that class's limit.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 5.2 sheet 3, `d/t <= k epsilon^2` with `epsilon^2 =
+    235 / f_y`. Sitting on the limit maximizes the wall slenderness, and so
+    minimizes material, while staying inside the class, so classification is
+    exact by construction and needs no smoothing.
+    """
+    if section_class not in CLASS_LIMITS:
+        raise ValueError(f"section_class must be 1, 2 or 3, got {section_class}")
+
+    ratio = CLASS_LIMITS[section_class] * 235.0 / grade.f_y
+
+    return TubeFamily(ratio, grade)
 
 
 def build_analyzer(
@@ -114,7 +155,7 @@ def build_sizer(
     if config.backend == "blueprint":
         return BlueprintSizer(structure, family)
     if config.backend == "blueprint_tesseract":
-        return BlueprintClient(structure, blueprint_tesseract(), family)
+        return TesseractSizer(structure, blueprint_tesseract(), family)
 
     raise ValueError(f"unknown sizing backend {config.backend!r}")
 
@@ -154,7 +195,7 @@ def build_pipeline(
     return pipeline
 
 
-def design_constraints(
+def build_design_constraints(
     config: ConstraintsConfig,
     guard: SignGuard | None,
 ) -> DesignConstraints:

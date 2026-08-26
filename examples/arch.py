@@ -43,8 +43,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from normax.blocks import build_pipeline
-from normax.blocks import design_constraints
+from normax.builders import build_design_constraints
+from normax.builders import build_pipeline
+from normax.builders import build_section_family
 from normax.config import RunConfig
 from normax.config import case_labels
 from normax.config import parse_run
@@ -59,7 +60,6 @@ from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import report_descent
 from normax.reporting import report_design
-from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.viewer import view_designs
@@ -150,7 +150,7 @@ def main(config_path: Path) -> None:
     pipeline = build_pipeline(structure, family, config.analysis, config.sizing)
 
     # An arch is a chain: every force density is its own coordinate, boxed.
-    constraints = design_constraints(config.constraints, None)
+    constraints = build_design_constraints(config.constraints, None)
     problem = DesignProblem(structure, pipeline, loads, None, None, constraints)
 
     # The start: a uniform force density, and the diameters a frozen-seed

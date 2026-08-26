@@ -26,9 +26,9 @@ import pytest
 from normax.analysis import MemberForces
 from normax.analysis import pynite
 from normax.analysis.smax import SmaxAnalyzer
+from normax.builders import build_section_family
 from normax.loads import select_load_case
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.sizing.ec3 import design_actions
 from normax.structures import Structure
 

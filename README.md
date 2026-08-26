@@ -36,7 +36,8 @@ without it those tests skip themselves and the rest of the suite runs.
 import jax
 import jax.numpy as jnp
 
-from normax.blocks import build_pipeline
+from normax.builders import build_pipeline
+from normax.builders import build_section_family
 from normax.config import AnalysisConfig
 from normax.config import SizingConfig
 from normax.design import DesignParameters
@@ -44,7 +45,6 @@ from normax.design import compute_mass
 from normax.loads import assemble_load_cases
 from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 
 num_edges = 20

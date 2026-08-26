@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.builders import build_section_family
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
 from normax.design import DesignProblem
@@ -33,7 +34,6 @@ from normax.loads import load_uniform
 from normax.materials import Steel355
 from normax.optimization import AugmentedBudget
 from normax.sections import TubeFamily
-from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.structures import build_warren_2d

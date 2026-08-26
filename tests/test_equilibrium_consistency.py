@@ -14,11 +14,11 @@ from normax.analysis import support_fixities
 from normax.analysis.smax import frame_model
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
+from normax.builders import build_section_family
 from normax.form_finding import equilibrium_graph
 from normax.form_finding import equilibrium_state
 from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 

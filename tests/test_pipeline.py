@@ -8,6 +8,7 @@ import pytest
 from ec3x.section import DIAMETER_MINIMUM
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -21,7 +22,6 @@ from normax.loads import load_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
 from normax.optimization import AugmentedAnswer
-from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import design_actions
 from normax.structures import build_arch_2d

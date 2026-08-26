@@ -6,12 +6,12 @@ import pytest
 
 from normax.analysis.smax import member_forces
 from normax.analysis.smax import prepare_model
+from normax.builders import build_section_family
 from normax.form_finding import FdmFormFinder
 from normax.loads import load_uniform
 from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.sections import TubeFamily
-from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 
 # A 10 m arch of ten members under a 20 kN load at every free node, in the XZ

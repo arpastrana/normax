@@ -11,9 +11,9 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
+from normax.builders import build_section_family
 from normax.materials import Steel355
 from normax.sections import TubeFamily
-from normax.sections import build_section_family
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.ec3 import Ec3Sizer

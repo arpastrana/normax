@@ -10,6 +10,7 @@ from tesseract_jax import apply_tesseract
 
 from normax.analysis import normal_axis
 from normax.analysis.smax import SmaxAnalyzer
+from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -18,7 +19,6 @@ from normax.loads import assemble_load_cases
 from normax.loads import load_tributary
 from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.sizing.blueprint import BlueprintSizer

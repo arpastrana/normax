@@ -32,8 +32,8 @@ from normax.analysis.element import member_frame
 from normax.analysis.element import stiffness_global
 from normax.analysis.element import stiffness_local
 from normax.analysis.smax import SmaxAnalyzer
+from normax.builders import build_section_family
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import analysis_tesseract

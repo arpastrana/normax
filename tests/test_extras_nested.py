@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -27,7 +28,6 @@ from normax.loads import assemble_load_cases
 from normax.loads import load_half_span
 from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
