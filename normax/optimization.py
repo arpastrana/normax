@@ -834,7 +834,7 @@ def descend_augmented(
     Parameters
     ----------
     maps :
-        The route's compiled programs.
+        The search's compiled programs.
     start :
         The variable vector to leave from, which must be inside the model's
         domain.
