@@ -25,8 +25,8 @@ from normax.sizing.blueprint import BlueprintSizer
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 from normax.tesseract import BACKEND_VARIABLE
-from normax.tesseract import BlueprintClient
 from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 from normax.tesseract import analysis_tesseract
 from normax.tesseract import blueprint_tesseract
 
@@ -135,7 +135,7 @@ def crossed_pipeline(structure, family, opensees_client, blueprint_client):
     analyzer = TesseractAnalyzer(
         structure, opensees_client, family, normal_axis(structure)
     )
-    sizer = BlueprintClient(structure, blueprint_client, family)
+    sizer = TesseractSizer(structure, blueprint_client, family)
 
     return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, sizer)
 
@@ -348,7 +348,7 @@ def shell_oracle(shell, family):
 @pytest.fixture(scope="module")
 def shell_crossed(shell, family, blueprint_client):
     analyzer = TesseractAnalyzer(shell, analysis_tesseract("pynite"), family, None)
-    sizer = BlueprintClient(shell, blueprint_client, family)
+    sizer = TesseractSizer(shell, blueprint_client, family)
 
     return StructuralDesignPipeline(FdmFormFinder(shell), analyzer, sizer)
 

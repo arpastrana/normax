@@ -287,7 +287,7 @@ The expensive half, and the reason this is one job rather than two.
   across all three clamp regimes (`free`, `bound`, `positive`), a fourth pull table
   on `AdjointState:611`, and a branch in both endpoints — the `else: raise` at
   `:752` is what makes a forgotten field fail loudly instead of silently.
-- `normax/tesseract.py:739-756` and `:805-821` — `BlueprintClient` builds its
+- `normax/tesseract.py:739-756` and `:805-821` — `TesseractSizer` builds its
   payload literally, twice.
 - Tests that break and must be extended, not deleted: `:284` (cubic root), `:642`
   (hardcodes the slope literal), `:673` (ec3-vs-blueprint agreement at `rtol=1e-7`

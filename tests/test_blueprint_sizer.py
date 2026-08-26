@@ -26,7 +26,7 @@ from normax.sizing.blueprint import host_family
 from normax.sizing.blueprint import sized_members
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
-from normax.tesseract import BlueprintClient
+from normax.tesseract import TesseractSizer
 from normax.tesseract import blueprint_tesseract
 
 # The proof this file makes: an external, non-differentiable, scalar code
@@ -92,7 +92,7 @@ def forces():
 
 @pytest.fixture(scope="module")
 def remote(structure, family):
-    return BlueprintClient(structure, blueprint_tesseract(), family)
+    return TesseractSizer(structure, blueprint_tesseract(), family)
 
 
 def test_the_backend_names_no_ec3_library():

@@ -48,6 +48,7 @@ from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
+from normax.sizing.blueprint import snapshot_family
 from normax.structures import Structure
 
 # Where the Tesseract API modules live, relative to the package.
@@ -316,7 +317,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         return stack_load_cases(per_case)
 
 
-class BlueprintClient(AbstractMemberSizer):
+class TesseractSizer(AbstractMemberSizer):
     """
     Blueprints' cross-section check, reached across a Tesseract boundary.
 
@@ -368,14 +369,12 @@ class BlueprintClient(AbstractMemberSizer):
         ValueError
             If the family's ratio leaves no wall at all.
         """
-        ratio = float(family.ratio)
-        if ratio <= 2.0:
-            raise ValueError(f"a ratio of {ratio} leaves no wall: need d/t > 2")
+        ratio, f_y = snapshot_family(family)
 
         self.client = client
         self.family = family
         self.ratio = ratio
-        self.f_y = float(family.material.f_y)
+        self.f_y = f_y
 
     def cross_check(
         self,
