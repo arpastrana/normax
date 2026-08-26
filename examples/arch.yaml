@@ -1,0 +1,57 @@
+# The arch of experiment 03, and the settings a design of it is searched for
+# under. Units are millimeters and newtons throughout, so a mass comes out in
+# tonnes and a force density in newtons per millimeter.
+
+structure:
+  span: 10000.0  # millimeters
+  rise: 3000.0  # millimeters
+  num_edges: 10
+form_finding:
+  force_density: -80.0  # newtons per millimeter
+analysis:
+  diameter: 250.0  # millimeters
+  # smax traces the frame in this process; opensees crosses a Tesseract
+  # boundary to a host solver carrying DDM sensitivities (planar arch only).
+  backend: smax
+load_cases:
+  - name: uniform
+    magnitude: 180000.0  # newtons
+  - name: half_span
+    magnitude: 90000.0  # newtons
+  - name: half_span_mirrored
+    magnitude: 90000.0  # newtons
+sizing:
+  section_class: 3
+  # ec3 is the full member check; blueprint is the cross-section-only check
+  # hosted from the Blueprints library, which implements no member buckling;
+  # blueprint_tesseract is that same check across a Tesseract boundary.
+  backend: blueprint
+# The direct search of experiment 103: force densities and diameters together,
+# the check held as inequality constraints. Experiment 101 never reads this.
+simultaneous:
+  iterations: 200
+  tolerance: 1.0e-12
+  # independent moves one force density per member; shared moves one for all.
+  force_densities: shared
+  # Hard SLSQP constraints beside the U <= 1 check, each switchable. The
+  # length floor holds every member at or above optimization.length_floor's
+  # floor; the fixed rise pins the crown at the seed's form-found height.
+  length_floor: false
+  fixed_rise: false
+optimization:
+  # The settling passes are spent after the descent, re-analyzing the answer at
+  # the sections the check demanded, to measure what a frozen seed cost.
+  iterations: 25
+  settling_passes: 400
+  settling_tolerance: 1.0e-6
+  envelope_sharpness: 50.0
+  bounds:
+    min: -100.0
+    max: -1.0e-3
+  # Without a floor the search collapses members instead of improving the form,
+  # a member being both free and unbucklable as it vanishes. A weight of zero
+  # turns it off, which is what the collapse looks like.
+  length_floor:
+    fraction: 0.6
+    sharpness: 50.0
+    weight: 50.0
