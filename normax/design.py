@@ -60,8 +60,8 @@ class DesignParameters(NamedTuple):
     Attributes
     ----------
     coordinates :
-        What the form finder is called with: the force densities themselves,
-        or the coordinates of a held-plan subspace of them.
+        What the form finder is called with — the force density of every
+        member, with any held-plan subspace already expanded.
     diameters :
         Outer diameter every member is analyzed and checked at.
     """
@@ -313,7 +313,7 @@ def expand_variables(
         member.
     """
     width = coordinate_count(problem)
-    coordinates = x[:width]
+    coordinates = member_densities(problem, x[:width])
     folded = x[width:]
     diameters = folded if problem.spread is None else problem.spread @ folded
 
@@ -386,12 +386,12 @@ def member_densities(
     problem :
         The problem supplying the basis.
     coordinates :
-        What the form finder is called with.
+        The basis coordinates, or the densities where there is no basis.
 
     Returns
     -------
     q :
-        Force density of every member.
+        Force density of every member, as the form finder is called with.
     """
     if problem.basis is None:
         return coordinates
@@ -464,8 +464,7 @@ def constraint_rows(
         rows.append((design.shape.lengths - held.length_floor) / held.length_floor)
     if held.sign_guard is not None:
         guard = held.sign_guard
-        q = member_densities(problem, params.coordinates)
-        signed = guard.signs * q[guard.members]
+        signed = guard.signs * params.coordinates[guard.members]
         rows.append((signed - guard.margin) / guard.scale)
 
     return jnp.concatenate(rows)
@@ -576,7 +575,8 @@ def envelope_diameters(
     """
     pipeline = problem.pipeline
     seeded = jnp.full(problem.structure.num_edges, seed)
-    shape = pipeline.formfinder(jnp.asarray(coordinates), problem.loads.formfinding)
+    q = member_densities(problem, jnp.asarray(coordinates))
+    shape = pipeline.formfinder(q, problem.loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, seeded, problem.loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
     demanded = np.asarray(jnp.max(sizes.sections.diameter, axis=0))
