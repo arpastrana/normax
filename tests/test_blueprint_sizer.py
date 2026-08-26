@@ -27,7 +27,7 @@ from normax.sizing.blueprint import sized_members
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
-from normax.tesseract import blueprint_tesseract
+from normax.tesseract import sizing_tesseract
 
 # The proof this file makes: an external, non-differentiable, scalar code
 # library fills the sizing contract and carries an exact adjoint — in process
@@ -92,7 +92,7 @@ def forces():
 
 @pytest.fixture(scope="module")
 def remote(structure, family):
-    return TesseractSizer(structure, blueprint_tesseract(), family)
+    return TesseractSizer(structure, sizing_tesseract("blueprint"), family)
 
 
 def test_the_backend_names_no_ec3_library():
@@ -318,7 +318,7 @@ def test_the_crossed_gradients_are_the_local_ones_bit_for_bit(sizer, remote, for
 
 @pytest.fixture(scope="module")
 def boundary():
-    return load_tesseract_api("blueprint_check")
+    return load_tesseract_api("sizing")
 
 
 @pytest.fixture(scope="module")

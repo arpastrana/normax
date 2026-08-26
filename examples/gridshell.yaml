@@ -41,7 +41,7 @@ analysis:
 sizing:
   section_class: 3
   # The check across its own boundary as well, so the descent crosses twice.
-  backend: blueprint_tesseract
+  backend: blueprint
 
 # The held-plan subspace is thirteen wide; the margin holds every guarded
 # density in compression through the descent.

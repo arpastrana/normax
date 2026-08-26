@@ -79,9 +79,8 @@ class SizingConfig(NamedTuple):
     section_class :
         Cross-section class the wall thickness sits at the limit of.
     backend :
-        Which check fills the sizing slot: `ec3` for the full member check in
-        process, `blueprint` for Blueprints' cross-section check in process,
-        `blueprint_tesseract` for that same check across a Tesseract boundary.
+        Which check fills the sizing slot, every one across the Tesseract
+        boundary: `blueprint` for Blueprints' cross-section check.
     """
 
     section_class: int

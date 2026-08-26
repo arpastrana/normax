@@ -33,7 +33,7 @@ sizing:
   section_class: 3
   # The check crosses its own boundary too, so neither solver on the far side
   # differentiates itself. Blueprints implements no 6.3.1 buckling.
-  backend: blueprint_tesseract
+  backend: blueprint
 
 # The held-plan subspace the densities move in: an orthonormal basis, folded
 # by the midspan mirror. The margin signs the chords at the start alone.

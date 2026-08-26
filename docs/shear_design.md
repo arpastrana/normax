@@ -282,7 +282,7 @@ The expensive half, and the reason this is one job rather than two.
   and `test_the_cubic_root_agrees_with_the_bisection` both need re-deriving. Take
   fidelity and redo the bracket; do not buy the test back by summing terms the
   standard does not sum.
-- `tesseracts/blueprint_check/tesseract_api.py` — the no-JAX duplicate. New
+- `tesseracts/sizing/_backend_blueprint.py` — the no-JAX duplicate. New
   differentiable schema fields, three partials per channel on `HandPartials:157`
   across all three clamp regimes (`free`, `bound`, `positive`), a fourth pull table
   on `AdjointState:611`, and a branch in both endpoints — the `else: raise` at

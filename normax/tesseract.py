@@ -54,8 +54,9 @@ from normax.structures import Structure
 # Where the Tesseract API modules live, relative to the package.
 TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
 
-# What the analysis stage reads to choose its solver.
-BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
+# What each stage reads to choose who answers it.
+ANALYSIS_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
+SIZING_VARIABLE = "NORMAX_SIZING_BACKEND"
 
 # Endpoints whose work must not move between threads.
 PINNED_ENDPOINTS = ("apply", "jacobian_vector_product", "vector_jacobian_product")
@@ -185,26 +186,36 @@ def analysis_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
     carry a choice about who implements it and a container is configured once
     at startup.
     """
-    os.environ[BACKEND_VARIABLE] = backend
+    os.environ[ANALYSIS_VARIABLE] = backend
 
     return load_tesseract("analysis", root)
 
 
-def blueprint_tesseract(root: Path = TESSERACTS) -> Tesseract:
+def sizing_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
     """
-    The Blueprints check, behind its schema.
+    The sizing stage, its check picked for the whole process.
 
     Parameters
     ----------
+    backend :
+        Which check answers the stage, `blueprint` being the one that ships.
     root :
         Directory holding one subdirectory per stage.
 
     Returns
     -------
     client :
-        The check.
+        The sizing stage.
+
+    Notes
+    -----
+    The stage reads its check from the environment, since a schema cannot
+    carry a choice about who implements it and a container is configured once
+    at startup.
     """
-    return load_tesseract("blueprint_check", root)
+    os.environ[SIZING_VARIABLE] = backend
+
+    return load_tesseract("sizing", root)
 
 
 class TesseractAnalyzer(AbstractFrameAnalyzer):
@@ -319,7 +330,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
 
 class TesseractSizer(AbstractMemberSizer):
     """
-    Blueprints' cross-section check, reached across a Tesseract boundary.
+    A cross-section check, reached across a Tesseract boundary.
 
     Attributes
     ----------
@@ -337,8 +348,8 @@ class TesseractSizer(AbstractMemberSizer):
     Every question crosses the boundary: the sizes come off the solve's
     outputs, and a size the caller owns goes over as `diameter_held` and comes
     back as `utilization_held`. A descent constrained on this block therefore
-    crosses on every evaluation, and its gradient takes the hand-written NumPy
-    adjoint on the far side in one crossing.
+    crosses on every evaluation, and its gradient takes the far side's
+    hand-written adjoint in one crossing.
     """
 
     client: Tesseract

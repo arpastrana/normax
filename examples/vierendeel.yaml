@@ -32,7 +32,7 @@ sizing:
   section_class: 3
   # The check crosses its own boundary too. Blueprints implements no 6.3.1
   # buckling, and rigid joints put end moments everywhere on this truss.
-  backend: blueprint_tesseract
+  backend: blueprint
 
 # The held-plan subspace in member coordinates, pivoted the TNA way: two
 # uniform chord families and the free verticals. The margin signs the chords

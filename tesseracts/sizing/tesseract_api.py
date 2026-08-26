@@ -12,21 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Blueprints' EN 1993-1-1 cross-section check, behind a Tesseract schema.
+T3 — The cross-section check, behind one swappable schema.
 
-No JAX anywhere in this module. The check, the bisection and the hand adjoint
-are the host functions of `normax.sizing.blueprint`, plain NumPy over a scalar
-library with no derivatives of any kind; this module maps the schema's fields
-onto them and nothing else. The in-process sizer wraps the same functions, so
-the crossed answer is the local one bit for bit.
+Member actions in, the sizes the check demands and the utilizations it reads
+off them, one load case per call. No JAX anywhere in this module: a backend
+hosts a scalar library with no derivatives of any kind and answers the
+pullback with a hand-written adjoint.
 
-The schema carries both questions the pipeline asks of a check: what size
-these actions demand (`diameter`, `utilization`), and how hard they work the
-sizes the caller already owns (`diameter_held` in, `utilization_held` out).
-No buckling length crosses — the check would ignore it, and a field the check
-ignores invites the belief that it participates.
+**This schema is the swappable one.** It carries both questions the pipeline
+asks of a check: what size these actions demand (`diameter`, `utilization`),
+and how hard they work the sizes the caller already owns (`diameter_held` in,
+`utilization_held` out). `NORMAX_SIZING_BACKEND` names the check, `blueprint`
+being the one that ships. No buckling length crosses — the shipped check
+would ignore it, and a field a check ignores invites the belief that it
+participates; the wire widens when a backend that reads one exists.
 """
 
+import os
 from typing import Any
 
 import numpy as np
@@ -35,15 +37,9 @@ from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
-from normax.sizing.blueprint import HostActions
-from normax.sizing.blueprint import HostFamily
-from normax.sizing.blueprint import SizeCotangents
-from normax.sizing.blueprint import check_cotangents
-from normax.sizing.blueprint import check_members
-from normax.sizing.blueprint import host_actions
-from normax.sizing.blueprint import host_family
-from normax.sizing.blueprint import size_cotangents
-from normax.sizing.blueprint import size_members
+# Environment variable naming the backend, and the one used when it is unset.
+BACKEND_VARIABLE = "NORMAX_SIZING_BACKEND"
+BACKEND_DEFAULT = "blueprint"
 
 # The inputs the hand adjoint covers, and the outputs it can be seeded on.
 DIFFERENTIABLE_INPUTS = (
@@ -109,25 +105,29 @@ class OutputSchema(BaseModel):
     """
 
 
-def _read_family(inputs: dict[str, Any]) -> HostFamily:
+def _selected_backend() -> Any:
     """
-    The section family the flat schema scalars describe.
-    """
-    return host_family(
-        float(inputs["ratio"]),
-        float(inputs["f_y"]),
-        float(inputs["gamma_m0"]),
-        float(inputs["diameter_min"]),
-    )
+    The module implementing the selected backend.
 
+    Raises
+    ------
+    ValueError
+        If the selected backend does not exist.
 
-def _read_actions(inputs: dict[str, Any]) -> HostActions:
+    Notes
+    -----
+    Imported on use, so an image shipping one backend's dependencies still
+    reads the schema, and read per call, so one process can compare two. A
+    backend owns its derivative as well as its forward pass.
     """
-    The member actions the schema arrays describe.
-    """
-    return host_actions(
-        inputs["axial_force"], inputs["end_moments_major"], inputs["end_moments_minor"]
-    )
+    selected = os.environ.get(BACKEND_VARIABLE, BACKEND_DEFAULT)
+
+    if selected == "blueprint":
+        import _backend_blueprint as backend  # noqa: PLC0415
+    else:
+        raise ValueError(f"unknown sizing backend {selected!r}")
+
+    return backend
 
 
 def apply(inputs: InputSchema) -> OutputSchema:
@@ -145,18 +145,8 @@ def apply(inputs: InputSchema) -> OutputSchema:
         The required sizes, both utilizations and the clamp mask.
     """
     raw = inputs.model_dump()
-    family = _read_family(raw)
-    actions = _read_actions(raw)
-    sized = size_members(actions, family)
-    utilization_held = check_members(raw["diameter_held"], actions, family)
-    outputs = {
-        "diameter": sized.diameter,
-        "utilization": sized.utilization,
-        "utilization_held": utilization_held,
-        "clamped": sized.clamped.astype(np.float64),
-    }
 
-    return outputs
+    return _selected_backend().solve_sizes(raw)
 
 
 def abstract_eval(abstract_inputs):
@@ -211,9 +201,8 @@ def vector_jacobian_product(
 
     Notes
     -----
-    What `jax.grad` calls, and the only endpoint it calls. The two solve
-    outputs and the held check pull back through separate host rules; an
-    output not seeded pulls a zero.
+    What `jax.grad` calls, and the only endpoint it calls. An output not
+    seeded pulls a zero, and the backend owns every rule.
     """
     unknown = set(vjp_inputs) - set(DIFFERENTIABLE_INPUTS)
     if "clamped" in vjp_outputs:
@@ -222,23 +211,11 @@ def vector_jacobian_product(
         raise ValueError(f"no hand-written derivative covers {sorted(unknown)}")
 
     raw = inputs.model_dump()
-    family = _read_family(raw)
-    actions = _read_actions(raw)
-    held = np.asarray(raw["diameter_held"], dtype=np.float64)
-    quiet = np.zeros_like(actions.axial)
+    quiet = np.zeros_like(np.asarray(raw["axial_force"], dtype=np.float64))
     seeds = {
         name: np.asarray(cotangent_vector.get(name, quiet), dtype=np.float64)
         for name in DIFFERENTIABLE_OUTPUTS
     }
+    pulled = _selected_backend().sizes_vjp(raw, seeds)
 
-    sized_seed = SizeCotangents(seeds["diameter"], seeds["utilization"])
-    from_sizes = size_cotangents(actions, family, sized_seed)
-    from_held = check_cotangents(held, actions, family, seeds["utilization_held"])
-    gathered = {
-        "axial_force": from_sizes.axial + from_held.actions.axial,
-        "end_moments_major": from_sizes.end_major + from_held.actions.end_major,
-        "end_moments_minor": from_sizes.end_minor + from_held.actions.end_minor,
-        "diameter_held": from_held.diameter_held,
-    }
-
-    return {name: gathered[name] for name in vjp_inputs}
+    return {name: pulled[name] for name in vjp_inputs}

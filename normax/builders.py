@@ -31,17 +31,19 @@ from normax.form_finding import FdmFormFinder
 from normax.materials import SteelGrade
 from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
-from normax.sizing.blueprint import BlueprintSizer
 from normax.structures import Structure
 from normax.symmetry import SignGuard
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
 from normax.tesseract import analysis_tesseract
-from normax.tesseract import blueprint_tesseract
+from normax.tesseract import sizing_tesseract
 
 # The crossed solvers, and which of them is planar and must be told its plane.
 ANALYSIS_CROSSED = ("opensees", "pynite")
 ANALYSIS_PLANAR = ("opensees",)
+
+# The crossed checks.
+SIZING_CROSSED = ("blueprint",)
 
 # EN 1993-1-1 Table 5.2 sheet 3: d/t limits of a tube in compression, per class,
 # in multiples of epsilon squared.
@@ -104,7 +106,7 @@ def build_analyzer(
     Returns
     -------
     analyzer :
-        The block, in process or across a boundary.
+        The block, behind its boundary.
 
     Raises
     ------
@@ -140,19 +142,19 @@ def build_sizer(
     Returns
     -------
     sizer :
-        The block, in process or across a boundary.
+        The block, behind its boundary.
 
     Raises
     ------
     ValueError
         If the backend is not one this module knows.
     """
-    if config.backend == "blueprint":
-        return BlueprintSizer(structure, family)
-    if config.backend == "blueprint_tesseract":
-        return TesseractSizer(structure, blueprint_tesseract(), family)
+    if config.backend not in SIZING_CROSSED:
+        raise ValueError(f"unknown sizing backend {config.backend!r}")
 
-    raise ValueError(f"unknown sizing backend {config.backend!r}")
+    client = sizing_tesseract(config.backend)
+
+    return TesseractSizer(structure, client, family)
 
 
 def build_pipeline(

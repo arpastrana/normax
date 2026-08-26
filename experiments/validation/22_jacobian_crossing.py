@@ -34,7 +34,7 @@ headline is end to end: same optimizer, same answer, different wall clock.
 
 The served leg repeats the cells over HTTP and is skipped unless
 `NORMAX_SERVED_OUTPUT` names a directory the container runtime can bind;
-build the image first with `tesseract build tesseracts/blueprint_check`.
+build the image first with `tesseract build tesseracts/sizing`.
 
 Run with `uv run --group pipeline python experiments/22_jacobian_crossing.py
 [jacobian_crossing.yaml]`.
@@ -60,7 +60,7 @@ from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.tesseract import TesseractSizer
-from normax.tesseract import blueprint_tesseract
+from normax.tesseract import sizing_tesseract
 
 # The two routes carry the same pulls, so their entries may differ only by
 # the client-side contraction's round-off; measured at zero, held with room.
@@ -627,11 +627,11 @@ def main(path: Path) -> None:
     report.write_banner("The Jacobian crossing — one boundary call, or one per row")
 
     report.write_heading("In process")
-    clients = (blueprint_tesseract(), blueprint_tesseract())
+    clients = (sizing_tesseract("blueprint"), sizing_tesseract("blueprint"))
     checks = crossing_study(report, scaffold, clients, config.crossing.repeats)
 
     report.write_heading("End to end, experiment 103's search on both routes")
-    solve_clients = (blueprint_tesseract(), blueprint_tesseract())
+    solve_clients = (sizing_tesseract("blueprint"), sizing_tesseract("blueprint"))
     routes = {
         "endpoint": route_problem(scaffold, solve_clients[0], None),
         "sequential": route_problem(scaffold, solve_clients[1], False),

@@ -22,16 +22,15 @@ load_cases:
 
 analysis:
   diameter: 250.0
-  # smax traces the frame in this process; opensees crosses a Tesseract
-  # boundary to a planar host solver carrying DDM sensitivities.
+  # opensees crosses a Tesseract boundary to a planar host solver carrying
+  # DDM sensitivities; pynite is the space-frame host with a hand adjoint.
   backend: opensees
 
 sizing:
   section_class: 3
-  # ec3 is the full member check in process; blueprint is Blueprints'
-  # cross-section check in process; blueprint_tesseract is that same check
-  # across a Tesseract boundary. Blueprints implements no 6.3.1 buckling.
-  backend: blueprint_tesseract
+  # blueprint is Blueprints' cross-section check, across a Tesseract
+  # boundary. Blueprints implements no 6.3.1 buckling.
+  backend: blueprint
 
 # No held-plan subspace: an arch is a chain, whose held plan has one degree
 # of freedom, so every force density moves on its own inside the bounds.

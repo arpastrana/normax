@@ -35,7 +35,7 @@ from normax.form_finding import equilibrium_state
 from normax.loads import load_uniform
 from normax.materials import Steel355
 from normax.structures import build_arch_2d
-from normax.tesseract import BACKEND_VARIABLE
+from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import analysis_tesseract
 
@@ -249,7 +249,7 @@ def test_the_environment_selects_the_backend(
     served = crossed(xyz, diameters, jnp.asarray(funicular)[None, ...])
     mine, _ = forces
 
-    assert os.environ[BACKEND_VARIABLE] == "opensees"
+    assert os.environ[ANALYSIS_VARIABLE] == "opensees"
     assert np.array_equal(
         np.asarray(served.axial_force[0]), np.asarray(mine.axial_force)
     )

@@ -24,11 +24,11 @@ from normax.sizing.blueprint import GAMMA_M0
 from normax.sizing.blueprint import BlueprintSizer
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
-from normax.tesseract import BACKEND_VARIABLE
+from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
 from normax.tesseract import analysis_tesseract
-from normax.tesseract import blueprint_tesseract
+from normax.tesseract import sizing_tesseract
 
 # The same 10 m arch rising 3 m under 180 kN that the in-process pipeline is
 # tested on, so the two routes are compared on identical ground.
@@ -127,7 +127,7 @@ def opensees_client():
 
 @pytest.fixture(scope="module")
 def blueprint_client():
-    return blueprint_tesseract()
+    return sizing_tesseract("blueprint")
 
 
 @pytest.fixture(scope="module")
@@ -143,18 +143,18 @@ def crossed_pipeline(structure, family, opensees_client, blueprint_client):
 @pytest.fixture
 def opensees_route():
     """The analysis stage reads its solver per call, so each test names it."""
-    os.environ[BACKEND_VARIABLE] = "opensees"
+    os.environ[ANALYSIS_VARIABLE] = "opensees"
 
 
 @pytest.fixture
 def pynite_route():
-    os.environ[BACKEND_VARIABLE] = "pynite"
+    os.environ[ANALYSIS_VARIABLE] = "pynite"
 
 
 @pytest.fixture(scope="module")
 def both_designs(oracle_pipeline, crossed_pipeline, params, one_case):
     """The same design taken in process and across the two boundaries."""
-    os.environ[BACKEND_VARIABLE] = "opensees"
+    os.environ[ANALYSIS_VARIABLE] = "opensees"
 
     return oracle_pipeline(params, one_case), crossed_pipeline(params, one_case)
 
@@ -355,7 +355,7 @@ def shell_crossed(shell, family, blueprint_client):
 
 @pytest.fixture(scope="module")
 def shell_designs(shell_oracle, shell_crossed, shell_params, shell_case):
-    os.environ[BACKEND_VARIABLE] = "pynite"
+    os.environ[ANALYSIS_VARIABLE] = "pynite"
 
     return shell_oracle(shell_params, shell_case), shell_crossed(
         shell_params, shell_case
@@ -459,7 +459,7 @@ def test_the_check_serves_both_questions_but_never_the_clamp_gradient(
 def test_the_check_module_reports_its_shapes_without_running():
     # The API module imports directly, no container and no network, and its
     # abstract evaluation answers from the member count alone.
-    module = load_tesseract_api("blueprint_check")
+    module = load_tesseract_api("sizing")
     abstract = types.SimpleNamespace(
         axial_force=jax.ShapeDtypeStruct((NUM_EDGES,), jnp.float64)
     )

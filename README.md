@@ -58,7 +58,7 @@ loads = assemble_load_cases([case_uniform])
 
 family = build_section_family(Steel355(), section_class)
 analysis = AnalysisConfig(diameter_start, "opensees")
-sizing = SizingConfig(section_class, "blueprint_tesseract")
+sizing = SizingConfig(section_class, "blueprint")
 pipeline = build_pipeline(structure, family, analysis, sizing)
 
 diameters = jnp.full(num_edges, diameter_start)
