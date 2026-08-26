@@ -331,7 +331,7 @@ def build_scaffold(config: StudyConfig, config_dir: Path) -> ArchScaffold:
     """
     here = Path(__file__).parent
     simultaneous = load_experiment(here / "103_simultaneous_api.py")
-    api = load_experiment(here / "101_api.py")
+    api = load_experiment(here.parents[1] / "examples" / "arch.py")
 
     config_text = (config_dir / config.arch_config).read_text()
     arch = api.parse_config(config_text)

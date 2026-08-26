@@ -1,7 +1,7 @@
-# All three routes of the pivoted run, read back rather than descended.
+# All three searches of the pivoted run, read back rather than descended.
 # The same descent as gridshell_16_pivoted.yaml, so it finds that run's
-# stored answers — every route it holds — and rebuilds the whole report,
-# both figures and the route comparison from the variables alone.
+# stored answers — every search it holds — and rebuilds the whole report,
+# both figures and the search comparison from the variables alone.
 # Every problem setting is gridshell_16.yaml's; the search is handed the
 # whole 29-coordinate subspace instead of its mirror-symmetric slice, so a
 # design need not answer to its own reflection.
@@ -63,5 +63,5 @@ descent:
 
 viewer:
   enabled: false
-  route: end to end
-  solo_route: false
+  search: end to end
+  solo_search: false

@@ -55,11 +55,11 @@ descent:
 
 viewer:
   enabled: true
-  route: end to end
+  search: end to end
   # Draw this case alone. Empty would draw all three, which is three
   # assemblies and three solves for one shape.
   load_case: LC1
   # Load glyphs at three times their own size. A kilonewton on a ten
   # metre shell is invisible drawn true.
   load_scale: 3.0
-  solo_route: true
+  solo_search: true

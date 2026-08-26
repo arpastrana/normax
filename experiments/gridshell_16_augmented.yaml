@@ -1,5 +1,5 @@
 # The 16x16 gridshell descended by the augmented Lagrangian, all three
-# routes from five starts. Backs the `augmented, 1e-6` row of the shell's
+# searches from five starts. Backs the `augmented, 1e-6` row of the shell's
 # three-setting table and both gridshell landing spreads.
 structure:
   num_rings: 16
@@ -51,8 +51,8 @@ descent:
 
 viewer:
   enabled: false
-  route: end to end
-  solo_route: false
+  search: end to end
+  solo_search: false
 
 # Read by experiment 24's augmented driver alone, and deliberately outside the
 # sections `parse_shell` reads: an answer already stored against this file

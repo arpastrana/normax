@@ -1,6 +1,6 @@
 # The free-heights answer of the pivoted run, opened rather than descended.
 # Same descent, so it reads that run's stored answer back; only the viewer
-# differs, and it asks for the other route.
+# differs, and it asks for the other search.
 # Every problem setting is gridshell_16.yaml's; the search is handed the
 # whole 29-coordinate subspace instead of its mirror-symmetric slice, so a
 # design need not answer to its own reflection.
@@ -62,7 +62,7 @@ descent:
 
 viewer:
   enabled: true
-  route: free heights
+  search: free heights
   load_case: LC1
   load_scale: 3.0
-  solo_route: true
+  solo_search: true

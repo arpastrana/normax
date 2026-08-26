@@ -14,7 +14,7 @@
 """
 The showcase arch, redesigned with the sizes as the optimizer's own variables.
 
-**The same problem as `101_api.py`, formulated the other way.** There the check
+**The same problem as `examples/arch.py`, formulated the other way.** There the check
 is a solver: it bisects every member to a fully-stressed size inside the
 pipeline, the analysis runs at frozen seed sections, and the answer is settled
 to self-consistency afterwards. Here the diameters join the force densities as
@@ -26,7 +26,7 @@ of one size per load case.
 
 **Everything up to the formulation is borrowed, not copied.** The config file,
 the arch, the load cases, the pipeline with its backend switch and the viewer
-are `101_api.py`'s own functions, imported the way experiment 102 imports
+are `examples/arch.py`'s own functions, imported the way experiment 102 imports
 them. What this file adds is the objective in `(q, d)`, the constraint slack
 read off `AbstractMemberSizer.compute_utilization` — which is exactly a constraint
 function's signature — and the SLSQP wiring with analytic Jacobians. The
@@ -82,10 +82,13 @@ from normax.sizing import MemberSizes
 from normax.structures import Structure
 from normax.visualization import figure_trajectory
 
-# The arch and the search, unless another file is named on the command line.
-CONFIG = Path(__file__).with_name("arch.yaml")
+# The four examples, which own the run descriptions an audit reads designs from.
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+# The arch and the search, unless another file is named on the command line.
+CONFIG = EXAMPLES / "arch.yaml"
+
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 # The 2D arch rises along Z; see `build_arch_2d`.
 VERTICAL_AXIS = 2
@@ -706,7 +709,7 @@ def main(config_path: Path) -> None:
     config_path :
         File naming the arch and the settings, shared verbatim with 101.
     """
-    api = load_showcase(Path(__file__).with_name("101_api.py"))
+    api = load_showcase(EXAMPLES / "arch.py")
 
     config_text = config_path.read_text()
     config = api.parse_config(config_text)

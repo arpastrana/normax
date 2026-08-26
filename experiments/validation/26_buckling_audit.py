@@ -40,7 +40,6 @@ Run with `uv run --group pipeline python experiments/26_buckling_audit.py`.
 """
 
 import importlib.util
-import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -49,17 +48,21 @@ import numpy as np
 from ec3x.resistance import SLENDERNESS_OFFSET
 from ec3x.resistance import reduction_buckling
 
+from normax import searches
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.searches import StructureProfile
 from normax.sections import TubeFamily
+from normax.structures import member_lengths
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The run descriptions the examples take, and the folder this file sits in.
+EXPERIMENTS = Path(__file__).resolve().parents[1]
+VALIDATION = Path(__file__).resolve().parent
 
-from design_routes import RouteProfile  # noqa: E402
-
-EXPERIMENTS = Path(__file__).resolve().parent
+# The four examples, which own the run descriptions an audit reads designs from.
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 # EN 1993-1-1 Table 6.2, curve a: hot-finished circular hollow sections.
 ALPHA_HOT_FINISHED = 0.21
@@ -77,7 +80,7 @@ class BucklingReading(NamedTuple):
     label :
         Name of the design the reading came from.
     shaped :
-        Whether the route that reached it was free to move the geometry.
+        Whether the search that reached it was free to move the geometry.
     members :
         Count of members in it.
     compressed :
@@ -112,6 +115,33 @@ class BucklingReading(NamedTuple):
         return 1.0 - self.reduction_median
 
 
+def loaded_module(path: Path):
+    """
+    One script, loaded by path rather than imported by name.
+
+    Parameters
+    ----------
+    path :
+        The file to load.
+
+    Returns
+    -------
+    module :
+        The loaded module.
+
+    Notes
+    -----
+    Neither the examples nor the numbered experiments are importable names, so
+    a script that reuses another reaches it by path. Taking the file rather
+    than a stem is what lets one loader serve both folders.
+    """
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return module
+
+
 def buckling_reading(
     label: str,
     shaped: bool,
@@ -128,7 +158,7 @@ def buckling_reading(
     label :
         Name the reading is reported under.
     shaped :
-        Whether the route that reached it was free to move the geometry.
+        Whether the search that reached it was free to move the geometry.
     family :
         The tube family the design was sized from, read for the material.
     diameters :
@@ -179,27 +209,6 @@ def buckling_reading(
     )
 
 
-def load_experiment(name: str):
-    """
-    One experiment module, loaded by path rather than imported by name.
-
-    Parameters
-    ----------
-    name :
-        Stem of the experiment's file.
-
-    Returns
-    -------
-    module :
-        The loaded module.
-    """
-    spec = importlib.util.spec_from_file_location(name, EXPERIMENTS / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    return module
-
-
 def read_the_arch() -> BucklingReading:
     """
     The arch at the simultaneous optimum of experiment 103.
@@ -214,10 +223,10 @@ def read_the_arch() -> BucklingReading:
     Experiment 103's own sequence, called rather than copied, following the
     pattern experiment 20 established for reaching this design.
     """
-    showcase = load_experiment("103_simultaneous_api")
-    api = showcase.load_showcase(EXPERIMENTS / "101_api.py")
+    showcase = loaded_module(VALIDATION / "103_simultaneous_api.py")
+    api = showcase.load_showcase(EXAMPLES / "arch.py")
 
-    text = (EXPERIMENTS / "arch.yaml").read_text()
+    text = (EXAMPLES / "arch.yaml").read_text()
     config = api.parse_config(text)
     searched = showcase.parse_simultaneous(text)
 
@@ -251,7 +260,10 @@ def read_the_arch() -> BucklingReading:
     )
 
 
-def read_a_structure(profile: RouteProfile, stem: str) -> tuple[BucklingReading, ...]:
+def read_a_structure(
+    profile: StructureProfile,
+    described: Path,
+) -> tuple[BucklingReading, ...]:
     """
     One structure's answers, each read at its own converged design.
 
@@ -259,29 +271,27 @@ def read_a_structure(profile: RouteProfile, stem: str) -> tuple[BucklingReading,
     ----------
     profile :
         The structure's profile, as its own experiment declares it.
-    stem :
+    described :
         Stem of the configuration file that experiment runs on.
 
     Returns
     -------
     readings :
-        One reading per route the run descended, in the order they are raced.
+        One reading per search the run descended, in the order they are raced.
 
     Notes
     -----
-    The shared flow of `design_routes` up to the reads, without its report, so
+    The shared flow of `normax.searches` up to the reads, without its report, so
     the answers read here are the ones those experiments report. A stored
     answer is reused where the run description allows it.
     """
-    routes = load_experiment("design_routes")
-
-    config = profile.parse_task((EXPERIMENTS / f"{stem}.yaml").read_text())
+    config = profile.parse_task(described.read_text())
     budget = config.descent
 
     structure = profile.build_structure(config)
     plan = profile.build_loads(structure, config)
-    folding_by = routes.folding_maps(profile, config, structure)
-    problem = routes.prepare_problem(structure, config, plan, folding_by)
+    folding_by = searches.folding_maps(profile, config, structure)
+    problem = searches.prepare_problem(structure, config, plan, folding_by)
 
     start = profile.signed_start(problem, config)
     finder = problem.pipeline.formfinder
@@ -292,25 +302,26 @@ def read_a_structure(profile: RouteProfile, stem: str) -> tuple[BucklingReading,
         guard = profile.sign_guard(config, start)
 
     limits = profile.height_limits(config)
-    maps = routes.route_maps(problem, limits, budget.length_floor, guard)
-    starts = routes.route_starts(problem, start, shape.xyz, budget.diameter_floor)
-    boxes = routes.route_boxes(problem, budget.diameter_floor, limits)
-    descending = routes.descent_plan(config)
-    answers = routes.descend_all(Report(verbose=False), maps, starts, boxes, descending)
-    reads = routes.route_reads(problem, answers, budget)
+    maps = searches.search_maps(problem, limits, budget.length_floor, guard)
+    starts = searches.search_starts(problem, start, shape.xyz, budget.diameter_floor)
+    boxes = searches.search_boxes(problem, budget.diameter_floor, limits)
+    descending = searches.descent_plan(config)
+    quiet = Report(verbose=False)
+    answers = searches.descend_all(quiet, maps, starts, boxes, descending)
+    reads = searches.search_reads(problem, answers, budget)
 
     readings = []
-    for route in routes.ROUTE_ORDER:
-        if route not in reads:
+    for search in searches.SEARCH_ORDER:
+        if search not in reads:
             continue
-        read = reads[route]
+        read = reads[search]
         xyz = jnp.asarray(read.xyz)
         diameters = jnp.asarray(read.diameters)
         forces = problem.pipeline.analyzer(xyz, diameters, problem.loads.analysis)
-        lengths = routes.member_lengths(xyz, problem.structure.edges)
+        lengths = member_lengths(xyz, problem.structure.edges)
         reading = buckling_reading(
-            f"{stem.split('_')[0]}, {route}",
-            route != routes.ROUTE_DRAWN,
+            f"{described.stem.split('_')[0]}, {search}",
+            search != searches.SEARCH_DRAWN,
             problem.pipeline.sizer.family,
             np.asarray(diameters),
             np.asarray(lengths),
@@ -371,15 +382,17 @@ def main() -> None:
     report = Report()
     report.write_banner("The buckling clause, read off every converged design")
 
-    trusses = load_experiment("18_warren_optimize")
-    vierendeel = load_experiment("19_vierendeel_optimize")
-    gridshell = load_experiment("23_gridshell_optimize")
+    trusses = loaded_module(EXAMPLES / "warren.py")
+    vierendeel = loaded_module(EXAMPLES / "vierendeel.py")
+    gridshell = loaded_module(EXAMPLES / "gridshell.py")
 
     readings = (
         read_the_arch(),
-        *read_a_structure(trusses.WARREN_PROFILE, "warren_optimize"),
-        *read_a_structure(vierendeel.VIERENDEEL_PROFILE, "vierendeel_optimize"),
-        *read_a_structure(gridshell.GRIDSHELL_PROFILE, "gridshell_16"),
+        *read_a_structure(trusses.WARREN_PROFILE, EXAMPLES / "warren.yaml"),
+        *read_a_structure(vierendeel.VIERENDEEL_PROFILE, EXAMPLES / "vierendeel.yaml"),
+        *read_a_structure(
+            gridshell.GRIDSHELL_PROFILE, EXPERIMENTS / "gridshell_16.yaml"
+        ),
     )
 
     report_readings(report, readings)
@@ -390,7 +403,7 @@ def main() -> None:
         f"{SLENDERNESS_OFFSET}. A design entirely below it would make the "
         "member check a cross-section check under another name. What is "
         "asserted is the narrower claim the designs support: wherever the "
-        "search could move the geometry, every member is reduced. A route "
+        "search could move the geometry, every member is reduced. A search "
         "that may not move it is reported and not asserted, because a "
         "structure drawn stocky is entitled to sit under the offset."
     )

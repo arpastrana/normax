@@ -87,7 +87,7 @@ TOLERANCE_AXIAL = 2.5e-4
 TOLERANCE_BENDING = 1.0e-3
 TOLERANCE_GRADIENT = 1e-7
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 GRADE = Steel355()
 SECTION_CLASS = 3

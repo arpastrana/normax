@@ -1,4 +1,4 @@
-# The 16x16 gridshell's free-heights route alone, tightened, five starts.
+# The 16x16 gridshell's free-heights search alone, tightened, five starts.
 # Backs 0.114312 t, against 0.125196 at the shipped tolerance: 8.7% the
 # loose rule was leaving behind after stopping in 287 iterations.
 structure:
@@ -50,8 +50,8 @@ descent:
 
 viewer:
   enabled: false
-  route: free heights
-  solo_route: true
+  search: free heights
+  solo_search: true
 
 # Read by experiment 24's augmented driver alone, and deliberately outside the
 # sections `parse_shell` reads: an answer already stored against this file

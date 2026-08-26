@@ -1,4 +1,4 @@
-# The crossed 16x16 gridshell, drawn. Identical to gridshell_16_crossed.yaml
+# The crossed 16x16 gridshell, drawn. Identical to examples/gridshell.yaml
 # apart from the viewer, which the fingerprint excludes — so this reads that
 # run's answer back instead of descending to it again.
 # The 16x16 gridshell across two Tesseract boundaries, in millimeters and
@@ -71,14 +71,14 @@ descent:
 
 viewer:
   enabled: true
-  route: end to end
+  search: end to end
   # Draw the response of this case alone. Empty would draw all three,
   # which is three assemblies and three solves for one shape.
   load_case: LC1
   # Load glyphs at three times their own size. A kilonewton on a ten
   # metre shell is invisible drawn true.
   load_scale: 3.0
-  solo_route: true
+  solo_search: true
 
 # Read by experiment 24's augmented driver alone, and deliberately outside the
 # sections `parse_shell` reads: an answer already stored against this file

@@ -117,7 +117,7 @@ TOLERANCE_ASKED = 1e-6
 DECADES = 10.0
 ITERATIONS = 60
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 GRADE = Steel355()
 SECTION_CLASS = 3

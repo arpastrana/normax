@@ -1,5 +1,5 @@
-# The 16x16 gridshell's sizing-only route alone, tightened, five starts.
-# Backs 0.126847 t, and the point that a route with no geometry to move
+# The 16x16 gridshell's sizing-only search alone, tightened, five starts.
+# Backs 0.126847 t, and the point that a search with no geometry to move
 # barely answers to the stopping rule at all.
 structure:
   num_rings: 16
@@ -50,8 +50,8 @@ descent:
 
 viewer:
   enabled: false
-  route: sizing only
-  solo_route: true
+  search: sizing only
+  solo_search: true
 
 # Read by experiment 24's augmented driver alone, and deliberately outside the
 # sections `parse_shell` reads: an answer already stored against this file

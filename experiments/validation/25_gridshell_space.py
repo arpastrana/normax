@@ -64,23 +64,23 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import numpy as np
 import yaml
-from design_routes import FIGURES
-from design_routes import ChordSigns
-from design_routes import HeightTruss
-from design_routes import RouteProblem
-from design_routes import folding_maps
-from design_routes import parse_shell
-from design_routes import prepare_problem
 from jaxtyping import Float
 
 from normax.reporting import Report
 from normax.reporting import ReportColumn
+from normax.searches import FIGURES
+from normax.searches import ChordSigns
+from normax.searches import DesignProblem
+from normax.searches import HeightTruss
+from normax.searches import folding_maps
+from normax.searches import parse_shell
+from normax.searches import prepare_problem
 from normax.structures import member_lengths
 from normax.visualization import ShapeVariation
 from normax.visualization import figure_shape_variations
 
 # Where experiment 23 keeps the profile this reads its structure through.
-EXPERIMENT = Path(__file__).with_name("23_gridshell_optimize.py")
+EXPERIMENT = Path(__file__).resolve().parents[2] / "examples" / "gridshell.py"
 
 # Stem the figure is named under.
 PREFIX = "25_gridshell_space"
@@ -207,7 +207,7 @@ def parse_space(text: str) -> SpaceConfig:
 
 
 def form_found(
-    problem: RouteProblem,
+    problem: DesignProblem,
     xi: Float[np.ndarray, "independents"],
 ) -> tuple[Float[np.ndarray, "nodes 3"], Float[np.ndarray, "members"]] | None:
     """
@@ -246,7 +246,7 @@ def form_found(
 
 
 def compressive(
-    problem: RouteProblem,
+    problem: DesignProblem,
     guard: ChordSigns | None,
     xi: Float[np.ndarray, "independents"],
 ) -> bool:
@@ -314,7 +314,7 @@ def within_bounds(
 
 
 def sampled_shapes(
-    problem: RouteProblem,
+    problem: DesignProblem,
     guard: ChordSigns | None,
     xi_drawn: Float[np.ndarray, "independents"],
     space: SpaceConfig,
@@ -378,7 +378,7 @@ def sampled_shapes(
 
 def report_space(
     report: Report,
-    problem: RouteProblem,
+    problem: DesignProblem,
     cap: SampledShape,
     shapes: list[SampledShape],
 ) -> None:
@@ -433,7 +433,7 @@ def report_space(
 
 
 def write_figure(
-    problem: RouteProblem,
+    problem: DesignProblem,
     cap: SampledShape,
     shapes: list[SampledShape],
 ) -> Path:

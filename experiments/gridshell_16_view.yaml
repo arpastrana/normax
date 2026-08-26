@@ -1,6 +1,6 @@
 # The 16x16 gridshell's end-to-end answer, redescended so it can be looked at.
 # Same descent as gridshell_16.yaml, so it lands on the same design; only the
-# other two routes are dropped and the viewer is opened on the answer.
+# other two searches are dropped and the viewer is opened on the answer.
 structure:
   num_rings: 16
   num_spokes: 16
@@ -50,11 +50,11 @@ descent:
 
 viewer:
   enabled: true
-  route: end to end
+  search: end to end
   # Draw the response of this case alone. Empty would draw all three,
   # which is three assemblies and three solves for one shape.
   load_case: LC1
   # Load glyphs at three times their own size. A kilonewton on a ten
   # metre shell is invisible drawn true.
   load_scale: 3.0
-  solo_route: true
+  solo_search: true

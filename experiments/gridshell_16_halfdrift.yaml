@@ -63,5 +63,5 @@ descent:
 
 viewer:
   enabled: false
-  route: end to end
-  solo_route: true
+  search: end to end
+  solo_search: true

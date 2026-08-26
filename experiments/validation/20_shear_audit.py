@@ -31,7 +31,6 @@ Run with `uv run --group pipeline python experiments/20_shear_audit.py`.
 """
 
 import importlib.util
-import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -43,18 +42,21 @@ from ec3x.resistance import area_shear
 from ec3x.resistance import resistance_shear
 from ec3x.resistance import utilization_shear
 
+from normax import searches
 from normax.analysis import MemberForces
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
+from normax.searches import StructureProfile
 from normax.sections import TubeFamily
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The run descriptions the examples take, and the folder this file sits in.
+EXPERIMENTS = Path(__file__).resolve().parents[1]
+VALIDATION = Path(__file__).resolve().parent
 
-from design_routes import RouteProfile  # noqa: E402
-
-EXPERIMENTS = Path(__file__).resolve().parent
+# The four examples, which own the run descriptions an audit reads designs from.
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 # The partial factor every sizer in the repo states for itself, EN 1993-1-1 §6.1.
 GAMMA_M0 = 1.0
@@ -101,6 +103,33 @@ class ShearReading(NamedTuple):
     capacity: float
     family: str
     torsion: float
+
+
+def loaded_module(path: Path):
+    """
+    One script, loaded by path rather than imported by name.
+
+    Parameters
+    ----------
+    path :
+        The file to load.
+
+    Returns
+    -------
+    module :
+        The loaded module.
+
+    Notes
+    -----
+    Neither the examples nor the numbered experiments are importable names, so
+    a script that reuses another reaches it by path. Taking the file rather
+    than a stem is what lets one loader serve both folders.
+    """
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return module
 
 
 def family_of(
@@ -210,32 +239,6 @@ def shear_reading(
     )
 
 
-def load_experiment(name: str):
-    """
-    One experiment module, loaded by path rather than imported by name.
-
-    Parameters
-    ----------
-    name :
-        Stem of the experiment's file.
-
-    Returns
-    -------
-    module :
-        The loaded module.
-
-    Notes
-    -----
-    The numbered experiments are not importable names, so this is the pattern
-    experiment 102 established for reusing one from another.
-    """
-    spec = importlib.util.spec_from_file_location(name, EXPERIMENTS / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    return module
-
-
 def read_the_arch() -> ShearReading:
     """
     The arch at the simultaneous optimum of experiment 103.
@@ -250,10 +253,10 @@ def read_the_arch() -> ShearReading:
     Experiment 103's own sequence, called rather than copied, so the design read
     here is the one that experiment reports.
     """
-    showcase = load_experiment("103_simultaneous_api")
-    api = showcase.load_showcase(EXPERIMENTS / "101_api.py")
+    showcase = loaded_module(VALIDATION / "103_simultaneous_api.py")
+    api = showcase.load_showcase(EXAMPLES / "arch.py")
 
-    text = (EXPERIMENTS / "arch.yaml").read_text()
+    text = (EXAMPLES / "arch.yaml").read_text()
     config = api.parse_config(text)
     searched = showcase.parse_simultaneous(text)
 
@@ -282,7 +285,10 @@ def read_the_arch() -> ShearReading:
     )
 
 
-def read_a_truss(profile: RouteProfile, stem: str) -> tuple[ShearReading, ...]:
+def read_a_truss(
+    profile: StructureProfile,
+    described: Path,
+) -> tuple[ShearReading, ...]:
     """
     One truss's three answers, each read at its own converged design.
 
@@ -290,29 +296,27 @@ def read_a_truss(profile: RouteProfile, stem: str) -> tuple[ShearReading, ...]:
     ----------
     profile :
         The truss's profile, as its own experiment declares it.
-    stem :
+    described :
         Stem of the configuration file that experiment runs on.
 
     Returns
     -------
     readings :
-        One reading per route, in the order the routes are raced.
+        One reading per search, in the order the searches are raced.
 
     Notes
     -----
-    The shared flow of `design_routes` up to the reads, without its report: the
+    The shared flow of `normax.searches` up to the reads, without its report: the
     descent is the same one experiments 18 and 19 run, so the answers read here
     are theirs.
     """
-    routes = load_experiment("design_routes")
-
-    config = profile.parse_task((EXPERIMENTS / f"{stem}.yaml").read_text())
+    config = profile.parse_task(described.read_text())
     budget = config.descent
 
     structure = profile.build_structure(config)
     plan = profile.build_loads(structure, config)
-    folding_by = routes.folding_maps(profile, config, structure)
-    problem = routes.prepare_problem(structure, config, plan, folding_by)
+    folding_by = searches.folding_maps(profile, config, structure)
+    problem = searches.prepare_problem(structure, config, plan, folding_by)
 
     start = profile.signed_start(problem, config)
     finder = problem.pipeline.formfinder
@@ -323,24 +327,24 @@ def read_a_truss(profile: RouteProfile, stem: str) -> tuple[ShearReading, ...]:
         guard = profile.sign_guard(config, start)
 
     limits = profile.height_limits(config)
-    maps = routes.route_maps(problem, limits, budget.length_floor, guard)
-    starts = routes.route_starts(problem, start, shape.xyz, budget.diameter_floor)
-    boxes = routes.route_boxes(problem, budget.diameter_floor, limits)
-    plan = routes.descent_plan(config)
-    answers = routes.descend_all(Report(verbose=False), maps, starts, boxes, plan)
-    reads = routes.route_reads(problem, answers, budget)
+    maps = searches.search_maps(problem, limits, budget.length_floor, guard)
+    starts = searches.search_starts(problem, start, shape.xyz, budget.diameter_floor)
+    boxes = searches.search_boxes(problem, budget.diameter_floor, limits)
+    plan = searches.descent_plan(config)
+    answers = searches.descend_all(Report(verbose=False), maps, starts, boxes, plan)
+    reads = searches.search_reads(problem, answers, budget)
 
     families = profile.member_families(config)
     readings = []
-    for route in routes.ROUTE_ORDER:
-        read = reads[route]
+    for search in searches.SEARCH_ORDER:
+        read = reads[search]
         forces = problem.pipeline.analyzer(
             jnp.asarray(read.xyz),
             jnp.asarray(read.diameters),
             problem.loads.analysis,
         )
         reading = shear_reading(
-            f"{stem.split('_')[0]}, {route}",
+            f"{described.stem.split('_')[0]}, {search}",
             problem.pipeline.sizer.family,
             read.diameters,
             forces,
@@ -393,12 +397,14 @@ def main() -> None:
     report = Report()
     report.write_banner("The shear the check leaves out, measured")
 
-    warren = load_experiment("18_warren_optimize")
-    vierendeel = load_experiment("19_vierendeel_optimize")
+    warren = loaded_module(EXAMPLES / "warren.py")
+    vierendeel = loaded_module(EXAMPLES / "vierendeel.py")
 
     readings = [read_the_arch()]
-    readings.extend(read_a_truss(warren.WARREN_PROFILE, "warren_optimize"))
-    readings.extend(read_a_truss(vierendeel.VIERENDEEL_PROFILE, "vierendeel_optimize"))
+    readings.extend(read_a_truss(warren.WARREN_PROFILE, EXAMPLES / "warren.yaml"))
+    readings.extend(
+        read_a_truss(vierendeel.VIERENDEEL_PROFILE, EXAMPLES / "vierendeel.yaml")
+    )
     ordered = tuple(sorted(readings, key=lambda reading: -reading.worst))
 
     report.write_heading("Design shear as a fraction of the plastic resistance")

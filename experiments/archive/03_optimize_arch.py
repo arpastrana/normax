@@ -181,7 +181,7 @@ FLOOR = 0.6 * SPAN / NUM_EDGES
 FLOOR_BETA = 50.0
 FLOOR_WEIGHT = 50.0
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 GRADE = Steel355()
 SECTION_CLASS = 3

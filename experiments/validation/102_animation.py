@@ -14,7 +14,7 @@
 """
 The 101 search replayed and rendered, one polyscope frame per iterate.
 
-**The artifact is the whole input.** `101_api.py` records where its search
+**The artifact is the whole input.** `examples/arch.py` records where its search
 went and embeds the file that described the run, so this experiment rebuilds
 the same structure, loads and pipeline from the artifact alone and carries
 every iterate back through them. The replay is exact because the search
@@ -46,17 +46,20 @@ import jax.numpy as jnp
 import numpy as np
 
 from normax.optimization import penalized_mass
-from normax.rendering import RenderSettings
-from normax.rendering import initialize_scene
-from normax.rendering import render_frames
 from normax.replay import DesignHistory
 from normax.replay import load_trajectory
 from normax.replay import replay_trajectory
+from normax.visualization.frames import RenderSettings
+from normax.visualization.frames import initialize_scene
+from normax.visualization.frames import render_frames
+
+# The four examples, which own the run descriptions an audit reads designs from.
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 
 # The artifact 101 writes, unless another file is named on the command line.
-ARTIFACT = Path(__file__).resolve().parent.parent / "artifacts" / "101_trajectory.npz"
+ARTIFACT = Path(__file__).resolve().parents[2] / "artifacts" / "101_trajectory.npz"
 
-FRAMES = Path(__file__).resolve().parent.parent / "figures" / "102_frames"
+FRAMES = Path(__file__).resolve().parents[2] / "figures" / "102_frames"
 
 # Factor the drawn tube radius exceeds the true one by, stated when rendering.
 EXAGGERATION = 2.0
@@ -121,7 +124,7 @@ def main(artifact_path: Path) -> None:
     artifact_path :
         The npz artifact a search was recorded into.
     """
-    api = load_showcase(Path(__file__).with_name("101_api.py"))
+    api = load_showcase(EXAMPLES / "arch.py")
 
     artifact = load_trajectory(artifact_path)
     config = api.parse_config(artifact.config_text)

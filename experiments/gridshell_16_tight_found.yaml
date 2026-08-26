@@ -1,4 +1,4 @@
-# The 16x16 gridshell's end-to-end route alone, at a tolerance a thousand
+# The 16x16 gridshell's end-to-end search alone, at a tolerance a thousand
 # times tighter, from five starts. Backs 0.072915 t — reached by a
 # scattered start, the nominal one landing 0.083263 unconverged.
 structure:
@@ -50,8 +50,8 @@ descent:
 
 viewer:
   enabled: false
-  route: end to end
-  solo_route: true
+  search: end to end
+  solo_search: true
 
 # Read by experiment 24's augmented driver alone, and deliberately outside the
 # sections `parse_shell` reads: an answer already stored against this file

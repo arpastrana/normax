@@ -48,8 +48,8 @@ descent:
 
 viewer:
   enabled: false
-  route: end to end
-  solo_route: false
+  search: end to end
+  solo_search: false
 
 # Read by experiment 24's augmented driver alone, and deliberately outside the
 # sections `parse_shell` reads: an answer already stored against this file

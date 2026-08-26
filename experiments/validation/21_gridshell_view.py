@@ -380,4 +380,4 @@ def main(path: Path) -> None:
 if __name__ == "__main__":
     jnp.set_printoptions(precision=12)
     described = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    main(described or Path(__file__).with_name("gridshell.yaml"))
+    main(described or Path(__file__).with_name("gridshell_view.yaml"))

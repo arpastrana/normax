@@ -23,7 +23,7 @@ its iteration limit, which is the measurement this spike answers.
 Two drivers over the identical maps, from the identical start:
 
     SLSQP       scipy's dense active-set sequential quadratic program, the
-                incumbent every route in experiment 23 is descended by.
+                incumbent every search in experiment 23 is descended by.
     augmented   an augmented Lagrangian whose rows are folded into the
                 objective before it is differentiated, so a gradient is one
                 reverse pass rather than a forward tangent per variable, then
@@ -52,7 +52,7 @@ read back against **every** load case. The last of these is what makes the
 comparison a measurement rather than a race — a driver that arrives lighter by
 leaving a constraint behind has not arrived.
 
-Only the end-to-end route is driven, and only from the nominal start. A
+Only the end-to-end search is driven, and only from the nominal start. A
 multi-start comparison prices the landscape, and the landscape is not what is
 in question here.
 
@@ -78,18 +78,6 @@ import jax.numpy as jnp
 import nlopt
 import numpy as np
 import yaml
-from design_routes import AUGMENTED_DEFAULT
-from design_routes import POLISH_ADMISSION
-from design_routes import POLISH_ITERATIONS
-from design_routes import ROUTE_FORMFOUND
-from design_routes import RouteProfile
-from design_routes import augmented_budget
-from design_routes import folding_maps
-from design_routes import prepare_problem
-from design_routes import read_answer
-from design_routes import route_boxes
-from design_routes import route_maps
-from design_routes import route_starts
 from jaxtyping import Float
 from scipy.optimize import minimize
 
@@ -98,9 +86,21 @@ from normax.optimization import ConstrainedMaps
 from normax.optimization import descend_augmented
 from normax.reporting import Report
 from normax.reporting import ReportColumn
+from normax.searches import AUGMENTED_DEFAULT
+from normax.searches import POLISH_ADMISSION
+from normax.searches import POLISH_ITERATIONS
+from normax.searches import SEARCH_FORMFOUND
+from normax.searches import StructureProfile
+from normax.searches import augmented_budget
+from normax.searches import folding_maps
+from normax.searches import prepare_problem
+from normax.searches import read_answer
+from normax.searches import search_boxes
+from normax.searches import search_maps
+from normax.searches import search_starts
 
 # The profile driven when a run names no other.
-EXPERIMENT = Path(__file__).with_name("23_gridshell_optimize.py")
+EXPERIMENT = Path(__file__).resolve().parents[2] / "examples" / "gridshell.py"
 
 # Budgets the three drivers share. Evaluations rather than iterations, which
 # is the only currency all three count in the same units.
@@ -177,12 +177,12 @@ class CountedMaps(NamedTuple):
 
 def counted_maps(maps, start: Float[np.ndarray, "variables"]) -> CountedMaps:
     """
-    Wrap a route's compiled maps in host arrays and a call counter.
+    Wrap a search's compiled maps in host arrays and a call counter.
 
     Parameters
     ----------
     maps :
-        The route's compiled maps.
+        The search's compiled maps.
     start :
         The variable vector the objective is normalized at.
 
@@ -360,9 +360,9 @@ def drive_nlopt(
     return DriverCall(name, np.asarray(landed), seconds, dict(maps.calls), note)
 
 
-def named_profile(path: Path) -> RouteProfile:
+def named_profile(path: Path) -> StructureProfile:
     """
-    The route profile an experiment exports, whichever family it describes.
+    The search profile an experiment exports, whichever family it describes.
 
     Parameters
     ----------
@@ -389,11 +389,13 @@ def named_profile(path: Path) -> RouteProfile:
     experiment = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(experiment)
     exported = [
-        found for found in vars(experiment).values() if isinstance(found, RouteProfile)
+        found
+        for found in vars(experiment).values()
+        if isinstance(found, StructureProfile)
     ]
     if len(exported) != 1:
         raise ValueError(
-            f"{path.name} must export exactly one route profile, found {len(exported)}"
+            f"{path.name} must export exactly one search profile, found {len(exported)}"
         )
 
     return exported[0]
@@ -534,7 +536,7 @@ def report_drivers(
 
 def main(path: Path, experiment: Path, separable: bool) -> None:
     """
-    Prepare the end-to-end route once and hand it to each driver in turn.
+    Prepare the end-to-end search once and hand it to each driver in turn.
 
     Parameters
     ----------
@@ -565,16 +567,16 @@ def main(path: Path, experiment: Path, separable: bool) -> None:
     else:
         guard = profile.sign_guard(config, start)
     limits = profile.height_limits(config)
-    maps = route_maps(problem, limits, config.descent.length_floor, guard)
+    maps = search_maps(problem, limits, config.descent.length_floor, guard)
     finder = problem.pipeline.formfinder
     shape = finder.formfinder(jnp.asarray(start.q), problem.loads.formfinding)
-    starts = route_starts(problem, start, shape.xyz, config.descent.diameter_floor)
-    boxes = route_boxes(problem, config.descent.diameter_floor, limits)
+    starts = search_starts(problem, start, shape.xyz, config.descent.diameter_floor)
+    boxes = search_boxes(problem, config.descent.diameter_floor, limits)
 
-    route = maps[ROUTE_FORMFOUND]
-    seed = np.asarray(starts[ROUTE_FORMFOUND], dtype=np.float64)
-    box = boxes[ROUTE_FORMFOUND]
-    counted = counted_maps(route, seed)
+    search = maps[SEARCH_FORMFOUND]
+    seed = np.asarray(starts[SEARCH_FORMFOUND], dtype=np.float64)
+    box = boxes[SEARCH_FORMFOUND]
+    counted = counted_maps(search, seed)
     rows = counted.slack(seed).size
 
     held = [problem.case_names[index] for index in problem.cases_held]
@@ -630,7 +632,9 @@ if __name__ == "__main__":
     given = [word for word in sys.argv[1:] if not word.startswith("-")]
     asked = "--separable" in sys.argv[1:]
     described = (
-        Path(given[0]) if given else Path(__file__).with_name("gridshell_16.yaml")
+        Path(given[0])
+        if given
+        else Path(__file__).resolve().parents[1] / "gridshell_16.yaml"
     )
     profiled = Path(given[1]) if len(given) > 1 else EXPERIMENT
     main(described, profiled, asked)

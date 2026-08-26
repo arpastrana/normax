@@ -15,9 +15,9 @@
 A form finder as a shape generator, against node coordinates searched directly.
 
 Two parametrizations of the same design space, feeding the same analysis, the
-same code check and the same descent. The direct route hands the optimizer the
+same code check and the same descent. The direct search hands the optimizer the
 height of every free node — nineteen variables — and holds the plan by simply
-never moving it. The physics-informed route hands it one variable, a uniform
+never moving it. The physics-informed search hands it one variable, a uniform
 force density, and lets the form finder turn it into a geometry; on an evenly
 spaced plan a uniform density is the only choice that keeps the projection
 fixed while staying funicular, so the fixed plan is maintained by equilibrium
@@ -27,35 +27,35 @@ so the single density is that whole subspace and nothing less.
 
 Six things are reported.
 
-    starts      the matched starting designs, one geometry entering two routes
-    gradient    the direct route's gradient against central differences
-    descents    both routes from every start, and what each arrived at
+    starts      the matched starting designs, one geometry entering two searches
+    gradient    the direct search's gradient against central differences
+    descents    both searches from every start, and what each arrived at
     quality     the bending-to-axial ratio every iterate passed through
     coupling    the same descents with the analysis re-sectioned between rounds
     variables   the density and the diameters as one constrained search
 
-**The two routes bracket a trade every reparametrization makes.** The height
+**The two searches bracket a trade every reparametrization makes.** The height
 space contains the funicular family as a curve, so the space's optimum can
 only be equal or better — but whether a local descent finds it is the actual
 question, and it is answered start by start rather than argued. What the
-prior buys is measured alongside: every iterate of the density route is
-funicular under the shaping case by construction, while the height route is
+prior buys is measured alongside: every iterate of the density search is
+funicular under the shaping case by construction, while the height search is
 free to wander through bending-dominated shapes on its way, and does.
 
-**Both routes carry their length floor by construction.** The plan never
+**Both searches carry their length floor by construction.** The plan never
 moves, so no member can shorten past its own projection and the collapse
-mode of experiment 03 does not exist here — neither route needs the penalty,
+mode of experiment 03 does not exist here — neither search needs the penalty,
 and the objective is the enveloped mass alone.
 
 **The height box excludes hanging shapes on purpose.** Below zero the members
 turn to tension, buckling disappears from the check, and the search leaves for
-a different structure — a cable, not an arch. The density route is held in
-compression by its own bounds, so the height route is held above the ground
+a different structure — a cable, not an arch. The density search is held in
+compression by its own bounds, so the height search is held above the ground
 plane to compare like with like.
 
 **Two more starts have no matched pair on purpose.** A flat line and random
 heights lie off the funicular manifold, where no force density can start, so
-they are descended by the height route alone — the no-prior scenario, begun
+they are descended by the height search alone — the no-prior scenario, begun
 from no prior. The flat start carries the shaping case in pure bending, a
 straight beam's axial force being identically zero, which is as far from
 funicular as the box allows.
@@ -67,7 +67,7 @@ would hand the search a different function at every trial.
 `normax.design.optimize_staggered` is the driver that closes the loop — a
 bounded descent at held sections, the sections settled to what the check
 demanded where it stopped, and the descent rerun there until settling no
-longer moves them. Both routes take it from every start, and what the
+longer moves them. Both searches take it from every start, and what the
 frozen seed cost each answer is a printed column rather than a caveat.
 
 **The third formulation makes the diameters variables outright.** The mass
@@ -132,7 +132,7 @@ from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.structures import member_lengths
 from normax.visualization import Form
-from normax.visualization import RouteTrace
+from normax.visualization import SearchTrace
 from normax.visualization import StartSpread
 from normax.visualization import figure_load_cases
 from normax.visualization import figure_parametrization
@@ -152,14 +152,14 @@ CASE_NAMES = (
 GRADIENT_STEPS = (1e-3, 1e-4, 1e-5, 1e-6, 1e-7)
 TOLERANCE_GRADIENT = 1e-6
 
-# Ceiling on the bending-to-axial ratio of every density-route iterate, which
-# is the funicular claim: the route cannot leave the axial-dominant manifold.
+# Ceiling on the bending-to-axial ratio of every density-search iterate, which
+# is the funicular claim: the search cannot leave the axial-dominant manifold.
 # Not zero, because the frame deforms elastically at the seed stiffness before
 # carrying anything, and that bending grows as the arch shallows: measured at
 # 2.4e-3 along the matched descent and 6.1e-3 along the shallow-start one.
 TOLERANCE_BENDING = 1e-2
 
-# Largest relative spread of the density route's answers over the starts: a
+# Largest relative spread of the density search's answers over the starts: a
 # one-variable search should land on the same design from anywhere, within
 # the optimizer's own convergence slack — measured at 1.8e-4 over the starts.
 TOLERANCE_SPREAD = 1e-3
@@ -172,11 +172,11 @@ TOLERANCE_UTILIZATION = 1e-9
 # its constraints to its own ftol, measured orders below this headroom.
 TOLERANCE_FEASIBILITY = 1e-6
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 # Every staggered run compiles its own gradient program, so the persistent
 # cache is what keeps eight of them from paying eight compilations.
-COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
+COMPILATION_CACHE = Path(__file__).resolve().parents[2] / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
@@ -185,9 +185,9 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 GRADE = Steel355()
 SECTION_CLASS = 3
 
-# The route names, keys wherever a frozen answer meets its staggered one.
-ROUTE_DENSITY = "one density"
-ROUTE_HEIGHTS = "free heights"
+# The search names, keys wherever a frozen answer meets its staggered one.
+SEARCH_DENSITY = "one density"
+SEARCH_HEIGHTS = "free heights"
 
 # The reads the reports make, compiled once each.
 governing_compiled = eqx.filter_jit(governing_load_case)
@@ -393,7 +393,7 @@ class ArchProblem(NamedTuple):
     q :
         Force densities that reach the target rise under the funicular case.
     nodes_free :
-        Indices of the nodes whose height the direct route moves.
+        Indices of the nodes whose height the direct search moves.
     diameters_seed :
         Outer diameter the frame is analyzed at until a settle says otherwise.
     bounds :
@@ -414,9 +414,9 @@ class ArchProblem(NamedTuple):
     heights_box: tuple[float, float]
 
 
-class RouteStart(NamedTuple):
+class SearchStart(NamedTuple):
     """
-    One starting geometry, written in both routes' variables.
+    One starting geometry, written in both searches' variables.
 
     Attributes
     ----------
@@ -435,7 +435,7 @@ class RouteStart(NamedTuple):
 
 class HeightStart(NamedTuple):
     """
-    One starting geometry only the height route can take.
+    One starting geometry only the height search can take.
 
     Attributes
     ----------
@@ -449,7 +449,7 @@ class HeightStart(NamedTuple):
     heights: Float[Array, "nodes_free"]
 
 
-class RouteRun(NamedTuple):
+class SearchRun(NamedTuple):
     """
     One descent, and the bending ratio replayed along it.
 
@@ -475,7 +475,7 @@ class StaggeredRun(NamedTuple):
 
     Attributes
     ----------
-    route :
+    search :
         Which parametrization descended.
     start :
         Name of the start the descent left from.
@@ -484,7 +484,7 @@ class StaggeredRun(NamedTuple):
         survived every round the driver was given.
     """
 
-    route: str
+    search: str
     start: str
     found: SearchResult | None
 
@@ -520,9 +520,9 @@ class FinalRead(NamedTuple):
     governing: Int[np.ndarray, "edges"]
 
 
-class RouteOutcomes(NamedTuple):
+class SearchOutcomes(NamedTuple):
     """
-    Everything one route's descents produced, in start order.
+    Everything one search's descents produced, in start order.
 
     Attributes
     ----------
@@ -532,18 +532,18 @@ class RouteOutcomes(NamedTuple):
         The answers read back at the frozen seed sections.
     """
 
-    runs: tuple[RouteRun, ...]
+    runs: tuple[SearchRun, ...]
     finals: tuple[FinalRead, ...]
 
 
-# What a design builder is: a route's variables and the analysis diameters
+# What a design builder is: a search's variables and the analysis diameters
 # in — None analyzing at the seed — and the by-case design out.
 DesignBuilder = Callable[
     [ArchProblem, Float[Array, "variables"], Float[Array, "edges"] | None],
     Design,
 ]
 
-# What a bending measure is: a route's variables in, the worst ratio out.
+# What a bending measure is: a search's variables in, the worst ratio out.
 BendingMeasure = Callable[[ArchProblem, Float[Array, "variables"]], Float[Array, ""]]
 
 
@@ -590,7 +590,7 @@ def arch_problem(config: TaskConfig) -> ArchProblem:
     The blocks are built here, on the host, because preparing the analysis
     reads support flags in Python, which a tracer cannot follow. The free node
     indices are read off the supports once and shipped as an array, so the
-    direct route's scatter is a device operation rather than a rebuild.
+    direct search's scatter is a device operation rather than a rebuild.
     """
     arch = config.structure
     structure = build_arch_2d(arch.num_edges, arch.span, arch.rise)
@@ -720,8 +720,8 @@ def bending_ratio(design: Design) -> Float[Array, ""]:
     Notes
     -----
     Dimensionless, and near zero exactly where a shape carries its shaping
-    case axially. The first case is the one the funicular route answers to by
-    construction, so this is the measure on which the two routes must differ
+    case axially. The first case is the one the funicular search answers to by
+    construction, so this is the measure on which the two searches must differ
     if the physics prior is doing anything at all.
 
     The denominator is walled at one newton-millimeter. The wall binds only
@@ -766,9 +766,9 @@ def heights_bending(
 def matched_starts(
     problem: ArchProblem,
     config: TaskConfig,
-) -> tuple[RouteStart, ...]:
+) -> tuple[SearchStart, ...]:
     """
-    The same starting geometries, written in both routes' variables.
+    The same starting geometries, written in both searches' variables.
 
     Parameters
     ----------
@@ -780,15 +780,15 @@ def matched_starts(
     Returns
     -------
     starts :
-        One start per rise multiple, exactly shared by the two routes.
+        One start per rise multiple, exactly shared by the two searches.
 
     Notes
     -----
     The force density system is linear in the coordinates, so scaling a
     uniform density by `1 / f` scales every free height by `f` and moves the
     plan not at all. A start is therefore matched exactly rather than
-    approximately: the density route's form-found shape and the height
-    route's written-down one are the same geometry, which `report_starts`
+    approximately: the density search's form-found shape and the height
+    search's written-down one are the same geometry, which `report_starts`
     measures rather than assumes.
     """
     shape = problem.pipeline.formfinder(problem.q, problem.loads.formfinding)
@@ -798,7 +798,7 @@ def matched_starts(
     for fraction in config.starts.rise_fractions:
         density = problem.q[:1] / fraction
         heights = fraction * reference
-        starts.append(RouteStart(f"{fraction:g}x rise", density, heights))
+        starts.append(SearchStart(f"{fraction:g}x rise", density, heights))
 
     return tuple(starts)
 
@@ -825,10 +825,10 @@ def unmatched_starts(
     Notes
     -----
     The no-prior scenario. The matched starts all lie on the funicular curve,
-    so a descent from them borrows the prior once even in the height route;
+    so a descent from them borrows the prior once even in the height search;
     these two owe it nothing. The flat line is the blank page — the shaping
     case carried in pure bending — and the random heights are the adversarial
-    page. Both are descended by the height route alone, the density route
+    page. Both are descended by the height search alone, the density search
     having no variable that reaches them.
     """
     count = int(problem.nodes_free.shape[0])
@@ -900,14 +900,14 @@ def staggered_objective(
     sharpness: Float[Array, ""],
 ) -> Callable[[DesignParameters], tuple[Float[Array, ""], Design]]:
     """
-    One route's enveloped mass as a function of whole design parameters.
+    One search's enveloped mass as a function of whole design parameters.
 
     Parameters
     ----------
     problem :
         The prepared arch.
     builder :
-        The route's design builder.
+        The search's design builder.
     sharpness :
         Envelope sharpness held for every round, the schedule's last.
 
@@ -919,7 +919,7 @@ def staggered_objective(
     Notes
     -----
     The staggered driver reads the container's first field as nothing more
-    than the variables a descent moves, so the height route's heights ride
+    than the variables a descent moves, so the height search's heights ride
     where force densities usually do. The envelope holds the final sharpness
     throughout: the rounds close a coupling rather than anneal a smoothing,
     and settling needs the reconciled one-diameter-per-member it produces.
@@ -938,11 +938,11 @@ def run_staggered(
     report: Report,
     problem: ArchProblem,
     search: SearchConfig,
-    starts: tuple[RouteStart, ...],
+    starts: tuple[SearchStart, ...],
     extras: tuple[HeightStart, ...],
 ) -> tuple[StaggeredRun, ...]:
     """
-    Both routes again from every start, the coupling closed between rounds.
+    Both searches again from every start, the coupling closed between rounds.
 
     Parameters
     ----------
@@ -953,9 +953,9 @@ def run_staggered(
     search :
         The budgets every bounded descent shares.
     starts :
-        The matched starts, each taken by both routes.
+        The matched starts, each taken by both searches.
     extras :
-        The starts off the funicular manifold, taken by the height route.
+        The starts off the funicular manifold, taken by the height search.
 
     Returns
     -------
@@ -976,11 +976,11 @@ def run_staggered(
     jobs = []
     for start in starts:
         jobs.append(
-            (ROUTE_DENSITY, start.label, weigh_density, start.density, problem.bounds)
+            (SEARCH_DENSITY, start.label, weigh_density, start.density, problem.bounds)
         )
         jobs.append(
             (
-                ROUTE_HEIGHTS,
+                SEARCH_HEIGHTS,
                 start.label,
                 weigh_heights,
                 start.heights,
@@ -990,7 +990,7 @@ def run_staggered(
     for extra in extras:
         jobs.append(
             (
-                ROUTE_HEIGHTS,
+                SEARCH_HEIGHTS,
                 extra.label,
                 weigh_heights,
                 extra.heights,
@@ -999,19 +999,19 @@ def run_staggered(
         )
 
     runs = []
-    for route, label, weighed, start, bounds in jobs:
+    for search, label, weighed, start, bounds in jobs:
         seeded = DesignParameters(start, problem.diameters_seed)
         try:
             found = optimize_staggered(
                 weighed, seeded, bounds=bounds, iterations=search.iterations
             )
         except ValueError as stalled:
-            report.write_line(f"{route}, {label}: {stalled}")
-            runs.append(StaggeredRun(route, label, None))
+            report.write_line(f"{search}, {label}: {stalled}")
+            runs.append(StaggeredRun(search, label, None))
             continue
 
-        runs.append(StaggeredRun(route, label, found))
-        report.write_line(f"{route}, {label}: {float(found.value):.9f} t staggered")
+        runs.append(StaggeredRun(search, label, found))
+        report.write_line(f"{search}, {label}: {float(found.value):.9f} t staggered")
 
     return tuple(runs)
 
@@ -1027,7 +1027,7 @@ def trajectory_bending(
     Parameters
     ----------
     measure :
-        The route's compiled bending read.
+        The search's compiled bending read.
     problem :
         The prepared arch.
     walked :
@@ -1049,7 +1049,7 @@ def trajectory_bending(
 def report_starts(
     report: Report,
     problem: ArchProblem,
-    starts: tuple[RouteStart, ...],
+    starts: tuple[SearchStart, ...],
 ) -> None:
     """
     The matched starts measured: one geometry, two sets of variables.
@@ -1081,7 +1081,7 @@ def report_starts(
             )
         )
 
-    report.write_line("Two routes to one geometry, started matched")
+    report.write_line("Two searches to one geometry, started matched")
     report.write_table(columns, rows)
 
 
@@ -1092,7 +1092,7 @@ def report_gradient(
     heights: Float[Array, "nodes_free"],
 ) -> float:
     """
-    The direct route's gradient against a directional central difference.
+    The direct search's gradient against a directional central difference.
 
     Parameters
     ----------
@@ -1112,7 +1112,7 @@ def report_gradient(
 
     Notes
     -----
-    The density route's gradient was validated in experiment 03 against the
+    The density search's gradient was validated in experiment 03 against the
     whole uniform sweep, and the single density is that family restricted, so
     only the new differentiation path — coordinates straight into the
     analysis, no form finder — is checked here. One direction rather than
@@ -1155,19 +1155,19 @@ def report_gradient(
         ("best scaled error", f"{best:.2e} ({TOLERANCE_GRADIENT:.0e})"),
     )
 
-    report.write_heading("The direct route's gradient, checked along the start")
+    report.write_heading("The direct search's gradient, checked along the start")
     report.write_table(columns, rows)
     report.write_entries(entries)
 
     return best
 
 
-def run_routes(
+def run_searches(
     report: Report,
     problem: ArchProblem,
     search: SearchConfig,
-    starts: tuple[RouteStart, ...],
-) -> tuple[tuple[RouteRun, ...], tuple[RouteRun, ...]]:
+    starts: tuple[SearchStart, ...],
+) -> tuple[tuple[SearchRun, ...], tuple[SearchRun, ...]]:
     """
     Both descents from every start, each with its bending ratio replayed.
 
@@ -1185,14 +1185,14 @@ def run_routes(
     Returns
     -------
     runs :
-        The density route's runs and the height route's runs, start by start.
+        The density search's runs and the height search's runs, start by start.
     """
     runs_density = []
     runs_heights = []
     for start in starts:
         found = density_descent(problem, search, start.density)
         walked = trajectory_bending(density_bending, problem, found.trajectory)
-        runs_density.append(RouteRun(start.label, found, walked))
+        runs_density.append(SearchRun(start.label, found, walked))
         report.write_line(
             f"one density, {start.label}: {float(found.value):.9f} t "
             f"in {len(walked)} iterates"
@@ -1200,7 +1200,7 @@ def run_routes(
 
         found = heights_descent(problem, search, start.heights)
         walked = trajectory_bending(heights_bending, problem, found.trajectory)
-        runs_heights.append(RouteRun(start.label, found, walked))
+        runs_heights.append(SearchRun(start.label, found, walked))
         report.write_line(
             f"free heights, {start.label}: {float(found.value):.9f} t "
             f"in {len(walked)} iterates"
@@ -1214,9 +1214,9 @@ def run_unmatched(
     problem: ArchProblem,
     search: SearchConfig,
     starts: tuple[HeightStart, ...],
-) -> tuple[RouteRun, ...]:
+) -> tuple[SearchRun, ...]:
     """
-    The height route alone, descended from the starts only it can take.
+    The height search alone, descended from the starts only it can take.
 
     Parameters
     ----------
@@ -1241,7 +1241,7 @@ def run_unmatched(
 
         found = heights_descent(problem, search, start.heights)
         walked = trajectory_bending(heights_bending, problem, found.trajectory)
-        runs.append(RouteRun(start.label, found, walked))
+        runs.append(SearchRun(start.label, found, walked))
         report.write_line(
             f"free heights, {start.label}: {began:.9f} t to "
             f"{float(found.value):.9f} t in {len(walked)} iterates"
@@ -1282,7 +1282,7 @@ def read_final(
 def read_finals(
     problem: ArchProblem,
     builder: DesignBuilder,
-    runs: tuple[RouteRun, ...],
+    runs: tuple[SearchRun, ...],
 ) -> tuple[FinalRead, ...]:
     """
     Every run's answer read back, in run order.
@@ -1297,11 +1297,11 @@ def read_finals(
 
 def report_descents(
     report: Report,
-    density: RouteOutcomes,
-    heights: RouteOutcomes,
+    density: SearchOutcomes,
+    heights: SearchOutcomes,
 ) -> None:
     """
-    What both routes arrived at from every start, side by side.
+    What both searches arrived at from every start, side by side.
 
     One row per run rather than per matched pair, because two of the starts
     have no pair: the density rows first, then every height row, the
@@ -1310,7 +1310,7 @@ def report_descents(
     """
     columns = (
         ReportColumn("start", align="<"),
-        ReportColumn("route", align="<"),
+        ReportColumn("search", align="<"),
         ReportColumn("variables"),
         ReportColumn("iterates"),
         ReportColumn("mass [t]", ".9f"),
@@ -1321,15 +1321,15 @@ def report_descents(
     )
     rows = []
     labeled = (
-        (ROUTE_DENSITY, density.runs, density.finals),
-        (ROUTE_HEIGHTS, heights.runs, heights.finals),
+        (SEARCH_DENSITY, density.runs, density.finals),
+        (SEARCH_HEIGHTS, heights.runs, heights.finals),
     )
-    for route, runs, finals in labeled:
+    for search, runs, finals in labeled:
         for run, final in zip(runs, finals):
             rows.append(
                 (
                     run.start,
-                    route,
+                    search,
                     int(run.found.trajectory.q.shape[1]),
                     len(run.bending),
                     final.mass,
@@ -1340,7 +1340,7 @@ def report_descents(
                 )
             )
 
-    report.write_heading("The descents, both routes from every start")
+    report.write_heading("The descents, both searches from every start")
     report.write_table(columns, rows)
 
 
@@ -1362,7 +1362,7 @@ def report_staggered(
     staggered :
         Every staggered run, the never-closed ones included.
     frozen :
-        The frozen-seed finals, keyed by route and start.
+        The frozen-seed finals, keyed by search and start.
 
     Returns
     -------
@@ -1380,7 +1380,7 @@ def report_staggered(
     """
     columns = (
         ReportColumn("start", align="<"),
-        ReportColumn("route", align="<"),
+        ReportColumn("search", align="<"),
         ReportColumn("mass, frozen [t]", ".9f"),
         ReportColumn("mass, staggered [t]", ".9f"),
         ReportColumn("coupling moved", "+.4%"),
@@ -1392,15 +1392,15 @@ def report_staggered(
     for run in staggered:
         if run.found is None:
             continue
-        builder = density_design if run.route == ROUTE_DENSITY else heights_design
+        builder = density_design if run.search == SEARCH_DENSITY else heights_design
         answer = run.found.trajectory.q[-1]
         settled = run.found.aux.sizes.sections.diameter
         final = read_final(problem, builder, answer, settled)
 
-        before = frozen[(run.route, run.start)]
+        before = frozen[(run.search, run.start)]
         moved = final.mass / before.mass - 1.0
-        rows.append((run.start, run.route, before.mass, final.mass, moved, final.rise))
-        closed[(run.route, run.start)] = final
+        rows.append((run.start, run.search, before.mass, final.mass, moved, final.rise))
+        closed[(run.search, run.start)] = final
         shifts.append(abs(moved))
 
     report.write_heading("The coupling closed, against the frozen seed")
@@ -1577,7 +1577,7 @@ def report_simultaneous(
     report: Report,
     problem: ArchProblem,
     searched: SimultaneousConfig,
-    starts: tuple[RouteStart, ...],
+    starts: tuple[SearchStart, ...],
     closed: dict[tuple[str, str], FinalRead],
 ) -> tuple[SimultaneousAnswer, ...]:
     """
@@ -1644,7 +1644,7 @@ def report_simultaneous(
         mass = float(weighed)
         rise = float(jnp.max(shape.xyz[:, 2]))
         worked = float(jnp.max(used))
-        base = closed.get((ROUTE_DENSITY, start.label))
+        base = closed.get((SEARCH_DENSITY, start.label))
         gained = mass / base.mass - 1.0 if base is not None else float("nan")
 
         rows.append((start.label, mass, rise, worked, gained, spent))
@@ -1658,8 +1658,8 @@ def report_simultaneous(
 
 def write_figures(
     problem: ArchProblem,
-    density: RouteOutcomes,
-    heights: RouteOutcomes,
+    density: SearchOutcomes,
+    heights: SearchOutcomes,
     closed: dict[tuple[str, str], FinalRead],
     constrained: float,
 ) -> None:
@@ -1677,18 +1677,18 @@ def write_figures(
 
     matched_q, matched_z = density.runs[0], heights.runs[0]
     traces = (
-        RouteTrace(
+        SearchTrace(
             "one force density",
             np.asarray(matched_q.found.trajectory.mass),
             matched_q.bending,
         ),
-        RouteTrace(
+        SearchTrace(
             "free heights",
             np.asarray(matched_z.found.trajectory.mass),
             matched_z.bending,
         ),
     )
-    # A start a route never took carries NaN in that route's slot, which
+    # A start a search never took carries NaN in that search's slot, which
     # the figure simply does not draw.
     labels = tuple(run.start for run in heights.runs)
     unpaired = len(heights.runs) - len(density.runs)
@@ -1699,15 +1699,15 @@ def write_figures(
         np.asarray([final.mass for final in heights.finals]),
     )
 
-    def settled_mass(route: str, start: str) -> float:
-        final = closed.get((route, start))
+    def settled_mass(search: str, start: str) -> float:
+        final = closed.get((search, start))
 
         return final.mass if final is not None else float("nan")
 
     settled = StartSpread(
         labels,
-        np.asarray([settled_mass(ROUTE_DENSITY, label) for label in labels]),
-        np.asarray([settled_mass(ROUTE_HEIGHTS, label) for label in labels]),
+        np.asarray([settled_mass(SEARCH_DENSITY, label) for label in labels]),
+        np.asarray([settled_mass(SEARCH_HEIGHTS, label) for label in labels]),
     )
     comparison = figure_parametrization(traces, spread, settled, constrained)
     comparison.savefig(FIGURES / "15_parametrization.png", dpi=200)
@@ -1733,7 +1733,7 @@ def write_figures(
 
 def main(config_path: Path) -> None:
     """
-    Descend every parametrization the file describes, and compare the routes.
+    Descend every parametrization the file describes, and compare the searches.
 
     Parameters
     ----------
@@ -1749,14 +1749,14 @@ def main(config_path: Path) -> None:
     report_starts(report, problem, starts)
     best_error = report_gradient(report, problem, search, starts[0].heights)
 
-    report.write_heading("Descending both routes from every start")
-    runs_density, runs_matched = run_routes(report, problem, search, starts)
+    report.write_heading("Descending both searches from every start")
+    runs_density, runs_matched = run_searches(report, problem, search, starts)
     extras = unmatched_starts(problem, config)
     runs_heights = runs_matched + run_unmatched(report, problem, search, extras)
-    density = RouteOutcomes(
+    density = SearchOutcomes(
         runs_density, read_finals(problem, density_design, runs_density)
     )
-    heights = RouteOutcomes(
+    heights = SearchOutcomes(
         runs_heights, read_finals(problem, heights_design, runs_heights)
     )
     report_descents(report, density, heights)
@@ -1765,9 +1765,9 @@ def main(config_path: Path) -> None:
     staggered = run_staggered(report, problem, search, starts, extras)
     frozen = {}
     for run, final in zip(density.runs, density.finals):
-        frozen[(ROUTE_DENSITY, run.start)] = final
+        frozen[(SEARCH_DENSITY, run.start)] = final
     for run, final in zip(heights.runs, heights.finals):
-        frozen[(ROUTE_HEIGHTS, run.start)] = final
+        frozen[(SEARCH_HEIGHTS, run.start)] = final
     closed = report_staggered(report, problem, staggered, frozen)
 
     answers = report_simultaneous(report, problem, config.simultaneous, starts, closed)
@@ -1802,8 +1802,8 @@ def main(config_path: Path) -> None:
         ("mass, free heights, random", f"{random_final.mass:.9f} t"),
         ("best one density over starts", f"{min(masses_density):.9f} t"),
         ("best free heights over starts", f"{min(masses_heights):.9f} t"),
-        ("density route spread over starts", f"{spread_density:.2e}"),
-        ("height route spread over starts", f"{spread_heights:.2e}"),
+        ("density search spread over starts", f"{spread_density:.2e}"),
+        ("height search spread over starts", f"{spread_heights:.2e}"),
         ("peak bending ratio, one density", f"{peak_density:.2e}"),
         ("peak bending, matched free heights", f"{peak_matched:.2e}"),
         ("the matched iterates bent", f"{bent_more:.0f}x more"),
@@ -1822,10 +1822,10 @@ def main(config_path: Path) -> None:
         "scaled directional gradient error", best_error, TOLERANCE_GRADIENT
     )
     checked_bending = ToleranceCheck(
-        "density route bending ratio", peak_density, TOLERANCE_BENDING
+        "density search bending ratio", peak_density, TOLERANCE_BENDING
     )
     checked_spread = ToleranceCheck(
-        "density route spread over starts", spread_density, TOLERANCE_SPREAD
+        "density search spread over starts", spread_density, TOLERANCE_SPREAD
     )
     checked_utilization = ToleranceCheck(
         "worst utilization deviation", worst_deviation, TOLERANCE_UTILIZATION

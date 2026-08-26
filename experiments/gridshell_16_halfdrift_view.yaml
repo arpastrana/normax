@@ -65,7 +65,7 @@ descent:
 
 viewer:
   enabled: true
-  route: end to end
+  search: end to end
   load_case: LC1
   load_scale: 3.0
-  solo_route: true
+  solo_search: true

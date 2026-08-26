@@ -1,5 +1,5 @@
 # The Vierendeel's sizing-only baseline under SLSQP, eight starts. Every
-# one converges to 0.43047x, which is what made the route look unimodal.
+# one converges to 0.43047x, which is what made the search look unimodal.
 structure:
   num_bays: 8
   span: 10000.0
@@ -38,7 +38,7 @@ descent:
 
 viewer:
   enabled: false
-  route: sizing only
-  # Descend that one route alone, for iterating rather than reporting:
-  # every comparison entry needs the routes it compares.
-  solo_route: true
+  search: sizing only
+  # Descend that one search alone, for iterating rather than reporting:
+  # every comparison entry needs the searches it compares.
+  solo_search: true

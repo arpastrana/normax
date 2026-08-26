@@ -115,7 +115,7 @@ TOLERANCE_LEAK = 1e-10
 CONTRAST_FLOOR = 0.4
 DRIFT_FLOOR = 100.0
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 
 class TrussProblem(NamedTuple):
@@ -1066,4 +1066,4 @@ def main(path: Path) -> None:
 if __name__ == "__main__":
     jnp.set_printoptions(precision=12)
     described = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    main(described or Path(__file__).with_name("vierendeel.yaml"))
+    main(described or Path(__file__).with_name("vierendeel_formfind.yaml"))

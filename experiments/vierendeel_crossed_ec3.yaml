@@ -43,7 +43,7 @@ descent:
 
 viewer:
   enabled: false
-  route: end to end
-  # Descend that one route alone, for iterating rather than reporting:
-  # every comparison entry needs the routes it compares.
-  solo_route: false
+  search: end to end
+  # Descend that one search alone, for iterating rather than reporting:
+  # every comparison entry needs the searches it compares.
+  solo_search: false

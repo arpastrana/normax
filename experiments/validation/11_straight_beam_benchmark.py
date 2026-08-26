@@ -130,12 +130,12 @@ TOLERANCE_AXIAL = 1e-6
 TOLERANCE_STATICS = 1e-10
 TOLERANCE_STAGGER = 1e-10
 
-FIGURES = Path(__file__).resolve().parent.parent / "figures"
+FIGURES = Path(__file__).resolve().parents[2] / "figures"
 
 # Compiled programs outlive the process, so a second run pays for arithmetic
 # alone. Every compilation here is well under the one second the persistent
 # cache keeps by default, which would otherwise leave all of them out of it.
-COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
+COMPILATION_CACHE = Path(__file__).resolve().parents[2] / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)

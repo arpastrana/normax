@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The path each route's best descent took, for the animations.
+The path each search's best descent took, for the animations.
 
 A multi-start run keeps its landings and throws the paths away, which is the
-right trade while the question is where a route ends up. Once the question is
+right trade while the question is where a search ends up. Once the question is
 what it did on the way, the path is wanted — and it can be had without having
 kept it, because the starts are drawn from a fixed seed.
 
@@ -43,7 +43,6 @@ Run it from the repository root:
 
 import importlib.util
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -54,19 +53,22 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from normax import searches  # noqa: E402
 
-import design_routes as routes  # noqa: E402
+# The run descriptions the examples take, and the folder this file sits in.
+EXPERIMENTS = Path(__file__).resolve().parents[1]
+VALIDATION = Path(__file__).resolve().parent
 
-EXPERIMENTS = Path(__file__).resolve().parent
+# The four examples, which own the run descriptions an audit reads designs from.
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 PATHS = EXPERIMENTS.parent / "trajectories"
 
 # The run whose landings are being redrawn, and where they were kept.
-DESCRIBED = EXPERIMENTS / "gridshell_16_crossed.yaml"
+DESCRIBED = EXAMPLES / "gridshell.yaml"
 KEPT = {
-    routes.ROUTE_FORMFOUND: "end_to_end",
-    routes.ROUTE_HEIGHTS: "free_heights",
-    routes.ROUTE_DRAWN: "sizing_only",
+    searches.SEARCH_FORMFOUND: "end_to_end",
+    searches.SEARCH_HEIGHTS: "free_heights",
+    searches.SEARCH_DRAWN: "sizing_only",
 }
 
 # How many starts the multi-start run spent, and how close to feasible a landing
@@ -75,21 +77,27 @@ STARTS = 24
 FEASIBLE = 1.0e-4
 
 
-def load_experiment(name: str):
+def loaded_module(path: Path):
     """
-    One experiment module, loaded by path rather than imported by name.
+    One script, loaded by path rather than imported by name.
 
     Parameters
     ----------
-    name :
-        Stem of the experiment's file.
+    path :
+        The file to load.
 
     Returns
     -------
     module :
         The loaded module.
+
+    Notes
+    -----
+    Neither the examples nor the numbered experiments are importable names, so
+    a script that reuses another reaches it by path. Taking the file rather
+    than a stem is what lets one loader serve both folders.
     """
-    spec = importlib.util.spec_from_file_location(name, EXPERIMENTS / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
@@ -98,12 +106,12 @@ def load_experiment(name: str):
 
 def winning_start(stem: str) -> dict:
     """
-    The lightest feasible landing the multi-start run recorded for one route.
+    The lightest feasible landing the multi-start run recorded for one search.
 
     Parameters
     ----------
     stem :
-        What the route's kept landings are filed under.
+        What the search's kept landings are filed under.
 
     Returns
     -------
@@ -120,49 +128,49 @@ def winning_start(stem: str) -> dict:
     return min(feasible, key=lambda entry: entry["mass"])
 
 
-def prepared_routes(profile):
+def prepared_searches(profile):
     """
-    Every route's maps, its starts and its bounds, as the run description asks.
+    Every search's maps, its starts and its bounds, as the run description asks.
 
     Parameters
     ----------
     profile :
-        The gridshell's route profile.
+        The gridshell's search profile.
 
     Returns
     -------
     prepared :
-        The maps by route, the scattered starts by route, and the bounds by
-        route.
+        The maps by search, the scattered starts by search, and the bounds by
+        search.
     """
     with open(DESCRIBED) as handle:
-        config = routes.parse_shell(handle)
+        config = searches.parse_shell(handle)
 
     structure = profile.build_structure(config)
     plan = profile.build_loads(structure, config)
-    folding = routes.folding_maps(profile, config, structure)
-    problem = routes.prepare_problem(structure, config, plan, folding)
+    folding = searches.folding_maps(profile, config, structure)
+    problem = searches.prepare_problem(structure, config, plan, folding)
     opening = profile.signed_start(problem, config)
     guard = None if profile.sign_guard is None else profile.sign_guard(config, opening)
     limits = profile.height_limits(config)
-    descent = routes.descent_plan(config)
+    descent = searches.descent_plan(config)
 
-    maps = routes.route_maps(problem, limits, descent.budget.length_floor, guard)
+    maps = searches.search_maps(problem, limits, descent.budget.length_floor, guard)
     finder = problem.pipeline.formfinder
     shape = finder.formfinder(jnp.asarray(opening.q), problem.loads.formfinding)
-    seeded = routes.route_starts(
+    seeded = searches.search_starts(
         problem, opening, shape.xyz, descent.budget.diameter_floor
     )
-    boxes = routes.route_boxes(problem, descent.budget.diameter_floor, limits)
+    boxes = searches.search_boxes(problem, descent.budget.diameter_floor, limits)
     widened = descent.budget._replace(starts=STARTS)
 
     scattered = {
-        route: routes.scattered_points(
-            np.asarray(seeded[route], dtype=np.float64), boxes[route], widened
+        search: searches.scattered_points(
+            np.asarray(seeded[search], dtype=np.float64), boxes[search], widened
         )
-        for route in KEPT
+        for search in KEPT
     }
-    budget = descent.augmented or routes.AUGMENTED_DEFAULT
+    budget = descent.augmented or searches.AUGMENTED_DEFAULT
 
     return maps, scattered, boxes, budget
 
@@ -174,7 +182,7 @@ def recorded_descent(maps, opening, boxes, budget):
     Parameters
     ----------
     maps :
-        The route's compiled maps.
+        The search's compiled maps.
     opening :
         The variable vector to descend from.
     boxes :
@@ -195,7 +203,7 @@ def recorded_descent(maps, opening, boxes, budget):
 
         return inner(variables, multipliers, penalty, scale)
 
-    answer = routes.descend_augmented_route(
+    answer = searches.descend_augmented_search(
         maps._replace(augmented=watched), opening, boxes, budget
     )
     steps = np.stack(visited)
@@ -206,28 +214,28 @@ def recorded_descent(maps, opening, boxes, budget):
 
 def main() -> None:
     """
-    Redraw every route's winning path and write it beside the landings.
+    Redraw every search's winning path and write it beside the landings.
     """
     PATHS.mkdir(exist_ok=True)
-    profile = load_experiment("23_gridshell_optimize").GRIDSHELL_PROFILE
-    maps, scattered, boxes, budget = prepared_routes(profile)
+    profile = loaded_module(EXAMPLES / "gridshell.py").GRIDSHELL_PROFILE
+    maps, scattered, boxes, budget = prepared_searches(profile)
 
-    for route, stem in KEPT.items():
+    for search, stem in KEPT.items():
         expected = winning_start(stem)
         started = int(expected["start"])
         began = time.perf_counter()
         answer, steps, masses = recorded_descent(
-            maps[route], scattered[route][started], boxes[route], budget
+            maps[search], scattered[search][started], boxes[search], budget
         )
         spent = (time.perf_counter() - began) / 60.0
 
-        landed = abs(float(maps[route].weigh(jnp.asarray(answer.variables))[0]))
+        landed = abs(float(maps[search].weigh(jnp.asarray(answer.variables))[0]))
         agrees = landed == expected["mass"]
         np.savez(
             PATHS / f"{stem}.npz",
-            route=np.array(route),
+            search=np.array(search),
             start=np.array(started),
-            opening=scattered[route][started],
+            opening=scattered[search][started],
             steps=steps,
             masses=masses,
             landing=np.asarray(answer.variables),
@@ -235,7 +243,7 @@ def main() -> None:
         )
 
         print(
-            f"  {route:14s} start {started:2d}: {steps.shape[0]:5d} frames of "
+            f"  {search:14s} start {started:2d}: {steps.shape[0]:5d} frames of "
             f"{steps.shape[1]:2d} variables, {spent:.1f} min",
             flush=True,
         )

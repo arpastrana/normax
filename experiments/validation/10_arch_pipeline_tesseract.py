@@ -91,7 +91,7 @@ from normax.tesseract import local_chain
 # Compiled programs outlive the process, so a second run pays for arithmetic and
 # for crossings alone. Every compilation here is well under the one second the
 # persistent cache keeps by default, which would otherwise leave all of them out.
-COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
+COMPILATION_CACHE = Path(__file__).resolve().parents[2] / ".jax_cache"
 COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
