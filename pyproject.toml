@@ -73,9 +73,6 @@ force-single-line = true
 
 [tool.ruff.lint.per-file-ignores]
 "normax/__init__.py" = ["E402", "F401"]  # re-exports after the JAX config
-"normax/analysis/__init__.py" = ["E402", "F401"]  # backend re-exports at the bottom
-"normax/form_finding/__init__.py" = ["E402", "F401"]  # backend re-exports at the bottom
-"normax/sizing/__init__.py" = ["E402", "F401"]  # backend re-exports at the bottom
 "tests/*" = ["E712", "E501"]  # JAX bool comparisons; relaxed line length
 
 
@@ -84,9 +81,6 @@ Homepage = "https://github.com/arpastrana/normax"
 Changelog = "https://github.com/arpastrana/normax/releases"
 Issues = "https://github.com/arpastrana/normax/issues"
 CI = "https://github.com/arpastrana/normax/actions"
-
-[project.optional-dependencies]
-spike = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

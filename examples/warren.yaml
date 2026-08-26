@@ -1,25 +1,27 @@
 # The Warren truss, composed across two Tesseract boundaries: jax-fdm in
 # process, OpenSees across the analysis schema, Blueprints across the check.
-# Blueprints implements no 6.3.1, so this sizes to 6.2 alone.
+# Millimeters and newtons throughout.
 structure:
   num_bays: 8
   span: 10000.0
   depth: 1000.0
 
-loads:
-  total: 180000.0
-  half_factor: 0.5
-  point_factor: 0.5
-  mirrored_case: false
-
+# The lens the start is fitted to: bottom chord hung, top chord arched.
 sketch:
   sag_lens: 600.0
   rise_lens: 800.0
 
-subspace:
-  symmetric: true
-  basis: svd
-  margin_fraction: 0.1
+# Every case sits on the deck. The first shapes the truss; every case is
+# checked. The mirrored half-span case is a reindexing of the near one on a
+# symmetric design, so it is left out.
+load_cases:
+  - name: deck
+    magnitude: 180000.0
+  - name: deck_half
+    magnitude: 180000.0
+    options: {factor: 0.5}
+  - name: deck_point
+    magnitude: 90000.0
 
 analysis:
   diameter: 100.0
@@ -28,34 +30,28 @@ analysis:
   backend: opensees
 
 sizing:
-  # The check crosses its own boundary too, so neither solver on the far
-  # side differentiates itself.
+  section_class: 3
+  # The check crosses its own boundary too, so neither solver on the far side
+  # differentiates itself. Blueprints implements no 6.3.1 buckling.
   backend: blueprint_tesseract
 
-descent:
-  iterations: 1000
-  rounds: 5
-  tolerance: 1.0e-9
+# The held-plan subspace the densities move in: an orthonormal basis, folded
+# by the midspan mirror. The margin signs the chords at the start alone.
+subspace:
+  symmetric: true
+  pivoted: false
+  margin_fraction: 0.1
+
+constraints:
   diameter_floor: 21.3
   length_floor: 500.0
-  starts: 1
-  scatter: 0.0
-  limit_rise: true
-  rise_factor: 2.0
-  limit_sag: true
-  sag_factor: 1.0
+  rise_ceiling: 2000.0
+  sag_floor: -1000.0
+  bounds: null
 
-viewer:
-  enabled: false
-  search: end to end
-  # Descend that one search alone, for iterating rather than reporting:
-  # every comparison entry needs the searches it compares.
-  solo_search: false
-
-# Budgets for `method: augmented`, read whether or not the method names it.
 # The opening penalty is the one setting that decides the answer rather than
-# the speed, and no value is safe on every structure — this truss is flat from
-# 1.0 to 0.003 where the Vierendeel is not, so the conservative end is kept.
+# the speed; this truss is flat across two decades of it, so the conservative
+# end is kept.
 augmented:
   rounds: 10
   iterations: 400
@@ -63,7 +59,8 @@ augmented:
   opening: 3
   penalty: 0.1
   growth: 10.0
-  # Signed exponent, or YAML reads this as a string.
   ceiling: 1.0e+8
   tolerance: 1.0e-6
   quiet: 1.0e-6
+
+viewer: false

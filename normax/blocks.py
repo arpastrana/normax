@@ -1,0 +1,186 @@
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+The blocks a run description names, built.
+
+The one place every backend is imported side by side: the traced solver and the
+clause library that validate, and the two Tesseract crossings that ship. A
+pipeline is picked here by name and nothing downstream asks which was chosen.
+"""
+
+from normax.analysis import AbstractFrameAnalyzer
+from normax.analysis import normal_axis
+from normax.analysis.smax import SmaxAnalyzer
+from normax.config import AnalysisConfig
+from normax.config import ConstraintsConfig
+from normax.config import SizingConfig
+from normax.design import DesignConstraints
+from normax.design import StructuralDesignPipeline
+from normax.form_finding import FdmFormFinder
+from normax.sections import TubeFamily
+from normax.sizing import AbstractMemberSizer
+from normax.sizing.blueprint import BlueprintSizer
+from normax.sizing.ec3 import Ec3Sizer
+from normax.structures import Structure
+from normax.symmetry import SignGuard
+from normax.tesseract import BlueprintClient
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import analysis_tesseract
+from normax.tesseract import blueprint_tesseract
+
+# The crossed solvers, and which of them is planar and must be told its plane.
+ANALYSIS_CROSSED = ("opensees", "pynite")
+ANALYSIS_PLANAR = ("opensees",)
+
+
+def build_analyzer(
+    structure: Structure,
+    family: TubeFamily,
+    config: AnalysisConfig,
+) -> AbstractFrameAnalyzer:
+    """
+    The frame analysis a run description asks for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the block is built on.
+    family :
+        The section family the seed section is drawn from.
+    config :
+        The backend, and the seed diameter.
+
+    Returns
+    -------
+    analyzer :
+        The block, in process or across a boundary.
+
+    Raises
+    ------
+    ValueError
+        If the backend is not one this module knows.
+    """
+    if config.backend == "smax":
+        return SmaxAnalyzer(structure, family(config.diameter))
+    if config.backend not in ANALYSIS_CROSSED:
+        raise ValueError(f"unknown analysis backend {config.backend!r}")
+
+    normal = normal_axis(structure) if config.backend in ANALYSIS_PLANAR else None
+    client = analysis_tesseract(config.backend)
+
+    return TesseractAnalyzer(structure, client, family, normal)
+
+
+def build_sizer(
+    structure: Structure,
+    family: TubeFamily,
+    config: SizingConfig,
+) -> AbstractMemberSizer:
+    """
+    The code check a run description asks for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the block is built on.
+    family :
+        The section family every size is drawn from.
+    config :
+        The backend.
+
+    Returns
+    -------
+    sizer :
+        The block, in process or across a boundary.
+
+    Raises
+    ------
+    ValueError
+        If the backend is not one this module knows.
+    """
+    if config.backend == "ec3":
+        return Ec3Sizer(structure, family)
+    if config.backend == "blueprint":
+        return BlueprintSizer(structure, family)
+    if config.backend == "blueprint_tesseract":
+        return BlueprintClient(structure, blueprint_tesseract(), family)
+
+    raise ValueError(f"unknown sizing backend {config.backend!r}")
+
+
+def build_pipeline(
+    structure: Structure,
+    family: TubeFamily,
+    analysis: AnalysisConfig,
+    sizing: SizingConfig,
+) -> StructuralDesignPipeline:
+    """
+    The three blocks a run composes, built on one structure.
+
+    Parameters
+    ----------
+    structure :
+        The structure every block is built from.
+    family :
+        The section family both the analysis and the check draw tubes from, so
+        whatever differs downstream is the check itself.
+    analysis :
+        Which solver fills the analysis slot.
+    sizing :
+        Which check fills the sizing slot.
+
+    Returns
+    -------
+    pipeline :
+        A form finder, a frame analysis and a code check, composed.
+    """
+    pipeline = StructuralDesignPipeline(
+        FdmFormFinder(structure),
+        build_analyzer(structure, family, analysis),
+        build_sizer(structure, family, sizing),
+    )
+
+    return pipeline
+
+
+def design_constraints(
+    config: ConstraintsConfig,
+    guard: SignGuard | None,
+) -> DesignConstraints:
+    """
+    What the design is held to, read off a run description.
+
+    Parameters
+    ----------
+    config :
+        The floors, the height limits and the density box the file names.
+    guard :
+        The sign guard the start scaled, or None for none.
+
+    Returns
+    -------
+    constraints :
+        Everything the descent is held to beside the check.
+    """
+    bounds = None if config.bounds is None else (config.bounds.min, config.bounds.max)
+    constraints = DesignConstraints(
+        config.diameter_floor,
+        config.length_floor,
+        config.rise_ceiling,
+        config.sag_floor,
+        guard,
+        bounds,
+    )
+
+    return constraints

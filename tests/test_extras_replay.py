@@ -1,25 +1,32 @@
 import jax.numpy as jnp
+import matplotlib
 import numpy as np
 import pytest
+from matplotlib.figure import Figure
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
+from normax.extras.nested import Trajectory
+from normax.extras.nested import design_envelope
+from normax.extras.nested import minimize_bounded
+from normax.extras.nested import penalized_mass
+from normax.extras.nested import size_design
+from normax.extras.replay import figure_trajectory
+from normax.extras.replay import load_trajectory
+from normax.extras.replay import replay_trajectory
+from normax.extras.replay import save_trajectory
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
-from normax.loads import create_loads_by_name
+from normax.loads import load_half_span
+from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.optimization import Trajectory
-from normax.optimization import minimize_bounded
-from normax.optimization import penalized_mass
-from normax.replay import load_trajectory
-from normax.replay import replay_trajectory
-from normax.replay import save_trajectory
-from normax.sizing import Ec3Sizer
-from normax.sizing import build_section_family
+from normax.sections import build_section_family
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
+
+matplotlib.use("Agg")
 
 # A small arch under 180 kN, in millimeters and newtons.
 SPAN = 4_000.0
@@ -56,21 +63,19 @@ def structure():
 
 @pytest.fixture(scope="module")
 def loads(structure):
-    uniform = create_loads_by_name("uniform", structure, TOTAL_LOAD)
-    lopsided = create_loads_by_name("half_span", structure, TOTAL_LOAD)
+    uniform = load_uniform(structure, TOTAL_LOAD)
+    lopsided = load_half_span(structure, TOTAL_LOAD)
 
     return assemble_load_cases([uniform, lopsided])
 
 
 @pytest.fixture(scope="module")
 def pipeline(structure):
-    grade = Steel355()
-    family = build_section_family(grade, 3)
-    section = family(SEED)
+    family = build_section_family(Steel355(), 3)
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, section),
+        SmaxAnalyzer(structure, family(SEED)),
         Ec3Sizer(structure, family),
     )
 
@@ -86,7 +91,9 @@ def run_search(pipeline, loads, diameters, sharpness):
     """
 
     def weigh_shape(force_densities):
-        design = pipeline(DesignParameters(force_densities, diameters), loads)
+        design = size_design(
+            pipeline, DesignParameters(force_densities, diameters), loads
+        )
         sized = design_envelope(design, sharpness)
         mass = compute_mass(sized)
 
@@ -186,6 +193,24 @@ def test_history_invariants(pipeline, loads, diameters):
     assert float(jnp.max(history.utilization)) < 1.0 + TOLERANCE_ROUNDOFF
 
     # The governing column agrees with the sizes the cases demanded on their own.
-    design = pipeline(DesignParameters(found.trajectory.q[0], diameters), loads)
+    design = size_design(
+        pipeline, DesignParameters(found.trajectory.q[0], diameters), loads
+    )
     expected = jnp.argmax(design.sizes.sections.diameter, axis=0)
     assert np.array_equal(history.governing[0], expected)
+
+
+def test_the_trajectory_figure_draws_one_curve_per_run():
+    stamped = Trajectory(
+        q=jnp.zeros((3, 2)),
+        mass=jnp.asarray([3.0, 2.0, 1.0]),
+        beta=jnp.asarray([1.0, 2.0, 4.0]),
+    )
+    unstamped = stamped._replace(beta=jnp.zeros(3))
+
+    colored = figure_trajectory([stamped, stamped], concatenated=True)
+    plain = figure_trajectory([unstamped], titles=("walk",))
+
+    assert isinstance(colored, Figure)
+    assert len(colored.axes[0].lines) >= 2
+    assert plain.axes[0].get_legend().get_texts()[0].get_text() == "walk"

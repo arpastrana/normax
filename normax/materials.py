@@ -54,7 +54,7 @@ class SteelGrade(NamedTuple):
     Notes
     -----
     **The strengths have no default, because a default is a grade chosen
-    silently.** A caller names its grade — `Steel355()`, `Steel235()` — or
+    silently.** A caller names its grade — `Steel355()` — or
     states the strengths itself; the modulus and the density default because
     they are the same for every structural steel. Every field is a leaf, so a
     gradient may be taken with respect to any of them.
@@ -91,30 +91,6 @@ class Steel355(SteelGrade):
         e_mod: float | Float[Array, ""] = E_MODULUS,
         density: float | Float[Array, ""] = DENSITY,
     ) -> "Steel355":
-        """
-        Build the grade at its certificate values.
-        """
-        return super().__new__(cls, f_y, f_u, e_mod, density)
-
-
-class Steel235(SteelGrade):
-    """
-    Grade S235 structural steel, as its certificate states it.
-
-    Notes
-    -----
-    The nominal strengths of EN 10025 for the thicknesses this project runs
-    at. The fields stay constructor arguments rather than being pinned,
-    because a pytree round trip rebuilds the instance positionally.
-    """
-
-    def __new__(
-        cls,
-        f_y: float | Float[Array, ""] = 235.0,
-        f_u: float | Float[Array, ""] = 360.0,
-        e_mod: float | Float[Array, ""] = E_MODULUS,
-        density: float | Float[Array, ""] = DENSITY,
-    ) -> "Steel235":
         """
         Build the grade at its certificate values.
         """

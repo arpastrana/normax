@@ -12,43 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-A recorded search, turned back into the designs it walked through.
+A recorded nested search, turned back into the designs it walked through.
 
-A trajectory remembers force densities and nothing else, so the designs the
-search moved through are gone the moment it returns. They are not lost: the
-pipeline that produced them is deterministic in its parameters, so carrying
-every iterate back through it reconstructs every intermediate design exactly —
-exactly, because the search analyzed every iterate at the same frozen seed
-diameters a replay hands back in.
-
-The artifact half of this module makes the record durable. A search and the
-file that described its run are written into one archive, so a replay needs
-nothing from the process that ran the search — a different process, on a
-different day, rebuilds the pipeline from the embedded text and walks the
-same designs.
-
-Everything here is host-side bookkeeping around one jitted step. Nothing is
-differentiated, and nothing imports a renderer: this module ends at arrays.
+A trajectory remembers force densities and nothing else, and the pipeline is
+deterministic in its parameters, so carrying every iterate back through it at
+the same frozen seed diameters reconstructs every intermediate design exactly.
+An artifact embeds the run's own description beside the record, so a replay
+needs nothing from the process that ran the search. The one figure here draws
+the objective the search read.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
+from matplotlib.colors import LogNorm
+from matplotlib.figure import Figure
 
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
-from normax.design import governing_load_case
+from normax.extras.nested import Trajectory
+from normax.extras.nested import design_envelope
+from normax.extras.nested import governing_load_case
+from normax.extras.nested import size_design
 from normax.loads import LoadCases
-from normax.optimization import Trajectory
+
+# Color of everything that is a reference rather than a result.
+GREY = "0.55"
 
 
 class TrajectoryArtifact(NamedTuple):
@@ -61,13 +60,6 @@ class TrajectoryArtifact(NamedTuple):
         Where the optimizer went, in the order it went there.
     config_text :
         Verbatim text of the file the run was described by.
-
-    Notes
-    -----
-    The text rather than a path, so the artifact stays true when the file it
-    was read from moves on. What configured the run is embedded in the record
-    of the run, and nothing else has to still exist for a replay to agree
-    with it.
     """
 
     trajectory: Trajectory
@@ -100,15 +92,9 @@ class DesignHistory(NamedTuple):
 
     Notes
     -----
-    **The utilization here is the reconciled section re-read against its
-    standard**, `AbstractMemberSizer.compute_utilization` — at most one, and exactly
-    one for the case that governs. It is not the fully-stressed diagonal a
-    design carries, which is one by construction and says nothing a color
-    could show.
-
-    **The mass here is the design's mass**, where a trajectory's own column is
-    the objective the search read — penalized wherever a floor was on.
-    Reconciling the two is the caller's arithmetic, through the same penalty.
+    The utilization is the reconciled section re-read against its standard —
+    at most one, exactly one for the governing case — and the mass is the
+    design's, where a trajectory's own column is the penalized objective.
     """
 
     xyz: Float[Array, "steps nodes 3"]
@@ -140,8 +126,7 @@ def save_trajectory(
 
     Notes
     -----
-    The text rides as a plain unicode array, so reading the artifact back
-    never needs pickling. The directory is the caller's to make.
+    The text rides as a plain unicode array, so reading back never pickles.
     """
     embedded = np.array(config_text)
     np.savez(
@@ -197,8 +182,7 @@ def replay_step(
         The iterate's force densities, and the frozen diameters the frame
         was analyzed with.
     sharpness :
-        Sharpness of the envelope reconciling the load cases. None takes the
-        true largest section any case demands.
+        Sharpness of the envelope, or None for the true largest.
 
     Returns
     -------
@@ -207,11 +191,9 @@ def replay_step(
 
     Notes
     -----
-    Which case governs is read before the envelope, on the sizes the cases
-    demanded on their own; the utilization is read after it, at the one
-    section every case must live with.
+    Which case governs is read before the envelope, the utilization after it.
     """
-    design = pipeline(params, loads)
+    design = size_design(pipeline, params, loads)
     governing = governing_load_case(design.sizes.sections.diameter)
 
     sized = design_envelope(design, sharpness)
@@ -255,8 +237,7 @@ def replay_trajectory(
     trajectory :
         Where the optimizer went, in the order it went there.
     diameters :
-        The frozen seed diameters every iterate was analyzed at, which is
-        what makes the replay exact rather than approximate.
+        The frozen seed diameters every iterate was analyzed at.
 
     Returns
     -------
@@ -267,15 +248,13 @@ def replay_trajectory(
     ------
     ValueError
         If the trajectory mixes iterates taken under an envelope with
-        iterates taken under none, which no single replay can honor.
+        iterates taken under none.
 
     Notes
     -----
-    The sharpness each step ran under is read back off the trajectory's own
-    column. A constant column replays as one compiled program; an annealed
-    one passes the sharpness as a traced argument, so every round still
-    shares a single compilation; a zero column is a search that enveloped
-    with the true largest, and replays under it.
+    The sharpness is read off the trajectory's own column and passed traced,
+    so one compilation covers the replay; a zero column replays under the
+    true largest.
     """
     recorded = np.asarray(trajectory.beta)
 
@@ -303,3 +282,82 @@ def replay_trajectory(
     history = jax.tree.map(lambda *steps: jnp.concatenate(steps), *frames)
 
     return history
+
+
+def figure_trajectory(
+    trajectories: Sequence[Trajectory],
+    *,
+    titles: Sequence[str] | None = None,
+    concatenated: bool = False,
+) -> Figure:
+    """
+    The objective at every iterate, for one search or several in a row.
+
+    Parameters
+    ----------
+    trajectories :
+        The runs to draw, each recorded by one search.
+    titles :
+        Name of each run, shown in the legend, or None to number them.
+    concatenated :
+        Whether to draw the runs end to end on one iteration axis rather
+        than overlaid from iteration zero.
+
+    Returns
+    -------
+    figure :
+        The descent of the objective, one curve per run.
+
+    Notes
+    -----
+    Iterates are colored by sharpness only when every run carries a positive
+    one; a logarithmic color scale has no place for the zero stamp.
+    """
+    masses = [np.asarray(walked.mass) for walked in trajectories]
+    sharpnesses = [np.asarray(walked.beta) for walked in trajectories]
+    if titles is None:
+        titles = tuple(f"run {index + 1}" for index in range(len(trajectories)))
+
+    figure, ax = plt.subplots(figsize=(7.0, 4.2), layout="constrained")
+
+    shades = ("#c0392b", "#35b779", "#31688e")
+    stamped = all(float(np.min(sharpness)) > 0.0 for sharpness in sharpnesses)
+
+    # One norm across every run, or the colors of two runs cannot be compared.
+    coloring = None
+    if stamped:
+        dimmest = min(float(np.min(sharpness)) for sharpness in sharpnesses)
+        sharpest = max(float(np.max(sharpness)) for sharpness in sharpnesses)
+        coloring = LogNorm(dimmest, sharpest)
+
+    offset = 0
+    scatter = None
+    for index, (mass, sharpness) in enumerate(zip(masses, sharpnesses, strict=True)):
+        steps = np.arange(len(mass)) + offset
+        ax.plot(
+            steps,
+            mass,
+            "-",
+            color=shades[index % len(shades)],
+            lw=1.4,
+            label=titles[index],
+        )
+        if coloring is not None:
+            scatter = ax.scatter(
+                steps, mass, c=sharpness, cmap="viridis", norm=coloring, s=14, zorder=2
+            )
+        if concatenated:
+            offset += len(mass)
+            if index < len(masses) - 1:
+                ax.axvline(offset - 0.5, color=GREY, ls=":", lw=1.0)
+
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("objective [t]")
+    final = float(masses[-1][-1])
+    ax.set_title(f"Descent, {final:.4f} t at the answer", fontsize=11)
+    ax.legend(frameon=False, fontsize=8)
+    ax.grid(alpha=0.3)
+    if scatter is not None:
+        figure.colorbar(scatter, ax=ax, label=r"envelope sharpness $\beta$")
+
+    return figure

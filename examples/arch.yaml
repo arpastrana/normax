@@ -1,57 +1,66 @@
-# The arch of experiment 03, and the settings a design of it is searched for
-# under. Units are millimeters and newtons throughout, so a mass comes out in
-# tonnes and a force density in newtons per millimeter.
-
+# The arch, and the settings a design of it is searched for under. Millimeters
+# and newtons throughout, so a mass comes out in tonnes and a force density in
+# newtons per millimeter.
 structure:
-  span: 10000.0  # millimeters
-  rise: 3000.0  # millimeters
   num_edges: 10
-form_finding:
-  force_density: -80.0  # newtons per millimeter
-analysis:
-  diameter: 250.0  # millimeters
-  # smax traces the frame in this process; opensees crosses a Tesseract
-  # boundary to a host solver carrying DDM sensitivities (planar arch only).
-  backend: smax
+  span: 10000.0
+  rise: 3000.0
+
+# Every force density starts here. Negative in compression.
+sketch:
+  force_density: -80.0
+
+# The first case shapes the arch; every case is checked.
 load_cases:
   - name: uniform
-    magnitude: 180000.0  # newtons
+    magnitude: 180000.0
   - name: half_span
-    magnitude: 90000.0  # newtons
-  - name: half_span_mirrored
-    magnitude: 90000.0  # newtons
+    magnitude: 90000.0
+  - name: half_span
+    magnitude: 90000.0
+    options: {mirrored: true}
+
+analysis:
+  diameter: 250.0
+  # smax traces the frame in this process; opensees crosses a Tesseract
+  # boundary to a planar host solver carrying DDM sensitivities.
+  backend: opensees
+
 sizing:
   section_class: 3
-  # ec3 is the full member check; blueprint is the cross-section-only check
-  # hosted from the Blueprints library, which implements no member buckling;
-  # blueprint_tesseract is that same check across a Tesseract boundary.
-  backend: blueprint
-# The direct search of experiment 103: force densities and diameters together,
-# the check held as inequality constraints. Experiment 101 never reads this.
-simultaneous:
-  iterations: 200
-  tolerance: 1.0e-12
-  # independent moves one force density per member; shared moves one for all.
-  force_densities: shared
-  # Hard SLSQP constraints beside the U <= 1 check, each switchable. The
-  # length floor holds every member at or above optimization.length_floor's
-  # floor; the fixed rise pins the crown at the seed's form-found height.
-  length_floor: false
-  fixed_rise: false
-optimization:
-  # The settling passes are spent after the descent, re-analyzing the answer at
-  # the sections the check demanded, to measure what a frozen seed cost.
-  iterations: 25
-  settling_passes: 400
-  settling_tolerance: 1.0e-6
-  envelope_sharpness: 50.0
-  bounds:
-    min: -100.0
-    max: -1.0e-3
-  # Without a floor the search collapses members instead of improving the form,
-  # a member being both free and unbucklable as it vanishes. A weight of zero
-  # turns it off, which is what the collapse looks like.
-  length_floor:
-    fraction: 0.6
-    sharpness: 50.0
-    weight: 50.0
+  # ec3 is the full member check in process; blueprint is Blueprints'
+  # cross-section check in process; blueprint_tesseract is that same check
+  # across a Tesseract boundary. Blueprints implements no 6.3.1 buckling.
+  backend: blueprint_tesseract
+
+# No held-plan subspace: an arch is a chain, whose held plan has one degree
+# of freedom, so every force density moves on its own inside the bounds.
+subspace: null
+
+constraints:
+  diameter_floor: 21.3
+  # Without a floor the search collapses members instead of improving the
+  # form, a member being both free and unbucklable as it vanishes.
+  length_floor: 600.0
+  rise_ceiling: null
+  sag_floor: null
+  # Not a design constraint: the bounds keep the densities away from zero,
+  # where the force density system is singular.
+  bounds: {min: -100.0, max: -1.0e-3}
+
+# The opening penalty is the one setting that decides the answer rather than
+# the speed; every other entry is a budget. Signed exponents, or YAML reads
+# them as strings.
+augmented:
+  rounds: 10
+  iterations: 400
+  settled: 100
+  opening: 3
+  penalty: 0.1
+  growth: 10.0
+  ceiling: 1.0e+8
+  tolerance: 1.0e-6
+  quiet: 1.0e-6
+
+# A viewer blocks until its window closes, so the run reports first.
+viewer: false

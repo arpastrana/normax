@@ -7,9 +7,8 @@ build_config:
   python_version: "3.12"
   target_platform: "native"
 
-  # Only tesseract_api.py is copied into the image by default, and the backend
-  # is a separate module so a second one can arrive without touching the schema.
+  # Only tesseract_api.py is copied into the image by default.
   package_data:
-    - [_backend_smax.py, /tesseract/_backend_smax.py]
+    - [_backend_common.py, /tesseract/_backend_common.py]
     - [_backend_opensees.py, /tesseract/_backend_opensees.py]
     - [_backend_pynite.py, /tesseract/_backend_pynite.py]

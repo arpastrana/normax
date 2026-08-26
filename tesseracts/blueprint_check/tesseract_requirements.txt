@@ -1,5 +1,6 @@
-# LGPL-2.1, experiment-only, waived 2026-08-15: never on the submission path.
-# Resolves from PyPI inside any build context — no wheel TODO, unlike ec3_check.
+# Built by `uv build` at the repo root, and gitignored, so build the wheel
+# before `tesseract build`. The version is the one in pyproject.toml.
+../../dist/normax-0.1-py3-none-any.whl
+
+# LGPL-2.1, imported unmodified as a pip package; permitted 2026-08-15.
 blue-prints>=0.7.1
-# Annotations only; jaxtyping imports no jax, so the no-JAX claim holds.
-jaxtyping>=0.3.11

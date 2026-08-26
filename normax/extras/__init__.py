@@ -12,17 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The units the standard is written in, each as its value in coherent SI.
+Add-ons the core no longer needs: the nested route, its replay, and comparisons.
+
+The augmented Lagrangian over `normax.design` is the method. Everything here is
+what it displaced — the nested descent over force densities with frozen
+diameters, the SLSQP oracle, and the form finders that make the two comparison
+searches a swapped block. Extras import the core; nothing in the core imports
+them.
 """
-
-# Meters in a millimeter.
-MILLIMETER = 1e-3
-
-# Pascals in a newton per square millimeter.
-MEGAPASCAL = 1e6
-
-# Newton meters in a newton millimeter.
-NEWTON_MILLIMETER = 1e-3
-
-# Kilograms per cubic meter in a tonne per cubic millimeter.
-TONNE_PER_CUBIC_MILLIMETER = 1e12

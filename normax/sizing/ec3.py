@@ -14,33 +14,27 @@
 """
 EN 1993-1-1 as a block of the design pipeline.
 
-`ec3x` implements the standard: what a section is, what it resists, and
-the diameter at which a member is exactly satisfied. This module is the adapter
-that lets a pipeline call it beside a form finder and a frame analysis, and it
-is deliberately thin — every clause it reaches lives there, and nothing about a
-clause is decided here.
-
-The separation is what keeps `ec3x` free of any opinion about pipelines,
-so a second standard added beside it inherits none of ours.
+`ec3x` implements the standard: what a section is, what it resists, and the
+diameter at which a member is exactly satisfied. This module is the thin
+adapter that lets a pipeline call it beside a form finder and a frame
+analysis; every clause it reaches lives there, and nothing about a clause is
+decided here.
 """
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from ec3x.actions import MemberActions
-from ec3x.classification import ratio_at_class_limit
 from ec3x.classification import section_class_at_ratio
 from ec3x.material import Steel
 from ec3x.section import Tube
 from ec3x.section import TubeCatalogue
 from ec3x.sizing import diameter_required
-from ec3x.sizing import governing_limit_state
 from ec3x.sizing import moment_factor_linear
 from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis import DESIGN_AXES
 from normax.analysis import MemberForces
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
@@ -62,17 +56,8 @@ def design_steel(grade: SteelGrade) -> Steel:
     Returns
     -------
     steel :
-        The same steel with EN 1993-1-1's partial factors and imperfection
-        factor beside it, at their defaults.
-
-    Notes
-    -----
-    The certificate half crosses unchanged; what is added is what only this
-    standard can add — the partial factors of §6.1 and the buckling curve of
-    Table 6.2. The defaults are the UK National Annex factors and curve a,
-    the hot-finished hollow section, and the sizer freezes them: other
-    factors, or the cold-formed curve c, are future work rather than an
-    argument.
+        The same steel with the standard's partial factors and buckling curve
+        beside it, at their defaults.
     """
     return Steel(
         f_y=grade.f_y,
@@ -80,41 +65,6 @@ def design_steel(grade: SteelGrade) -> Steel:
         density=grade.density,
         f_u=grade.f_u,
     )
-
-
-def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
-    """
-    The section family as thin as a given class allows, from a bare grade.
-
-    Parameters
-    ----------
-    grade :
-        The steel as a certificate states it, free of any standard.
-    section_class :
-        Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
-
-    Returns
-    -------
-    family :
-        The family whose ratio sits exactly on that class's limit.
-
-    Raises
-    ------
-    ValueError
-        If the class is not 1, 2 or 3.
-
-    Notes
-    -----
-    EN 1993-1-1 Table 5.2 sheet 3. Sitting on the limit maximises the wall
-    slenderness, and so minimises material, while staying inside the class —
-    the way a family is ordinarily chosen here. The derivation is clause work,
-    so it lives with the sizer rather than on the neutral container it returns:
-    a driver names the standard by importing this, and the family it gets back
-    names nothing.
-    """
-    ratio = ratio_at_class_limit(grade.f_y, section_class)
-
-    return TubeFamily(ratio, grade)
 
 
 def neutral_sections(tubes: Tube) -> MemberSections:
@@ -129,17 +79,8 @@ def neutral_sections(tubes: Tube) -> MemberSections:
     Returns
     -------
     sections :
-        The same geometry and the same steel, with everything a clause decided
-        left behind.
-
-    Notes
-    -----
-    The inverse crossing of `design_steel` and `design_actions`: those read
-    neutral records in the standard's terms on the way in, and this strips the
-    standard's terms on the way out. What is dropped is the class — a label
-    that selects clauses, meaningless to any other standard — and the partial
-    factors riding on the material. The geometry and the certificate half of
-    the steel cross unchanged, so nothing a mass or a re-analysis reads moves.
+        The same geometry and the same steel, with the class and the partial
+        factors left behind.
     """
     steel = tubes.material
     grade = SteelGrade(
@@ -170,37 +111,12 @@ def axisymmetric_bending(
 
     Notes
     -----
-    **A circular hollow section has no major axis, so a check that reads one is
-    reading a convention.** Which of the two moments carries which part of one
-    physical bending is decided by the local frame a solver picked, and solvers
-    pick differently: one may take the vertical as its reference and another the
-    axis beside it, one may report the bending diagram and another the nodal
-    actions. Measured across two, every field the check consumes disagreed
-    except the axial force, and the sizes moved with them.
-
-    What does not depend on the frame is the length of each end's moment vector
-    and the angle between the two. The design moment is the longer vector, and
-    the ratio the table wants is how much the shorter one agrees with it, which
-    a dot product states without naming an axis:
-
-        psi = (M_first . M_second) / max(|M_first|, |M_second|)^2
-
-    **No reference is chosen, and that is the point.** Projecting both ends onto
-    the longer one also removes the frame, but *which* end is longer flips
-    between solvers when the two are close, and the projection flips with it.
-    A dot product has nothing to flip.
-
-    Collinear ends recover the signed reading exactly — every member of a plane
-    frame, where one moment is zero — so this costs nothing where the
-    convention was never in doubt. Where the bending plane turns along the
-    member the two readings differ, and there the notion of a reversal is
-    genuinely ambiguous rather than merely unmeasured.
-
-    **A future analysis should not need this.** The moments belong in the local
-    frames the analyzer itself defines, reported under a convention the schema
-    prescribes rather than one each solver chooses; then the check could read an
-    axis and mean it. This reads around the disagreement instead of settling it,
-    and only an axisymmetric section lets it.
+    A circular hollow section has no major axis, so which of the two moments
+    carries which part of one bending is a solver's frame convention. What no
+    frame changes is each end's moment vector length and the angle between the
+    two: the design moment is the longer vector, and the ratio is the dot
+    product over the larger squared length, which collinear ends reduce to the
+    signed reading exactly.
     """
     first = jnp.stack([forces.moment_major[:, 0], forces.moment_minor[:, 0]], axis=-1)
     second = jnp.stack([forces.moment_major[:, 1], forces.moment_minor[:, 1]], axis=-1)
@@ -231,28 +147,11 @@ def design_actions(forces: MemberForces) -> MemberActions:
 
     Notes
     -----
-    **EN 1993-1-1 Table B.3, first row, and nothing else.** Two end moments
-    become a design moment and an equivalent uniform moment factor: the checks
-    of 6.3.3 are written for a member under a uniform moment, and a real one
-    almost never has one, so the standard converts the diagram it does have into
-    the uniform moment that would be equally severe. That reduction is lossy —
-    the factor cannot be recovered from the design moment — which is why both
-    come back. Nodal loading leaves the moment linear along the span, so the row
-    is exact here rather than approximate.
-
-    An analysis stops one step short of this and the step belongs to the check.
-
-    **The two moments are read as one, because the section is a tube.** A
-    circular hollow section has no weak axis, so the pair a solver reports is a
-    frame it chose rather than a property of the member; `axisymmetric_bending`
-    reads the bending without naming an axis. The minor moment comes back zero
-    and its factor one, which is what a section with a single bending resistance
-    has to say. A family that is not axisymmetric would need the two axes back.
-
-    **One load case, and vectorized rather than indexed.** Every operation is
-    elementwise over members, so several load cases are `jax.vmap` of this over
-    the leading axis of a stacked container, and the check runs batched rather
-    than looped.
+    EN 1993-1-1 Table B.3, first row: two end moments become a design moment
+    and an equivalent uniform moment factor, exact under nodal loading since
+    the moment is linear along the span. The two axes are read as one because
+    the section is a tube, so the minor moment comes back zero and its factor
+    one.
     """
     moment, factor = axisymmetric_bending(forces)
     absent = jnp.zeros_like(moment)
@@ -276,43 +175,20 @@ class Ec3Sizer(AbstractMemberSizer):
     structure :
         The structure whose members are sized. Read for nothing.
     catalogue :
-        The section family in the standard's terms, derived from the neutral
-        family the block was configured by.
+        The section family in the standard's terms.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
     section_class :
-        Cross-section class, derived from the family's ratio rather than
-        accepted beside it.
+        Cross-section class, derived from the family's ratio.
 
     Notes
     -----
-    **The block is configured by neutral containers and converts internally.**
-    A driver hands in a `TubeFamily` — a ratio and a certificate-level grade,
-    naming no EC3 vocabulary — and everything the standard adds is derived in
-    here at its defaults: the partial factors, the buckling curve, the class
-    the ratio falls in. That is the model a second standard's sizer replicates
-    beside this one; other factors or a cold-formed curve are future work.
-
-    **A grade is not an argument here, because a section family already has
-    one.** The ratio only means something read at a yield strength, so a grade
-    handed in beside the family could be a different one; taking the family
-    alone makes that unrepresentable.
-
-    **The cross-section class is derived and never taken on trust.** It selects
-    a clause rather than scaling a number, so it has to be static, and it is
-    classified once when the block is built, on the host, where the ratio and
-    the yield strength are concrete numbers and the Class 4 refusal can fire.
-
-    **The structure settles nothing, and that is the honest answer here.** A
-    code check reads one member at a time and knows nothing of connectivity, so
-    there is no view of one for this block to build. It is taken all the same,
-    because a block that needs no topology saying so is the point rather than
-    an omission.
-
-    Every load case is sized for on its own. Reconciling several of them into
-    one size per member is smoothing rather than a clause, and belongs above a
-    block that implements a standard.
+    Configured by a neutral family and converting internally: the partial
+    factors, the buckling curve and the class are derived here at their
+    defaults. The class selects a clause, so it is classified once, on the
+    host, where the Class 4 refusal can fire. Every load case is sized on its
+    own; reconciling them is smoothing rather than a clause.
     """
 
     structure: Structure
@@ -334,8 +210,7 @@ class Ec3Sizer(AbstractMemberSizer):
         structure :
             The structure whose members are sized. Read for nothing.
         family :
-            The section family every member is drawn from, whose ratio fixes
-            the wall proportion and whose grade supplies the material.
+            The section family every member is drawn from.
         resultant :
             Whether the two moments combine as a resultant in the cross-section
             check, or as a linear sum.
@@ -355,24 +230,9 @@ class Ec3Sizer(AbstractMemberSizer):
         self.section_class = section_class
 
     @property
-    def steel(self) -> Steel:
-        """
-        The steel every member is cut from, in this standard's terms.
-        """
-        return self.catalogue.material
-
-    @property
     def family(self) -> TubeFamily:
         """
         The section family this block sizes over, as bare geometry.
-
-        Notes
-        -----
-        What an analysis wants of the sizer's family — the wall proportion and
-        the grade, nothing a clause decided — so a driver that configured this
-        block can build the frame's sections off it without importing the
-        standard's library. Reading the ratio here rather than restating it is
-        what keeps one number from being derived twice.
         """
         steel = self.catalogue.material
         grade = SteelGrade(
@@ -406,18 +266,8 @@ class Ec3Sizer(AbstractMemberSizer):
 
         Notes
         -----
-        The size is the root of a residual that is monotone in the diameter, so
-        it is unique, and the block carries an implicit tangent at that root
-        rather than differentiating the solve that found it.
-
-        **The utilization comes back with the size rather than being asked for
-        afterwards.** It is the same clause read at the size just chosen, so it
-        costs a fraction of the root find that produced it, and a caller holding
-        sizes never has to know how to re-derive it. That it is one is the
-        invariant the map exists to hold.
-
-        Every load case runs through one `vmap` rather than a Python loop, the
-        check being elementwise over members and the root find batching cleanly.
+        The size is the root of a residual monotone in the diameter, so it is
+        unique, and the block carries an implicit tangent at that root.
         """
 
         def size_case(carried: MemberForces):
@@ -437,60 +287,10 @@ class Ec3Sizer(AbstractMemberSizer):
 
             return demanded, used
 
-        demanded, used = jax.vmap(size_case, in_axes=(DESIGN_AXES,))(forces)
+        demanded, used = jax.vmap(size_case)(forces)
         sections = neutral_sections(self.catalogue(demanded))
 
         return MemberSizes(sections, used)
-
-    def governing(
-        self,
-        diameters: Float[Array, "members"],
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> Float[Array, "load_cases members"]:
-        """
-        Which limit state decided each member's size, under each load case.
-
-        Parameters
-        ----------
-        diameters :
-            Outer diameter every member was given.
-        forces :
-            What every member carries under every load case, reduced to design
-            actions here because that reduction is a clause.
-        buckling_length :
-            Length every member is assumed to buckle over.
-
-        Returns
-        -------
-        governing :
-            One of the limit-state codes of `ec3x.sizing`.
-
-        Notes
-        -----
-        **Non-differentiable**, which is why no design carries it and why the
-        abstract block does not require it: a concrete cotangent on it raises
-        rather than passing quietly. Read it beside a design, never through one.
-
-        The picture only a differentiable code check can produce. As the form
-        changes, the pattern of which clause governs where reorganizes, and it
-        does so because the shape decides how much bending each load case raises
-        rather than because any member was reassigned.
-        """
-        tubes = self.catalogue(diameters)
-
-        def governing_case(carried: MemberForces):
-            acting = design_actions(carried)
-
-            return governing_limit_state(
-                tubes,
-                acting,
-                buckling_length,
-                self.catalogue,
-                resultant=self.resultant,
-            )
-
-        return jax.vmap(governing_case, in_axes=(DESIGN_AXES,))(forces)
 
     def compute_utilization(
         self,
@@ -506,23 +306,15 @@ class Ec3Sizer(AbstractMemberSizer):
         diameters :
             Outer diameter every member was given.
         forces :
-            What every member carries under every load case, reduced to design
-            actions here because that reduction is a clause.
+            What every member carries under every load case.
         buckling_length :
             Length every member is assumed to buckle over.
 
         Returns
         -------
         utilization :
-            Demand over resistance of every member under every load case.
-
-        Notes
-        -----
-        Asked of a design after several load cases have been reconciled — at
-        most one, and exactly one for whichever case governs each member — or
-        of an optimizer's own diameters, where it is the differentiable
-        constraint held at or under one, member buckling included since the
-        whole check traces.
+            Demand over resistance of every member under every load case,
+            member buckling included since the whole check traces.
         """
         tubes = self.catalogue(diameters)
 
@@ -536,4 +328,4 @@ class Ec3Sizer(AbstractMemberSizer):
                 resultant=self.resultant,
             )
 
-        return jax.vmap(utilization_case, in_axes=(DESIGN_AXES,))(forces)
+        return jax.vmap(utilization_case)(forces)

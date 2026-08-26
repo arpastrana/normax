@@ -1,6 +1,6 @@
 # The 16x16 gridshell, composed across two Tesseract boundaries: jax-fdm in
 # process, PyNite across the analysis schema, Blueprints across the check.
-# This is the run the reported masses were measured on.
+# Millimeters and newtons throughout.
 structure:
   num_rings: 16
   num_spokes: 16
@@ -8,84 +8,67 @@ structure:
   rise: 2000.0
   oculus: false
   braced: false
-  # Fold the sections by the polar symmetry as well as the mirror: one
-  # diameter per ring per family, a fabrication constraint the drift cases
+  # Fold the diameters by the polar symmetry as well as the mirror: one
+  # section per ring per family, a fabrication constraint the drift cases
   # cannot argue with.
   polar_diameters: true
-  polar_heights: true
+  # Guard the radials alone: meridian compression is what makes a cap carry
+  # as an arch, while hoop tension in the lower rings is the membrane response.
   guard_hoops: false
 
-loads:
-  pressure: 1.0e-3
-  sector_spokes: 3
-  sector_center: 3
-  drift_factor: 0.5
-  asymmetric_cases: true
+# No sketch: the drawn cap is already funicular under its own pressure.
+sketch: null
 
-subspace:
-  symmetric: true
-  basis: svd
-  margin_fraction: 0.01
+# The load is a pressure on the plan, spread by tributary area, so the boundary
+# ring's share goes straight to ground. The two drifts are mirror images, each
+# rescaled to the uniform total so no case wins by carrying less.
+load_cases:
+  - name: tributary
+    magnitude: 1.0e-3
+  - name: sector
+    magnitude: 1.0e-3
+    options: {center: 3, spokes: 3, factor: 0.5}
+  - name: sector
+    magnitude: 1.0e-3
+    options: {center: 13, spokes: 3, factor: 0.5}
 
 analysis:
   diameter: 100.0
   # A space frame solver that carries no derivative of its own, reached across
-  # the analysis schema. Its adjoint is this repository's, and it is the only
-  # crossed backend a shell can use: the planar one refuses this geometry.
+  # the analysis schema. Its adjoint is this repository's.
   backend: pynite
 
 sizing:
-  # The check across its own boundary as well, so the descent crosses twice and
-  # neither solver on the far side differentiates itself.
+  section_class: 3
+  # The check across its own boundary as well, so the descent crosses twice.
   backend: blueprint_tesseract
 
-descent:
-  # The augmented method, because a sequential-quadratic search forms its
-  # subproblem from the constraint Jacobian and materializing one across a
-  # boundary is what this pipeline cannot afford. Folding the rows into the
-  # objective leaves one adjoint per step, which crosses at the cost of a
-  # forward solve.
-  method: augmented
-  iterations: 1000
-  rounds: 5
-  # Relative to the mass at the start, which is what SLSQP's own test
-  # compares against once the objective is normalized.
-  tolerance: 1.0e-6
+# The held-plan subspace is thirteen wide; the margin holds every guarded
+# density in compression through the descent.
+subspace:
+  symmetric: true
+  pivoted: false
+  margin_fraction: 0.01
+
+constraints:
   diameter_floor: 21.3
+  # A held plan bounds every member length by its plan projection.
   length_floor: 0.0
-  # One start, because the augmented method was measured to reach the record
-  # that five scattered SLSQP starts found, and five of them across two
-  # boundaries is hours rather than an hour.
-  starts: 1
-  scatter: 0.15
-  # Read a stored answer back instead of descending to it again. Every run
-  # writes its answers whatever this says; only reading them is a decision.
-  reuse_answers: true
-  limit_rise: true
-  rise_factor: 1.0
-  limit_sag: true
-  sag_factor: 0.0
+  rise_ceiling: 5000.0
+  sag_floor: 0.0
+  bounds: null
 
-viewer:
-  enabled: false
-  search: end to end
-  solo_search: false
-
-# Read by experiment 24's augmented driver alone, and deliberately outside the
-# sections `parse_shell` reads: an answer already stored against this file
-# stays findable, its fingerprint being taken over the parsed configuration.
+# A small opening penalty, so the mass leads and the search crosses the
+# infeasible region: measured to reach the record five scattered starts found.
 augmented:
   rounds: 10
-  # Inner iterations while the search is still choosing a basin.
   iterations: 400
-  # And once it is only repairing the rows.
   settled: 100
   opening: 3
-  # The one setting that decides the answer rather than the speed. Small, so
-  # the mass leads and the search crosses the infeasible region.
   penalty: 0.01
   growth: 10.0
-  # Signed exponent, or YAML reads this as a string.
   ceiling: 1.0e+8
   tolerance: 1.0e-6
   quiet: 1.0e-6
+
+viewer: false

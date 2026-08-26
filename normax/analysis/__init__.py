@@ -12,49 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Frame analysis of a form-found geometry, the second stage of the pipeline.
+The contract a frame analysis fills as a block of the pipeline.
 
-Form finding hands over a geometry and nothing else: no prestress, no initial
-member forces. The frame is analyzed from an unstressed reference state, so it
-must deform elastically before any internal force appears, and the axial forces
-that come back are the analysis's own product rather than a restatement of the
-force densities that shaped it. Their agreement is a prediction, and it is what
-`tests/test_equilibrium_consistency.py` measures.
-
-Members are beams, not bars, so the analysis also returns the bending the
-form-finder could not see. That is the reason this stage exists: the code check
-downstream consumes moments, and a pin-jointed form-finder has none to give.
-
-**This module says what the stage means; a backend beside it says how a solver
-computes it.** `normax.analysis.smax` traces a JAX frame solver in three
-dimensions and `normax.analysis.opensees` drives a C++ one in two. The smax
-backend is re-exported at the bottom so every call site imports two levels
-deep; the OpenSees one is not, because `openseespy` is an optional extra, so
-its names are reached through the module — `from normax.analysis import
-opensees` — and only the files that need it pay for it.
-
-**Every backend is reached in two calls, and the split is where the topology
-lives.** `prepare_model` reads a structure and returns a model: whatever that
-solver can work out from the connectivity and the supports alone, built on the
-host and outside any traced call. `member_forces` then takes that model with a
-geometry and a set of sizes and returns what the members carry. The model is
-opaque and belongs to the backend, so a solver that can precompute an assembly
-holds one and a solver that must rebuild its domain per call holds only what it
-needs to do that.
-
-The split is what keeps a topology out of the objective. A model is a pure
-function of things no optimizer varies, so recomputing it per iterate is waste,
-and for a traced backend it is worse than waste: compilation reads support flags
-in Python, so a rebuild inside the trace is what stops the stage being jitted.
-
-**What a backend returns is `normax.design.MemberForces`, one load case of it.**
-A solver answers one case at a time and a block answers all of them, and the two
-are the same container at two ranks rather than two containers; `stack_load_cases`
-is what puts them together. A load case reaches a backend as the dense nodal
-array of `normax.loads`, which is the one thing two backends cannot disagree
-about.
-
-All lengths, forces and stresses cross the boundary through `normax.units`.
+A form finder hands over a geometry and nothing else, so the axial forces that
+come back are the analysis's own product rather than a restatement of the force
+densities that shaped it, and the bending beside them is what the check reads.
+Backends live beside this module and import nothing from each other.
 """
 
 import abc
@@ -68,8 +31,7 @@ from jaxtyping import Float
 
 from normax.structures import Structure
 
-# Three translations and three rotations: what a node of a frame in space has,
-# and the width of a fixity row whichever solver reads it.
+# Three translations and three rotations, the width of a fixity row.
 DOF_PER_NODE = 6
 
 
@@ -85,59 +47,18 @@ class MemberForces(NamedTuple):
         Bending moment about the major axis, at each end of every member.
     moment_minor :
         Bending moment about the minor axis, at each end of every member.
-    shear_major :
-        Shear force along the major axis of every member.
-    shear_minor :
-        Shear force along the minor axis of every member.
-    torsion_moment :
-        Torsional moment of every member.
 
     Notes
     -----
-    **The load case axis is variadic, and that is what lets one container serve
-    a solver and a block.** A solver answers one load case at a time and returns
-    these fields without it; a block answers every case and returns the same
-    fields with it, stacked by `stack_load_cases`. The two differ in rank and in
-    nothing else, so a second container for the unstacked form would be this one
-    with a line removed.
-
-    Moments are given at the two ends rather than sampled along the span,
-    because loads are applied at nodes alone and the moment therefore varies
-    linearly in between. That is what makes the first row of EN 1993-1-1 Table
-    B.3 exact here, and the reduction to a design moment belongs to the check
-    rather than to the analysis.
-
-    The axial force is one number per member and load case for the same reason:
-    with no load along the span it does not vary, and the analysis is linear.
-    The shears and the torsion are one number each on the same grounds: a linear
-    moment differentiates to a constant shear, and a frame loaded at its nodes
-    alone is given no distributed torque.
-
-    **All six components, of which the check reads three.** EN 1993-1-1 6.2.10
-    lets shear be ignored in the bending and axial checks while the design shear
-    stays under half the plastic shear resistance, and that exemption is what
-    the design path here rests on. It is an exemption to be measured on a
-    converged design rather than assumed, and nothing can measure it unless the
-    analysis reports what it already computed. The three the check does not read
-    default to zero, so a caller stating a demand by hand states what it means
-    to; a backend states all six.
+    The load case axis is variadic: a solver answers one case and returns
+    these fields without it, a block answers every case and returns them
+    stacked. Moments are given at the two ends because loads are applied at
+    nodes alone, so the moment varies linearly in between.
     """
 
     axial_force: Float[Array, "*load_cases members"]
     moment_major: Float[Array, "*load_cases members ends"]
     moment_minor: Float[Array, "*load_cases members ends"]
-    shear_major: float | Float[Array, "*load_cases members"] = 0.0
-    shear_minor: float | Float[Array, "*load_cases members"] = 0.0
-    torsion_moment: float | Float[Array, "*load_cases members"] = 0.0
-
-
-# The load case axis of `MemberForces` as a check maps over it. The last three are
-# unmapped because no check reads them, not because they lack the axis — every
-# solver fills them per load case and per member. Mapping them would forbid the
-# scalar defaults a hand-stated demand relies on; reading them under this spec
-# would hand each case the whole stack, so a check that ever wants them must
-# change this line rather than trust it.
-DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)
 
 
 class AbstractFrameAnalyzer(eqx.Module):
@@ -146,24 +67,10 @@ class AbstractFrameAnalyzer(eqx.Module):
 
     Notes
     -----
-    A form finder hands over a geometry and nothing else: no prestress and no
-    initial member forces. The frame is analyzed from an unstressed reference
-    state, so it must deform before any internal force appears, and the axial
-    forces that come back are the analysis's own product rather than a
-    restatement of the force densities that shaped it.
-
-    Members are beams and not bars, so the analysis also reports the bending a
-    form finder could not see. That is the reason this block exists: the check
-    downstream consumes moments, and a pin-jointed form finder has none to give.
-
-    Built from the structure it is to analyze, and from the material and section
-    family it is configured with. Everything a solver can assemble before a
-    geometry is chosen is assembled there.
-
-    **It takes coordinates rather than a form-found shape.** A frame analysis
-    needs a geometry and has no use for anything else a form finder settled, so
-    asking for the container would make this contract unreadable without the
-    form finder's own dependencies for no gain.
+    Built from the structure it is to analyze and the section it is configured
+    with; everything a solver can assemble before a geometry is chosen is
+    assembled there. Takes coordinates rather than a form-found shape, since a
+    frame analysis needs a geometry and nothing else a form finder settled.
     """
 
     @abc.abstractmethod
@@ -307,10 +214,3 @@ def support_fixities(structure: Structure) -> Bool[np.ndarray, "nodes 6"]:
         flags[np.ix_(supports, rotations)] = True
 
     return flags
-
-
-# The default backend, re-exported so call sites import two levels deep.
-from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import frame_model
-from normax.analysis.smax import member_forces
-from normax.analysis.smax import prepare_model

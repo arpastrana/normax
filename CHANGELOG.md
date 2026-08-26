@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+### The package condensed around one method and four examples
+
+The API was two APIs: `examples/arch.py` composed three blocks and descended a
+penalized mass by L-BFGS-B over the force densities alone, while the other three
+examples drove a fourteen-callback `StructureProfile` through `normax/searches/`
+— eleven modules that never called the pipeline they were built on, raced three
+searches, polished every landing with SLSQP and stored answers by digest. Both
+are gone. What remains is the formulation the measured results came from: the
+force densities and the diameters as one variable vector, the check and the
+constraints as rows of one slack vector, and an augmented Lagrangian spending
+one reverse pass per gradient across whatever boundary a block sits behind.
+
+**The pipeline checks rather than sizes.** `StructuralDesignPipeline(params,
+loads)` now analyzes at the given diameters and asks the sizer how hard they are
+worked, which is the question a simultaneous search asks; the sizing map
+`sizer(forces, lengths)` survives to seed a start. `DesignProblem` holds the two
+linear maps every example needs — a `PlanBasis` for the densities and an orbit
+matrix for the diameters — and `design.py` states the rows, the boxes, the
+compiled maps and `optimize_design`. `SubspaceFormFinder` folded into the
+problem: with the basis owned there, `DesignParameters.coordinates` is honest
+and `FdmFormFinder` is the only form finder on the shipping path.
+
+**One module per concern, arrays in and arrays out.** `symmetry.py` (orbits,
+permuted members, the sign guard and the self-stress shift), `form_finding.py`
+(the two packages merged, `held_plan_basis` in both conventions), `loads.py`
+(one registry of patterns that read a deck or a polar plan off the structure —
+the truss and shell builders reproduce the retired ones to 1e-13), `config.py`
+(the shared run containers, each example supplying only its own structure and
+sketch types), `blocks.py` (the one place every backend is named),
+`tesseract.py` (the two shipping crossings and the dispatch pin), `figures.py`
+and `viewer.py` (the three drawings the examples make). `Report` stays as the
+printing kernel, with three domain writers beside it.
+
+**Demoted, not deleted.** `normax/extras/` parks the nested route
+(`minimize_bounded`, the penalized floor, settling, staggered rounds,
+annealing, trajectories and their replay), an SLSQP descent for cross-checks,
+and two form finders — free heights and the drawn geometry — that express the
+old comparison searches as a swapped block.
+
+**Deleted outright.** The formfinding and ec3 Tesseracts and their clients,
+`TesseractFormFinder` and `TesseractSizer`; the `jacobian` and
+`jacobian_vector_product` endpoints everywhere (a scalar gradient takes the VJP
+alone); shear and torsion from `MemberForces` and the analysis schema (nothing
+in design read them); the smax backend behind the analysis schema; `frames.py`
+and twelve experiment-only figures; `build_diagrid_3d`, `Steel235`, the unused
+section moduli, `positions_vertical`, `equilibrium_gap`; the settings module
+and its import-time JAX config; digest-keyed stored answers, replaced by one
+`np.savez` per example under `data/`.
+
+**The Blueprints check has one implementation.** The Tesseract re-implemented
+the in-process sizer's bisection and partials in NumPy; now `sizing/blueprint.py`
+is the NumPy host implementation — the evaluator fast path, the solved-state
+memo and the clamp-aware adjoint included — the Tesseract imports it, and the
+in-process `BlueprintSizer` calls the same functions through `pure_callback`
+with a `custom_vjp`, so the two are bit-identical by construction.
+`build_section_family` moved to `sections.py` with the Table 5.2 limits, so the
+shipping path no longer imports ec3x for a ratio; `import normax.analysis` no
+longer imports smax.
+
+**Every example reads the same way.** Structure, load cases, blocks, subspace
+and folding, start, `optimize_design`, report, figures, viewer — the same
+`main` shape in all four, the structure-specific part being a generator, a
+mirror, a start recipe and, where the manifold has degenerate sheets, a sign
+guard. The arch runs the augmented Lagrangian too, its density box as bounds
+and its length floor as rows. `experiments/` was left untouched and no longer
+imports; it is to be adapted to this API, not the other way round.
+
 ### Four featured examples, an installed search package, and the dependency line redrawn
 
 The repository had thirty-three scripts in one flat folder, a 4,651-line harness

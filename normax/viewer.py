@@ -1,0 +1,93 @@
+# Copyright 2026 Rafael Pastrana
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Designs drawn in the frame solver's own terms.
+"""
+
+import vix
+from smax import LoadCase
+
+from normax.analysis.smax import SmaxAnalyzer
+from normax.analysis.smax import frame_model
+from normax.design import Design
+from normax.loads import LoadCases
+from normax.structures import Structure
+from normax.tesseract import TesseractAnalyzer
+
+# The internal-force diagrams drawn beside every response.
+FORCE_DIAGRAMS = ("nx", "my")
+
+
+def view_designs(
+    structure: Structure,
+    analyzer: SmaxAnalyzer | TesseractAnalyzer,
+    loads: LoadCases,
+    designs: dict[str, Design],
+    case_names: tuple[str, ...],
+) -> None:
+    """
+    Inspect designs interactively, in the frame solver's own terms.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the connectivity and the supported nodes.
+    analyzer :
+        The analysis block, whose model builder and solve the viewer reads.
+    loads :
+        The checked load cases, each solved and drawn for every design.
+    designs :
+        The designs to draw, keyed by the name each appears under.
+    case_names :
+        Name of every checked case, naming its response in the viewer.
+
+    Notes
+    -----
+    Each response is the solver's own, at the design's geometry and sections,
+    so the diagrams are the analysis rather than a retelling. An analyzer that
+    cannot report a whole response is stood in for by a traced one built at
+    the same structure; the design itself is only redrawn. Every registration
+    is named apart, since the viewer's `add` replaces a same-named one.
+    Blocks until the window closes.
+    """
+    if isinstance(analyzer, TesseractAnalyzer):
+        analyzer = SmaxAnalyzer(structure, analyzer.family(100.0))
+
+    viewer = vix.Viewer(show_reactions=False)
+
+    for name, design in designs.items():
+        xyz = design.shape.xyz
+        sections = design.sizes.sections
+        frame = frame_model(structure, xyz, sections)
+        viewer.add(frame, name=name)
+
+        for index, case_name in enumerate(case_names):
+            case_loads = loads.analysis[index]
+            response = analyzer.solve_response(xyz, sections.diameter, case_loads)
+            viewer.add(
+                response,
+                name=f"{name} — {case_name}",
+                structure=name,
+                show_deformation=False,
+                show_forces=FORCE_DIAGRAMS,
+            )
+
+            loads_drawn = LoadCase.from_array(case_loads, frame)
+            viewer.add(
+                loads_drawn,
+                name=f"{name} — {case_name} — loads",
+                structure=name,
+            )
+
+    viewer.show()

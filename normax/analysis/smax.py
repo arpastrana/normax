@@ -12,40 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The `smax` backend of the analysis stage, differentiated by tracing autodiff.
+The `smax` frame analysis, differentiated by tracing autodiff.
 
-A JAX frame solver, so the assembly and the solve are traced end to end and the
-derivatives come out of the same machinery that produced the geometry upstream.
-The frame is analyzed from an unstressed reference state, so it must deform
-elastically before any internal force appears, and the axial forces that come
-back are `smax`'s own product rather than a restatement of the force densities
-that shaped it. Their agreement is a prediction, and it is what
-`tests/test_equilibrium_consistency.py` measures.
-
-Three dimensions throughout, which is what the gridshell needs and what a direct
-differentiation backend cannot supply. This is the reference the second backend
-is measured against rather than the interesting one: the argument the stage makes
-is that a solver which cannot be traced at all fits behind the same contract.
-
-**The assembly is compiled once and the traced values are injected into it.**
-Compiling a frame flattens model objects into arrays and works out the degree of
-freedom maps, and only the second half depends on anything an optimizer varies —
-which is to say none of it does. `prepare` runs both on the host and `forces`
-replaces every array leaf that a geometry or a size reaches, so the maps are
-computed once for a structure rather than once per call. That is also what makes
-the stage jittable: compilation reads support flags with a Python conditional,
-so it cannot happen inside a trace, and after this it never does.
-
-**A load case is a dense nodal array and stays one all the way to the solve.**
-`smax` accepts one wherever it accepts a load case of its own, so nothing here
-builds load objects, compiles channels or scatters values into them. That is the
-same array `normax.loads` produces and the same one the OpenSees backend takes,
-which is what makes a load case the one thing the two backends cannot disagree
-about.
-
-The stage's own vocabulary — what a member force is, which degrees of freedom a
-support restrains — lives in `normax.analysis` and is shared with every backend.
-All lengths, forces and stresses cross the boundary through `normax.units`.
+A JAX frame solver in three dimensions, so the assembly and the solve are traced
+end to end. It is the oracle the shipped backends are measured against, not one
+of them. The assembly is compiled once on the host, where support flags are
+read with a Python conditional, and every leaf a geometry or a size reaches is
+injected into it per call, which is what leaves the stage jittable. A load case
+is the same dense nodal array every other stage speaks in.
 """
 
 import equinox as eqx
@@ -69,21 +43,18 @@ from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.analysis import support_fixities
 from normax.loads import stack_load_cases
-from normax.materials import SteelGrade
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
 from normax.structures import Structure
-from normax.units import to_kilograms_per_cubic_meter
-from normax.units import to_meters
-from normax.units import to_newton_millimeters
-from normax.units import to_pascals
+from normax.units import MEGAPASCAL
+from normax.units import MILLIMETER
+from normax.units import NEWTON_MILLIMETER
+from normax.units import TONNE_PER_CUBIC_MILLIMETER
 
-# EN 1993-1-1 3.2.6. Enters only the torsional and out-of-plane response, both
-# of which vanish in a planar frame under in-plane load.
+# EN 1993-1-1 3.2.6. Enters only the torsional and out-of-plane response.
 POISSONS_RATIO = 0.3
 
-# Torsion constant of a thin ring over its second moment. A tube is doubly
-# symmetric, so the polar moment is twice the bending one.
+# The polar moment of an annulus is twice its second moment.
 TORSION_FACTOR = 2.0
 
 
@@ -102,8 +73,7 @@ def frame_model(
     xyz :
         Position of every node, from form finding.
     section :
-        The tube every member is built as, and what it is made of. One section
-        or one per member.
+        The tube every member is built as, one section or one per member.
 
     Returns
     -------
@@ -112,50 +82,32 @@ def frame_model(
 
     Notes
     -----
-    Every member is a beam with the full six degrees of freedom at each node,
-    so bending and torsion are present by construction rather than released.
-
-    **A section rather than a family.** A frame is built out of the sections it
-    has, and choosing one for a member is the check's business downstream; a
-    family here would be an offer of sizes nothing in an analysis has any use
-    for. The two leaves a tube carries are the two a pipe section wants, so no
-    wall is derived on the way in.
-
-    The supports are what `support_fixities` makes of the structure's own, which
-    is more than it names wherever a planar structure would be a mechanism in
-    three dimensions. Nothing about the plane is passed in, here or anywhere
-    above: it is measured from the geometry.
-
-    Poisson's ratio is not carried by the material container, since no clause
-    implemented here needs it, and is supplied from EN 1993-1-1 3.2.6.
+    Every member is a beam with six degrees of freedom at each node. The
+    supports are what `support_fixities` makes of the structure's own, measured
+    from the geometry rather than declared.
     """
     steel = section.material
     material = Material(
-        elasticity_modulus=to_pascals(steel.e_mod),
-        yield_stress=to_pascals(steel.f_y),
-        density=to_kilograms_per_cubic_meter(steel.density),
+        elasticity_modulus=steel.e_mod * MEGAPASCAL,
+        yield_stress=steel.f_y * MEGAPASCAL,
+        density=steel.density * TONNE_PER_CUBIC_MILLIMETER,
         poissons_ratio=POISSONS_RATIO,
     )
 
-    positions = to_meters(xyz)
+    positions = xyz * MILLIMETER
     nodes = [Node(index, xyz=positions[index]) for index in range(xyz.shape[0])]
 
     members = (structure.num_edges,)
-    outer = to_meters(jnp.broadcast_to(jnp.asarray(section.diameter), members))
-    wall = to_meters(jnp.broadcast_to(jnp.asarray(section.thickness), members))
+    outer = jnp.broadcast_to(jnp.asarray(section.diameter), members) * MILLIMETER
+    wall = jnp.broadcast_to(jnp.asarray(section.thickness), members) * MILLIMETER
     edges = np.asarray(structure.edges)
-    elements = [
-        BeamElement(
-            member,
-            nodes=(int(edges[member, 0]), int(edges[member, 1])),
-            material=material,
-            section=PipeSection(
-                outer_diameter=outer[member],
-                thickness=wall[member],
-            ),
+    elements = []
+    for member in range(edges.shape[0]):
+        pipe = PipeSection(outer_diameter=outer[member], thickness=wall[member])
+        ends = (int(edges[member, 0]), int(edges[member, 1]))
+        elements.append(
+            BeamElement(member, nodes=ends, material=material, section=pipe)
         )
-        for member in range(edges.shape[0])
-    ]
 
     flags = support_fixities(structure)
     supports = [
@@ -177,8 +129,7 @@ def prepare_model(
     structure :
         The structure supplying the connectivity and the supported nodes.
     section :
-        The tube every member starts as, and what it is made of. A placeholder
-        geometry, replaced at every call, carrying the material that is not.
+        A placeholder tube, replaced at every call, carrying the material.
 
     Returns
     -------
@@ -187,19 +138,8 @@ def prepare_model(
 
     Notes
     -----
-    **Host-side, and never called from inside a traced function.** Compiling a
-    frame decides the degree of freedom maps by reading support flags with a
-    Python conditional, which a tracer cannot follow; running it once here is
-    what leaves everything downstream jittable.
-
-    The starting geometry and the section given stand in for the values that
-    matter. Both are overwritten by `member_forces` before anything is assembled,
-    so what they are cannot reach a result — only their shapes can, and those
-    come from the structure.
-
-    **No load case is compiled here**, since the solver takes a dense nodal
-    array and builds its own channels. What this settles is the assembly alone,
-    and a load case is an argument of every call rather than a field of it.
+    Host-side and never traced. Only the shapes of the placeholder geometry and
+    section survive into a result; their values are overwritten per call.
     """
     frame = frame_model(structure, structure.nodes, section)
 
@@ -218,14 +158,13 @@ def _injected_assembly(
     Parameters
     ----------
     model :
-        The compiled assembly, from `prepare`.
+        The compiled assembly, from `prepare_model`.
     xyz :
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
     section :
-        The tube the members are built as, supplying the wall proportion the
-        diameters are walled by and the material.
+        The tube supplying the wall proportion and the material.
 
     Returns
     -------
@@ -234,43 +173,35 @@ def _injected_assembly(
 
     Notes
     -----
-    **Every array a derivative might be taken through is replaced, not reused.**
-    A leaf left alone keeps the placeholder `prepare` built it from, and since
-    that placeholder is a constant the gradient with respect to it is silently
-    zero rather than an error. The section properties come from
-    `normax.sections` rather than from the solver's own section class, so the
-    two stages cannot disagree about what a tube is; they agree algebraically.
-
-    **The tube the block holds is restated at the diameters given rather than
-    consulted.** What survives of it is its wall proportion, its grade and its
-    class — everything but the geometry a caller replaces — and the restatement
-    goes through the family those three define, that being the one place a wall
-    is chosen for a diameter.
-
-    Poisson's ratio is deliberately not replaced. It is a constant of this
-    backend taken from EN 1993-1-1 rather than a field of the material container,
-    so nothing upstream can vary it and the shear modulus follows the modulus
-    that is replaced.
-
-    Elements are grouped by type in the compiled assembly, so each group is
-    indexed by the global member ids it holds. One group is the usual case here,
-    every member being a beam.
+    A leaf left alone keeps its placeholder, and its gradient is then silently
+    zero, so everything a derivative might be taken through is replaced. The
+    section properties come from `normax.sections`, so the two stages cannot
+    disagree about what a tube is.
     """
     family = TubeFamily(section.ratio, section.material)
-    sections = family(to_meters(diameters))
+    sections = family(diameters * MILLIMETER)
     steel = sections.material
     gross = sections.area
     inertia = sections.second_moment
 
-    e_mod = to_pascals(jnp.asarray(steel.e_mod))
-    f_y = to_pascals(jnp.asarray(steel.f_y))
-    density = to_kilograms_per_cubic_meter(jnp.asarray(steel.density))
+    e_mod = jnp.asarray(steel.e_mod) * MEGAPASCAL
+    f_y = jnp.asarray(steel.f_y) * MEGAPASCAL
+    density = jnp.asarray(steel.density) * TONNE_PER_CUBIC_MILLIMETER
 
-    compiled = eqx.tree_at(lambda c: c.params.xyz, model, to_meters(jnp.asarray(xyz)))
+    compiled = eqx.tree_at(lambda c: c.params.xyz, model, jnp.asarray(xyz) * MILLIMETER)
 
     groups = enumerate(compiled.topology.element_group_ids)
     for index, member_ids in groups:
         held = jnp.asarray(member_ids)
+        replaced = (
+            gross[held],
+            inertia[held],
+            inertia[held],
+            TORSION_FACTOR * inertia[held],
+            jnp.broadcast_to(e_mod, held.shape),
+            jnp.broadcast_to(f_y, held.shape),
+            jnp.broadcast_to(density, held.shape),
+        )
         compiled = eqx.tree_at(
             lambda c, i=index: (
                 c.params.element_groups[i].section.area,
@@ -282,15 +213,7 @@ def _injected_assembly(
                 c.params.element_groups[i].material.density,
             ),
             compiled,
-            (
-                gross[held],
-                inertia[held],
-                inertia[held],
-                TORSION_FACTOR * inertia[held],
-                jnp.broadcast_to(e_mod, held.shape),
-                jnp.broadcast_to(f_y, held.shape),
-                jnp.broadcast_to(density, held.shape),
-            ),
+            replaced,
         )
 
     return compiled
@@ -309,50 +232,27 @@ def member_forces(
     Parameters
     ----------
     model :
-        The compiled assembly, from `prepare`.
+        The compiled assembly, from `prepare_model`.
     xyz :
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
     section :
-        The tube the members are built as, supplying the wall proportion the
-        diameters are walled by and the material.
+        The tube supplying the wall proportion and the material.
     loads :
         Force applied at every node.
 
     Returns
     -------
     forces :
-        Axial force and both end moments of every member, and the shear and
-        torsion the design check excludes.
+        Axial force and both end moments of every member.
 
     Notes
     -----
-    The solver recovers all six components of the internal-force field, so the
-    shear and torsion cost nothing to report and are carried rather than
-    dropped. Nothing downstream checks them; they are what audits the exemption
-    of EN 1993-1-1 6.2.10 that leaving 6.2.6 out of the check relies on.
-
-    **A shear is paired with the moment it differentiates, not with the axis it
-    shares a letter with.** Bending about the major axis varies with the shear
-    across the minor one, so the major-axis shear here is the solver's `vz` and
-    the minor-axis shear its `vy`. Reading the letters instead puts a real force
-    in the wrong component, which the two backends disagreeing is what shows.
-
-    Differentiable in the geometry, in the diameters and in every material
-    property, since all of them are injected into the assembly here rather than
-    baked into it when the model was built.
-
-    The load case is an argument because a structure is form-found under one
-    load case and has to be checked under several. Only the first of them leaves
-    the members free of bending, that being the one the shape was chosen for.
-    It reaches the solver as the same dense nodal array every other stage speaks
-    in, so nothing here compiles, scatters or reshapes a load.
-
+    Differentiable in the geometry, the diameters and every material property.
     The reference state is unstressed, so the nodes displace before any force
-    appears. Those displacements are the elastic response the form-finder does
-    not model, not an error, and they are the whole of the gap between these
-    axial forces and the product of force density and length.
+    appears, and that elastic response is the whole gap between these axial
+    forces and the force density times the length.
     """
     compiled = _injected_assembly(model, xyz, diameters, section)
 
@@ -361,11 +261,8 @@ def member_forces(
 
     return MemberForces(
         axial_force=field.nx[:, 0],
-        moment_major=to_newton_millimeters(field.my),
-        moment_minor=to_newton_millimeters(field.mz),
-        shear_major=field.vz[:, 0],
-        shear_minor=field.vy[:, 0],
-        torsion_moment=to_newton_millimeters(field.mx[:, 0]),
+        moment_major=field.my / NEWTON_MILLIMETER,
+        moment_minor=field.mz / NEWTON_MILLIMETER,
     )
 
 
@@ -383,27 +280,8 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
 
     Notes
     -----
-    **One section, not a family.** A solver is configured with the sections its
-    elements have, and choosing between sizes is what the check downstream does;
-    a family here would offer an analysis a choice it never makes. What the tube
-    is consulted for on a call is everything but its diameter, that being what
-    the call replaces.
-
-    The material travels on the block rather than reaching it per call, since a
-    solver is configured with a material in its own terms. It is injected into
-    the assembly on every call all the same, which is what leaves a derivative
-    with respect to a material property defined rather than silently zero.
-
-    **A structure is all the block is told.** Whether it is planar, and what a
-    three-dimensional solve of it therefore needs restrained beyond the supports
-    it names, is measured by `support_fixities` while the assembly is compiled.
-    That decision is static either way — it selects degrees of freedom rather
-    than scaling any number — so nothing about it becomes a traced leaf.
-
     Load cases are looped over rather than mapped, this solver not being
-    traceable through `vmap`, so the cost is linear in their number. Each is
-    handed over as the dense nodal array it already is, so the loop costs a
-    solve and nothing else: no case is compiled, and the block carries none.
+    traceable through `vmap`; each costs a solve and nothing else.
     """
 
     section: MemberSections
@@ -422,18 +300,10 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         structure :
             The structure supplying the connectivity and the supported nodes.
         section :
-            The tube the frame is analyzed as, whose wall proportion walls the
-            diameters of a call and whose grade supplies the material.
+            The tube the frame is analyzed as.
         """
         self.section = section
         self.model = prepare_model(structure, section)
-
-    @property
-    def steel(self) -> SteelGrade:
-        """
-        The material the frame is analyzed with, free of any standard.
-        """
-        return self.section.material
 
     def solve_response(
         self,
@@ -442,7 +312,7 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         loads: Float[Array, "nodes 3"],
     ) -> Response:
         """
-        The solver's whole response under one load case, for inspection.
+        The solver's whole response under one load case, for a viewer to draw.
 
         Parameters
         ----------
@@ -457,13 +327,6 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         -------
         response :
             Displacements and reactions, in the solver's own terms and units.
-
-        Notes
-        -----
-        The same injected assembly and the same solve `member_forces` reads
-        its forces from, returned whole rather than reduced, so a viewer can
-        draw deformations and internal-force diagrams from it. Nothing here
-        is differentiated, and no pipeline stage consumes it.
         """
         compiled = _injected_assembly(self.model, xyz, diameters, self.section)
 
@@ -494,13 +357,7 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         """
         analyzed = []
         for load_case in loads:
-            forces = member_forces(
-                self.model,
-                xyz,
-                diameters,
-                self.section,
-                load_case,
-            )
+            forces = member_forces(self.model, xyz, diameters, self.section, load_case)
             analyzed.append(forces)
 
         return stack_load_cases(analyzed)

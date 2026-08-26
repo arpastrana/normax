@@ -12,44 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The same three blocks, reached across a Tesseract boundary.
+The two blocks that cross a Tesseract boundary, and the clients that reach them.
 
-`normax.form_finding`, `normax.analysis.smax` and `normax.sizing` each hold a
-block that computes in this process. This module holds one of each that does not:
-the arguments are serialized against a schema, a container answers, and what
-comes back is the same container the in-process block returns. Nothing in
-`normax.design` can tell which it was handed, and that is the whole claim.
-
-**The in-process blocks are the oracle, not the scaffolding.** Reproducing their
-design and their gradient through the boundary is what turns "the Tesseracts run"
-into "the boundary is transparent", and that claim cannot be made afterwards
-without a baseline to make it against. `tests/test_tesseract_parity.py` is where
-it is made, and it now runs one pipeline over two sets of blocks rather than two
-implementations of one pipeline.
-
-What the boundary costs, and what it buys, are both visible here. It costs the
-loss of everything a schema cannot carry: the connectivity is rebuilt from flat
-arrays on every call, and objects give way to arrays. It buys the only property
-the pipeline actually needs, which is that no block has to be written in the same
-language, or differentiate in the same way, as the one before it.
-
-**One question of the standard crosses and the other does not.** The check is
-asked what size a set of actions demands, which is what its schema carries; asked
-how hard a size it did not choose is working, this block answers in process,
-holding an `Ec3Sizer` for exactly that. An asymmetry worth naming rather than
-hiding, and the reason it is a field rather than a private detail.
+A frame analysis hosted by a solver that does not differentiate itself, and a
+code check hosted by a library that never heard of a gradient, each behind a
+schema with a hand-written adjoint. On the JAX side they are ordinary blocks:
+`apply_tesseract` is a primitive, so `jax.grad` through either takes the
+server's `vector_jacobian_product` in one crossing.
 """
 
 import functools
 import os
 import threading
 from collections.abc import Callable
-from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from typing import NamedTuple
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -62,31 +40,24 @@ from tesseract_jax.tesseract_compat import Jaxeract
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
-from normax.form_finding import AbstractFormFinder
-from normax.form_finding import FormFoundShape
 from normax.loads import count_load_cases
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
-from normax.materials import SteelGrade
 from normax.sections import TubeFamily
-from normax.sizing import DIAMETER_MINIMUM
-from normax.sizing import GAMMA_M0
 from normax.sizing import AbstractMemberSizer
-from normax.sizing import BlueprintSizer
-from normax.sizing import Ec3Sizer
 from normax.sizing import MemberSizes
-from normax.sizing import neutral_sections
+from normax.sizing.blueprint import DIAMETER_MINIMUM
+from normax.sizing.blueprint import GAMMA_M0
 from normax.structures import Structure
-from normax.structures import member_lengths
 
-# Where the three Tesseract API modules live, relative to the package.
-# Endpoints whose work must not move between threads, in dispatch order.
-PINNED_ENDPOINTS = (
-    "apply",
-    "jacobian",
-    "jacobian_vector_product",
-    "vector_jacobian_product",
-)
+# Where the Tesseract API modules live, relative to the package.
+TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
+
+# What the analysis stage reads to choose its solver.
+BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
+
+# Endpoints whose work must not move between threads.
+PINNED_ENDPOINTS = ("apply", "jacobian_vector_product", "vector_jacobian_product")
 
 # One worker owning every dispatch across the process, and a re-entrancy flag.
 _DISPATCH_OWNER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tesseract")
@@ -136,30 +107,13 @@ def pin_dispatch_thread() -> None:
 
     Notes
     -----
-    **Tesseract-JAX lowers a call to an XLA host callback that carries no
-    ordering and no thread affinity.** It emits the callback with no token and
-    no sharding, which is `pure_callback` semantics: under `jit` the runtime is
-    free to run several dispatches at once, on whichever workers are free, and
-    it does. Outside `jit` the primitive's own eager rule runs inline on the
-    calling thread, which is why disabling compilation looks like a fix.
-
-    Two things in the path cannot take that. A local Tesseract runs the API in
-    this process, so a backend holding global state — a solver owning one
-    mutable domain — is entered concurrently and corrupted. And the local
-    client redirects file descriptors 1 and 2 around every call, which is
-    process-wide: two dispatches racing there interleave the redirect and its
-    restore, and output goes missing for the rest of the run.
-
-    Pinning rather than locking, because mutual exclusion still lets the work
-    migrate, and a library with thread-affine state needs one owner rather than
-    one at a time. The cost is a queue hop per dispatch.
-
-    **This belongs upstream**, as an opt-in on the client rather than a patch
-    applied from outside; it is written here because the boundary is otherwise
-    unusable with the planar solver behind it.
-
-    Set `NORMAX_PIN_DISPATCH=0` to leave the endpoints alone, which is how the
-    behavior it corrects is measured.
+    Tesseract-JAX lowers a call to an XLA host callback with no ordering and no
+    thread affinity, so under `jit` the runtime runs several dispatches at once.
+    A local Tesseract runs the API in this process, where a solver owning one
+    mutable domain is corrupted by that, and the local client redirects file
+    descriptors around every call, which races process-wide. Pinning rather
+    than locking, because a library with thread-affine state needs one owner.
+    This belongs upstream; `NORMAX_PIN_DISPATCH=0` leaves the endpoints alone.
     """
     if os.environ.get("NORMAX_PIN_DISPATCH") == "0":
         return
@@ -171,84 +125,73 @@ def pin_dispatch_thread() -> None:
         setattr(Jaxeract, name, pinned_dispatch(work))
 
 
-TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
-
 # Armed on import: a crossed call is unsafe before it, so there is no window.
 pin_dispatch_thread()
 
-STAGES = ("formfinding", "analysis", "ec3_check")
 
-# What the analysis stage reads to choose its solver. Named here so a caller
-# switching backends does not have to know the stage's own spelling.
-BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
-
-
-@contextmanager
-def analysis_backend(name: str) -> Iterator[None]:
+def load_tesseract(stage: str, root: Path = TESSERACTS) -> Tesseract:
     """
-    Run the analysis stage on a named solver for the duration of a block.
+    A client that imports one stage's API module into this process.
 
     Parameters
     ----------
-    name :
-        Backend to select, `smax` or `opensees`.
+    stage :
+        Directory of the stage under the root.
+    root :
+        Directory holding one subdirectory per stage.
 
-    Yields
+    Returns
+    -------
+    client :
+        The stage, behind the same client a served container answers.
+
+    Raises
     ------
-    None
-        The block runs with that backend selected.
+    FileNotFoundError
+        If the stage has no API module under that directory.
 
     Notes
     -----
-    The stage takes its backend from the environment, since a schema cannot
-    carry a choice about who implements it and a container is configured once at
-    startup. Comparing two backends in one process is the case that needs more
-    than that, and this makes the switch a block rather than a global edit: the
-    previous value is restored on the way out, exceptions included.
-
-    Nothing is rebuilt. The same chain serves either solver, which is the claim
-    the boundary makes rather than an optimization.
+    No containers and no network, so the composition is tested wherever the
+    dependencies are installed. It proves nothing about the image.
     """
-    previous = os.environ.get(BACKEND_VARIABLE)
-    os.environ[BACKEND_VARIABLE] = name
+    module = root / stage / "tesseract_api.py"
+    if not module.is_file():
+        raise FileNotFoundError(f"no API module for stage {stage!r} at {module}")
 
-    try:
-        yield
-    finally:
-        if previous is None:
-            del os.environ[BACKEND_VARIABLE]
-        else:
-            os.environ[BACKEND_VARIABLE] = previous
+    return Tesseract.from_tesseract_api(module)
 
 
-class Chain(NamedTuple):
+def analysis_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
     """
-    The three Tesseracts of the pipeline, in the order they run.
+    The analysis stage, its solver picked for the whole process.
 
-    Attributes
+    Parameters
     ----------
-    formfinding :
-        Force densities to a geometry.
-    analysis :
-        A geometry to the internal forces its members carry.
-    ec3 :
-        Member actions to the sizes EN 1993-1-1 requires.
+    backend :
+        Which solver answers the stage, `opensees` or `pynite`.
+    root :
+        Directory holding one subdirectory per stage.
+
+    Returns
+    -------
+    client :
+        The analysis stage.
 
     Notes
     -----
-    Any client will do, whether it imports a module in this process or talks to
-    a container over HTTP. Nothing below asks which, and that is the point of
-    the boundary being a schema rather than a call.
+    The stage reads its solver from the environment, since a schema cannot
+    carry a choice about who implements it and a container is configured once
+    at startup.
     """
+    os.environ[BACKEND_VARIABLE] = backend
 
-    formfinding: Tesseract
-    analysis: Tesseract
-    ec3: Tesseract
+    return load_tesseract("analysis", root)
 
 
-def local_chain(root: Path = TESSERACTS) -> Chain:
+def blueprint_tesseract(root: Path = TESSERACTS) -> Tesseract:
     """
-    A chain that imports the three API modules into this process.
+    The Blueprints check, behind its schema.
 
     Parameters
     ----------
@@ -257,119 +200,10 @@ def local_chain(root: Path = TESSERACTS) -> Chain:
 
     Returns
     -------
-    chain :
-        The three stages.
-
-    Raises
-    ------
-    FileNotFoundError
-        If a stage has no API module under that directory.
-
-    Notes
-    -----
-    No containers and no network, so the composition can be tested wherever the
-    dependencies are installed. It exercises every endpoint a served Tesseract
-    exposes, since the client is the same one either way, but it proves nothing
-    about the image: `tesseract build` is what does that.
-    """
-    modules = {stage: root / stage / "tesseract_api.py" for stage in STAGES}
-
-    for stage, module in modules.items():
-        if not module.is_file():
-            raise FileNotFoundError(f"no API module for stage {stage!r} at {module}")
-
-    return Chain(
-        formfinding=Tesseract.from_tesseract_api(modules["formfinding"]),
-        analysis=Tesseract.from_tesseract_api(modules["analysis"]),
-        ec3=Tesseract.from_tesseract_api(modules["ec3_check"]),
-    )
-
-
-class TesseractFormFinder(AbstractFormFinder):
-    """
-    Form finding, reached across a Tesseract boundary.
-
-    Attributes
-    ----------
     client :
-        The form-finding Tesseract.
-    nodes :
-        Starting position of every node.
-    edges :
-        The two node indices spanned by every member.
-    supports :
-        Indices of the nodes whose position is fixed.
-
-    Notes
-    -----
-    The topology crosses as flat arrays on every call, a schema carrying arrays
-    and not objects, so this block settles almost nothing: what it keeps is the
-    three arrays in the dtypes the schema names, converted once rather than per
-    call.
+        The check.
     """
-
-    client: Tesseract
-    nodes: Float[Array, "nodes 3"]
-    edges: Int[Array, "members 2"]
-    supports: Int[Array, "supports"]
-
-    def __init__(self, structure: Structure, client: Tesseract) -> None:
-        """
-        Build a form finder that crosses a boundary to shape a structure.
-
-        Parameters
-        ----------
-        structure :
-            The structure supplying the topology and the supported nodes.
-        client :
-            The form-finding Tesseract.
-        """
-        self.client = client
-        self.nodes = jnp.asarray(structure.nodes, dtype=jnp.float64)
-        self.edges = jnp.asarray(structure.edges, dtype=jnp.int64)
-        self.supports = jnp.asarray(structure.supports, dtype=jnp.int64)
-
-    def __call__(
-        self,
-        q: Float[Array, "members"],
-        loads: Float[Array, "nodes 3"],
-    ) -> FormFoundShape:
-        """
-        Find the shape that carries a load case at given force densities.
-
-        Parameters
-        ----------
-        q :
-            Force density of every member. Negative in compression.
-        loads :
-            Force applied at every node.
-
-        Returns
-        -------
-        shape :
-            The geometry at equilibrium, and its member lengths.
-
-        Notes
-        -----
-        The lengths are measured here rather than carried by the schema. A
-        length is a distance between two nodes, geometry that no standard has an
-        opinion on, so computing it locally cannot disagree with the far side
-        and asking for it would pay a round trip for a subtraction.
-        """
-        crossed = apply_tesseract(
-            self.client,
-            {
-                "q": q,
-                "nodes": self.nodes,
-                "edges": self.edges,
-                "supports": self.supports,
-                "loads": loads,
-            },
-        )
-        lengths = member_lengths(crossed["xyz"], self.edges)
-        shape = FormFoundShape(crossed["xyz"], lengths)
-
-        return shape
+    return load_tesseract("blueprint_check", root)
 
 
 class TesseractAnalyzer(AbstractFrameAnalyzer):
@@ -381,12 +215,11 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     client :
         The analysis Tesseract.
     family :
-        The section family the frame is analyzed with, whose ratio fixes the wall
-        thickness and whose grade supplies the material — bare geometry, free of
-        any standard.
+        The section family the frame is analyzed with, whose ratio fixes the
+        wall and whose grade supplies the material.
     normal :
         Index of the global axis a planar structure has no thickness along, or
-        None for a structure that occupies all three dimensions.
+        None for a structure occupying all three dimensions.
     edges :
         The two node indices spanned by every member.
     supports :
@@ -394,14 +227,10 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
 
     Notes
     -----
-    **This block carries fewer opinions about what is differentiable than the
-    others, and that is the schema's doing rather than an oversight.** Its
-    differentiable inputs stop at the coordinates and the diameters; a material
-    property crosses as a plain number, because the schema is meant to be
-    satisfiable by a solver whose adjoints were written by hand.
-
-    One load case crosses per call, the schema carrying one, so the round trips
-    grow with their number while the boundary itself does not.
+    The differentiable inputs stop at the coordinates and the diameters; a
+    material property crosses as a plain number, because the schema is meant to
+    be satisfiable by a solver whose adjoints were written by hand. One load
+    case crosses per call, the schema carrying one.
     """
 
     client: Tesseract
@@ -427,24 +256,16 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         client :
             The analysis Tesseract.
         family :
-            The section family the frame is analyzed with, whose ratio fixes the
-            wall thickness and whose grade supplies the material.
+            The section family the frame is analyzed with.
         normal :
             Index of the global axis a planar structure has no thickness along,
-            or None for a structure that occupies all three dimensions.
+            or None for a structure occupying all three dimensions.
         """
         self.client = client
         self.family = family
         self.normal = normal
         self.edges = jnp.asarray(structure.edges, dtype=jnp.int64)
         self.supports = jnp.asarray(structure.supports, dtype=jnp.int64)
-
-    @property
-    def steel(self) -> SteelGrade:
-        """
-        The material the frame is analyzed with, free of any standard.
-        """
-        return self.family.material
 
     def __call__(
         self,
@@ -468,284 +289,31 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         -------
         forces :
             Axial force and both end moments, per load case and member.
-
-        Notes
-        -----
-        A Jacobian of a map through this block batches its cotangents, and
-        the sequential vmap method turns that batch into one boundary
-        crossing per row rather than a refusal.
         """
-        analyzed = [
-            apply_tesseract(
-                self.client,
-                {
-                    "xyz": xyz,
-                    "diameter": diameters,
-                    "edges": self.edges,
-                    "supports": self.supports,
-                    "loads": load_case,
-                    "f_y": self.steel.f_y,
-                    "e_mod": self.steel.e_mod,
-                    "density": self.steel.density,
-                    "ratio": self.family.ratio,
-                    "normal": self.normal,
-                },
-                vmap_method="sequential",
+        steel = self.family.material
+        per_case = []
+        for load_case in loads:
+            inputs = {
+                "xyz": xyz,
+                "diameter": diameters,
+                "edges": self.edges,
+                "supports": self.supports,
+                "loads": load_case,
+                "f_y": steel.f_y,
+                "e_mod": steel.e_mod,
+                "density": steel.density,
+                "ratio": self.family.ratio,
+                "normal": self.normal,
+            }
+            crossed = apply_tesseract(self.client, inputs, vmap_method="sequential")
+            forces = MemberForces(
+                crossed["axial_force"],
+                crossed["end_moments_major"],
+                crossed["end_moments_minor"],
             )
-            for load_case in loads
-        ]
-
-        per_case = [
-            MemberForces(
-                forces["axial_force"],
-                forces["end_moments_major"],
-                forces["end_moments_minor"],
-                forces["shear_major"],
-                forces["shear_minor"],
-                forces["torsion_moment"],
-            )
-            for forces in analyzed
-        ]
+            per_case.append(forces)
 
         return stack_load_cases(per_case)
-
-
-class TesseractSizer(AbstractMemberSizer):
-    """
-    EN 1993-1-1, reached across a Tesseract boundary.
-
-    Attributes
-    ----------
-    client :
-        The check's Tesseract.
-    local :
-        The same standard in this process, answering the questions the schema
-        does not carry.
-
-    Notes
-    -----
-    **The sizes cross and the re-check does not.** The schema asks what size a
-    set of actions demands, which is what the standard decides; how hard a size
-    the block did not choose is working is a second question it has no endpoint
-    for, and it is answered in process. So is the mass a member of a given size
-    carries per unit length, which is a property of a section family rather than
-    a clause.
-
-    Naming that as a field rather than reaching for an import is the honest form
-    of it: this block is remote for one of its three answers and local for two,
-    and a reader can see which.
-
-    The cross-section class is confirmed by the block it delegates to, and
-    crosses as a static field of the schema.
-    """
-
-    client: Tesseract
-    local: Ec3Sizer
-
-    def __init__(
-        self,
-        structure: Structure,
-        client: Tesseract,
-        family: TubeFamily,
-        resultant: bool = True,
-    ) -> None:
-        """
-        Build a sizer that crosses a boundary to size and stays home to check.
-
-        Parameters
-        ----------
-        structure :
-            The structure whose members are sized. Read for nothing.
-        client :
-            The check's Tesseract.
-        family :
-            The section family every member is drawn from, whose ratio fixes
-            the wall proportion and whose grade supplies the material.
-        resultant :
-            Whether the two moments combine as a resultant in the cross-section
-            check, or as a linear sum.
-
-        Raises
-        ------
-        ValueError
-            If the family's ratio classifies as Class 4.
-        """
-        self.client = client
-        self.local = Ec3Sizer(structure, family, resultant)
-
-    @property
-    def family(self) -> TubeFamily:
-        """
-        The section family this block sizes over, as bare geometry.
-        """
-        return self.local.family
-
-    def __call__(
-        self,
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> MemberSizes:
-        """
-        Size every member for every load case, each on its own.
-
-        Parameters
-        ----------
-        forces :
-            What every member carries under every load case.
-        buckling_length :
-            Length every member is assumed to buckle over.
-
-        Returns
-        -------
-        sizes :
-            The diameter each load case demands, and how hard it is worked.
-
-        Notes
-        -----
-        EN 1993-1-1 Table B.3 is applied on the far side rather than here, so
-        what comes back is a design moment and a factor rather than two end
-        moments. Only the diameters are read off the boundary's answer: the
-        re-check at those diameters is the in-process block's, running the same
-        clauses over the same forces, and the parity tests measure that the
-        boundary's own reduction agrees with it.
-        """
-        local = self.local
-        carried = [
-            select_load_case(forces, load_case)
-            for load_case in range(count_load_cases(forces))
-        ]
-
-        crossed = [
-            apply_tesseract(
-                self.client,
-                {
-                    "axial_force": acting.axial_force,
-                    "end_moments_major": acting.moment_major,
-                    "end_moments_minor": acting.moment_minor,
-                    "buckling_length": buckling_length,
-                    "f_y": local.steel.f_y,
-                    "e_mod": local.steel.e_mod,
-                    "density": local.steel.density,
-                    "gamma_m0": local.steel.gamma_m0,
-                    "gamma_m1": local.steel.gamma_m1,
-                    "ratio": local.catalogue.ratio,
-                    "alpha": local.steel.alpha,
-                    "diameter_min": local.catalogue.diameter_min,
-                    "section_class": local.section_class,
-                    "resultant": local.resultant,
-                },
-            )
-            for acting in carried
-        ]
-
-        demanded = jnp.stack([sized["diameter"] for sized in crossed])
-        sections = local.catalogue(demanded)
-
-        # The diagonal read: each case's demanded size against that case alone.
-        per_case = []
-        for diameter, acting in zip(demanded, carried):
-            single = stack_load_cases([acting])
-            reread = local.compute_utilization(diameter, single, buckling_length)
-            per_case.append(reread[0])
-        used = jnp.stack(per_case)
-
-        return MemberSizes(neutral_sections(sections), used)
-
-    def governing(
-        self,
-        diameters: Float[Array, "members"],
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> Float[Array, "load_cases members"]:
-        """
-        Which limit state decided each member's size, under each load case.
-
-        Parameters
-        ----------
-        diameters :
-            Outer diameter every member was given.
-        forces :
-            What every member carries under every load case, which the check
-            reduces to design actions itself.
-        buckling_length :
-            Length every member is assumed to buckle over.
-
-        Returns
-        -------
-        governing :
-            One of the limit-state codes of `ec3x.sizing`.
-
-        Notes
-        -----
-        Answered in process, like the re-check it is read beside. The schema
-        does carry this diagnostic, but only for a size it chose itself, and a
-        design that has been reconciled across load cases is not at one.
-        """
-        return self.local.governing(diameters, forces, buckling_length)
-
-    def compute_utilization(
-        self,
-        diameters: Float[Array, "members"],
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> Float[Array, "load_cases members"]:
-        """
-        Check sizes the caller owns against EN 1993-1-1.
-
-        Parameters
-        ----------
-        diameters :
-            Outer diameter every member was given.
-        forces :
-            What every member carries under every load case, which the check
-            reduces to design actions itself.
-        buckling_length :
-            Length every member is assumed to buckle over.
-
-        Returns
-        -------
-        utilization :
-            Demand over resistance of every member under every load case.
-
-        Notes
-        -----
-        Answered in process, the schema having no endpoint that checks at a size
-        rather than solving for one. It is the same clauses either way, which is
-        why the answer is the one the boundary would have given.
-        """
-        return self.local.compute_utilization(diameters, forces, buckling_length)
-
-
-def blueprint_tesseract(root: Path = TESSERACTS) -> Tesseract:
-    """
-    A client that imports the blueprint check's API module into this process.
-
-    Parameters
-    ----------
-    root :
-        Directory holding one subdirectory per stage.
-
-    Returns
-    -------
-    client :
-        The check, behind the same client a served container answers.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no API module sits under that directory.
-
-    Notes
-    -----
-    Beside `local_chain` in role, and outside `Chain` on purpose: the chain is
-    the submission's three stages, and this one is an experiment riding along.
-    Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
-    """
-    module = root / "blueprint_check" / "tesseract_api.py"
-    if not module.is_file():
-        raise FileNotFoundError(f"no API module for the blueprint check at {module}")
-
-    return Tesseract.from_tesseract_api(module)
 
 
 class BlueprintClient(AbstractMemberSizer):
@@ -756,43 +324,35 @@ class BlueprintClient(AbstractMemberSizer):
     ----------
     client :
         The check's Tesseract.
-    local :
-        The same check in this process, supplying the family and the static
-        snapshots the schema's flat fields are read from.
-    materialize_jacobian :
-        How a batched derivative crosses: `None` lets tesseract-jax take the
-        `jacobian` endpoint whenever the server offers one, `False` forces
-        one sequential product crossing per row, `True` demands the endpoint
-        and raises where it is missing.
+    family :
+        The section family every member is drawn from.
+    ratio :
+        The family's wall proportion, snapshotted for the host.
+    f_y :
+        The family's yield strength, snapshotted for the host.
 
     Notes
     -----
-    **Every question crosses the boundary.** Unlike the EC3 client, which
-    answers the re-read in process, this block serializes both: the sizes
-    and their diagonal come off the solve's outputs, and a size the caller
-    owns goes over as `diameter_held` and comes back as `utilization_held`.
-    A simultaneous optimization constrained on this block therefore crosses
-    the boundary on every constraint evaluation. Its Jacobian crosses once
-    through the server's `jacobian` endpoint — or once per constraint row
-    through the hand-written NumPy adjoint when `materialize_jacobian` says
-    so. A single-cotangent `jax.grad` always takes the adjoint.
-
-    Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
+    Every question crosses the boundary: the sizes come off the solve's
+    outputs, and a size the caller owns goes over as `diameter_held` and comes
+    back as `utilization_held`. A descent constrained on this block therefore
+    crosses on every evaluation, and its gradient takes the hand-written NumPy
+    adjoint on the far side in one crossing.
     """
 
     client: Tesseract
-    local: BlueprintSizer
-    materialize_jacobian: bool | None
+    family: TubeFamily
+    ratio: float = eqx.field(static=True)
+    f_y: float = eqx.field(static=True)
 
     def __init__(
         self,
         structure: Structure,
         client: Tesseract,
         family: TubeFamily,
-        materialize_jacobian: bool | None = None,
     ) -> None:
         """
-        Build a sizer that crosses a boundary to size and stays home to re-read.
+        Build a sizer that crosses a boundary for every question.
 
         Parameters
         ----------
@@ -801,27 +361,61 @@ class BlueprintClient(AbstractMemberSizer):
         client :
             The check's Tesseract.
         family :
-            The section family every member is drawn from, whose ratio fixes
-            the wall proportion and whose grade supplies the material.
-        materialize_jacobian :
-            How a batched derivative crosses; the default lets the boundary
-            take its `jacobian` endpoint whenever the server offers one.
+            The section family every member is drawn from.
 
         Raises
         ------
         ValueError
             If the family's ratio leaves no wall at all.
         """
-        self.client = client
-        self.local = BlueprintSizer(structure, family)
-        self.materialize_jacobian = materialize_jacobian
+        ratio = float(family.ratio)
+        if ratio <= 2.0:
+            raise ValueError(f"a ratio of {ratio} leaves no wall: need d/t > 2")
 
-    @property
-    def family(self) -> TubeFamily:
+        self.client = client
+        self.family = family
+        self.ratio = ratio
+        self.f_y = float(family.material.f_y)
+
+    def cross_check(
+        self,
+        forces: MemberForces,
+        diameter_held: Float[Array, "*load_cases members"],
+    ) -> list[dict[str, Array]]:
         """
-        The section family this block sizes over, as bare geometry.
+        Cross the boundary once per load case, at a held size.
+
+        Parameters
+        ----------
+        forces :
+            What every member carries under every load case.
+        diameter_held :
+            Outer diameter the held-size check is read at, per member, or per
+            load case and member.
+
+        Returns
+        -------
+        crossed :
+            The schema's outputs, one dictionary per load case.
         """
-        return self.local.family
+        held = jnp.broadcast_to(diameter_held, jnp.shape(forces.axial_force))
+        crossed = []
+        for load_case in range(count_load_cases(forces)):
+            acting = select_load_case(forces, load_case)
+            inputs = {
+                "axial_force": acting.axial_force,
+                "end_moments_major": acting.moment_major,
+                "end_moments_minor": acting.moment_minor,
+                "diameter_held": held[load_case],
+                "f_y": jnp.asarray(self.f_y),
+                "gamma_m0": jnp.asarray(GAMMA_M0),
+                "ratio": jnp.asarray(self.ratio),
+                "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
+            }
+            answer = apply_tesseract(self.client, inputs, vmap_method="sequential")
+            crossed.append(answer)
+
+        return crossed
 
     def __call__(
         self,
@@ -836,47 +430,20 @@ class BlueprintClient(AbstractMemberSizer):
         forces :
             What every member carries under every load case.
         buckling_length :
-            Accepted, ignored, and never serialized: the check's schema
-            carries no length, which is the philosophy's statement on the
-            wire rather than only in a docstring.
+            Accepted, ignored, and never serialized: the check's schema carries
+            no length, which is the cross-section philosophy stated on the wire.
 
         Returns
         -------
         sizes :
             The diameter each load case demands, and how hard it is worked.
         """
-        local = self.local
-        carried = [
-            select_load_case(forces, load_case)
-            for load_case in range(count_load_cases(forces))
-        ]
+        placeholder = jnp.full_like(forces.axial_force, DIAMETER_MINIMUM)
+        crossed = self.cross_check(forces, placeholder)
+        demanded = jnp.stack([answer["diameter"] for answer in crossed])
+        used = jnp.stack([answer["utilization"] for answer in crossed])
 
-        # A positive placeholder: the solve never reads the held size.
-        crossed = [
-            apply_tesseract(
-                self.client,
-                {
-                    "axial_force": acting.axial_force,
-                    "end_moments_major": acting.moment_major,
-                    "end_moments_minor": acting.moment_minor,
-                    "diameter_held": jnp.full_like(
-                        acting.axial_force, DIAMETER_MINIMUM
-                    ),
-                    "f_y": jnp.asarray(local.f_y),
-                    "gamma_m0": jnp.asarray(GAMMA_M0),
-                    "ratio": jnp.asarray(local.ratio),
-                    "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
-                },
-                materialize_jacobian=self.materialize_jacobian,
-            )
-            for acting in carried
-        ]
-
-        demanded = jnp.stack([sized["diameter"] for sized in crossed])
-        used = jnp.stack([sized["utilization"] for sized in crossed])
-        sections = local.family(demanded)
-
-        return MemberSizes(sections, used)
+        return MemberSizes(self.family(demanded), used)
 
     def compute_utilization(
         self,
@@ -894,52 +461,13 @@ class BlueprintClient(AbstractMemberSizer):
         forces :
             What every member carries under every load case.
         buckling_length :
-            Accepted, ignored, and never serialized: the check's schema
-            carries no length.
+            Accepted, ignored, and never serialized.
 
         Returns
         -------
         utilization :
-            Demand over resistance of every member under every load case —
-            the differentiable constraint a simultaneous optimization holds
-            at or under one, crossing the boundary on every evaluation.
-
-        Notes
-        -----
-        Answered by the boundary's held-size check, so a constrained search
-        over the diameters crosses on every constraint evaluation. The
-        in-process block would give the same bits, and a parity test holds
-        it to that. A Jacobian of this map batches its cotangents, which
-        tesseract-jax routes through the server's `jacobian` endpoint in one
-        crossing; the sequential vmap method is the fallback that turns the
-        batch into one product crossing per row when `materialize_jacobian`
-        declines the endpoint.
+            Demand over resistance of every member under every load case.
         """
-        local = self.local
-        carried = [
-            select_load_case(forces, load_case)
-            for load_case in range(count_load_cases(forces))
-        ]
+        crossed = self.cross_check(forces, diameters)
 
-        crossed = [
-            apply_tesseract(
-                self.client,
-                {
-                    "axial_force": acting.axial_force,
-                    "end_moments_major": acting.moment_major,
-                    "end_moments_minor": acting.moment_minor,
-                    "diameter_held": diameters,
-                    "f_y": jnp.asarray(local.f_y),
-                    "gamma_m0": jnp.asarray(GAMMA_M0),
-                    "ratio": jnp.asarray(local.ratio),
-                    "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
-                },
-                vmap_method="sequential",
-                materialize_jacobian=self.materialize_jacobian,
-            )
-            for acting in carried
-        ]
-
-        used = jnp.stack([answer["utilization_held"] for answer in crossed])
-
-        return used
+        return jnp.stack([answer["utilization_held"] for answer in crossed])

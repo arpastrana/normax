@@ -12,21 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-What the experiments print, in one place and one style.
+What a run prints, in one place and one style.
 
-The experiments measure and this module prints, as `normax.visualization` draws.
 A table states each column once — a heading and the format its cells take — and
-the widths follow from the text that is actually printed, so nothing is padded by
-hand and no heading can drift out of step with the row beneath it.
-
-Every writer carries its own verbosity. A quiet writer returns from each call
-without printing, so a caller silences a whole report by constructing one rather
-than by threading a flag through the functions that compute.
+the widths follow from the text actually printed. Every writer carries its own
+verbosity, so a caller silences a whole report by constructing a quiet one.
 """
 
 import textwrap
 from collections.abc import Sequence
 from typing import NamedTuple
+
+import jax.numpy as jnp
+import numpy as np
+
+from normax.design import Design
+from normax.design import compute_mass
+from normax.optimization import AugmentedAnswer
 
 # Spaces of indentation given to anything printed under a heading.
 INDENT = "  "
@@ -244,3 +246,88 @@ class Report:
         The one word the experiment is read for.
         """
         self.write_heading("PASS" if passed else "FAIL")
+
+
+def report_descent(report: Report, answer: AugmentedAnswer) -> None:
+    """
+    Every round of an augmented descent, its mass beside its violation.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    answer :
+        What the descent arrived at.
+    """
+    columns = (
+        ReportColumn("round"),
+        ReportColumn("mass [t]", ".6f"),
+        ReportColumn("violation", ".2e"),
+    )
+    walked = zip(answer.objectives, answer.violations, strict=True)
+    rows = [(index, mass, gap) for index, (mass, gap) in enumerate(walked)]
+    report.write_table(columns, rows)
+
+    ended = "converged" if answer.converged else "stopped on its round budget"
+    entries = [("evaluations", str(answer.evaluations)), ("ended", ended)]
+    report.write_entries(entries)
+
+
+def report_design(report: Report, design: Design, title: str) -> None:
+    """
+    What a design weighs, how hard it is worked, and how it sits.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    design :
+        The design to read.
+    title :
+        Heading the entries are printed under.
+    """
+    diameters = np.asarray(design.sizes.sections.diameter)
+    heights = np.asarray(design.shape.xyz)[:, 2]
+    entries = [
+        ("mass [t]", f"{float(compute_mass(design)):.6f}"),
+        ("utilization, worst", f"{float(jnp.max(design.sizes.utilization)):.6f}"),
+        ("diameters [mm]", f"{diameters.min():.1f} to {diameters.max():.1f}"),
+        ("shortest member [mm]", f"{float(jnp.min(design.shape.lengths)):.1f}"),
+        ("heights [mm]", f"{heights.min():.1f} to {heights.max():.1f}"),
+    ]
+    report.write_heading(title)
+    report.write_entries(entries)
+
+
+def report_families(
+    report: Report,
+    design: Design,
+    families: Sequence[tuple[str, slice]],
+) -> None:
+    """
+    Diameter and utilization ranges per member family.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    design :
+        The design to read.
+    families :
+        Name and member slice of every family.
+    """
+    diameters = np.asarray(design.sizes.sections.diameter)
+    worked = np.asarray(jnp.max(design.sizes.utilization, axis=0))
+    columns = (
+        ReportColumn("family", align="<"),
+        ReportColumn("d min [mm]", ".1f"),
+        ReportColumn("d max [mm]", ".1f"),
+        ReportColumn("U min", ".4f"),
+        ReportColumn("U max", ".4f"),
+    )
+    rows = []
+    for name, members in families:
+        sizes = diameters[members]
+        used = worked[members]
+        rows.append((name, sizes.min(), sizes.max(), used.min(), used.max()))
+    report.write_table(columns, rows)

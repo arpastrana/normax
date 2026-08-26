@@ -1,25 +1,26 @@
 # The Vierendeel truss, composed across two Tesseract boundaries: jax-fdm in
 # process, OpenSees across the analysis schema, Blueprints across the check.
-# Blueprints implements no 6.3.1, so this sizes to 6.2 alone.
+# Millimeters and newtons throughout.
 structure:
   num_bays: 8
   span: 10000.0
   depth: 1000.0
 
-loads:
-  total: 180000.0
-  half_factor: 0.5
-  point_factor: 0.5
-  mirrored_case: false
-
+# The lens the start is fitted to: bottom chord hung, top chord arched.
 sketch:
   sag_lens: 600.0
   rise_lens: 800.0
 
-subspace:
-  symmetric: true
-  basis: pivoted
-  margin_fraction: 0.1
+# Every case sits on the deck. The first shapes the truss; every case is
+# checked.
+load_cases:
+  - name: deck
+    magnitude: 180000.0
+  - name: deck_half
+    magnitude: 180000.0
+    options: {factor: 0.5}
+  - name: deck_point
+    magnitude: 90000.0
 
 analysis:
   diameter: 100.0
@@ -28,26 +29,40 @@ analysis:
   backend: opensees
 
 sizing:
-  # The check crosses its own boundary too, so neither solver on the far
-  # side differentiates itself.
+  section_class: 3
+  # The check crosses its own boundary too. Blueprints implements no 6.3.1
+  # buckling, and rigid joints put end moments everywhere on this truss.
   backend: blueprint_tesseract
 
-descent:
-  iterations: 1000
-  rounds: 5
-  tolerance: 1.0e-9
-  diameter_floor: 21.3
-  length_floor: 1000.0
-  starts: 1
-  scatter: 0.0
-  limit_rise: true
-  rise_factor: 2.0
-  limit_sag: true
-  sag_factor: 1.0
+# The held-plan subspace in member coordinates, pivoted the TNA way: two
+# uniform chord families and the free verticals. The margin signs the chords
+# at the start and guards them through the descent, where a chord crossing
+# zero would hand the form finder a singular stiffness.
+subspace:
+  symmetric: true
+  pivoted: true
+  margin_fraction: 0.1
 
-viewer:
-  enabled: false
-  search: end to end
-  # Descend that one search alone, for iterating rather than reporting:
-  # every comparison entry needs the searches it compares.
-  solo_search: false
+constraints:
+  diameter_floor: 21.3
+  # The verticals may not collapse: a vanishing member is free and unbucklable.
+  length_floor: 1000.0
+  rise_ceiling: 2000.0
+  sag_floor: -1000.0
+  bounds: null
+
+# The opening penalty decides the answer on this truss: below a value between
+# 0.1 and 0.03 the descent settles inside its own infeasible dive and reports
+# half the feasible mass. Read the violation column before believing a mass.
+augmented:
+  rounds: 10
+  iterations: 400
+  settled: 100
+  opening: 3
+  penalty: 0.1
+  growth: 10.0
+  ceiling: 1.0e+8
+  tolerance: 1.0e-6
+  quiet: 1.0e-6
+
+viewer: false
