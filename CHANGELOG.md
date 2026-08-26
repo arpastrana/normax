@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+### Three routes, twenty-four starts each, and the form finder buys half the steel
+
+The three parametrizations had never been compared on equal terms. Every figure
+on record set a five-start SLSQP run against another five-start SLSQP run, in
+process, before the frame-convention fix — and a previous version of this
+comparison collapsed from +18.53% to +0.17% the moment the starts were equalised.
+So all three were run again through the crossed pipeline — jax-fdm in process,
+**PyNite** across the analysis schema, **Blueprints** across the check — with the
+same augmented budget, the same twenty-four fixed-seed scattered starts, the same
+feasibility threshold and no polish. One line differs between the three runs: the
+route.
+
+| route | best [t] | median | worst | spread | feasible | within 5% of best |
+|---|---|---|---|---|---|---|
+| **end to end** | **0.074724** | 0.075659 | 0.114863 | 53.7% | 23/24 | 17 of 23 |
+| free heights | 0.136011 | 0.144273 | 0.168641 | 24.0% | 24/24 | 7 of 24 |
+| sizing only | 0.145735 | 0.148004 | 0.149061 | **2.3%** | 24/24 | 24 of 24 |
+
+**The form finder buys 48.7%** best to best, and **48.9%** median to median. The
+two agreeing is the point: the number does not rest on the luckiest draw.
+
+**Free heights buy 6.7%, and 2.5% on medians.** Moving the nodes directly is
+barely better than not moving them at all, and lands **82% heavier** than the
+form-found route — reaching the same geometries and failing to find them. That is
+far sharper than the ten to fifteen percent on record for the trusses, and it is
+now measured with equal starts on both sides, which is exactly what the earlier
+version of this claim did not have.
+
+**The scatter belongs to the parametrization, not to the boundary.** Coefficient
+of variation across starts: **0.5%** frozen, **6.1%** over heights, **14.5%** over
+force densities. A frozen geometry is nearly convex and all twenty-four starts
+agree; searching over geometry is what makes landings differ. Note also that
+end to end has the widest range and the **tightest core** — three quarters of its
+starts fall within 5% of the best, and its tail is a handful of bad basins rather
+than a smear.
+
+**Determinism, asked before anything else.** In all three runs the first start
+descended twice gives a bit-identical mass. So the landing is a deterministic
+function of the build, and a run reproduces; what moves it is a change to the
+numerics, not chance.
+
+The best landing of each route is stored against
+`experiments/gridshell_16_crossed.yaml`, so
+`gridshell_16_crossed_view.yaml` draws these designs rather than a nominal start.
+
+### Two claims from yesterday were wrong, and this is the correction
+
+**The Blueprints check does not cost 41.7%. It costs about 2.3%.** That figure
+came from setting one single-start crossed run against one single-start
+in-process run, and it was reported with a note that it sat inside the spread —
+which was not enough. Measured properly, the crossed pipeline with the
+conservative check reaches **0.074724 t against the in-process record of
+0.073013**. What survives is smaller and still real: the check reads 1.39x the
+resultant bending on median and omits the four equations of §6.3.1, and on this
+structure those effects very nearly cancel.
+
+**No single-start shell mass should have been quoted, and the reason is worse
+than a spread.** The nominal start is the **worst of all twenty-four** on the
+end-to-end route, at 0.114863 t against a best of 0.074724. Every single-start
+figure produced yesterday — 0.105635, 0.091569, 0.114863 — came from it. The
+"not reproducible to better than a tenth" heading below is therefore also
+wrong twice over: runs are bit-reproducible inside a build, and the variation
+across yesterday's runs was three different builds sampling one bad basin.
+
 ### The check was 94% of an evaluation, and object allocation was all of it
 
 With the analysis stage made cheap, profiling put **94% of a crossed evaluation
@@ -57,7 +121,7 @@ allocating code, 27,000 shared class objects making refcounts contend.
 0.32 ms against 13.8 ms. Calling a normative library scalar by scalar is about
 an order of magnitude, on a stage that is no longer the bottleneck.
 
-### ⚠ The crossed shell mass is not reproducible to better than about a tenth
+### ⚠ The crossed shell mass is basin-dependent — SUPERSEDED, and corrected above
 
 Three descents of an **identical** configuration — same file, same cold start,
 same budget — landed at **0.105635, 0.091569 and 0.114863 t**. The forward pass
@@ -66,11 +130,12 @@ is bit-identical across all three: read at the stored optimum, each returns mass
 by either optimisation. So this is not drift. It is round-off amplified through
 four hundred inner iterations a round, and the landing is chaotic in it.
 
-**No single crossed shell mass may be quoted.** What can be reported is a range,
-or a best over several starts with its spread stated. This also softens the
-earlier attribution of +41.7% to the check: the check's cost is real and large,
-but that particular figure sits inside this spread, and the honest comparison
-needs the same treatment on both sides.
+**No single crossed shell mass may be quoted** — that part stands. Two things
+here were later measured and are wrong: a run **is** bit-reproducible inside a
+build (each of the three multi-start runs confirms it on its first start), so the
+three figures above differed by *build*, not by chance; and all three were the
+**nominal start, which is the worst of twenty-four**. The corrected numbers,
+and the check's real cost of about 2.3%, are at the top of this file.
 
 ### The crossed descent gets twelve times cheaper, and none of it was the boundary
 
@@ -338,15 +403,17 @@ gradient.** Replacing a traced JAX solver with a foreign Python one *across a
 schema* moves the answer by -0.8%, which is basin noise. The stage-level
 agreement was already known; this is the optimizer landing on the same design.
 
-**Swapping the check costs 41.7%, and the price was predicted.** Blueprints
-reads a bending 1.39x the resultant on median, and the design comes out 1.42x
-heavier. A modeling choice with a measurable cost — not a defect, and not the
-omitted §6.3.1, which is permissive and could not do this.
+**Swapping the check appeared to cost 41.7%.** ⚠ **Superseded — see the
+three-route run above.** Both sides of that comparison were single starts from
+the nominal point, which is the worst of twenty-four; measured over matched
+multi-start runs the check costs about **2.3%**. The mechanism described here is
+real — Blueprints reads a bending 1.39x the resultant on median — but on this
+structure it very nearly cancels against the clause it omits.
 
-So there are two defensible answers from one start, and which to quote depends on
-which check is being stood behind: **0.074557 t, the geometry buying 50.6%**, on
-a fully public analysis path; or **0.105635 t, buying 30.1%**, with both foreign
-stages and neither differentiating itself.
+⚠ **Both figures here are single starts and both are superseded** by the
+three-route multi-start run above: the crossed pipeline reaches **0.074724 t**
+with the geometry buying **48.7%**, and the two checks differ by about 2.3%
+rather than by a third.
 
 ### Swapping the solver changes nothing; swapping the check changes everything
 

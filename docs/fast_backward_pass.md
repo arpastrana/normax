@@ -288,7 +288,36 @@ throughout, verified at a fixed point after every change. Round-off amplified
 through four hundred inner iterations a round is enough to choose a different
 basin.
 
-The optimization did not cause this; it exposed it. A single-start number on
-this structure was never reproducible, and at 37 minutes a run nobody was going
-to discover that. **Report a range, or a best over several starts with its
-spread** — not a landing.
+The optimization did not cause this; it exposed it. At 37 minutes a run nobody
+was going to discover it.
+
+**And then the range was measured, which settled it.** Twenty-four starts on each
+of the three routes — 4h20 of unattended compute, only affordable because of the
+work above:
+
+| route | best [t] | spread across starts | coefficient of variation |
+|---|---|---|---|
+| end to end | 0.074724 | 53.7% | 14.5% |
+| free heights | 0.136011 | 24.0% | 6.1% |
+| sizing only | 0.145735 | 2.3% | 0.5% |
+
+Three things the single-start numbers had hidden.
+
+**A run is bit-reproducible inside a build.** Each route's first start, descended
+twice, returns an identical mass. The three figures that differed came from three
+different *builds* — a much milder claim than nondeterminism, and the right one.
+
+**The scatter is the parametrization's, not the boundary's.** A frozen geometry
+is nearly convex and all twenty-four starts agree to 2.3%. Searching over
+geometry is what makes landings differ.
+
+**The nominal start was the worst of twenty-four.** Every number quoted from a
+single start came from it, and it is 54% heavier than the best. That is what
+turned a 2.3% difference between two design checks into a reported 41.7% — a
+wrong attribution that survived a day because both sides of the comparison
+happened to be drawn from the same bad basin.
+
+So the closing lesson is not "report a range" but something narrower and more
+uncomfortable: **a comparison of two pipelines is only as good as the search
+behind each side of it**, and matching the method on both sides is not a
+refinement, it is the difference between a result and an artifact.

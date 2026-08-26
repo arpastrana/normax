@@ -1220,6 +1220,32 @@ bit-identical forward pass. **No single crossed shell mass may be quoted** —
 report a range, or a best over several starts with the spread stated. Cheap runs
 made visible what a 37-minute run had hidden.
 
+## P6b — The three routes, measured on matched terms (Aug 26) — **DONE**
+
+Twenty-four fixed-seed starts on each of end to end, free heights and sizing
+only, all through the crossed pipeline (jax-fdm, PyNite, Blueprints), same
+augmented budget, no polish. 4h20 unattended, only affordable after P5f/P5g.
+
+| route | best [t] | spread | feasible |
+|---|---|---|---|
+| **end to end** | **0.074724** | 53.7% | 23/24 |
+| free heights | 0.136011 | 24.0% | 24/24 |
+| sizing only | 0.145735 | 2.3% | 24/24 |
+
+**The form finder buys 48.7%**, and 48.9% on medians. **Free heights buy 6.7%**
+and land 82% heavier than the form-found route — the headline result, and the
+first version of it measured with equal starts on both sides.
+
+⚠ **It also corrected two claims from Aug 25.** The Blueprints check costs about
+**2.3%**, not the reported 41.7%: both sides of that comparison were single
+starts from the nominal point, which turns out to be the **worst of
+twenty-four**. And a run is bit-reproducible inside a build, so the three
+differing masses were three builds sampling one bad basin. `CHANGELOG.md` carries
+the corrections; `docs/fast_backward_pass.md` closes on what the episode teaches.
+
+The best landing of each route is stored against `gridshell_16_crossed.yaml`, so
+the viewer draws these rather than a nominal start.
+
 ## P8 — File the two upstream Tesseract reports (before Aug 31) — **NOT DONE**
 
 **Do not let the deadline swallow these.** Both were found by composing Tesseract
