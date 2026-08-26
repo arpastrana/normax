@@ -15,7 +15,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 # the plan is to delete them rather than publish them.
 ORACLE_PACKAGES = ("smax", "ec3x")
 
-# Tests importing an oracle, directly or through normax.builders, normax.viewer,
+# Tests importing an oracle, directly or through normax.viewer,
 # normax.analysis.smax or normax.sizing.ec3. Omitting one turns CI red at
 # collection rather than passing quietly.
 ORACLE_TESTS = (
@@ -28,7 +28,6 @@ ORACLE_TESTS = (
     "test_extras_replay.py",
     "test_materials.py",
     "test_pipeline.py",
-    "test_plan_basis.py",
     "test_second_sizer.py",
     "test_sections.py",
     "test_tesseract_parity.py",

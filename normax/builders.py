@@ -14,14 +14,14 @@
 """
 Every builder in one file: the blocks a run description names, built.
 
-The one place every backend is imported side by side: the traced solver and the
-clause library that validate, and the two Tesseract crossings that ship. A
-pipeline is picked here by name and nothing downstream asks which was chosen.
+The one place every shipping backend is named: the two Tesseract crossings,
+picked here so nothing downstream asks which was chosen. The oracles are not
+named here — a validation run constructs them directly, so the shipping path
+imports neither oracle package.
 """
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import normal_axis
-from normax.analysis.smax import SmaxAnalyzer
 from normax.config import AnalysisConfig
 from normax.config import ConstraintsConfig
 from normax.config import SizingConfig
@@ -32,7 +32,6 @@ from normax.materials import SteelGrade
 from normax.sections import TubeFamily
 from normax.sizing import AbstractMemberSizer
 from normax.sizing.blueprint import BlueprintSizer
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.symmetry import SignGuard
 from normax.tesseract import TesseractAnalyzer
@@ -98,9 +97,9 @@ def build_analyzer(
     structure :
         The structure the block is built on.
     family :
-        The section family the seed section is drawn from.
+        The section family the frame is analyzed with.
     config :
-        The backend, and the seed diameter.
+        The backend.
 
     Returns
     -------
@@ -112,8 +111,6 @@ def build_analyzer(
     ValueError
         If the backend is not one this module knows.
     """
-    if config.backend == "smax":
-        return SmaxAnalyzer(structure, family(config.diameter))
     if config.backend not in ANALYSIS_CROSSED:
         raise ValueError(f"unknown analysis backend {config.backend!r}")
 
@@ -150,8 +147,6 @@ def build_sizer(
     ValueError
         If the backend is not one this module knows.
     """
-    if config.backend == "ec3":
-        return Ec3Sizer(structure, family)
     if config.backend == "blueprint":
         return BlueprintSizer(structure, family)
     if config.backend == "blueprint_tesseract":
