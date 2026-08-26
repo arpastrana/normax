@@ -152,6 +152,40 @@ def host_family(
     )
 
 
+def snapshot_family(family: TubeFamily) -> tuple[float, float]:
+    """
+    Snapshot a family's ratio and yield strength for the host.
+
+    Parameters
+    ----------
+    family :
+        The section family a sizer is built over.
+
+    Returns
+    -------
+    ratio :
+        The family's wall proportion, as a concrete float.
+    f_y :
+        The family's yield strength, as a concrete float.
+
+    Raises
+    ------
+    ValueError
+        If the family's ratio leaves no wall at all.
+
+    Notes
+    -----
+    The two numbers a host check reads off a family, concretized once at
+    construction so no material sensitivity flows through a sizer — the
+    in-process one and the crossed one snapshot identically.
+    """
+    ratio = float(family.ratio)
+    f_y = float(family.material.f_y)
+    host_family(ratio, f_y)
+
+    return ratio, f_y
+
+
 def _check_scalar(
     diameter: float,
     axial: float,
@@ -1065,9 +1099,7 @@ class BlueprintSizer(AbstractMemberSizer):
         ValueError
             If the family's ratio leaves no wall at all.
         """
-        ratio = float(family.ratio)
-        f_y = float(family.material.f_y)
-        host_family(ratio, f_y)
+        ratio, f_y = snapshot_family(family)
 
         self.structure = structure
         self.family = family
