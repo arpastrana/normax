@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### The crossed descent gets twelve times cheaper, and none of it was the boundary
+
+A crossed evaluation cost 0.92 s and a descent 37 minutes, against half a minute
+in process. The obvious culprit was the Tesseract boundary. **It was not** —
+profiling put the boundary at about 9% and PyNite itself at 91%, and none of the
+four things actually responsible were where anyone would have looked.
+
+| | before | after |
+|---|---|---|
+| a crossed evaluation, three load cases | 0.92 s | **0.077 s** |
+| the 2408-evaluation descent | 37.0 min | **~3.1 min** |
+| against the traced solver in process | 1.24x slower | **0.16x** |
+
+Gradient agreement is unchanged at **2.9e-12** over the coordinates and 3.2e-11
+over the diameters, and the whole suite still passes.
+
+**A vector of zeros cost more than the factorization.** The solver builds its
+right-hand side as a nodal load vector minus every member's fixed-end reactions,
+and under nodal loading those reactions are identically zero — 0.0176 s per load
+case spent producing them. Built here from the loads already in hand: 0.0000 s,
+and identical to the last bit rather than merely close.
+
+**An identical matrix was decomposed once per load case.** The stiffness does
+not depend on the loading, and the solver's own linear analysis knows it —
+it assembles once and loops the combinations. But it solves each with a routine
+that factorizes afresh every call, and the package contains no factorization
+object anywhere. Holding the decomposition turns every case after the first into
+a back-substitution: three cases now cost **1.00x** what one costs.
+
+**The end forces are the element stiffness times the displacement.** Reading
+them back through the solver's own per-member loop cost 0.108 s; the same
+arithmetic against a stiffness this repository already holds compiled costs
+0.003 s. That also collapsed the forward pass and the derivative onto **one
+function** — `member_reading` is now the head of `member_actions` — so a
+reported force and its slope are the value and the derivative of one expression,
+rather than two that have to be kept in agreement.
+
+**Two JAX steps were dispatch, not arithmetic.** The element derivatives ran
+uncompiled at 0.0502 s; compiled, 0.0006 s.
+
+**The load-case stack never had to cross the schema.** The expensive half of a
+solve — assembling and factorizing — does not depend on the loading, so one
+remembered frame serves every load case in an evaluation *and* the adjoint that
+follows each. A single entry keyed on the geometry and the diameters is hit five
+times in six, which is the whole benefit of stacking the cases into the schema
+without touching the schema, the other two backends, or the parity tests. It is
+also why one entry is enough: the key deliberately omits the loads, so nothing
+can evict it midway through an evaluation.
+
+**The cache is the one thing here that buys speed with a constraint.** It makes
+this backend depend on dispatch being serialized, which it had not before. That
+holds because every endpoint runs on one owner thread; a served runtime would
+need a lock of its own, and the code says so. Two tests cover what would
+otherwise be silent: a gradient over three genuinely different load cases, and
+two geometries interleaved in one process.
+
+**A drawing could never have been made of a crossed design.** The viewer asked
+its analyzer for a whole response field, which only the traced backend can
+supply and the schema does not carry — so `smax_tesseract` and `opensees` would
+have failed exactly as PyNite did. It now asks whether a response can be had
+rather than which backend it is, and builds a traced one for the drawing when it
+cannot. Sound because the design is not the drawing's: the geometry and the
+diameters were decided by whichever pipeline the run described.
+
+**The sequence is written up as `docs/fast_backward_pass.md`**, for the paper's
+appendix. Each stage was aimed at what the previous stage's profile proved was
+expensive, which four times out of five was not where we had guessed — and the
+document reports the five ways we mismeasured along with the results, because
+most of them looked like results.
+
+**Two flaws in `experiments/27_pynite_agreement.py`, found while re-running it.**
+It timed the forward pass cold, so its cost table was reporting a compilation;
+and it priced a 248-member diagrid while every act runs a 496-member gridshell —
+a different generator. Both corrected, and the shell it prices is now the one
+the acts build.
+
 ### A size may not depend on the frame the analysis happened to pick
 
 Two solvers analyzing one frame reported bending about different axes, and the
@@ -35,9 +111,12 @@ resolved in the local frames the analyzer itself defines, under a convention the
 schema states. Then a check could read an axis and mean it. Only an
 axisymmetric section lets this be read around.
 
-⚠ **Every mass on record predates this.** The moment factor moves wherever a
-member is in reversal, so the arch, Vierendeel and gridshell figures are all
-provisional until re-run.
+⚠ **The masses on record predate this, but not all of them are at risk.**
+Measured at the shell's stored optimum after the fix: **0 of 1730 rows violated,
+worst slack −6.1e-11** — still exactly fully-stressed, so **0.073013 t stands**.
+A funicular shell is nearly moment-free, so the factor barely bites there. The
+**trusses are the exposed ones**, where 77% and 82% of members are in reversal
+and nothing has been re-measured.
 
 ### A space frame solver with no derivative, given an exact one
 
@@ -146,10 +225,102 @@ to hold for. Neither is the arch or the Vierendeel: those are planar, they stay
 on OpenSees, and the Vierendeel would be **refused** outright for its vertical
 members.
 
-**Not yet measured, and not to be quoted until it is**: the crossed shell's
-mass. Every recorded figure for the arch, the Vierendeel and the shell predates
-the frame-convention fix, which moves the moment factor wherever a member is in
-reversal.
+### The whole pipeline descends across two boundaries
+
+Form found by jax-fdm in process, analyzed by **PyNite across the analysis
+schema**, checked by **Blueprints across the check schema**, and searched by an
+augmented Lagrangian on exact gradients — no finite differences anywhere, and
+two of the three stages solvers that cannot differentiate themselves.
+
+From the drawn cap, one cold start, no polish:
+
+    0.151023 t  ->  0.105635 t        the geometry bought 30.1%
+
+37 minutes, 2408 evaluations at 0.92 s each. **It stopped on its round budget,
+not its own test**: worst violation 1.4e-05 over 8 of 1730 rows, so the design
+sits on the constraint surface without being certified onto it. The SLSQP polish
+that would certify it was deliberately not run — it needs a 1730-by-54
+constraint Jacobian across both boundaries, per iteration, for up to 600
+iterations.
+
+**What each swap costs**, same method, same budget, same single cold start, so
+only one thing moves at a time:
+
+| pipeline | mass [t] | violation | against the row above |
+|---|---|---|---|
+| smax + ec3x, both in process | 0.075179 | 3.1e-05 | — |
+| **PyNite crossed** + ec3x | 0.074557 | 1.4e-06 | **-0.8%** |
+| PyNite crossed + **Blueprints crossed** | 0.105635 | 1.4e-05 | **+41.7%** |
+
+**The method costs 3.0%.** One cold start under the augmented Lagrangian, with
+no polish, lands within three percent of the five-start SLSQP record of
+0.073013 t — for a fraction of its cost, and without ever forming a constraint
+Jacobian.
+
+**Swapping the analyzer is free, at the level of the design rather than the
+gradient.** Replacing a traced JAX solver with a foreign Python one *across a
+schema* moves the answer by -0.8%, which is basin noise. The stage-level
+agreement was already known; this is the optimizer landing on the same design.
+
+**Swapping the check costs 41.7%, and the price was predicted.** Blueprints
+reads a bending 1.39x the resultant on median, and the design comes out 1.42x
+heavier. A modeling choice with a measurable cost — not a defect, and not the
+omitted §6.3.1, which is permissive and could not do this.
+
+So there are two defensible answers from one start, and which to quote depends on
+which check is being stood behind: **0.074557 t, the geometry buying 50.6%**, on
+a fully public analysis path; or **0.105635 t, buying 30.1%**, with both foreign
+stages and neither differentiating itself.
+
+### Swapping the solver changes nothing; swapping the check changes everything
+
+Two analyzers against two checks, read at the shell's stored optimum, which
+isolates each axis instead of confounding them:
+
+| | mass [t] | rows violated | worst slack |
+|---|---|---|---|
+| smax + ec3x | 0.073013 | **0** | −6.13e-11 |
+| smax + Blueprints | 0.073013 | **25** | −1.4232e-01 |
+| PyNite + ec3x | 0.073013 | **0** | −6.12e-11 |
+| PyNite + Blueprints | 0.073013 | **25** | −1.4232e-01 |
+
+**Swapping the analyzer moves the whole 1730-row slack vector by 7.7e-13.** That
+is the swappability claim measured where it counts — not at the stage boundary,
+where the forces were already known to agree, but through the composed pipeline
+to the constraint the search reads. A foreign solver and a traced one are
+interchangeable here to a part in a million million.
+
+**Swapping the check moves it by 0.249**, identically under either analyzer,
+which is the signature of the analyzer contributing nothing.
+
+**Why, and it is not the omitted clause.** Blueprints leaving out §6.3.1 is
+*permissive*, so it cannot produce a violation. The cause is
+`normax/sizing/blueprint.py`'s own documented reduction: it reads
+`max|My| + max|Mz|`, superposing the two axes linearly per eq. (6.2), where the
+other check reads the bending a circular section actually feels. Measured over
+twenty thousand random moment pairs, the sum is **1.39x the resultant on median
+and 2.00x at worst** — above √2 because each axis's maximum is taken
+independently over the two ends.
+
+**A sum of components is not frame-invariant, and that is the sharper point.**
+Rotating the reporting frame by 45 degrees moves this reading by up to **41%**,
+while the resultant moves by 4e-16. So **the design-is-backend-independent
+result holds for the clause library and cannot hold for the Blueprints wrapper**,
+by construction rather than by defect.
+
+**The confound is new with three dimensions.** A plane frame carries almost no
+minor-axis moment, so the sum collapses onto the resultant and the recorded
+crossed Vierendeel comparison is unaffected. On a shell the two readings
+diverge, so an in-process-against-crossed *mass* comparison there mixes an
+omitted clause pulling one way against a conservative superposition pulling the
+other. **That comparison is not a result yet**, and the crossed shell's mass has
+not been measured.
+
+**What a crossed iteration costs**, since a full route was launched before it was
+priced: **1.18 s per iteration**, 0.91 s per evaluation, so the augmented
+budget's 1900 inner iterations is about 29 minutes per route and three routes is
+an hour and a half. Reading the mass at a point is 1 ms; the 1730 slack rows
+cost 0.36 s.
 
 ### A crossed dispatch runs on whatever thread is free, and the solver cannot take it
 

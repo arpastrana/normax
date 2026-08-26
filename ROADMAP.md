@@ -1161,12 +1161,49 @@ adjoint and its guards in `normax/analysis/pynite.py`,
 form is element equality at 7.7e-18, roll invariance at 1.7e-16, and the
 gradient against `smax` at 1.3e-14 in process and 6.2e-14 crossed.
 
-**Still open here.** The crossed shell descent is the first run of this backend
-in anger, and no mass from it may be quoted until it finishes. Neither may any
-*existing* mass: the frame-convention fix moves the moment factor wherever a
-member is in reversal, so the arch, Vierendeel and shell figures on record are
-all provisional until re-run. The 2D acts stay on OpenSees deliberately — it is
-what keeps P8's concurrency report reproducible.
+**Swappability is now measured through the composed pipeline**, not just at the
+stage: at the shell's stored optimum, swapping smax for PyNite moves the whole
+1730-row constraint vector by **7.7e-13**. Swapping the *check* moves it by
+0.249, all of which is `blueprint.py`'s linear superposition of the two axis
+moments — a reading that is 1.39x the resultant on median and, being a sum of
+components, not frame-invariant. See `CHANGELOG.md`.
+
+**The complete crossed pipeline has now descended end to end** — jax-fdm,
+PyNite across the analysis schema, Blueprints across the check, augmented
+Lagrangian, no polish: **0.151023 -> 0.105635 t, the geometry buying 30.1%** in
+37 minutes. Swapping the analyzer alone costs -0.8%; swapping the check costs
++41.7%, all of it the linear superposition. With ec3x instead the same descent
+lands **0.074557 t, buying 50.6%**. Numbers and caveats in `CHANGELOG.md`.
+
+**Still open here.** The landing stopped on its round budget rather than its own
+test (violation 1.4e-05 on 8 of 1730 rows), so nothing is certified feasible;
+the SLSQP polish that would certify it needs a 1730-by-54 constraint Jacobian
+across both boundaries and was not run.
+The shell's stored 0.073013 t **survives** the frame-convention fix (0 of 1730
+rows violated after it), so it may still be quoted; the **truss** figures are
+the ones at risk, 77% and 82% of their members being in reversal. The 2D acts
+stay on OpenSees deliberately — it is what keeps P8's concurrency report
+reproducible.
+
+## P5f — A fast backward pass, and the appendix about building it (Aug 25) — **DONE**
+
+A crossed descent fell from **37 minutes to about 3** (0.92 s an evaluation to
+0.077), with the gradient's agreement to a traced solver unmoved at 2.9e-12.
+None of it was the boundary, which isolates at **12%**.
+
+`docs/fast_backward_pass.md` is the paper's appendix: six stages, each aimed at
+what the previous profile proved was expensive. It is worth including because
+the intuitions it overturns are the ones people bring to a differentiable
+boundary — the boundary was never the cost, rebuilding the model was 1%, a
+vector of zeros cost more than the factorization, an identical matrix was
+decomposed once per load case, and the schema change that looked necessary was
+not. It also reports the five ways we mismeasured, because most of them looked
+like results.
+
+**A third upstream contribution falls out of it**, friendlier than the two
+below: PyNite's linear analysis re-factorizes a bit-identical matrix once per
+load combination, and holds no factorization object anywhere. A one-block change
+gives ~3x on any multi-combination model, trivially reproducible.
 
 ## P8 — File the two upstream Tesseract reports (before Aug 31) — **NOT DONE**
 
