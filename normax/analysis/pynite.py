@@ -54,6 +54,7 @@ from jaxtyping import Float
 from jaxtyping import Int
 from Pynite import FEModel3D
 from Pynite.Analysis import _partition_D
+from Pynite.Analysis import _prepare_model
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import MatrixRankWarning
 from scipy.sparse.linalg import SuperLU
@@ -61,6 +62,7 @@ from scipy.sparse.linalg import splu
 
 from normax.analysis import DOF_PER_NODE
 from normax.analysis import MemberForces
+from normax.analysis.element import DOF_PER_MEMBER
 from normax.analysis.element import REFERENCE_MARGIN
 from normax.analysis.element import SectionRigidity
 from normax.analysis.element import member_frame
@@ -129,34 +131,6 @@ def vertical_upward(
     turned = np.asarray(vectors)
 
     return np.stack([turned[:, 0], turned[:, 2], -turned[:, 1]], axis=1)
-
-
-def vertical_downward(
-    vectors: Float[np.ndarray, "rows 3"],
-) -> Float[np.ndarray, "rows 3"]:
-    """
-    The inverse of `vertical_upward`, for reading a solved answer back.
-
-    Parameters
-    ----------
-    vectors :
-        Positions, forces or moments, one row each, in PyNite's axes.
-
-    Returns
-    -------
-    turned :
-        The same quantities about this repository's vertical.
-
-    Notes
-    -----
-    A moment is a pseudovector, which under a reflection would not transform
-    like a force. `vertical_upward` is a rotation and so is this, which is why
-    one inverse serves both and why the handedness argument there was worth
-    making.
-    """
-    turned = np.asarray(vectors)
-
-    return np.stack([turned[:, 0], -turned[:, 2], turned[:, 1]], axis=1)
 
 
 def frame_model(
@@ -244,207 +218,6 @@ def _member_name(member: int) -> str:
     return f"member-{member}"
 
 
-def apply_loads(
-    model: FEModel3D,
-    loads: Float[np.ndarray, "nodes 3"],
-) -> None:
-    """
-    Register one load case on an assembled frame, and the combination reading it.
-
-    Parameters
-    ----------
-    model :
-        The assembled frame.
-    loads :
-        Force applied at every node, in newtons.
-
-    Notes
-    -----
-    A node carrying nothing is skipped rather than registered at zero, which
-    keeps the pattern the size of the loading rather than the size of the frame.
-    """
-    applied = np.asarray(loads)
-    directions = ("FX", "FY", "FZ")
-
-    for node in range(applied.shape[0]):
-        for axis, direction in enumerate(directions):
-            component = float(applied[node, axis])
-            if component != 0.0:
-                model.add_node_load(
-                    _node_name(node), direction, component, case=CASE_NAME
-                )
-
-    model.add_load_combo(COMBO_NAME, {CASE_NAME: 1.0})
-
-
-def _end_forces(
-    model: FEModel3D,
-    num_members: int,
-) -> Float[np.ndarray, "members 12"]:
-    """
-    The global end-force vector of every member, as PyNite reports it.
-
-    Parameters
-    ----------
-    model :
-        The solved frame.
-    num_members :
-        How many members the frame was built with.
-
-    Returns
-    -------
-    forces :
-        Twelve components per member, in PyNite's own axes, units and signs.
-
-    Raises
-    ------
-    RuntimeError
-        If a member segmented, which nodal loading does not do.
-
-    Notes
-    -----
-    **Global, not local.** The local vector would arrive resolved about axes
-    PyNite chose for itself, and those are neither this repository's convention
-    nor anything a second solver would reproduce. Read globally and projected
-    here, the components answer to one stated convention instead, and the
-    derivative of the reading needs the global element stiffness alone.
-    """
-    forces = np.empty((num_members, 12))
-
-    for member in range(num_members):
-        pieces = model.members[_member_name(member)].sub_members
-        if len(pieces) != 1:
-            raise RuntimeError(
-                f"member {member} segmented into {len(pieces)} pieces; this "
-                "reading holds only under nodal loading"
-            )
-        whole = next(iter(pieces.values()))
-        forces[member] = np.asarray(whole.F(COMBO_NAME)).ravel()
-
-    return forces
-
-
-def projected_forces(
-    xyz: Float[np.ndarray, "nodes 3"],
-    edges: Int[np.ndarray, "members 2"],
-    global_forces: Float[np.ndarray, "members 12"],
-) -> MemberForces:
-    """
-    Global end forces resolved onto the convention the check is stated in.
-
-    Parameters
-    ----------
-    xyz :
-        Position of every node, in this repository's axes and millimeters.
-    edges :
-        The two nodes every member spans.
-    global_forces :
-        Twelve global components per member, in newtons and newton meters.
-
-    Returns
-    -------
-    forces :
-        Axial force, both end moments, both shears and the torsion.
-
-    Notes
-    -----
-    Axial force and torsion are the components along the member axis and are
-    invariant: every convention agrees on them. The two bending components are
-    not — they are the transverse moment resolved onto `member_frame`'s pair,
-    and a solver that completed its own pair differently reports different
-    numbers for the same bending. Only the invariants of the pair are shared,
-    which is why the check reads those and not these.
-
-    **A shear pairs with the moment it differentiates**, so the shear reported
-    beside the bending about one transverse axis is the force along the other.
-    Reading the letters instead puts a real force in the wrong component.
-    """
-    positions = np.asarray(xyz)
-    spans = np.asarray(edges)
-    starts = positions[spans[:, 0]]
-    ends = positions[spans[:, 1]]
-    frames = np.asarray(jax.vmap(member_frame)(jnp.asarray(starts), jnp.asarray(ends)))
-
-    axis = frames[:, 0]
-    first = frames[:, 1]
-    second = frames[:, 2]
-
-    forces_at = [global_forces[:, columns] for columns in FORCE_COLUMNS]
-    moments_at = [global_forces[:, columns] for columns in MOMENT_COLUMNS]
-
-    # Tension is positive here and the first end's action points back along the axis.
-    axial = -np.einsum("mi,mi->m", forces_at[0], axis)
-    torsion = np.einsum("mi,mi->m", moments_at[0], axis)
-
-    bending_first = np.stack(
-        [np.einsum("mi,mi->m", m, first) for m in moments_at], axis=1
-    )
-    bending_second = np.stack(
-        [np.einsum("mi,mi->m", m, second) for m in moments_at], axis=1
-    )
-
-    return MemberForces(
-        axial_force=axial,
-        moment_major=to_newton_millimeters(bending_first * DIAGRAM_SIGN),
-        moment_minor=to_newton_millimeters(bending_second * DIAGRAM_SIGN),
-        shear_major=np.einsum("mi,mi->m", forces_at[0], second),
-        shear_minor=np.einsum("mi,mi->m", forces_at[0], first),
-        torsion_moment=to_newton_millimeters(torsion),
-    )
-
-
-def member_forces(
-    structure: Structure,
-    xyz: Float[np.ndarray, "nodes 3"],
-    sections: MemberSections,
-    loads: Float[np.ndarray, "nodes 3"],
-) -> MemberForces:
-    """
-    Internal forces of a space frame under one load case.
-
-    Parameters
-    ----------
-    structure :
-        The connectivity and the supported nodes.
-    xyz :
-        Position of every node, in millimeters.
-    sections :
-        The tube every member is analyzed as.
-    loads :
-        Force applied at every node, in newtons.
-
-    Returns
-    -------
-    forces :
-        Axial force, both end moments, both shears and the torsion, in the units
-        and signs the rest of the pipeline states.
-
-    Notes
-    -----
-    The axial force is taken at the first end and negated: nodal loading leaves
-    it constant along the span, and PyNite calls a bar in tension negative.
-    Moments are reported at both ends because nodal loading leaves them linear
-    in between, which is what makes the first row of EN 1993-1-1 Table B.3 exact
-    downstream rather than approximate.
-    """
-    edges = np.asarray(structure.edges)
-    model = _solved_frame(structure, xyz, sections, loads)
-
-    num_members = int(edges.shape[0])
-    solved = _end_forces(model, num_members)
-
-    turned = np.concatenate(
-        [
-            vertical_downward(solved[:, columns])
-            for columns in (*FORCE_COLUMNS, *MOMENT_COLUMNS)
-        ],
-        axis=1,
-    )
-    ordered = turned[:, [0, 1, 2, 6, 7, 8, 3, 4, 5, 9, 10, 11]]
-
-    return projected_forces(np.asarray(xyz), edges, ordered)
-
-
 def bending_resultant(
     moment_major: Float[np.ndarray, "members ends"],
     moment_minor: Float[np.ndarray, "members ends"],
@@ -476,43 +249,6 @@ def bending_resultant(
     check's decision and the check has a switch for it.
     """
     return np.hypot(np.asarray(moment_major), np.asarray(moment_minor))
-
-
-def stiffness_free(
-    model: FEModel3D,
-) -> tuple[Int[np.ndarray, "dofs_free"], csc_matrix]:
-    """
-    The free degrees of freedom of a solved frame, and the stiffness among them.
-
-    Parameters
-    ----------
-    model :
-        The solved frame.
-
-    Returns
-    -------
-    partitioned :
-        Indices of the free degrees of freedom, and the stiffness restricted to
-        them, sparse.
-
-    Notes
-    -----
-    A solved linear system is an implicit function, so differentiating
-    equilibrium gives the derivative of the displacement as another solve
-    against this same matrix. One factorization therefore serves every
-    parameter, which is what makes an exact rule cheaper than a perturbation of
-    each — and it is the solver's own matrix, so the rule differentiates the
-    model that was actually solved.
-
-    Sparse and left unfactorized: the caller decides how many right-hand sides
-    it has, and a factorization is worth reusing across all of them.
-    """
-    free, _, _ = _partition_D(model)
-    indices = np.asarray(free, dtype=np.int64).ravel()
-    stiffness = model.Ke(COMBO_NAME, log=False, check_stability=False, sparse=True)
-    restricted = csc_matrix(stiffness.tocsc()[indices][:, indices])
-
-    return indices, restricted
 
 
 class FrameProblem(NamedTuple):
@@ -598,6 +334,9 @@ class AdjointState(NamedTuple):
         Outer diameter of every member.
     moved :
         Solved displacement of every member's twelve degrees of freedom.
+    numbered :
+        Where each node's degrees of freedom sit, the solver renumbering its
+        own.
 
     Notes
     -----
@@ -615,6 +354,7 @@ class AdjointState(NamedTuple):
     ends: Float[Array, "members 3"]
     diameters: Float[Array, "members"]
     moved: Float[Array, "members dofs_member"]
+    numbered: Int[np.ndarray, "nodes"]
 
 
 class Jacobian(NamedTuple):
@@ -658,6 +398,9 @@ class Jacobian(NamedTuple):
 READING_AXIAL = 0
 READING_MAJOR = (1, 2)
 READING_MINOR = (3, 4)
+
+# How many of a member's actions the schema differentiates.
+READING_WIDTH = 5
 
 
 def member_rigidity(
@@ -739,6 +482,80 @@ def member_stiffness(
     return stiffness_global(first, second, rigidity)
 
 
+def member_actions(
+    start: Float[Array, "3"],
+    end: Float[Array, "3"],
+    diameter: Float[Array, ""],
+    displacement: Float[Array, "dofs_member"],
+    catalogue: TubeFamily,
+) -> Float[Array, "actions"]:
+    """
+    Everything the schema reports about one member, from what it depends on.
+
+    Parameters
+    ----------
+    start :
+        Position of the member's first end, in this repository's axes.
+    end :
+        Position of the member's second end, in this repository's axes.
+    diameter :
+        Outer diameter of the member.
+    displacement :
+        Solved displacement of both its ends, in the solver's axes.
+    catalogue :
+        The section family, whose ratio fixes the wall thickness.
+
+    Returns
+    -------
+    actions :
+        Axial force, both end moments about the first transverse axis, both
+        about the second, then the two shears and the torsion.
+
+    Notes
+    -----
+    **The forward pass and the derivative read the same function.** This
+    rebuilds the element stiffness, multiplies by the displacement, turns the
+    answer into this repository's axes and resolves it onto the stated
+    convention — and the adjoint differentiates its first five components. A
+    stage whose reported force came from one expression and whose slope came
+    from another would be free to disagree with itself; this cannot.
+
+    It is also what lets the foreign solver be asked only for displacements.
+    Reading its own per-member end forces means a Python loop over every
+    member; multiplying by a stiffness this repository already holds compiled
+    is the same arithmetic in one mapped pass.
+
+    The last three are diagnostics. Nothing in the check reads them, and the
+    schema refuses a cotangent on them, so their being differentiable here
+    costs nothing and states no claim.
+    """
+    stiffness = member_stiffness(start, end, diameter, catalogue)
+    acting = stiffness @ displacement
+    inverse = jnp.asarray(ROTATION).T
+
+    force = inverse @ acting[0:3]
+    moment_start = inverse @ acting[3:6]
+    moment_end = inverse @ acting[9:12]
+
+    frame = member_frame(start, end)
+    axial = -jnp.dot(force, frame[0])
+    torsion = jnp.dot(moment_start, frame[0])
+    ends = jnp.stack([moment_start, moment_end])
+    first = ends @ frame[1] * jnp.asarray(DIAGRAM_SIGN)
+    second = ends @ frame[2] * jnp.asarray(DIAGRAM_SIGN)
+    bending = to_newton_millimeters(jnp.concatenate([first, second]))
+
+    secondary = jnp.stack(
+        [
+            jnp.dot(force, frame[2]),
+            jnp.dot(force, frame[1]),
+            to_newton_millimeters(torsion),
+        ]
+    )
+
+    return jnp.concatenate([jnp.atleast_1d(axial), bending, secondary])
+
+
 def member_reading(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
@@ -747,7 +564,7 @@ def member_reading(
     catalogue: TubeFamily,
 ) -> Float[Array, "reading"]:
     """
-    What the check reads off one member, as a function of all it depends on.
+    The part of a member's actions the schema will differentiate.
 
     Parameters
     ----------
@@ -770,35 +587,15 @@ def member_reading(
 
     Notes
     -----
-    **This one function carries the entire explicit derivative.** It rebuilds
-    the element stiffness, multiplies by the displacement, turns the answer into
-    this repository's axes and resolves it onto the stated convention. Its
-    derivative in the first three arguments is every way a reading moves at
-    fixed displacement; its derivative in the fourth is what the implicit term
-    gets contracted with. Nothing about the element is differentiated by hand.
-
-    The result is flat rather than named because a Jacobian assembly slices it,
-    and one five-wide vector states that slicing in a single place.
+    The head of `member_actions`, so the slope and the reported value are
+    derivatives and values of one expression rather than of two that have to be
+    kept in agreement.
     """
-    stiffness = member_stiffness(start, end, diameter, catalogue)
-    acting = stiffness @ displacement
-    inverse = jnp.asarray(ROTATION).T
-
-    force = inverse @ acting[0:3]
-    moment_start = inverse @ acting[3:6]
-    moment_end = inverse @ acting[9:12]
-
-    frame = member_frame(start, end)
-    axial = -jnp.dot(force, frame[0])
-    ends = jnp.stack([moment_start, moment_end])
-    first = ends @ frame[1] * jnp.asarray(DIAGRAM_SIGN)
-    second = ends @ frame[2] * jnp.asarray(DIAGRAM_SIGN)
-    bending = to_newton_millimeters(jnp.concatenate([first, second]))
-    reading = jnp.concatenate([jnp.atleast_1d(axial), bending])
-
-    return reading
+    return member_actions(start, end, diameter, displacement, catalogue)[:READING_WIDTH]
 
 
+# Compiled once and reused: the element derivatives are a fixed program over a
+# fixed shape, and dispatching them uncompiled costs far more than running them.
 def refuse_unusable(
     xyz: Float[np.ndarray, "nodes 3"],
     sections: MemberSections,
@@ -883,63 +680,247 @@ def refuse_upright(
         )
 
 
-def _solved_frame(
-    structure: Structure,
-    xyz: Float[np.ndarray, "nodes 3"],
-    sections: MemberSections,
-    loads: Float[np.ndarray, "nodes 3"],
-) -> FEModel3D:
+# Compiled once and reused: these are fixed programs over fixed shapes, and
+# dispatching them uncompiled costs far more than running them.
+_STIFFNESS_SLOPES = jax.jit(
+    jax.vmap(jax.jacfwd(member_stiffness, argnums=(0, 1, 2)), in_axes=(0, 0, 0, None))
+)
+
+_READ_MEMBERS = jax.vmap(member_actions, in_axes=(0, 0, 0, 0, None))
+
+_READ_CASES = jax.jit(jax.vmap(_READ_MEMBERS, in_axes=(None, None, None, 0, None)))
+
+
+def _pull_one_reading(start, end, diameter, displacement, cotangent, catalogue):
     """
-    One assembled, loaded and solved frame.
+    One member's reading, pulled back onto everything it was read from.
+    """
+
+    def reading(*acting):
+        return member_reading(*acting, catalogue)
+
+    _, backward = jax.vjp(reading, start, end, diameter, displacement)
+
+    return backward(cotangent)
+
+
+_PULL_READINGS = jax.jit(jax.vmap(_pull_one_reading, in_axes=(0, 0, 0, 0, 0, None)))
+
+
+def prepared_frame(
+    problem: FrameProblem,
+    xyz: Float[np.ndarray, "nodes 3"],
+    diameters: Float[np.ndarray, "members"],
+) -> AdjointState:
+    """
+    Assemble the frame once and factorize it once, before any load is applied.
 
     Parameters
     ----------
-    structure :
-        The connectivity and the supported nodes.
+    problem :
+        The frame and its section family. Its loads are not read here.
     xyz :
         Position of every node, in this repository's axes and millimeters.
-    sections :
-        The tube every member is analyzed as.
-    loads :
-        Force applied at every node, in newtons.
+    diameters :
+        Outer diameter of every member.
 
     Returns
     -------
-    model :
-        The solved frame, in the solver's axes.
+    prepared :
+        The decomposed free stiffness and the per-member views a reading needs.
+
+    Raises
+    ------
+    RuntimeError
+        If a support is prescribed a displacement, which this solve assumes away.
 
     Notes
     -----
-    Shared so that the forward pass and the derivative solve one identical
-    model. A stage that built them apart could report a force and a slope that
-    belong to different structures, and nothing downstream would notice.
+    **The stiffness does not depend on the loading, so nothing here does
+    either.** The solver's own linear analysis knows this — it assembles once
+    and loops the combinations — but it solves each of them with a routine that
+    factorizes afresh every call, so an identical matrix is decomposed once per
+    load case. Holding the decomposition instead turns every case after the
+    first into a back-substitution.
+
+    Assembly, degree-of-freedom numbering and partitioning are all the solver's.
+    What is taken over is the arithmetic it repeats.
     """
+    structure = problem.structure
+    edges = np.asarray(structure.edges)
+    sections = problem.catalogue(jnp.asarray(np.asarray(diameters)))
+
+    refuse_unusable(xyz, sections)
+    refuse_upright(np.asarray(xyz), edges)
+
     upright = Structure(
         nodes=vertical_upward(np.asarray(xyz)),
-        edges=np.asarray(structure.edges),
+        edges=edges,
         supports=np.asarray(structure.supports),
     )
-    refuse_unusable(xyz, sections)
-    refuse_upright(np.asarray(xyz), np.asarray(structure.edges))
-
     model = frame_model(upright, upright.nodes, sections)
-    apply_loads(model, vertical_upward(np.asarray(loads)))
+    model.add_load_combo(COMBO_NAME, {CASE_NAME: 1.0})
+    _prepare_model(model)
 
-    # A singular factorization is a warning here and a finite garbage number
-    # downstream, so it is promoted before anything reads the answer.
+    free, _, held = _partition_D(model)
+    free = np.asarray(free, dtype=np.int64).ravel()
+    if not np.all(np.asarray(held) == 0.0):
+        raise RuntimeError(
+            "a support is prescribed a displacement; this solve assumes none"
+        )
+
+    stiffness = model.Ke(COMBO_NAME, log=False, check_stability=False, sparse=True)
+    restricted = csc_matrix(stiffness.tocsc()[free][:, free])
+
+    # A singular frame is a warning and a garbage number further down, so the
+    # decomposition is the place to refuse it.
     with warnings.catch_warnings():
         warnings.simplefilter("error", MatrixRankWarning)
         try:
-            model.analyze_linear(check_stability=False)
-        except MatrixRankWarning as singular:
+            decomposed = splu(restricted)
+        except (MatrixRankWarning, RuntimeError) as singular:
             raise RuntimeError(
                 "the frame is singular; the solve is unusable"
             ) from singular
 
-    if not np.all(np.isfinite(np.asarray(model.D(COMBO_NAME)))):
+    indexed = _member_dofs(model, edges)
+    positions = np.asarray(xyz)
+
+    return AdjointState(
+        displaced=np.zeros(len(model.nodes) * DOF_PER_NODE),
+        free=free,
+        factorized=decomposed,
+        indexed=indexed,
+        starts=jnp.asarray(positions[edges[:, 0]]),
+        ends=jnp.asarray(positions[edges[:, 1]]),
+        diameters=jnp.asarray(np.asarray(diameters)),
+        moved=jnp.zeros((edges.shape[0], DOF_PER_MEMBER)),
+        numbered=np.array(
+            [model.nodes[_node_name(node)].ID for node in range(len(model.nodes))]
+        ),
+    )
+
+
+def case_displacements(
+    prepared: AdjointState,
+    loads: Float[np.ndarray, "cases nodes 3"],
+) -> Float[np.ndarray, "cases dofs"]:
+    """
+    Solve every load case against the decomposition already held.
+
+    Parameters
+    ----------
+    prepared :
+        The assembled and factorized frame.
+    loads :
+        Force applied at every node, per load case, in newtons.
+
+    Returns
+    -------
+    displaced :
+        Every degree of freedom's displacement, per case, in the solver's axes.
+
+    Notes
+    -----
+    **The right-hand side is built here rather than asked for.** The solver
+    would answer it as a nodal load vector minus the fixed-end reactions of
+    every member — and under nodal loading those reactions are identically
+    zero, so most of that work produces a vector of zeros. What is applied is
+    what was passed in, scattered onto the degrees of freedom it acts on.
+
+    Supports are prescribed at zero, so their rows drop out and the solve is
+    over the free set alone.
+    """
+    applied = np.asarray(loads)
+    turned = np.stack([vertical_upward(case) for case in applied])
+    cases = turned.shape[0]
+
+    forcing = np.zeros((prepared.displaced.size, cases))
+    rows = (prepared.numbered[:, None] * DOF_PER_NODE + np.arange(3)).ravel()
+    for case in range(cases):
+        np.add.at(forcing[:, case], rows, turned[case].ravel())
+
+    solved = np.asarray(prepared.factorized.solve(forcing[prepared.free]))
+    if not np.all(np.isfinite(solved)):
         raise RuntimeError("the solved displacements are not finite")
 
-    return model
+    displaced = np.zeros((cases, prepared.displaced.size))
+    displaced[:, prepared.free] = np.asarray(solved).T
+
+    return displaced
+
+
+def member_forces(
+    problem: FrameProblem,
+    xyz: Float[np.ndarray, "nodes 3"],
+    diameters: Float[np.ndarray, "members"],
+    loads: Float[np.ndarray, "*cases nodes 3"],
+    prepared: AdjointState | None = None,
+) -> MemberForces:
+    """
+    Internal forces of a space frame, under one load case or several.
+
+    Parameters
+    ----------
+    problem :
+        The frame and its section family.
+    xyz :
+        Position of every node, in this repository's axes and millimeters.
+    diameters :
+        Outer diameter of every member.
+    loads :
+        Force applied at every node, in newtons, with or without a leading
+        load-case axis.
+    prepared :
+        An already assembled and factorized frame at this geometry and these
+        diameters, or None to prepare one.
+
+    Returns
+    -------
+    forces :
+        Axial force, both end moments, both shears and the torsion, carrying a
+        load-case axis exactly when the loading did.
+
+    Notes
+    -----
+    **Several load cases cost one assembly and one factorization.** They differ
+    only in their right-hand side, so the second and third are
+    back-substitutions against a decomposition the first already paid for.
+
+    The end forces are the element stiffness times the displacement, taken from
+    the element this repository states and holds equal to the solver's own,
+    rather than read back member by member through the solver's own loop. The
+    arithmetic is identical and it happens in one mapped pass.
+    """
+    applied = np.asarray(loads)
+    stacked = applied.ndim == 3
+    cases = applied if stacked else applied[None, ...]
+
+    if prepared is None:
+        prepared = prepared_frame(problem, xyz, diameters)
+    displaced = case_displacements(prepared, cases)
+    moved = jnp.asarray(displaced[:, prepared.indexed])
+
+    acting = np.asarray(
+        _READ_CASES(
+            prepared.starts,
+            prepared.ends,
+            prepared.diameters,
+            moved,
+            problem.catalogue,
+        )
+    )
+    if not stacked:
+        acting = acting[0]
+
+    return MemberForces(
+        axial_force=acting[..., READING_AXIAL],
+        moment_major=acting[..., READING_MAJOR[0] : READING_MAJOR[1] + 1],
+        moment_minor=acting[..., READING_MINOR[0] : READING_MINOR[1] + 1],
+        shear_major=acting[..., 5],
+        shear_minor=acting[..., 6],
+        torsion_moment=acting[..., 7],
+    )
 
 
 def _member_dofs(
@@ -981,9 +962,10 @@ def adjoint_state(
     problem: FrameProblem,
     xyz: Float[np.ndarray, "nodes 3"],
     diameters: Float[np.ndarray, "members"],
+    prepared: AdjointState | None = None,
 ) -> AdjointState:
     """
-    Solve once, factorize once, and gather what either derivative rule reads.
+    One solve, factorized once, with everything either derivative rule reads.
 
     Parameters
     ----------
@@ -993,6 +975,9 @@ def adjoint_state(
         Position of every node, in this repository's axes and millimeters.
     diameters :
         Outer diameter of every member.
+    prepared :
+        An already assembled and factorized frame at this geometry and these
+        diameters, or None to prepare one.
 
     Returns
     -------
@@ -1002,29 +987,17 @@ def adjoint_state(
 
     Notes
     -----
-    The solver's matrix and the solver's displacements, so whatever is
-    differentiated afterwards is a statement about the model that was solved.
-    Its nodes are renumbered internally, so a member's degrees of freedom are
-    read off the model rather than assumed from the order they were added in.
+    One load case, this being the derivative of one reading. The assembly and
+    the factorization are `prepared_frame`'s, so a rule and the forward pass it
+    belongs to differ only in what they do after the solve.
     """
-    structure = problem.structure
-    edges = np.asarray(structure.edges)
-    model = _solved_frame(structure, xyz, problem.catalogue(diameters), problem.loads)
+    if prepared is None:
+        prepared = prepared_frame(problem, xyz, diameters)
+    displaced = case_displacements(prepared, np.asarray(problem.loads)[None, ...])[0]
 
-    displaced = np.asarray(model.D(COMBO_NAME)).ravel()
-    free, restricted = stiffness_free(model)
-    indexed = _member_dofs(model, edges)
-    positions = np.asarray(xyz)
-
-    return AdjointState(
+    return prepared._replace(
         displaced=displaced,
-        free=free,
-        factorized=splu(restricted),
-        indexed=indexed,
-        starts=jnp.asarray(positions[edges[:, 0]]),
-        ends=jnp.asarray(positions[edges[:, 1]]),
-        diameters=jnp.asarray(np.asarray(diameters)),
-        moved=jnp.asarray(displaced[indexed]),
+        moved=jnp.asarray(displaced[prepared.indexed]),
     )
 
 
@@ -1055,17 +1028,11 @@ def _element_slopes(
     element-local, so the whole set is one mapped pass over the members rather
     than anything that touches the assembled matrix.
     """
-
-    def stiffness(start, end, diameter):
-        return member_stiffness(start, end, diameter, problem.catalogue)
-
-    shaped = (state.starts, state.ends, state.diameters)
-
-    return (
-        np.asarray(jax.vmap(jax.jacfwd(stiffness, 0))(*shaped)),
-        np.asarray(jax.vmap(jax.jacfwd(stiffness, 1))(*shaped)),
-        np.asarray(jax.vmap(jax.jacfwd(stiffness, 2))(*shaped)),
+    slopes = _STIFFNESS_SLOPES(
+        state.starts, state.ends, state.diameters, problem.catalogue
     )
+
+    return tuple(np.asarray(block) for block in slopes)
 
 
 def force_cotangents(
@@ -1073,6 +1040,7 @@ def force_cotangents(
     xyz: Float[np.ndarray, "nodes 3"],
     diameters: Float[np.ndarray, "members"],
     cotangent: ReadingCotangent,
+    prepared: AdjointState | None = None,
 ) -> Cotangents:
     """
     Pull a cotangent on the reported forces back onto the inputs.
@@ -1087,6 +1055,9 @@ def force_cotangents(
         Outer diameter of every member.
     cotangent :
         Cotangent on each reported quantity.
+    prepared :
+        An already assembled and factorized frame at this geometry and these
+        diameters, or None to prepare one.
 
     Returns
     -------
@@ -1106,7 +1077,7 @@ def force_cotangents(
     Nodal loads do not move with the geometry, so no load derivative enters and
     the adjoint load is the reading's alone.
     """
-    state = adjoint_state(problem, xyz, diameters)
+    state = adjoint_state(problem, xyz, diameters, prepared)
     edges = np.asarray(problem.structure.edges)
     nodes = int(np.asarray(xyz).shape[0])
 
@@ -1121,16 +1092,14 @@ def force_cotangents(
         axis=1,
     )
 
-    def pulled(start, end, diameter, displacement, sown):
-        def reading(*args):
-            return member_reading(*args, problem.catalogue)
-
-        _, backward = jax.vjp(reading, start, end, diameter, displacement)
-
-        return backward(sown)
-
-    over = (state.starts, state.ends, state.diameters, state.moved, seed)
-    by_start, by_end, by_diameter, by_displacement = jax.vmap(pulled)(*over)
+    by_start, by_end, by_diameter, by_displacement = _PULL_READINGS(
+        state.starts,
+        state.ends,
+        state.diameters,
+        state.moved,
+        seed,
+        problem.catalogue,
+    )
 
     # One adjoint load, gathered from every member that reads a displacement.
     acting = np.zeros(state.displaced.size)
