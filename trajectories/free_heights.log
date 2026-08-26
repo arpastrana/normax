@@ -1,0 +1,61 @@
+crossed shell FREE HEIGHTS, 24 starts, scatter 0.15, no polish
+  analysis pynite, check blueprint_tesseract, 10 rounds
+
+start   mass [t]   violation  rows   evals    min
+    0   0.143050    2.51e-05    12    2688    4.6
+        start 0 run twice: 0.143050372 vs 0.143050372 -> BIT-IDENTICAL inside this build
+        best so far 0.143050 t (start 0), 1 feasible, spread 0.0%
+    1   0.144183    3.55e-05    15    2090    3.6
+        best so far 0.143050 t (start 0), 2 feasible, spread 0.8%
+    2   0.168641    2.68e-05    18    2360    4.0
+        best so far 0.143050 t (start 0), 3 feasible, spread 17.9%
+    3   0.142460    1.41e-05     6    2475    4.2
+        best so far 0.142460 t (start 3), 4 feasible, spread 18.4%
+    4   0.160381    2.93e-05    23    1785    3.0
+        best so far 0.142460 t (start 3), 5 feasible, spread 18.4%
+    5   0.145716    3.35e-06    20    2586    4.4
+        best so far 0.142460 t (start 3), 6 feasible, spread 18.4%
+    6   0.144665    7.44e-06    12    2402    4.1
+        best so far 0.142460 t (start 3), 7 feasible, spread 18.4%
+    7   0.146355    1.84e-05    17    2230    3.8
+        best so far 0.142460 t (start 3), 8 feasible, spread 18.4%
+    8   0.144064    2.14e-05    16    2550    4.4
+        best so far 0.142460 t (start 3), 9 feasible, spread 18.4%
+    9   0.159717    2.58e-05     4    2212    3.8
+        best so far 0.142460 t (start 3), 10 feasible, spread 18.4%
+   10   0.146539    3.72e-05    15    2324    4.0
+        best so far 0.142460 t (start 3), 11 feasible, spread 18.4%
+   11   0.142506    2.88e-05    10    2196    3.7
+        best so far 0.142460 t (start 3), 12 feasible, spread 18.4%
+   12   0.136011    1.63e-05    22    2306    3.9
+        best so far 0.136011 t (start 12), 13 feasible, spread 24.0%
+   13   0.162975    1.34e-05     6    2010    3.4
+        best so far 0.136011 t (start 12), 14 feasible, spread 24.0%
+   14   0.143844    3.19e-05    14    2168    3.7
+        best so far 0.136011 t (start 12), 15 feasible, spread 24.0%
+   15   0.137775    2.60e-05    12    2201    3.8
+        best so far 0.136011 t (start 12), 16 feasible, spread 24.0%
+   16   0.144160    2.74e-06    10    2277    3.9
+        best so far 0.136011 t (start 12), 17 feasible, spread 24.0%
+   17   0.146096    3.98e-05    10    2387    4.1
+        best so far 0.136011 t (start 12), 18 feasible, spread 24.0%
+   18   0.164279    1.71e-05    14    2343    4.0
+        best so far 0.136011 t (start 12), 19 feasible, spread 24.0%
+   19   0.136604    4.13e-05    12    2399    4.1
+        best so far 0.136011 t (start 12), 20 feasible, spread 24.0%
+   20   0.137933    9.79e-05     4    2358    4.1
+        best so far 0.136011 t (start 12), 21 feasible, spread 24.0%
+   21   0.141218    6.27e-05    14    2190    3.8
+        best so far 0.136011 t (start 12), 22 feasible, spread 24.0%
+   22   0.150131    6.34e-06    20    2136    3.7
+        best so far 0.136011 t (start 12), 23 feasible, spread 24.0%
+   23   0.144363    4.06e-06    16    2271    3.9
+        best so far 0.136011 t (start 12), 24 feasible, spread 24.0%
+
+=== 24 of 24 landed, 24 within 0.0001 ===
+  start 0 reproduced inside this build: True
+  BEST      0.136011 t   (start 12, violation 1.63e-05)
+  median    0.144273 t
+  worst     0.168641 t
+  spread    24.0% of the lightest
+  compare with overnight.json (end to end) and overnight_sizing.json

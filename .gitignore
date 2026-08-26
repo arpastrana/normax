@@ -33,6 +33,10 @@ artifacts/
 # than a rerun. Reproducible from the run description that names them.
 designs/
 
+# Descent paths: two megabytes of binary, nine minutes to regenerate from a
+# fixed seed, and proven to reproduce exactly. The landings beside them are kept.
+trajectories/*.npz
+
 # Viewer state polyscope writes beside wherever it ran.
 .polyscope.ini
 imgui.ini
