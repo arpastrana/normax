@@ -9,11 +9,12 @@ COMPILATION_CACHE.mkdir(exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
 
-# TEMPORARY, until smax and ec3x are published. None of the three is on PyPI
-# yet, so all sit in the "pipeline" dependency group and CI installs "dev"
-# alone. Delete this block and move them into the project dependencies once
-# they are public.
-PIPELINE_PACKAGES = ("jax_fdm", "smax", "ec3x")
+# TEMPORARY, until smax and ec3x are gone. Neither is on PyPI, both are pinned
+# to a local path in the "local-dev" group, and CI installs "dev" alone. They
+# are JAX-native, which is what makes them oracles rather than backends, and
+# the plan is to delete them rather than publish them. Delete this block with
+# them.
+PIPELINE_PACKAGES = ("smax", "ec3x")
 
 # A test importing any of those packages, directly or through
 # normax.form_finding, normax.analysis, normax.sizing.ec3 or the backends,
