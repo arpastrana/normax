@@ -130,7 +130,6 @@ def test_two_solvers_demand_the_same_diameters(canopy, family):
     # The regression this file exists for. One traced, one not; one vertical on
     # the third axis, one on the second; and the sizes must not know.
     diameters = jnp.full((canopy.num_edges,), SEED_DIAMETER)
-    sections = family(diameters)
     loads = np.zeros_like(np.asarray(canopy.nodes))
     loads[4, 2] = -6.0e4
     loads[4, 0] = 2.0e4
@@ -138,7 +137,10 @@ def test_two_solvers_demand_the_same_diameters(canopy, family):
     traced = SmaxAnalyzer(canopy, family(SEED_DIAMETER))(
         canopy.nodes, diameters, jnp.asarray(loads)[None, ...]
     )
-    foreign = pynite.member_forces(canopy, np.asarray(canopy.nodes), sections, loads)
+    problem = pynite.FrameProblem(structure=canopy, catalogue=family, loads=loads)
+    foreign = pynite.member_forces(
+        problem, np.asarray(canopy.nodes), np.asarray(diameters), loads
+    )
 
     axial = np.asarray(traced.axial_force)[0]
     scale = max(float(np.max(np.abs(axial))), 1.0)

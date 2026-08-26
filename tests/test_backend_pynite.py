@@ -220,8 +220,11 @@ def test_the_adjoint_agrees_with_a_traced_solver(
     diameters = jnp.asarray(canopy_diameters)
     traced = jax.grad(traced_loss, argnums=(0, 1))(canopy.nodes, diameters)
 
+    problem = pynite.FrameProblem(
+        structure=canopy, catalogue=family, loads=canopy_loads
+    )
     forces = pynite.member_forces(
-        canopy, np.asarray(canopy.nodes), family(diameters), canopy_loads
+        problem, np.asarray(canopy.nodes), canopy_diameters, canopy_loads
     )
     problem = pynite.FrameProblem(
         structure=canopy, catalogue=family, loads=canopy_loads
@@ -271,9 +274,7 @@ def test_the_adjoint_survives_a_central_difference(
     )
 
     def reported(xyz):
-        forces = pynite.member_forces(
-            canopy, xyz, family(jnp.asarray(canopy_diameters)), canopy_loads
-        )
+        forces = pynite.member_forces(problem, xyz, canopy_diameters, canopy_loads)
 
         return np.concatenate(
             [
@@ -331,10 +332,13 @@ def test_the_gradient_survives_the_boundary(
 def test_a_section_of_no_area_is_refused(canopy, canopy_loads, family):
     # The solver validates none of this and would answer about the singular
     # model it assembled instead.
-    hollow = family(jnp.zeros((canopy.num_edges,)))
-
     with pytest.raises(ValueError, match="not positive"):
-        pynite.member_forces(canopy, np.asarray(canopy.nodes), hollow, canopy_loads)
+        pynite.member_forces(
+            pynite.FrameProblem(structure=canopy, catalogue=family, loads=canopy_loads),
+            np.asarray(canopy.nodes),
+            np.zeros(canopy.num_edges),
+            canopy_loads,
+        )
 
 
 def test_a_vertical_member_is_refused(family):
@@ -347,7 +351,12 @@ def test_a_vertical_member_is_refused(family):
     loads[2, 2] = -1.0e4
 
     with pytest.raises(ValueError, match="vertical"):
-        pynite.member_forces(mast, nodes, family(jnp.full((2,), SEED_DIAMETER)), loads)
+        pynite.member_forces(
+            pynite.FrameProblem(structure=mast, catalogue=family, loads=loads),
+            nodes,
+            np.full(2, SEED_DIAMETER),
+            loads,
+        )
 
 
 def test_the_reverse_rule_agrees_with_the_dense_one(
@@ -385,3 +394,99 @@ def test_the_reverse_rule_agrees_with_the_dense_one(
 
     assert relative(cheap.xyz, by_node) < TOLERANCE_ELEMENT
     assert relative(cheap.diameter, by_member) < TOLERANCE_ELEMENT
+
+
+def test_several_load_cases_cross_together(
+    canopy, canopy_loads, canopy_diameters, family
+):
+    # The backend remembers one assembled and factorized frame between endpoint
+    # calls. Every load case in one gradient shares it, and the adjoints run
+    # after all the forwards — so a cache keyed on anything the loads touch, or
+    # sized for one call rather than one frame, would answer the second case
+    # with the first case's solve. Two cases that differ, differentiated
+    # together, is what catches that.
+    sideways = np.zeros_like(canopy_loads)
+    sideways[4] = (-4.0e4, 1.5e4, -1.0e4)
+    stacked = jnp.asarray(np.stack([canopy_loads, sideways, 0.4 * canopy_loads]))
+    diameters = jnp.asarray(canopy_diameters)
+
+    def loss(analyzer, xyz, sizes):
+        forces = analyzer(xyz, sizes, stacked)
+        weighted = jnp.arange(1, forces.axial_force.shape[0] + 1)[:, None]
+        axial = jnp.sum(weighted * (forces.axial_force / SCALE_FORCE) ** 2)
+        major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
+        minor = jnp.sum((forces.moment_minor / SCALE_MOMENT) ** 2)
+
+        return axial + major + minor
+
+    with analysis_backend("pynite"):
+        chain = local_chain()
+        crossed = TesseractAnalyzer(canopy, chain.analysis, family, None)
+        served = crossed(canopy.nodes, diameters, stacked)
+        foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
+            canopy.nodes, diameters
+        )
+
+    traced = SmaxAnalyzer(canopy, family(SEED_DIAMETER))
+    expected = traced(canopy.nodes, diameters, stacked)
+    reference = jax.grad(lambda x, d: loss(traced, x, d), argnums=(0, 1))(
+        canopy.nodes, diameters
+    )
+
+    # The three cases must stay distinct, or a cache has served one for another.
+    spread = np.asarray(served.axial_force)
+    assert relative(spread[0], spread[1]) > 0.1
+    assert relative(spread[0], spread[2]) > 0.1
+
+    assert relative(served.axial_force, expected.axial_force) < TOLERANCE_GRADIENT
+    assert relative(served.moment_major, expected.moment_major) < TOLERANCE_GRADIENT
+    assert relative(foreign[0], reference[0]) < TOLERANCE_GRADIENT
+    assert relative(foreign[1], reference[1]) < TOLERANCE_GRADIENT
+
+
+def test_a_second_frame_is_not_answered_by_the_first(canopy, canopy_loads, family):
+    # Two different geometries interleaved in one process. The fingerprint has
+    # to tell them apart, and the second must not be served the first's
+    # factorization.
+    moved = np.asarray(canopy.nodes).copy()
+    moved[4, 2] += 900.0
+    shifted = Structure(
+        nodes=moved,
+        edges=np.asarray(canopy.edges),
+        supports=np.asarray(canopy.supports),
+    )
+    diameters = np.full(canopy.num_edges, SEED_DIAMETER)
+
+    first = pynite.FrameProblem(structure=canopy, catalogue=family, loads=canopy_loads)
+    second = pynite.FrameProblem(
+        structure=shifted, catalogue=family, loads=canopy_loads
+    )
+
+    with analysis_backend("pynite"):
+        chain = local_chain()
+        here = TesseractAnalyzer(canopy, chain.analysis, family, None)
+        there = TesseractAnalyzer(shifted, chain.analysis, family, None)
+        sizes = jnp.asarray(diameters)
+        stacked = jnp.asarray(canopy_loads)[None, ...]
+        served_here = here(canopy.nodes, sizes, stacked)
+        served_there = there(shifted.nodes, sizes, stacked)
+        served_again = here(canopy.nodes, sizes, stacked)
+
+    direct_here = pynite.member_forces(
+        first, np.asarray(canopy.nodes), diameters, canopy_loads
+    )
+    direct_there = pynite.member_forces(second, moved, diameters, canopy_loads)
+
+    assert (
+        relative(served_here.axial_force[0], direct_here.axial_force)
+        < TOLERANCE_GRADIENT
+    )
+    assert (
+        relative(served_there.axial_force[0], direct_there.axial_force)
+        < TOLERANCE_GRADIENT
+    )
+    assert (
+        relative(served_again.axial_force[0], direct_here.axial_force)
+        < TOLERANCE_GRADIENT
+    )
+    assert relative(served_here.axial_force[0], served_there.axial_force[0]) > 0.01
