@@ -63,7 +63,7 @@ from normax.reporting import ToleranceCheck
 from normax.reporting import checks_passed
 from normax.sizing import build_section_family
 from normax.structures import Structure
-from normax.structures import build_diagrid_3d
+from normax.structures import build_gridshell_3d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import analysis_backend
 from normax.tesseract import local_chain
@@ -174,18 +174,20 @@ def canopy_sample() -> FrameSample:
 
 def shell_sample() -> FrameSample:
     """
-    The diagrid cap the cost is priced on.
+    The gridshell cap the cost is priced on, as the acts build it.
 
     Returns
     -------
     sample :
         The structure, its diameters and its loading.
     """
-    structure = build_diagrid_3d(
-        num_rings=SHELL_RINGS,
-        num_spokes=SHELL_SPOKES,
-        radius=SHELL_RADIUS,
-        rise=SHELL_RISE,
+    structure = build_gridshell_3d(
+        SHELL_RINGS,
+        SHELL_SPOKES,
+        SHELL_RADIUS,
+        SHELL_RISE,
+        False,
+        False,
     )
     nodes = np.asarray(structure.nodes)
     loads = np.zeros_like(nodes)
@@ -416,11 +418,11 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
         structure.nodes, diameters
     )
 
-    forces = pynite.member_forces(
-        structure, np.asarray(structure.nodes), family(diameters), sample.loads
-    )
     problem = pynite.FrameProblem(
         structure=structure, catalogue=family, loads=sample.loads
+    )
+    forces = pynite.member_forces(
+        problem, np.asarray(structure.nodes), sample.diameters, sample.loads
     )
     jacobian = pynite.force_jacobian(
         problem, np.asarray(structure.nodes), sample.diameters
@@ -493,16 +495,16 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
     nodes = np.asarray(structure.nodes)
     members = structure.num_edges
     width = nodes.shape[0] * 3 + members
-
-    start = time.perf_counter()
-    pynite.member_forces(
-        structure, nodes, family(jnp.asarray(sample.diameters)), sample.loads
-    )
-    forward = time.perf_counter() - start
-
     problem = pynite.FrameProblem(
         structure=structure, catalogue=family, loads=sample.loads
     )
+
+    # Warmed first: the first call through either compiles, and a cost table
+    # that reported a compilation would be measuring the wrong thing.
+    pynite.member_forces(problem, nodes, sample.diameters, sample.loads)
+    start = time.perf_counter()
+    pynite.member_forces(problem, nodes, sample.diameters, sample.loads)
+    forward = time.perf_counter() - start
 
     start = time.perf_counter()
     pynite.force_jacobian(problem, nodes, sample.diameters)
@@ -511,6 +513,12 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
     start = time.perf_counter()
     pynite.force_jacobian(problem, nodes, sample.diameters)
     warm = time.perf_counter() - start
+
+    stacked = np.stack([sample.loads, 0.6 * sample.loads, 0.4 * sample.loads])
+    pynite.member_forces(problem, nodes, sample.diameters, stacked)
+    start = time.perf_counter()
+    pynite.member_forces(problem, nodes, sample.diameters, stacked)
+    together = time.perf_counter() - start
 
     seed = pynite.ReadingCotangent(
         axial_force=np.ones(members),
@@ -540,6 +548,7 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
     )
     rows = [
         ["one forward solve", forward, ""],
+        ["three load cases, one call", together, f"{together / forward:.2f}x"],
         ["exact jacobian, first call", cold, "compiles"],
         ["exact jacobian, warm", warm, "1x"],
         ["one reverse-mode gradient", adjoint, f"{adjoint / warm:.2f}x"],
