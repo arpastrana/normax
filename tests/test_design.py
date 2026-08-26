@@ -1,32 +1,45 @@
-from typing import NamedTuple
-
-import equinox as eqx
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis.smax import SmaxAnalyzer
+from normax.design import DesignConstraints
 from normax.design import DesignParameters
+from normax.design import DesignProblem
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
-from normax.design import diameter_envelope
-from normax.design import optimize_staggered
+from normax.design import constraint_rows
+from normax.design import coordinate_count
+from normax.design import design_maps
+from normax.design import envelope_diameters
+from normax.design import expand_variables
+from normax.design import fold_variables
+from normax.design import initial_variables
+from normax.design import member_densities
+from normax.design import member_mass
+from normax.design import optimize_design
+from normax.design import read_coordinates
+from normax.design import read_design
+from normax.design import unfold_diameters
+from normax.design import variable_bounds
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import equilibrium_graph
 from normax.form_finding import equilibrium_state
-from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import create_loads_half_span
-from normax.loads import create_loads_uniform
-from normax.loads import select_load_case
+from normax.form_finding import free_nodes
+from normax.form_finding import held_plan_basis
+from normax.loads import assemble_load_cases
+from normax.loads import load_half_span
+from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.optimization import SearchResult
+from normax.optimization import AugmentedBudget
 from normax.sections import TubeFamily
-from normax.sizing import Ec3Sizer
-from normax.sizing import build_section_family
-from normax.sizing import design_actions
+from normax.sections import build_section_family
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
+from normax.structures import build_warren_2d
+from normax.symmetry import SignGuard
+from normax.symmetry import member_spread
+from normax.symmetry import permuted_members
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
 # millimeters and newtons.
@@ -38,25 +51,12 @@ NUM_EDGES = 10
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
-# Sharpness of the envelope in the several-load-case tests.
-SHARPNESS = 50.0
-
-# Relative step at which the central difference plateaus, and the agreement
-# measured there, scaled by the largest component of the gradient. Three load
-# cases make the mass longer to accumulate than one, so cancellation dominates
-# sooner and the plateau sits at a larger step than a single case wants.
-STEP = 1e-4
-TOLERANCE_GRADIENT = 1e-7
-
-# Bounds wide enough that a descent is not pinned by them, and what it may spend.
+# What the arch's descent is held to beside the check.
+FLOOR = 25.0
 BOUNDS = (-500.0, -1.0)
-STAGGERED_ITERATIONS = 10
 
-# Largest fractional movement in a diameter a settled coupling may still show.
-TOLERANCE_SETTLING = 1e-6
-
-# Below this, two masses of the same design disagree only by round-off.
-TOLERANCE_ROUNDOFF = 1e-9
+# Invariant 6.5 of CLAUDE.md, read at the enveloped start.
+TOLERANCE_UTILIZATION = 1e-9
 
 
 @pytest.fixture(scope="module")
@@ -74,23 +74,29 @@ def structure():
     return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
 
 
-def funicular(structure):
-    """
-    The uniform load case the arch is form-found under.
-    """
-    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+@pytest.fixture(scope="module")
+def one_case(structure):
+    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
 
 
 @pytest.fixture(scope="module")
-def force_densities(structure):
-    """Force densities reaching the target rise, so the arch is the same one."""
-    graph = equilibrium_graph(structure)
-    trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(
-        trial, structure.nodes[graph.indices_fixed], graph, funicular(structure)
-    )
+def three_cases(structure):
+    cases = [
+        load_uniform(structure, TOTAL_LOAD),
+        load_half_span(structure, TOTAL_LOAD, factor=0.25),
+        load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
+    ]
 
-    return trial * jnp.max(state.xyz[:, 2]) / RISE
+    return assemble_load_cases(cases)
+
+
+@pytest.fixture(scope="module")
+def force_densities(structure, one_case):
+    """Force densities reaching the target rise, so the arch is the same one."""
+    trial = jnp.full(NUM_EDGES, -1.0)
+    shape = FdmFormFinder(structure)(trial, one_case.formfinding)
+
+    return trial * jnp.max(shape.xyz[:, 2]) / RISE
 
 
 @pytest.fixture(scope="module")
@@ -107,86 +113,59 @@ def params(force_densities):
     return DesignParameters(force_densities, jnp.full(NUM_EDGES, SEED))
 
 
-def mass_objective(pipeline, loads):
-    """
-    The enveloped mass of a design, and the design that was weighed.
-    """
+@pytest.fixture(scope="module")
+def problem(structure, pipeline, three_cases):
+    constraints = DesignConstraints(FLOOR, 0.0, None, None, None, BOUNDS)
 
-    def objective(params):
-        design = pipeline(params, loads)
-        sized = design_envelope(design, SHARPNESS)
-
-        return compute_mass(sized), sized
-
-    return objective
+    return DesignProblem(structure, pipeline, three_cases, None, None, constraints)
 
 
-class StaggeredRun(NamedTuple):
-    """
-    One staggered search, and how many times it traced its objective.
-    """
-
-    found: SearchResult
-    traces: int
+# --------------------------------------------------------------------------- #
+# The Warren problem, where the two linear maps are not the identity
+# --------------------------------------------------------------------------- #
+WARREN_BAYS = 8
 
 
-def round_seams(trajectory):
-    """
-    Where one round hands over to the next, which is a repeated iterate.
+def warren_mirror():
+    bottom = WARREN_BAYS - np.arange(WARREN_BAYS + 1)
+    top = 2 * WARREN_BAYS - np.arange(WARREN_BAYS)
 
-    A search records its starting point before it steps, so a warm-started round
-    repeats the row its predecessor ended on. That is the only mark of a round
-    boundary the concatenated trajectory carries.
-    """
-    return [
-        index
-        for index in range(len(trajectory.q) - 1)
-        if jnp.array_equal(trajectory.q[index], trajectory.q[index + 1])
-    ]
+    return np.concatenate([bottom, top])
 
 
 @pytest.fixture(scope="module")
-def one_case(structure):
-    applied = funicular(structure)
-
-    return load_cases_of([applied])
+def warren():
+    return build_warren_2d(num_bays=WARREN_BAYS, span=SPAN, depth=1_200.0)
 
 
 @pytest.fixture(scope="module")
-def three_cases(structure):
-    load = TOTAL_LOAD / (NUM_EDGES - 1)
-    cases = [
-        create_loads_uniform(structure, load),
-        create_loads_half_span(structure, load, factor=0.25),
-        create_loads_half_span(structure, load, factor=0.25, mirrored=True),
-    ]
-
-    return load_cases_of(cases)
-
-
-@pytest.fixture(scope="module")
-def staggered(pipeline, params, three_cases):
-    """One staggered search, counting the traces so every test shares them."""
-    traces = []
-    weighed = mass_objective(pipeline, three_cases)
-
-    def counted(design_params):
-        traces.append(1)
-
-        return weighed(design_params)
-
-    found = optimize_staggered(
-        counted,
-        params,
-        bounds=BOUNDS,
-        iterations=STAGGERED_ITERATIONS,
+def warren_problem(warren, family):
+    blocks = StructuralDesignPipeline(
+        FdmFormFinder(warren),
+        SmaxAnalyzer(warren, family(SEED)),
+        Ec3Sizer(warren, family),
     )
+    loads = assemble_load_cases([load_uniform(warren, TOTAL_LOAD)])
+    basis = held_plan_basis(warren, warren_mirror(), pivoted=True)
+    spread = member_spread(warren, (warren_mirror(),))
+    constraints = DesignConstraints(FLOOR, 0.0, None, None, None, None)
 
-    return StaggeredRun(found, len(traces))
+    return DesignProblem(warren, blocks, loads, basis, spread, constraints)
 
 
-def test_sizer_reads_its_class_off_its_family(structure, grade):
-    """The class is derived from the family and never accepted beside it."""
+@pytest.fixture(scope="module")
+def warren_q(warren_problem):
+    """A density vector inside the held-plan span, negative throughout."""
+    basis = warren_problem.basis
+    xi = -1.0 - np.linspace(0.0, 1.0, basis.width)
+
+    return np.asarray(basis.densities(jnp.asarray(xi)))
+
+
+# --------------------------------------------------------------------------- #
+# The sizer block is built from its family alone
+# --------------------------------------------------------------------------- #
+def test_the_sizer_reads_its_class_off_its_family(structure, grade):
     for section_class in (1, 2, 3):
         family = build_section_family(grade, section_class)
         sizer = Ec3Sizer(structure, family)
@@ -194,14 +173,17 @@ def test_sizer_reads_its_class_off_its_family(structure, grade):
         assert sizer.section_class == section_class
 
 
-def test_sizer_refuses_a_class_four_family(structure, grade):
-    """A family too slender to be checked by these clauses is refused at build."""
+def test_the_sizer_refuses_a_class_four_family(structure, grade):
     with pytest.raises(ValueError):
         Ec3Sizer(structure, TubeFamily(200.0, grade))
 
 
-def test_form_finder_matches_the_free_function(structure, force_densities, one_case):
-    """The block wraps the solve and changes nothing about it."""
+# --------------------------------------------------------------------------- #
+# What the composed blocks do
+# --------------------------------------------------------------------------- #
+def test_the_form_finder_matches_the_free_function(
+    structure, force_densities, one_case
+):
     graph = equilibrium_graph(structure)
     state = equilibrium_state(
         force_densities,
@@ -215,9 +197,8 @@ def test_form_finder_matches_the_free_function(structure, force_densities, one_c
     assert jnp.array_equal(shape.lengths, state.lengths[:, 0])
 
 
-def test_analyzer_stacks_one_load_case_per_row(pipeline, params, three_cases):
-    """Each row of the stacked forces is the analysis of the matching case."""
-    shape = pipeline.formfinder(params.force_densities, three_cases.formfinding)
+def test_the_analyzer_stacks_one_load_case_per_row(pipeline, params, three_cases):
+    shape = pipeline.formfinder(params.coordinates, three_cases.formfinding)
     forces = pipeline.analyzer(shape.xyz, params.diameters, three_cases.analysis)
 
     assert forces.axial_force.shape == (3, NUM_EDGES)
@@ -231,42 +212,6 @@ def test_analyzer_stacks_one_load_case_per_row(pipeline, params, three_cases):
         assert jnp.array_equal(alone.moment_major[0], forces.moment_major[load_case])
 
 
-def test_repeating_a_load_case_changes_nothing(pipeline, params, one_case):
-    # A case listed twice is the same structure asked the same question twice,
-    # so every field has to come back identical rather than merely close. Taken
-    # at the true largest, since a smooth envelope over two equal sizes is
-    # deliberately above both of them.
-    once = pipeline(params, one_case)
-    twice = pipeline(params, load_cases_of([one_case.analysis[0]] * 2))
-
-    demanded_once = once.sizes.sections.diameter
-    demanded_twice = twice.sizes.sections.diameter
-
-    assert jnp.array_equal(demanded_twice[0], demanded_once[0])
-    assert jnp.array_equal(demanded_twice[1], demanded_once[0])
-    assert jnp.array_equal(
-        design_envelope(twice).sizes.sections.diameter,
-        design_envelope(once).sizes.sections.diameter,
-    )
-    assert compute_mass(design_envelope(twice)) == compute_mass(design_envelope(once))
-
-
-def test_a_bare_load_array_is_the_assembled_single_case(pipeline, params, one_case):
-    # A structure shaped and checked by one case needs no container to say
-    # which case shapes it, so the pipeline promotes the bare array to exactly
-    # what assemble_load_cases builds — identical to the leaf, not merely close.
-    assembled = pipeline(params, one_case)
-    bare = pipeline(params, one_case.formfinding)
-
-    assert eqx.tree_equal(bare, assembled)
-
-
-def test_a_stacked_bare_array_is_refused(pipeline, params, three_cases):
-    # A raw stack cannot say which of its cases the shape answers to.
-    with pytest.raises(ValueError, match="one bare load case"):
-        pipeline(params, three_cases.analysis)
-
-
 def test_a_geometry_is_form_found_once_for_every_load_case(
     pipeline, params, one_case, three_cases
 ):
@@ -276,257 +221,287 @@ def test_a_geometry_is_form_found_once_for_every_load_case(
     several = pipeline(params, three_cases)
 
     assert jnp.array_equal(several.shape.xyz, single.shape.xyz)
-    # The lengths are also what the check buckles every member over.
     assert jnp.array_equal(several.shape.lengths, single.shape.lengths)
 
 
-def test_the_largest_is_the_default_and_the_envelope_bounds_it(
-    pipeline, params, three_cases
-):
-    """The envelope never understates the size any load case demands."""
-    design = pipeline(params, three_cases)
-    largest = design_envelope(design)
-    enveloped = design_envelope(design, SHARPNESS)
+def test_repeating_a_load_case_repeats_its_utilization_row(pipeline, params, one_case):
+    # Bit-equal within one call; the single-case call batches its solve
+    # differently, so against it the rows agree only to round-off.
+    once = pipeline(params, one_case)
+    twice = pipeline(params, assemble_load_cases([one_case.analysis[0]] * 2))
 
+    assert jnp.array_equal(twice.sizes.utilization[0], twice.sizes.utilization[1])
+    assert np.allclose(
+        np.asarray(twice.sizes.utilization[0]),
+        np.asarray(once.sizes.utilization[0]),
+        rtol=1e-12,
+    )
+
+
+def test_the_pipeline_checks_the_diameters_it_was_given(pipeline, params, three_cases):
+    # The pipeline no longer sizes: the sections are the family at the given
+    # diameters, and the utilization is the check read at them.
+    design = pipeline(params, three_cases)
+    expected = pipeline.sizer.compute_utilization(
+        params.diameters, design.forces, design.shape.lengths
+    )
+
+    assert jnp.array_equal(design.sizes.sections.diameter, params.diameters)
     assert jnp.array_equal(
-        largest.sizes.sections.diameter,
-        jnp.max(design.sizes.sections.diameter, axis=0),
+        design.sizes.sections.thickness,
+        pipeline.sizer.family(params.diameters).thickness,
     )
-    assert jnp.all(enveloped.sizes.sections.diameter >= largest.sizes.sections.diameter)
-    assert compute_mass(enveloped) >= compute_mass(largest)
+    assert jnp.array_equal(design.sizes.utilization, expected)
 
 
-def test_the_envelope_covers_every_load_case():
-    # Exactly the largest in the limit, so the comparison carries the rounding
-    # of the logarithm and its inverse.
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    largest = jnp.max(load_cases, axis=0)
+def test_the_utilization_falls_as_the_diameters_grow(pipeline, params, three_cases):
+    lean = pipeline(params, three_cases)
+    fattened = DesignParameters(params.coordinates, params.diameters * 1.2)
+    stout = pipeline(fattened, three_cases)
 
-    assert jnp.all(diameter_envelope(load_cases, 20.0) >= largest * (1.0 - 1e-12))
-
-
-def test_the_envelope_approaches_the_largest_load_case():
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    sharp = diameter_envelope(load_cases, 2000.0)
-
-    assert np.asarray(sharp) == pytest.approx(
-        np.asarray(jnp.max(load_cases, axis=0)), rel=1e-3
-    )
-
-
-def test_the_envelope_respects_its_bound():
-    # In the logarithm the smooth maximum exceeds the true one by at most the
-    # logarithm of the number of cases over the sharpness.
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    beta = 20.0
-    largest = jnp.max(load_cases, axis=0)
-    slack = jnp.log(diameter_envelope(load_cases, beta)) - jnp.log(largest)
-
-    assert jnp.all(slack >= 0.0)
-    assert jnp.all(slack <= jnp.log(load_cases.shape[0]) / beta + 1e-12)
-
-
-def test_the_envelope_tightens_as_it_sharpens():
-    # Past a sharpness of about fifty the smoothing is already below the
-    # precision of the numbers, so the annealing range that does any work is
-    # the low end.
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0], [50.0, 220.0]])
-    values = [
-        float(diameter_envelope(load_cases, beta)[0]) for beta in (2.0, 5.0, 10.0, 20.0)
-    ]
-
-    assert np.all(np.diff(values) < 0.0)
-
-
-def test_the_envelope_is_differentiable():
-    load_cases = jnp.asarray([[100.0, 300.0], [200.0, 150.0]])
-    gradient = jax.grad(lambda c: jnp.sum(diameter_envelope(c, 50.0)))(load_cases)
-
-    assert jnp.all(jnp.isfinite(gradient))
-    assert jnp.all(gradient >= 0.0)
-
-
-def test_one_load_case_is_never_enveloped(pipeline, params, one_case):
-    """An envelope over one case is the identity, so it is not taken."""
-    design = pipeline(params, one_case)
-
-    for sharpness in (None, 1.0, SHARPNESS):
-        covered = design_envelope(design, sharpness)
-
-        assert jnp.array_equal(
-            covered.sizes.sections.diameter, design.sizes.sections.diameter[0]
-        )
-
-
-def test_every_member_is_exactly_stressed(pipeline, params, one_case):
-    """Invariant 6.5 of CLAUDE.md, through the composed blocks."""
-    design = pipeline(params, one_case)
-
-    assert jnp.max(jnp.abs(design.sizes.utilization - 1.0)) < 1e-9
-
-
-def test_the_governing_load_case_is_fully_stressed(pipeline, params, three_cases):
-    """A size covers every case, and works exactly for the one that set it."""
-    design = pipeline(params, three_cases)
-    worst = jnp.max(design.sizes.utilization, axis=0)
-
-    assert jnp.all(design.sizes.utilization <= 1.0 + 1e-9)
-    assert jnp.max(jnp.abs(worst - 1.0)) < 1e-9
+    assert jnp.all(stout.sizes.utilization < lean.sizes.utilization)
 
 
 def test_the_mass_is_the_sum_of_what_the_members_weigh(pipeline, params, one_case):
-    """Mass is geometry: a mass per length times a length, added up."""
-    design = design_envelope(pipeline(params, one_case))
-    tubes = pipeline.sizer.catalogue(design.sizes.sections.diameter)
-    expected = pipeline.sizer.steel.density * jnp.sum(tubes.area * design.shape.lengths)
+    design = pipeline(params, one_case)
+    tubes = pipeline.sizer.family(params.diameters)
+    expected = tubes.material.density * jnp.sum(tubes.area * design.shape.lengths)
 
-    assert compute_mass(design) == pytest.approx(float(expected), rel=1e-14)
-
-
-def test_the_gradient_survives_the_composition(pipeline, params, three_cases):
-    # One reverse pass through three blocks, against a difference of two masses.
-    # Nothing vouches for it but the forward pass, which is the point: the
-    # composition is not being compared with another implementation of itself.
-    def composed(q, blocks, loads):
-        design = blocks(DesignParameters(q, params.diameters), loads)
-        return compute_mass(design_envelope(design, SHARPNESS))
-
-    objective = eqx.filter_jit(composed)
-    gradient = eqx.filter_jit(jax.grad(composed))(
-        params.force_densities, pipeline, three_cases
+    assert float(compute_mass(design)) == pytest.approx(float(expected), rel=1e-14)
+    assert float(member_mass(design.sizes.sections, design.shape.lengths)) == float(
+        compute_mass(design)
     )
-    scale = float(jnp.max(jnp.abs(gradient)))
-    q = params.force_densities
-
-    assert jnp.all(jnp.isfinite(gradient))
-
-    for member in (0, NUM_EDGES // 2, NUM_EDGES - 1):
-        step = abs(float(q[member])) * STEP
-        plus = objective(q.at[member].add(step), pipeline, three_cases)
-        minus = objective(q.at[member].add(-step), pipeline, three_cases)
-        difference = float((plus - minus) / (2.0 * step))
-
-        assert abs(float(gradient[member]) - difference) / scale < TOLERANCE_GRADIENT
 
 
-def test_the_pipeline_compiles_under_jit(pipeline, params, three_cases):
-    """The compiled blocks cross a trace as a pytree, with nothing rebuilt."""
+# --------------------------------------------------------------------------- #
+# The variable vector and its two linear maps
+# --------------------------------------------------------------------------- #
+def test_the_variable_vector_is_coordinates_then_diameters(problem, force_densities):
+    diameters = np.linspace(80.0, 120.0, NUM_EDGES)
+    x = np.concatenate([np.asarray(force_densities), diameters])
+    expanded = expand_variables(problem, jnp.asarray(x))
 
-    def composed(blocks, design, loads):
-        return compute_mass(design_envelope(blocks(design, loads), SHARPNESS))
-
-    traced = eqx.filter_jit(composed)(pipeline, params, three_cases)
-    eager = composed(pipeline, params, three_cases)
-
-    assert float(traced) == pytest.approx(float(eager), rel=1e-12)
-
-
-def test_design_actions_reduce_the_two_ends(pipeline, params, three_cases):
-    """The design moment is the larger end, which is Table B.3 read by the check."""
-    shape = pipeline.formfinder(params.force_densities, three_cases.formfinding)
-    forces = pipeline.analyzer(shape.xyz, params.diameters, three_cases.analysis)
-    acting = design_actions(select_load_case(forces, 1))
-
-    largest = jnp.max(jnp.abs(forces.moment_major[1]), axis=1)
-
-    assert jnp.array_equal(acting.axial_force, forces.axial_force[1])
-    assert jnp.allclose(jnp.abs(acting.moment_major), largest)
+    assert coordinate_count(problem) == NUM_EDGES
+    assert np.allclose(np.asarray(expanded.coordinates), np.asarray(force_densities))
+    assert np.allclose(np.asarray(expanded.diameters), diameters)
 
 
-def test_the_staggered_search_closes_its_coupling(staggered, pipeline, three_cases):
-    # The claim the routine exists to make: the answer is a design analyzed at
-    # its own sections, so the mass reported is one the structure really has.
-    settled = staggered.found.aux.sizes.sections.diameter
-    answer = DesignParameters(staggered.found.trajectory.q[-1], settled)
-    weighed = design_envelope(pipeline(answer, three_cases), SHARPNESS)
-    demanded = weighed.sizes.sections.diameter
+def test_folding_is_the_identity_without_a_subspace(problem, force_densities):
+    q = np.asarray(force_densities)
+    diameters = np.linspace(80.0, 120.0, NUM_EDGES)
+    x = fold_variables(problem, q, diameters)
 
-    assert float(jnp.max(jnp.abs(demanded / settled - 1.0))) < TOLERANCE_SETTLING
-
-
-def test_the_staggered_search_traces_the_objective_twice(staggered):
-    # Once for the descent's value and gradient, once for the value alone the
-    # settling passes need. Both take the diameters as an argument rather than
-    # capturing them, so neither is retraced however many rounds the coupling
-    # takes; capturing them would compile all three blocks per round.
-    assert round_seams(staggered.found.trajectory)
-    assert staggered.traces == 2
+    assert np.array_equal(x, np.concatenate([q, diameters]))
+    assert np.array_equal(read_coordinates(problem, q), q)
+    assert np.array_equal(np.asarray(member_densities(problem, jnp.asarray(q))), q)
 
 
-def test_a_round_starts_where_the_last_one_stopped(staggered):
-    """
-    A seam is one point weighed under two seeds.
+def test_the_bounds_box_the_densities_and_floor_the_diameters(problem):
+    boxes = variable_bounds(problem)
 
-    The force densities repeat, so the round was warm-started; the mass moves
-    anyway, because only the seed changed between the two rows. Both together are
-    what a refresh between descents means, and the first seam is where the seed
-    moves furthest.
-    """
-    walked = staggered.found.trajectory
-    seams = round_seams(walked)
-
-    assert seams
-
-    first = seams[0]
-    before = float(walked.mass[first])
-    after = float(walked.mass[first + 1])
-
-    assert abs(after / before - 1.0) > TOLERANCE_ROUNDOFF
+    assert len(boxes) == 2 * NUM_EDGES
+    assert boxes[:NUM_EDGES] == [BOUNDS] * NUM_EDGES
+    assert boxes[NUM_EDGES:] == [(FLOOR, None)] * NUM_EDGES
 
 
-def test_the_staggered_search_reports_the_value_it_ends_on(staggered):
-    """The answer is the last row of the concatenated trajectory."""
-    walked = staggered.found.trajectory
+def test_subspace_coordinates_take_no_box(warren_problem):
+    boxes = variable_bounds(warren_problem)
+    width = warren_problem.basis.width
+    patterns = warren_problem.spread.shape[1]
 
-    assert float(staggered.found.value) == float(walked.mass[-1])
+    assert len(boxes) == width + patterns
+    assert boxes[:width] == [(None, None)] * width
+    assert boxes[width:] == [(FLOOR, None)] * patterns
 
 
-def test_the_staggered_search_refuses_a_coupling_that_has_not_settled(
-    pipeline,
-    params,
-    three_cases,
+def test_member_densities_expands_the_basis(warren_problem):
+    basis = warren_problem.basis
+    xi = jnp.asarray(-1.0 - np.linspace(0.0, 1.0, basis.width))
+
+    assert jnp.array_equal(member_densities(warren_problem, xi), basis.densities(xi))
+
+
+def test_the_expansion_holds_the_drawn_plan(warren_problem, warren_q):
+    # Expanded parameters are member-wide and keep the plan by construction.
+    width = warren_problem.basis.width
+    patterns = warren_problem.spread.shape[1]
+    xi = np.asarray(warren_problem.basis.coordinates(warren_q))
+    x = np.concatenate([xi, np.full(patterns, SEED)])
+
+    expanded = expand_variables(warren_problem, jnp.asarray(x))
+
+    assert expanded.coordinates.shape == (warren_problem.structure.num_edges,)
+    assert coordinate_count(warren_problem) == width
+    assert np.allclose(np.asarray(expanded.coordinates), warren_q)
+
+
+def test_the_folded_diameters_keep_the_mirror(warren_problem, warren_q):
+    rng = np.random.default_rng(3)
+    diameters = rng.uniform(60.0, 160.0, warren_problem.structure.num_edges)
+    x = fold_variables(warren_problem, warren_q, diameters)
+
+    expanded = expand_variables(warren_problem, jnp.asarray(x))
+    targets = permuted_members(warren_mirror(), warren_problem.structure)
+    unfolded = np.asarray(expanded.diameters)
+
+    assert np.allclose(unfolded[targets], unfolded)
+    assert np.all(unfolded >= diameters - 1e-12)
+    assert np.array_equal(unfold_diameters(warren_problem, x), unfolded)
+
+
+def test_reading_back_an_in_span_vector_is_exact(warren_problem, warren_q):
+    xi = read_coordinates(warren_problem, warren_q)
+    rebuilt = member_densities(warren_problem, jnp.asarray(xi))
+
+    assert np.abs(np.asarray(rebuilt) - warren_q).max() < 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# The inequality rows
+# --------------------------------------------------------------------------- #
+def test_the_rows_start_with_the_utilization(problem, params):
+    design = problem.pipeline(params, problem.loads)
+    rows = np.asarray(constraint_rows(problem, params, design))
+    leading = 1.0 - np.asarray(design.sizes.utilization).ravel()
+
+    assert rows.shape == (3 * NUM_EDGES,)
+    assert np.allclose(rows, leading)
+
+
+def test_each_optional_row_family_appears_when_asked(problem, params):
+    guarded = np.arange(3)
+    guard = SignGuard(-np.ones(3), guarded, 1.0, 10.0)
+    held = DesignConstraints(FLOOR, 100.0, 4_000.0, -500.0, guard, BOUNDS)
+    asked = problem._replace(constraints=held)
+
+    design = asked.pipeline(params, asked.loads)
+    rows = np.asarray(constraint_rows(asked, params, design))
+    heights = free_nodes(asked.structure).size
+
+    assert rows.size == 3 * NUM_EDGES + 2 * heights + NUM_EDGES + guarded.size
+
+
+def test_the_sign_rows_read_the_guarded_densities(problem, params):
+    guarded = np.arange(3)
+    guard = SignGuard(-np.ones(3), guarded, 1.0, 10.0)
+    held = DesignConstraints(FLOOR, 0.0, None, None, guard, BOUNDS)
+    asked = problem._replace(constraints=held)
+
+    design = asked.pipeline(params, asked.loads)
+    rows = np.asarray(constraint_rows(asked, params, design))
+    signed = -np.asarray(params.coordinates)[guarded]
+
+    assert np.allclose(rows[-3:], (signed - guard.margin) / guard.scale)
+
+
+# --------------------------------------------------------------------------- #
+# Where a search starts, and how a vector reads back as a design
+# --------------------------------------------------------------------------- #
+def test_the_enveloped_start_covers_every_load_case(problem, force_densities):
+    # Exact at the seed forces the envelope was sized from; re-analyzed at its
+    # own sections the forces shift, which is the frozen-seed gap a search closes.
+    pipeline = problem.pipeline
+    diameters = envelope_diameters(problem, np.asarray(force_densities), SEED)
+    held = jnp.asarray(diameters)
+
+    shape = pipeline.formfinder(force_densities, problem.loads.formfinding)
+    seeded = jnp.full(NUM_EDGES, SEED)
+    frozen = pipeline.analyzer(shape.xyz, seeded, problem.loads.analysis)
+    at_seed = np.asarray(
+        pipeline.sizer.compute_utilization(held, frozen, shape.lengths)
+    )
+    settled = pipeline(DesignParameters(force_densities, held), problem.loads)
+    reworked = np.asarray(settled.sizes.utilization)
+
+    assert np.all(at_seed <= 1.0 + TOLERANCE_UTILIZATION)
+    assert np.allclose(at_seed.max(axis=0), 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION)
+    assert np.allclose(reworked.max(axis=0), 1.0, rtol=0.0, atol=0.05)
+
+
+def test_the_enveloped_start_respects_the_floor(problem, force_densities):
+    raised = problem._replace(
+        constraints=problem.constraints._replace(diameter_floor=500.0)
+    )
+    diameters = envelope_diameters(raised, np.asarray(force_densities), SEED)
+
+    assert np.all(diameters >= 500.0)
+
+
+def test_initial_variables_compose_the_two_reads(problem, force_densities):
+    q = np.asarray(force_densities)
+    start = initial_variables(problem, q, SEED)
+    diameters = envelope_diameters(problem, read_coordinates(problem, q), SEED)
+
+    assert np.array_equal(start, fold_variables(problem, q, diameters))
+
+
+def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
+    problem, force_densities
 ):
-    # A mass computed at diameters the design does not have is not returned, so
-    # a successful return is itself the evidence that the coupling closed. One
-    # round cannot close it, the seed being the wrong sections by construction.
-    weighed = mass_objective(pipeline, three_cases)
+    start = initial_variables(problem, np.asarray(force_densities), SEED)
+    design = read_design(problem, start)
+    expanded = expand_variables(problem, jnp.asarray(start))
+    expected = problem.pipeline(expanded, problem.loads)
 
-    with pytest.raises(ValueError, match="still moving"):
-        optimize_staggered(
-            weighed,
-            params,
-            bounds=BOUNDS,
-            iterations=STAGGERED_ITERATIONS,
-            rounds=1,
-        )
+    assert jnp.array_equal(design.shape.xyz, expected.shape.xyz)
+    assert jnp.array_equal(design.sizes.utilization, expected.sizes.utilization)
 
 
-def test_the_two_caps_are_refused_separately(pipeline, params, three_cases):
-    # The message says which loop stalled, a round of the search or a pass of the
-    # settling inside one, so a budget that ran out names the budget to raise.
-    weighed = mass_objective(pipeline, three_cases)
+# --------------------------------------------------------------------------- #
+# The compiled maps and the descent over them
+# --------------------------------------------------------------------------- #
+def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
+    maps = design_maps(problem)
+    start = initial_variables(problem, np.asarray(force_densities), SEED)
+    x = jnp.asarray(start)
 
-    with pytest.raises(ValueError, match="passes at fixed force densities"):
-        optimize_staggered(
-            weighed,
-            params,
-            bounds=BOUNDS,
-            iterations=1,
-            settling_passes=1,
-        )
+    design = read_design(problem, start)
+    expanded = expand_variables(problem, x)
+    weighed, _ = maps.objective(x)
+    rows = np.asarray(maps.slack(x))
+    expected = np.asarray(constraint_rows(problem, expanded, design))
+
+    assert float(weighed) == pytest.approx(float(compute_mass(design)), rel=1e-12)
+    assert np.allclose(rows, expected, rtol=0.0, atol=1e-12)
 
 
-def test_the_frozen_seed_misreports_the_mass(staggered, pipeline, three_cases):
-    """
-    Weighing the answer at the seed instead reports a mass it does not have.
+def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
+    # With zero multipliers and no violation the augmented objective is the
+    # normalized mass alone.
+    maps = design_maps(problem)
+    q = np.asarray(force_densities)
+    fattened = 1.5 * envelope_diameters(problem, q, SEED)
+    x = jnp.asarray(fold_variables(problem, q, fattened))
 
-    The direction is not asserted, because it is not signable: a member analyzed
-    fatter than it is attracts force, so a seed that is uniform where the design
-    is not can land either side of it however thin it is.
-    """
-    answer = staggered.found.trajectory.q[-1]
-    frozen = DesignParameters(answer, jnp.full(NUM_EDGES, SEED))
-    weighed = design_envelope(pipeline(frozen, three_cases), SHARPNESS)
-    reported = float(compute_mass(weighed))
+    rows = np.asarray(maps.slack(x))
+    assert np.all(rows > 0.0)
 
-    assert abs(reported / float(staggered.found.value) - 1.0) > TOLERANCE_ROUNDOFF
+    reference = jnp.asarray(float(maps.objective(x)[0]))
+    resting = jnp.zeros(rows.size)
+    augmented, _ = maps.augmented(x, resting, reference, reference)
+
+    assert float(augmented) == pytest.approx(1.0, rel=1e-12)
+
+
+def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_densities):
+    start = initial_variables(problem, np.asarray(force_densities), SEED)
+    budget = AugmentedBudget(
+        rounds=3,
+        iterations=10,
+        settled=10,
+        opening=1,
+        penalty=1.0,
+        growth=4.0,
+        ceiling=1e8,
+        tolerance=1e-3,
+        quiet=1e-8,
+    )
+    answer = optimize_design(problem, start, budget)
+    landed = compute_mass(read_design(problem, answer.variables))
+
+    assert answer.objectives.shape == answer.violations.shape
+    assert answer.variables.shape == start.shape
+    assert float(answer.objectives[0]) == pytest.approx(
+        float(compute_mass(read_design(problem, start))), rel=1e-12
+    )
+    assert float(answer.objectives[-1]) == pytest.approx(float(landed), rel=1e-12)
