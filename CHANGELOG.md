@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+### Four featured examples, an installed search package, and the dependency line redrawn
+
+The repository had thirty-three scripts in one flat folder, a 4,651-line harness
+among them, and no way for a reader to tell a validation run from the result the
+writeup quotes. It now has four examples, a graveyard, and one installed package.
+
+**`route` became `search`, and two misnomers were fixed.** The word was doing
+double duty: one of three competing ways to design a structure, and one of two
+ways to compute the same number. Only the first sense was renamed — the second
+survives in `13_simultaneous_sizing.py`, `22_jacobian_crossing.py` and three test
+modules, where "two routes to one gradient" is the intended meaning.
+`RouteProblem` became `DesignProblem` (all three searches share one) and
+`RouteProfile` became `StructureProfile` (it holds a structure's generator and
+mirror, never a search's). The YAML viewer keys followed. Every stored answer
+still resolves: `descent_digest` hashes a `repr` that carries field and class
+names, so the four landings were checked before and after and are unchanged.
+
+**`design_routes.py` was split by binding, not by line.** An AST pass partitioned
+142 top-level bindings into ten modules along a measured DAG with no back edges,
+then the package was promoted to `normax/searches/`. Equivalence was checked four
+ways: no signature or `NamedTuple` field differs, every digest holds, lint is
+clean, and a read-back of the crossed shell reproduces 0.074724 / 0.136011 /
+0.145735 t byte-identically against the same run at the previous commit in a
+throwaway worktree.
+
+**Every `sys.path` insert is gone** — eight of them, five added by the move
+itself and three predating it. That was the point of promoting the harness rather
+than relocating it.
+
+**The four examples now state their backends.** Three of them set only
+`analysis.diameter` and inherited `smax` plus in-process `ec3` from a dataclass
+default, so the featured runs exercised neither Tesseract boundary while the
+reported masses came from PyNite and Blueprints across theirs. `examples/gridshell.yaml`
+is now that crossed run itself — the digest is content-only, so it still resolves
+the stored landing — and the two trusses take the vetted `opensees` plus
+`blueprint_tesseract` pairing, which also avoids the segfault the in-process
+`ec3` pairing hits. Crossed Warren had never been run; it passes at 3.99e-10.
+
+**`pipeline` and `spike` are dissolved.** jax-fdm, Blueprints, PyNite, OpenSees,
+matplotlib and polyscope ship; `ec3x`, `smax` and `vix` are quarantined in
+`local-dev`, pinned to filesystem paths, and slated for deletion because being
+JAX-native is what makes them oracles rather than backends. With them absent 167
+of 450 tests run, which is the size of that job.
+
+**Two stale pins surfaced, both hidden by an untracked lock.** `smax` deleted
+`CompiledStructure` on 2026-08-15; twelve test modules import it and passed only
+because `uv.lock` had frozen a pre-deletion commit while `rev = "main"` went
+eleven days unresolved. It is now pinned to `750c85d` explicitly, with the reason
+in `[tool.uv.sources]`. And `vix` was never in `[project] dependencies` at all,
+so promoting the viewer into the package had broken `import normax.searches` for
+every install without the viz group.
+
+**The viewer no longer sits in the library's import path.** `run_searches` returns
+a `ViewRequest` instead of opening a window, and the drawing modules are one
+package — `visualization.figures` for matplotlib, `visualization.frames` for
+polyscope screenshots, `visualization.viewer` for the interactive window. Only
+`figures` is re-exported: `frames` reaches the frame solver through the replay it
+draws, which is `normax/analysis/__init__.py`'s module-scope smax re-export
+showing up a third time.
+
+**Still open.** The prose sweep — the README quotes a command that now fails, and
+eighteen moved scripts print their pre-move invocation. `CLAUDE.md` §7's layout
+predates all of this, and §9 still forbids openseespy in CI, which the new
+dependencies contradict. `uv.lock` stays gitignored, which is what hid the smax
+pin.
+
 ### Three routes, twenty-four starts each, and the form finder buys half the steel
 
 The three parametrizations had never been compared on equal terms. Every figure
