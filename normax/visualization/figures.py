@@ -1442,7 +1442,7 @@ class DescentTrace(NamedTuple):
     Attributes
     ----------
     title :
-        Name of the route, shown in the legend.
+        Name of the search, shown in the legend.
     mass :
         Objective at every iterate, the start included.
     """
@@ -1453,7 +1453,7 @@ class DescentTrace(NamedTuple):
 
 def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
     """
-    Constrained descents side by side, one line of objective per route.
+    Constrained descents side by side, one line of objective per search.
 
     Parameters
     ----------
@@ -1467,10 +1467,10 @@ def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
 
     Notes
     -----
-    A single shared panel rather than one per route: the comparison is where
+    A single shared panel rather than one per search: the comparison is where
     each line flattens, and separately scaled axes would hide the gap the
     figure exists to show. The first and last shades match the palette of
-    `figure_parametrization` so a route reads the same across experiments.
+    `figure_parametrization` so a search reads the same across experiments.
     """
     figure, descent = plt.subplots(figsize=(6.0, 4.0), layout="constrained")
     shades = ("#31688e", "#35b779", "#c0392b")
@@ -1489,14 +1489,14 @@ def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
     return figure
 
 
-class RouteTrace(NamedTuple):
+class SearchTrace(NamedTuple):
     """
-    One route's descent, and how funicular its iterates stayed.
+    One search's descent, and how funicular its iterates stayed.
 
     Attributes
     ----------
     title :
-        Name of the route, shown in the legend.
+        Name of the search, shown in the legend.
     mass :
         Objective at every iterate.
     bending :
@@ -1511,7 +1511,7 @@ class RouteTrace(NamedTuple):
 
 class StartSpread(NamedTuple):
     """
-    The mass each route reaches from every matched start.
+    The mass each search reaches from every matched start.
 
     Attributes
     ----------
@@ -1524,7 +1524,7 @@ class StartSpread(NamedTuple):
 
     Notes
     -----
-    A start only one route can take carries NaN in the other route's slot,
+    A start only one search can take carries NaN in the other search's slot,
     and the figure draws no marker there.
     """
 
@@ -1534,7 +1534,7 @@ class StartSpread(NamedTuple):
 
 
 def figure_parametrization(
-    traces: Sequence[RouteTrace],
+    traces: Sequence[SearchTrace],
     spread: StartSpread,
     closed: StartSpread | None = None,
     constrained: float | None = None,
@@ -1545,9 +1545,9 @@ def figure_parametrization(
     Parameters
     ----------
     traces :
-        The matched-start descent of every route, in the order they are drawn.
+        The matched-start descent of every search, in the order they are drawn.
     spread :
-        The mass each route reaches from every start.
+        The mass each search reaches from every start.
     closed :
         The same masses with the coupling closed, or None where no staggered
         runs were made. Shares the spread's start order.
@@ -1565,16 +1565,16 @@ def figure_parametrization(
     Notes
     -----
     Three panels because the comparison makes three claims. The descent panel
-    shows where each route ends; the bending panel shows what its iterates
-    passed through on the way, on a logarithmic axis because the routes differ
+    shows where each search ends; the bending panel shows what its iterates
+    passed through on the way, on a logarithmic axis because the searches differ
     by orders of magnitude; the spread panel shows what each start bought,
     which is where a larger design space pays for itself or does not.
 
-    One color per route across all three panels, so a route reads as one
+    One color per search across all three panels, so a search reads as one
     entity wherever it appears, and the spread panel's markers differ in shape
     so it survives being printed without color. The closed-coupling masses
     wear the same marks hollow: filled against open is the frozen seed
-    against the settled sections, per route, without a third color.
+    against the settled sections, per search, without a third color.
     """
     figure, axes = plt.subplots(1, 3, figsize=(12.5, 4.0), layout="constrained")
     descent, quality, robustness = axes
