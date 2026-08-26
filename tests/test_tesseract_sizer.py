@@ -20,19 +20,22 @@ from normax.sections import TubeFamily
 from normax.sizing import MemberSizes
 from normax.sizing import blueprint as blueprint_module
 from normax.sizing.blueprint import DIAMETER_MINIMUM
-from normax.sizing.blueprint import BlueprintSizer
-from normax.sizing.blueprint import checked_members
+from normax.sizing.blueprint import SizeCotangents
+from normax.sizing.blueprint import check_cotangents
+from normax.sizing.blueprint import check_members
+from normax.sizing.blueprint import host_actions
 from normax.sizing.blueprint import host_family
-from normax.sizing.blueprint import sized_members
+from normax.sizing.blueprint import size_cotangents
+from normax.sizing.blueprint import size_members
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
 from normax.tesseract import sizing_tesseract
 
 # The proof this file makes: an external, non-differentiable, scalar code
-# library fills the sizing contract and carries an exact adjoint — in process
-# through a pure_callback, and across a Tesseract boundary through the same
-# host functions, so the two agree bit for bit rather than to a tolerance.
+# library fills the sizing contract and carries an exact adjoint, reached only
+# across a Tesseract boundary — and the crossed answers and gradients are the
+# host functions' own, bit for bit rather than to a tolerance.
 
 NUM_EDGES = 4
 
@@ -81,8 +84,13 @@ def family():
 
 
 @pytest.fixture(scope="module")
-def sizer(structure, family):
-    return BlueprintSizer(structure, family)
+def host():
+    return host_family(RATIO, YIELD_SAMPLE)
+
+
+@pytest.fixture(scope="module")
+def actions():
+    return host_actions(np.asarray(AXIAL), np.asarray(END_MAJOR), np.asarray(END_MINOR))
 
 
 @pytest.fixture(scope="module")
@@ -113,8 +121,8 @@ def test_the_two_axial_formulas_agree():
     assert float(yielding) == float(squashing)
 
 
-def test_the_sizer_fills_the_contract_and_is_fully_stressed(sizer, forces):
-    sizes = sizer(forces, LENGTHS)
+def test_the_sizer_fills_the_contract_and_is_fully_stressed(remote, forces):
+    sizes = remote(forces, LENGTHS)
     diameter = np.asarray(sizes.sections.diameter)
     used = np.asarray(sizes.utilization)
     free = diameter > DIAMETER_MINIMUM
@@ -125,10 +133,10 @@ def test_the_sizer_fills_the_contract_and_is_fully_stressed(sizer, forces):
     assert np.all(used <= 1.0 + TOLERANCE_UTILIZATION)
 
 
-def test_the_reread_agrees_with_the_sizes(sizer, forces):
-    sizes = sizer(forces, LENGTHS)
+def test_the_reread_agrees_with_the_sizes(remote, forces):
+    sizes = remote(forces, LENGTHS)
     demanded = sizes.sections.diameter
-    reread = sizer.compute_utilization(demanded, forces, LENGTHS)
+    reread = remote.compute_utilization(demanded, forces, LENGTHS)
     free = np.asarray(demanded) > DIAMETER_MINIMUM
 
     assert np.allclose(
@@ -136,7 +144,7 @@ def test_the_reread_agrees_with_the_sizes(sizer, forces):
     )
 
 
-def test_the_check_matches_check_grads(sizer):
+def test_the_check_matches_check_grads(remote):
     # check_grads perturbs by a small absolute step, so the map is rescaled to
     # unit order before it judges the hand rule.
     scale_diameter = 100.0
@@ -144,13 +152,11 @@ def test_the_check_matches_check_grads(sizer):
     scale_moment = 1.0e6
 
     def scaled(size, force, major, minor):
-        return checked_members(
-            sizer.host,
-            size * scale_diameter,
-            force * scale_axial,
-            major * scale_moment,
-            minor * scale_moment,
+        carried = MemberForces(
+            force * scale_axial, major * scale_moment, minor * scale_moment
         )
+
+        return remote.compute_utilization(size * scale_diameter, carried, LENGTHS)
 
     size = jnp.asarray([[1.2, 0.8, 1.4, 0.3], [1.5, 0.9, 2.0, 1.1]])
     arguments = (
@@ -162,16 +168,16 @@ def test_the_check_matches_check_grads(sizer):
     check_grads(scaled, arguments, order=1, modes=("rev",))
 
 
-def test_the_sizing_map_matches_check_grads(sizer):
+def test_the_sizing_map_matches_check_grads(remote):
     scale_axial = 1.0e5
     scale_moment = 1.0e6
 
     def scaled(force, major, minor):
-        diameter, _ = sized_members(
-            sizer.host, force * scale_axial, major * scale_moment, minor * scale_moment
+        carried = MemberForces(
+            force * scale_axial, major * scale_moment, minor * scale_moment
         )
 
-        return diameter / 100.0
+        return remote(carried, LENGTHS).sections.diameter / 100.0
 
     arguments = (
         AXIAL / scale_axial,
@@ -181,13 +187,13 @@ def test_the_sizing_map_matches_check_grads(sizer):
     check_grads(scaled, arguments, order=1, modes=("rev",))
 
 
-def test_central_differences_are_the_oracle(sizer):
+def test_central_differences_are_the_oracle(remote):
     # The implicit quotients against the numerical truth at a relative step,
     # on the free members, tension and compression alike.
     def total(force):
-        diameter, _ = sized_members(sizer.host, force, END_MAJOR, END_MINOR)
+        carried = MemberForces(force, END_MAJOR, END_MINOR)
 
-        return jnp.sum(diameter)
+        return jnp.sum(remote(carried, LENGTHS).sections.diameter)
 
     gradient = jax.grad(total)(AXIAL)
     for load_case in range(2):
@@ -205,10 +211,9 @@ def test_central_differences_are_the_oracle(sizer):
             )
 
 
-def test_the_cubic_root_agrees_with_the_bisection(sizer):
+def test_the_cubic_root_agrees_with_the_bisection(host, actions):
     # U(d) = 1 is the depressed cubic d^3 - a d - b = 0 with one positive root.
-    host = host_family(RATIO, YIELD_SAMPLE)
-    diameter, _ = sized_members(sizer.host, AXIAL, END_MAJOR, END_MINOR)
+    diameter = size_members(actions, host).diameter
     moment = jnp.max(jnp.abs(END_MAJOR), axis=-1) + jnp.max(jnp.abs(END_MINOR), axis=-1)
     for load_case in range(2):
         for member in range(NUM_EDGES):
@@ -231,25 +236,28 @@ def test_the_cubic_root_agrees_with_the_bisection(sizer):
             )
 
 
-def test_tension_and_compression_size_alike(sizer):
-    pulled, _ = sized_members(sizer.host, jnp.abs(AXIAL), END_MAJOR, END_MINOR)
-    pushed, _ = sized_members(sizer.host, -jnp.abs(AXIAL), END_MAJOR, END_MINOR)
+def test_tension_and_compression_size_alike(host):
+    magnitude = np.abs(np.asarray(AXIAL))
+    ends_major = np.asarray(END_MAJOR)
+    ends_minor = np.asarray(END_MINOR)
+    pulled = size_members(host_actions(magnitude, ends_major, ends_minor), host)
+    pushed = size_members(host_actions(-magnitude, ends_major, ends_minor), host)
 
-    assert np.array_equal(np.asarray(pulled), np.asarray(pushed))
+    assert np.array_equal(pulled.diameter, pushed.diameter)
 
 
-def test_an_unloaded_member_sits_at_the_clamp(sizer):
+def test_an_unloaded_member_sits_at_the_clamp(remote):
     idle = MemberForces(
         jnp.zeros((1, NUM_EDGES)),
         jnp.zeros((1, NUM_EDGES, 2)),
         jnp.zeros((1, NUM_EDGES, 2)),
     )
-    sizes = sizer(idle, LENGTHS)
+    sizes = remote(idle, LENGTHS)
 
     def total(axial_force):
         forces = MemberForces(axial_force, idle.moment_major, idle.moment_minor)
 
-        return jnp.sum(sizer(forces, LENGTHS).sections.diameter)
+        return jnp.sum(remote(forces, LENGTHS).sections.diameter)
 
     gradient = jax.grad(total)(idle.axial_force)
 
@@ -258,16 +266,16 @@ def test_an_unloaded_member_sits_at_the_clamp(sizer):
     assert np.allclose(np.asarray(gradient), 0.0)
 
 
-def test_a_wall_less_family_is_refused(structure):
+def test_a_wall_less_family_is_refused(structure, remote):
     with pytest.raises(ValueError, match="wall"):
-        BlueprintSizer(structure, TubeFamily(2.0, Steel355()))
+        TesseractSizer(structure, remote.client, TubeFamily(2.0, Steel355()))
 
 
-def test_the_gradient_survives_jit(sizer, forces):
+def test_the_gradient_survives_jit(remote, forces):
     weights = jnp.arange(1.0, 1.0 + AXIAL.size).reshape(AXIAL.shape)
 
     def total(diameters):
-        return jnp.sum(weights * sizer.compute_utilization(diameters, forces, LENGTHS))
+        return jnp.sum(weights * remote.compute_utilization(diameters, forces, LENGTHS))
 
     eager = jax.grad(total)(HELD)
     compiled = jax.jit(jax.grad(total))(HELD)
@@ -276,44 +284,49 @@ def test_the_gradient_survives_jit(sizer, forces):
     assert np.array_equal(np.asarray(eager), np.asarray(compiled))
 
 
-def test_the_crossed_sizes_are_the_local_ones_bit_for_bit(sizer, remote, forces):
-    local = sizer(forces, LENGTHS)
+def test_the_crossed_sizes_are_the_host_ones_bit_for_bit(host, actions, remote, forces):
+    hosted = size_members(actions, host)
     crossed = remote(forces, LENGTHS)
 
-    assert np.array_equal(
-        np.asarray(crossed.sections.diameter), np.asarray(local.sections.diameter)
-    )
-    assert np.array_equal(
-        np.asarray(crossed.utilization), np.asarray(local.utilization)
-    )
+    assert np.array_equal(np.asarray(crossed.sections.diameter), hosted.diameter)
+    assert np.array_equal(np.asarray(crossed.utilization), hosted.utilization)
 
 
-def test_the_crossed_check_is_the_local_one_bit_for_bit(sizer, remote, forces):
-    local = sizer.compute_utilization(HELD, forces, LENGTHS)
+def test_the_crossed_check_is_the_host_one_bit_for_bit(host, actions, remote, forces):
+    spread = np.broadcast_to(np.asarray(HELD), np.shape(actions.axial))
+    hosted = check_members(spread, actions, host)
     crossed = remote.compute_utilization(HELD, forces, LENGTHS)
 
-    assert np.array_equal(np.asarray(crossed), np.asarray(local))
+    assert np.array_equal(np.asarray(crossed), hosted)
 
 
-def test_the_crossed_gradients_are_the_local_ones_bit_for_bit(sizer, remote, forces):
-    # Both sides pull through the same host cotangent functions, so the
+def test_the_crossed_gradients_are_the_host_ones_bit_for_bit(
+    host, actions, remote, forces
+):
+    # The crossed pullback delegates to the host cotangent functions, so the
     # boundary changes nothing about the derivative, not even its last bit.
     weights = jnp.arange(1.0, 1.0 + AXIAL.size).reshape(AXIAL.shape)
+    seeds = np.asarray(weights)
 
-    def held_total(block, diameters):
-        return jnp.sum(weights * block.compute_utilization(diameters, forces, LENGTHS))
+    def held_total(diameters):
+        return jnp.sum(weights * remote.compute_utilization(diameters, forces, LENGTHS))
 
-    def sized_total(block, carried):
-        return jnp.sum(weights * block(carried, LENGTHS).sections.diameter)
+    def sized_total(carried):
+        return jnp.sum(weights * remote(carried, LENGTHS).sections.diameter)
 
-    local_held = jax.grad(lambda d: held_total(sizer, d))(HELD)
-    crossed_held = jax.grad(lambda d: held_total(remote, d))(HELD)
-    local_sized = jax.grad(lambda f: sized_total(sizer, f))(forces)
-    crossed_sized = jax.grad(lambda f: sized_total(remote, f))(forces)
+    spread = np.broadcast_to(np.asarray(HELD), np.shape(actions.axial))
+    hosted_held = check_cotangents(spread, actions, host, seeds)
+    sized_seed = SizeCotangents(seeds, np.zeros_like(seeds))
+    hosted_sized = size_cotangents(actions, host, sized_seed)
 
-    assert np.array_equal(np.asarray(crossed_held), np.asarray(local_held))
-    for local_leaf, crossed_leaf in zip(local_sized, crossed_sized, strict=True):
-        assert np.array_equal(np.asarray(crossed_leaf), np.asarray(local_leaf))
+    crossed_held = jax.grad(held_total)(HELD)
+    crossed_sized = jax.grad(sized_total)(forces)
+
+    assert np.array_equal(
+        np.asarray(crossed_held), hosted_held.diameter_held.sum(axis=0)
+    )
+    for hosted_leaf, crossed_leaf in zip(hosted_sized, crossed_sized, strict=True):
+        assert np.array_equal(np.asarray(crossed_leaf), hosted_leaf)
 
 
 @pytest.fixture(scope="module")
@@ -372,7 +385,7 @@ def test_the_pinned_utilization_has_no_derivative_where_the_check_decided(
     assert pulled["axial_force"][3] != 0.0
 
 
-def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, family, sizer):
+def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, family, remote):
     # Drive the EC3 sizer's buckling length to zero and set its moment
     # combination linear, and the two libraries size alike — exactly in
     # tension, and to the first-order slenderness residual in compression.
@@ -383,7 +396,7 @@ def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, family, sizer
         jnp.asarray([[-5.0e5, -3.0e5, -1.0e4, 2.0e5]]), ends, jnp.zeros_like(ends)
     )
 
-    naive = sizer(forces, jnp.full(NUM_EDGES, 4000.0)).sections.diameter
+    naive = remote(forces, jnp.full(NUM_EDGES, 4000.0)).sections.diameter
     checked = silenced(forces, jnp.full(NUM_EDGES, 1e-3)).sections.diameter
 
     assert np.allclose(np.asarray(checked), np.asarray(naive), rtol=1e-7, atol=0.0)

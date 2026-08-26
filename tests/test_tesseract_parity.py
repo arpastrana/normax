@@ -21,7 +21,6 @@ from normax.loads import load_uniform
 from normax.materials import Steel355
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
-from normax.sizing.blueprint import BlueprintSizer
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 from normax.tesseract import ANALYSIS_VARIABLE
@@ -55,7 +54,8 @@ TOLERANCE_AXIAL = 1e-13
 # scale, so it inherits that larger scale. Measured 2.1e-12 / 2.7e-13.
 TOLERANCE_MOMENT = 1e-10
 
-# The check runs the identical host functions both sides. Measured 4.9e-14.
+# The check is one shared crossed block, so any utilization disagreement is
+# inherited from the analysis crossing alone. Measured 4.9e-14.
 TOLERANCE_UTILIZATION = 1e-12
 
 # Each route linearizes its own program, so the same sum is accumulated in a
@@ -112,15 +112,6 @@ def params(force_densities):
 
 
 @pytest.fixture(scope="module")
-def oracle_pipeline(structure, family):
-    return StructuralDesignPipeline(
-        FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        BlueprintSizer(structure, family),
-    )
-
-
-@pytest.fixture(scope="module")
 def opensees_client():
     return analysis_tesseract("opensees")
 
@@ -131,13 +122,27 @@ def blueprint_client():
 
 
 @pytest.fixture(scope="module")
-def crossed_pipeline(structure, family, opensees_client, blueprint_client):
+def shared_sizer(structure, family, blueprint_client):
+    """One crossed check in both triples, so parity isolates the analysis."""
+    return TesseractSizer(structure, blueprint_client, family)
+
+
+@pytest.fixture(scope="module")
+def oracle_pipeline(structure, family, shared_sizer):
+    return StructuralDesignPipeline(
+        FdmFormFinder(structure),
+        SmaxAnalyzer(structure, family(SEED)),
+        shared_sizer,
+    )
+
+
+@pytest.fixture(scope="module")
+def crossed_pipeline(structure, family, opensees_client, shared_sizer):
     analyzer = TesseractAnalyzer(
         structure, opensees_client, family, normal_axis(structure)
     )
-    sizer = TesseractSizer(structure, blueprint_client, family)
 
-    return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, sizer)
+    return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, shared_sizer)
 
 
 @pytest.fixture
@@ -337,20 +342,25 @@ def shell_params(shell, shell_case):
 
 
 @pytest.fixture(scope="module")
-def shell_oracle(shell, family):
+def shell_sizer(shell, family, blueprint_client):
+    """One crossed check in both shell triples as well."""
+    return TesseractSizer(shell, blueprint_client, family)
+
+
+@pytest.fixture(scope="module")
+def shell_oracle(shell, family, shell_sizer):
     return StructuralDesignPipeline(
         FdmFormFinder(shell),
         SmaxAnalyzer(shell, family(SEED)),
-        BlueprintSizer(shell, family),
+        shell_sizer,
     )
 
 
 @pytest.fixture(scope="module")
-def shell_crossed(shell, family, blueprint_client):
+def shell_crossed(shell, family, shell_sizer):
     analyzer = TesseractAnalyzer(shell, analysis_tesseract("pynite"), family, None)
-    sizer = TesseractSizer(shell, blueprint_client, family)
 
-    return StructuralDesignPipeline(FdmFormFinder(shell), analyzer, sizer)
+    return StructuralDesignPipeline(FdmFormFinder(shell), analyzer, shell_sizer)
 
 
 @pytest.fixture(scope="module")

@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Blueprints' EN 1993-1-1 cross-section check, hosted once and reached two ways.
+Blueprints' EN 1993-1-1 cross-section check, the host half of the boundary.
 
 Blueprints is a scalar Python library whose formula classes subclass `float`
-and carry no derivatives. Everything here up to the sizer is plain NumPy on
-the host: the check through the library's eq. (6.10) and (6.14), a bisection
-to the size that is worked to exactly one, and the adjoint of both by hand —
-the implicit function theorem at the root, the bare partials at a held size.
-The Tesseract wraps these functions behind its schema, and the in-process
-sizer wraps the same functions behind `jax.pure_callback`, so the two answers
-are identical by construction rather than by a parity test.
+and carry no derivatives. Everything here is plain NumPy on the host: the
+check through the library's eq. (6.10) and (6.14), a bisection to the size
+that is worked to exactly one, and the adjoint of both by hand — the implicit
+function theorem at the root, the bare partials at a held size. No JAX
+anywhere in this module: the sizing Tesseract's blueprint backend maps its
+schema onto these functions, and that boundary is the only way a trace
+reaches them.
 
 The check is axial force with bending at cross-section level and nothing else:
 Blueprints implements no §6.3.1 flexural buckling, so no buckling length is
@@ -30,14 +30,10 @@ decision recorded in the project notes. Blueprints is LGPL-2.1 and is imported
 unmodified as a pip package.
 """
 
-import functools
 import hashlib
 import math
 from typing import NamedTuple
 
-import equinox as eqx
-import jax
-import jax.numpy as jnp
 import numpy as np
 from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.formula_6_10 import (  # noqa: E501
     Form6Dot10NcRdClass1And2And3,
@@ -45,16 +41,11 @@ from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.f
 from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.formula_6_14 import (  # noqa: E501
     Form6Dot14MCRdClass3,
 )
-from jaxtyping import Array
 from jaxtyping import Bool
 from jaxtyping import Float
 from jaxtyping import Int
 
-from normax.analysis import MemberForces
 from normax.sections import TubeFamily
-from normax.sizing import AbstractMemberSizer
-from normax.sizing import MemberSizes
-from normax.structures import Structure
 
 # EN 1993-1-1 §6.1, the recommended value.
 GAMMA_M0 = 1.0
@@ -421,9 +412,9 @@ class HostActions(NamedTuple):
 
 
 def host_actions(
-    axial: Float[Array, "*load_cases members"],
-    end_major: Float[Array, "*load_cases members ends"],
-    end_minor: Float[Array, "*load_cases members ends"],
+    axial: Float[np.ndarray, "*load_cases members"],
+    end_major: Float[np.ndarray, "*load_cases members ends"],
+    end_minor: Float[np.ndarray, "*load_cases members ends"],
 ) -> HostActions:
     """
     Bring three arrays of any provenance to the host as contiguous float64.
@@ -869,308 +860,3 @@ def check_cotangents(
     )
 
     return HeldCotangents(partials.slope * pulled, on_actions)
-
-
-def _float_struct(shape: tuple[int, ...]) -> jax.ShapeDtypeStruct:
-    """
-    The abstract float64 array a host callback promises to return.
-    """
-    return jax.ShapeDtypeStruct(shape, jnp.float64)
-
-
-@functools.partial(jax.custom_vjp, nondiff_argnums=(0,))
-def sized_members(
-    family: HostFamily,
-    axial: Float[Array, "*load_cases members"],
-    end_major: Float[Array, "*load_cases members ends"],
-    end_minor: Float[Array, "*load_cases members ends"],
-) -> tuple[Float[Array, "*load_cases members"], Float[Array, "*load_cases members"]]:
-    """
-    The host sizing map, reached from a trace through a callback.
-
-    Parameters
-    ----------
-    family :
-        The section family reduced to its host coefficients, static.
-    axial :
-        Axial force of every member, tension positive.
-    end_major :
-        Major-axis moment at each end of every member.
-    end_minor :
-        Minor-axis moment at each end of every member.
-
-    Returns
-    -------
-    sized :
-        The floored diameter of every member, and the utilization at it; the
-        reverse rule is the host's hand adjoint through a second callback.
-    """
-
-    def on_host(axial_host, major_host, minor_host):
-        actions = host_actions(axial_host, major_host, minor_host)
-        sized = size_members(actions, family)
-
-        return sized.diameter, sized.utilization
-
-    struct = _float_struct(jnp.shape(axial))
-
-    return jax.pure_callback(
-        on_host, (struct, struct), axial, end_major, end_minor, vmap_method="sequential"
-    )
-
-
-def _sized_forward(family, axial, end_major, end_minor):
-    """
-    Run the sizing map and keep the actions for the reverse pass.
-    """
-    sized = sized_members(family, axial, end_major, end_minor)
-
-    return sized, (axial, end_major, end_minor)
-
-
-def _sized_backward(family, residuals, cotangents):
-    """
-    Pull the two output cotangents back through the host's hand adjoint.
-    """
-    axial, end_major, end_minor = residuals
-    pulled_diameter, pulled_used = cotangents
-
-    def on_host(axial_host, major_host, minor_host, diameter_host, used_host):
-        actions = host_actions(axial_host, major_host, minor_host)
-        seeds = SizeCotangents(diameter_host, used_host)
-
-        return tuple(size_cotangents(actions, family, seeds))
-
-    structs = (
-        _float_struct(jnp.shape(axial)),
-        _float_struct(jnp.shape(end_major)),
-        _float_struct(jnp.shape(end_minor)),
-    )
-
-    return jax.pure_callback(
-        on_host,
-        structs,
-        axial,
-        end_major,
-        end_minor,
-        pulled_diameter,
-        pulled_used,
-        vmap_method="sequential",
-    )
-
-
-sized_members.defvjp(_sized_forward, _sized_backward)
-
-
-@functools.partial(jax.custom_vjp, nondiff_argnums=(0,))
-def checked_members(
-    family: HostFamily,
-    diameter: Float[Array, "*load_cases members"],
-    axial: Float[Array, "*load_cases members"],
-    end_major: Float[Array, "*load_cases members ends"],
-    end_minor: Float[Array, "*load_cases members ends"],
-) -> Float[Array, "*load_cases members"]:
-    """
-    The host check at a held size, reached from a trace through a callback.
-
-    Parameters
-    ----------
-    family :
-        The section family reduced to its host coefficients, static.
-    diameter :
-        Outer diameter every member is checked at.
-    axial :
-        Axial force of every member, tension positive.
-    end_major :
-        Major-axis moment at each end of every member.
-    end_minor :
-        Minor-axis moment at each end of every member.
-
-    Returns
-    -------
-    utilization :
-        Demand over resistance of every member at the held size.
-    """
-
-    def on_host(diameter_host, axial_host, major_host, minor_host):
-        actions = host_actions(axial_host, major_host, minor_host)
-
-        return check_members(diameter_host, actions, family)
-
-    struct = _float_struct(jnp.shape(diameter))
-
-    return jax.pure_callback(
-        on_host,
-        struct,
-        diameter,
-        axial,
-        end_major,
-        end_minor,
-        vmap_method="sequential",
-    )
-
-
-def _checked_forward(family, diameter, axial, end_major, end_minor):
-    """
-    Run the held check and keep its inputs for the reverse pass.
-    """
-    used = checked_members(family, diameter, axial, end_major, end_minor)
-
-    return used, (diameter, axial, end_major, end_minor)
-
-
-def _checked_backward(family, residuals, cotangent):
-    """
-    Pull the held check's cotangent back through the host's hand adjoint.
-    """
-    diameter, axial, end_major, end_minor = residuals
-
-    def on_host(diameter_host, axial_host, major_host, minor_host, pulled_host):
-        actions = host_actions(axial_host, major_host, minor_host)
-        pulled = check_cotangents(diameter_host, actions, family, pulled_host)
-
-        return (pulled.diameter_held, *pulled.actions)
-
-    structs = (
-        _float_struct(jnp.shape(diameter)),
-        _float_struct(jnp.shape(axial)),
-        _float_struct(jnp.shape(end_major)),
-        _float_struct(jnp.shape(end_minor)),
-    )
-
-    return jax.pure_callback(
-        on_host,
-        structs,
-        diameter,
-        axial,
-        end_major,
-        end_minor,
-        cotangent,
-        vmap_method="sequential",
-    )
-
-
-checked_members.defvjp(_checked_forward, _checked_backward)
-
-
-class BlueprintSizer(AbstractMemberSizer):
-    """
-    Blueprints' cross-section check, in process, as a block of the pipeline.
-
-    Attributes
-    ----------
-    structure :
-        The structure whose members are sized. Read for nothing.
-    family :
-        The section family every member is drawn from, and its grade.
-    ratio :
-        The family's wall proportion, snapshotted for the host.
-    f_y :
-        The family's yield strength, snapshotted for the host.
-
-    Notes
-    -----
-    Every value is Blueprints' own, behind `jax.pure_callback`, and every
-    derivative is the host's hand adjoint behind another. The Tesseract wraps
-    the same host functions, so the two agree bit for bit. The ratio and the
-    strength are concrete floats, so no material sensitivity flows through
-    this block, and the buckling length is accepted and ignored — a
-    cross-section check reads no length.
-    """
-
-    structure: Structure
-    family: TubeFamily
-    ratio: float = eqx.field(static=True)
-    f_y: float = eqx.field(static=True)
-
-    def __init__(self, structure: Structure, family: TubeFamily) -> None:
-        """
-        Build a sizer over a section family stated as bare geometry.
-
-        Parameters
-        ----------
-        structure :
-            The structure whose members are sized. Read for nothing.
-        family :
-            The section family every member is drawn from.
-
-        Raises
-        ------
-        ValueError
-            If the family's ratio leaves no wall at all.
-        """
-        ratio, f_y = snapshot_family(family)
-
-        self.structure = structure
-        self.family = family
-        self.ratio = ratio
-        self.f_y = f_y
-
-    @property
-    def host(self) -> HostFamily:
-        """
-        The family as the host check reads it.
-        """
-        return host_family(self.ratio, self.f_y)
-
-    def __call__(
-        self,
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> MemberSizes:
-        """
-        Size every member for every load case, each on its own.
-
-        Parameters
-        ----------
-        forces :
-            What every member carries under every load case.
-        buckling_length :
-            Accepted and ignored: a cross-section check reads no length.
-
-        Returns
-        -------
-        sizes :
-            The section each load case demands, and how hard it is worked —
-            one wherever the size was free to move, below one at the floor.
-        """
-        diameter, used = sized_members(
-            self.host, forces.axial_force, forces.moment_major, forces.moment_minor
-        )
-
-        return MemberSizes(self.family(diameter), used)
-
-    def compute_utilization(
-        self,
-        diameters: Float[Array, "members"],
-        forces: MemberForces,
-        buckling_length: Float[Array, "members"],
-    ) -> Float[Array, "load_cases members"]:
-        """
-        Check sizes the caller owns against Blueprints' cross-section check.
-
-        Parameters
-        ----------
-        diameters :
-            Outer diameter every member was given.
-        forces :
-            What every member carries under every load case.
-        buckling_length :
-            Accepted and ignored: a cross-section check reads no length.
-
-        Returns
-        -------
-        utilization :
-            Demand over resistance of every member under every load case.
-        """
-        spread = jnp.broadcast_to(diameters, jnp.shape(forces.axial_force))
-
-        used = checked_members(
-            self.host,
-            spread,
-            forces.axial_force,
-            forces.moment_major,
-            forces.moment_minor,
-        )
-
-        return used

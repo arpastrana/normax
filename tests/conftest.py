@@ -20,7 +20,6 @@ ORACLE_PACKAGES = ("smax", "ec3x")
 # collection rather than passing quietly.
 ORACLE_TESTS = (
     "test_analysis_prepared.py",
-    "test_blueprint_sizer.py",
     "test_design.py",
     "test_equilibrium_consistency.py",
     "test_extras_comparison.py",
@@ -31,6 +30,7 @@ ORACLE_TESTS = (
     "test_second_sizer.py",
     "test_sections.py",
     "test_tesseract_parity.py",
+    "test_tesseract_sizer.py",
 )
 
 # The two crossed analysis backends are tested against the traced oracle, so
@@ -52,8 +52,8 @@ BLUEPRINT_PACKAGES = ("blueprints",)
 
 BLUEPRINT_TESTS = (
     "test_backend_opensees.py",
-    "test_blueprint_sizer.py",
     "test_tesseract_parity.py",
+    "test_tesseract_sizer.py",
 )
 
 collect_ignore = []
