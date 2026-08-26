@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+### The check was 94% of an evaluation, and object allocation was all of it
+
+With the analysis stage made cheap, profiling put **94% of a crossed evaluation
+in the check and 6% in the solver** — and inside the check, essentially none of
+it in the arithmetic. Sizing 496 members builds **54,560 clause objects**: fifty
+bisection halvings per member, two clauses per halving. Constructing the pair
+costs 1.958 us against a whole utilization read of 1.92 us, so the formulas are
+free and the objects are the entire cost.
+
+| | before | after |
+|---|---|---|
+| the check, per evaluation | 0.245 s | **~0.040 s** |
+| one crossed evaluation | 0.262 s | **0.11 s** |
+| the crossed shell descent | 37.0 min | **4.8 min** |
+
+**The clause's own evaluator, without the object around it.** Blueprints'
+formula is a float subclass whose constructor calls `_evaluate` and wraps the
+result, so calling that directly is the library's own arithmetic with no
+allocation — five times cheaper and bit-identical. **The search runs on it; the
+answer does not.** Every reported utilization is still read through the public
+class, so a section the library would refuse is refused where it is reported.
+
+**A private method is a fast path and never a requirement.** It is checked once
+at import for existing and for agreeing with its own class, and where it does
+not this falls through to constructing the clause — slower, and identical,
+verified over 400 members at a gap of exactly zero. A test pins the two
+implementations at 1e-15 so a release that moves it fails loudly instead of
+quietly changing what every size in this repository is solved against.
+
+**The reverse rule was re-solving the forward problem.** Both endpoints now
+share one solved state. It needs room for more than one point, which is not a
+guess: reverse-mode differentiation runs every forward call before any backward
+call, and one evaluation asks the check about more than one point, so a single
+entry is overwritten before the matching backward pass arrives. Measured with
+one entry: **four misses, no hits.**
+
+**Fifty halvings, not fifty-five.** Over four thousand random members the
+diameter lands within one ulp of what the larger budget reaches and the
+utilization read back is one to **2.776e-15** — identical to the old budget,
+against the 1e-9 the pipeline's invariant asks for. `normax/sizing/blueprint.py`
+moved with it, that file being this stage's declared drift alarm.
+
+**Parallelising the bisection was measured and declined.** Threads are flat by
+construction at 1.00x — the clause is a float subclass whose attribute writes
+are pure Python, so nothing releases the interpreter lock. Processes reach 2.4x
+on the endpoint, but only from a pool that must outlive a host-callback
+endpoint already carrying a known file-descriptor hazard, and a cold pool costs
+42x the work it saves. A free-threaded interpreter reaches 1.8x and cannot run
+the rest of the stack — and would have been a **2x regression** on the
+allocating code, 27,000 shared class objects making refcounts contend.
+
+**What the design costs, for the writeup.** A fully vectorised bisection is
+0.32 ms against 13.8 ms. Calling a normative library scalar by scalar is about
+an order of magnitude, on a stage that is no longer the bottleneck.
+
+### ⚠ The crossed shell mass is not reproducible to better than about a tenth
+
+Three descents of an **identical** configuration — same file, same cold start,
+same budget — landed at **0.105635, 0.091569 and 0.114863 t**. The forward pass
+is bit-identical across all three: read at the stored optimum, each returns mass
+0.073013, twenty-five violated rows and a worst slack of -1.4232e-01, unchanged
+by either optimisation. So this is not drift. It is round-off amplified through
+four hundred inner iterations a round, and the landing is chaotic in it.
+
+**No single crossed shell mass may be quoted.** What can be reported is a range,
+or a best over several starts with its spread stated. This also softens the
+earlier attribution of +41.7% to the check: the check's cost is real and large,
+but that particular figure sits inside this spread, and the honest comparison
+needs the same treatment on both sides.
+
 ### The crossed descent gets twelve times cheaper, and none of it was the boundary
 
 A crossed evaluation cost 0.92 s and a descent 37 minutes, against half a minute
@@ -235,6 +305,12 @@ two of the three stages solvers that cannot differentiate themselves.
 From the drawn cap, one cold start, no polish:
 
     0.151023 t  ->  0.105635 t        the geometry bought 30.1%
+
+⚠ **Read that landing with the section above on reproducibility.** Two later
+descents of the identical configuration reached 0.091569 and 0.114863 t, so the
+figure here is one draw from a spread of about a tenth, not a converged answer.
+What survives is the shape: the whole pipeline descends across two boundaries on
+exact gradients.
 
 37 minutes, 2408 evaluations at 0.92 s each. **It stopped on its round budget,
 not its own test**: worst violation 1.4e-05 over 8 of 1730 rows, so the design

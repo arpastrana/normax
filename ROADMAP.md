@@ -1205,6 +1205,21 @@ below: PyNite's linear analysis re-factorizes a bit-identical matrix once per
 load combination, and holds no factorization object anywhere. A one-block change
 gives ~3x on any multi-combination model, trivially reproducible.
 
+## P5g — The check, profiled the same way (Aug 25) — **DONE**
+
+With the analysis cheap, the check was **94% of a crossed evaluation** and clause
+allocation was all of it — 54,560 objects to size 496 members. Calling the
+clause's own evaluator, sharing the solved state between the endpoints, and
+spending fifty halvings instead of fifty-five took the descent from 20 minutes
+to **4.8**, and from 37 where the day started. Parallelism was measured and
+declined; the appendix carries the numbers.
+
+⚠ **And it exposed the finding that matters more.** Three descents of an
+identical configuration landed at **0.105635, 0.091569 and 0.114863 t** with a
+bit-identical forward pass. **No single crossed shell mass may be quoted** —
+report a range, or a best over several starts with the spread stated. Cheap runs
+made visible what a 37-minute run had hidden.
+
 ## P8 — File the two upstream Tesseract reports (before Aug 31) — **NOT DONE**
 
 **Do not let the deadline swallow these.** Both were found by composing Tesseract

@@ -206,3 +206,89 @@ CPU looked like it had stalled. The machine had been asleep.
 wedged; the actual worker underneath it was at 117%. Silence in the log was
 block-buffered output, not a hang — redirecting to a file buffers, and the fix
 is to run unbuffered.
+
+---
+
+# Appendix to the appendix: the same method, applied to the check
+
+Making the analysis cheap moved the bottleneck rather than removing it. Profiled
+again, one crossed evaluation was **94% the check and 6% the solver**, and
+everything in process — form-finding, 1730 constraint rows, the augmented
+assembly — was 1.4 ms, half a percent. So the method repeated itself on a stage
+written by someone else.
+
+**The cost was allocation, not arithmetic.** Sizing 496 members builds **54,560
+clause objects**: fifty bisection halvings per member, two clauses each.
+Constructing the pair takes 1.958 µs; a whole utilization read takes 1.92 µs.
+The formulas are free.
+
+Three changes, in the same spirit as the six before them.
+
+**Call the clause's own evaluator.** Blueprints' formula is a `float` subclass
+whose constructor calls `_evaluate` and wraps the result — so calling that
+directly is the library's arithmetic without the object, five times cheaper and
+bit-identical. The search runs on it; **the answer does not**. Every reported
+utilization is still read through the public class, so a section the library
+would refuse is refused where it is reported.
+
+That is a dependency on a private method, which is a real cost and is treated as
+one: it is checked once at import for existing and for agreeing with its own
+class, falls through to constructing the clause where it does not, and a test
+pins the two at 1e-15.
+
+**Stop the reverse rule re-solving the forward problem.** Both endpoints now
+share one solved state — and it needs room for more than one point. That is the
+trap from stage 6 inverted: there, the key was independent of the loading, so
+one entry could never be evicted. Here the key *is* the actions, one evaluation
+asks about more than one point, and reverse-mode runs every forward call before
+any backward call. Measured with a single entry: **four misses, no hits.** The
+same reasoning gave opposite answers on two stages, and only measuring told them
+apart.
+
+**Spend fifty halvings, not fifty-five.** Over four thousand random members the
+diameter lands within one ulp of the larger budget and the utilization read back
+is one to 2.776e-15 — against the 1e-9 the pipeline requires.
+
+Together: the check from 0.245 s to about 0.040 s, an evaluation from 0.262 s to
+0.11 s, and the crossed shell descent from 37 minutes to **4.8**.
+
+## Parallelism was measured and declined
+
+| 496 members | speedup |
+|---|---|
+| threads, 2 / 4 / 8 | **1.00×** |
+| processes, warm pool | 4.0× on the bisection, 2.4× on the endpoint |
+| processes, cold pool | **0.02×** — spawning costs 42× the work |
+| free-threaded interpreter | 1.8×, on a runtime the stack cannot use |
+
+Threads are flat by construction: the clause is a `float` subclass whose
+attribute writes go through an overridden `__setattr__`, all pure Python, so
+nothing releases the interpreter lock. Processes are the only real gain, and
+they would require a pool outliving a host-callback endpoint that already
+carries a known file-descriptor hazard — 2.4× does not buy that risk. Free
+threading is the sharpest lesson: on the *allocating* code it was a **2×
+regression**, because 27,000 shared class objects make reference counts
+contend. The optimization that helped and the parallelism that would have hurt
+were the same measurement away.
+
+## What the design costs, stated rather than apologised for
+
+A fully vectorized bisection over all members at once is **0.32 ms against
+13.8 ms**. So calling a normative library scalar by scalar costs about an order
+of magnitude — on a stage that, after this, is no longer the bottleneck. That is
+the price of the boundary being the point, and it is worth naming precisely
+instead of leaving implied.
+
+## A closing caution: fast enough to see the noise
+
+Cheap descents made something visible that expensive ones had hidden. Three runs
+of an **identical** configuration landed at **0.105635, 0.091569 and 0.114863 t**
+— a spread of about a tenth — while the forward pass stayed bit-identical
+throughout, verified at a fixed point after every change. Round-off amplified
+through four hundred inner iterations a round is enough to choose a different
+basin.
+
+The optimization did not cause this; it exposed it. A single-start number on
+this structure was never reproducible, and at 37 minutes a run nobody was going
+to discover that. **Report a range, or a best over several starts with its
+spread** — not a landing.
