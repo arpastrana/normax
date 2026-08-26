@@ -4198,6 +4198,47 @@ def write_figures(
     descents.savefig(FIGURES / f"{prefix}_descent.png", dpi=200, bbox_inches="tight")
 
 
+def response_analyzer(
+    problem: RouteProblem,
+    sections: MemberSections,
+) -> AbstractFrameAnalyzer:
+    """
+    The analyzer a drawing reads its response from.
+
+    Parameters
+    ----------
+    problem :
+        The prepared structure and its pipeline.
+    sections :
+        The tubes the design landed on.
+
+    Returns
+    -------
+    analyzer :
+        The stage's own analyzer where it can report a full response, and a
+        traced one built for the occasion where it cannot.
+
+    Notes
+    -----
+    **A drawing wants more than the schema carries.** Deformation and force
+    diagrams are read off a whole response field, and the analysis schema serves
+    member end forces alone — so no crossed backend can answer this, and asking
+    one is how the viewer used to fail. Keyed on whether a response can be had
+    rather than on which backend it is, the same way the shear fallback is, so a
+    backend that grows the ability stops needing the substitute.
+
+    **The substitute is sound because the design is not the drawing's.** The
+    geometry and the diameters were decided by whatever pipeline the run
+    described; this only recomputes a response at that finished design, and the
+    backends agree there to a part in a million million.
+    """
+    analyzer = problem.pipeline.analyzer
+    if hasattr(analyzer, "solve_response"):
+        return analyzer
+
+    return SmaxAnalyzer(problem.structure, sections)
+
+
 def view_answers(
     problem: RouteProblem,
     reads: dict[str, RouteRead],
@@ -4264,13 +4305,14 @@ def view_answers(
         xyz = jnp.asarray(read.xyz)
         sections = problem.pipeline.sizer.family(jnp.asarray(read.diameters))
         frame = frame_model(problem.structure, xyz, sections)
+        drawn = response_analyzer(problem, sections)
         viewer.add(frame, name=route)
 
         for index, case_name in enumerate(problem.case_names):
             if not case_name.startswith(load_case):
                 continue
             case_loads = problem.loads.analysis[index]
-            response = problem.pipeline.analyzer.solve_response(
+            response = drawn.solve_response(
                 xyz,
                 sections.diameter,
                 case_loads,
