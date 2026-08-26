@@ -391,6 +391,7 @@ class TesseractSizer(AbstractMemberSizer):
         self,
         forces: MemberForces,
         diameter_held: Float[Array, "*load_cases members"],
+        solve: bool,
     ) -> list[dict[str, Array]]:
         """
         Cross the boundary once per load case, at a held size.
@@ -402,6 +403,10 @@ class TesseractSizer(AbstractMemberSizer):
         diameter_held :
             Outer diameter the held-size check is read at, per member, or per
             load case and member.
+        solve :
+            Whether the far side runs the sizing solve, or only the held
+            check — the solve is the expensive half, so a caller who reads
+            none of its outputs declines it.
 
         Returns
         -------
@@ -421,6 +426,7 @@ class TesseractSizer(AbstractMemberSizer):
                 "gamma_m0": jnp.asarray(GAMMA_M0),
                 "ratio": jnp.asarray(self.ratio),
                 "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
+                "solve": solve,
             }
             answer = apply_tesseract(self.client, inputs, vmap_method="sequential")
             crossed.append(answer)
@@ -449,7 +455,7 @@ class TesseractSizer(AbstractMemberSizer):
             The diameter each load case demands, and how hard it is worked.
         """
         placeholder = jnp.full_like(forces.axial_force, DIAMETER_MINIMUM)
-        crossed = self.cross_check(forces, placeholder)
+        crossed = self.cross_check(forces, placeholder, solve=True)
         demanded = jnp.stack([answer["diameter"] for answer in crossed])
         used = jnp.stack([answer["utilization"] for answer in crossed])
 
@@ -477,7 +483,12 @@ class TesseractSizer(AbstractMemberSizer):
         -------
         utilization :
             Demand over resistance of every member under every load case.
+
+        Notes
+        -----
+        Crosses without the far side's sizing solve: this question reads only
+        the held check, and the solve is the expensive half of a crossing.
         """
-        crossed = self.cross_check(forces, diameters)
+        crossed = self.cross_check(forces, diameters, solve=False)
 
         return jnp.stack([answer["utilization_held"] for answer in crossed])

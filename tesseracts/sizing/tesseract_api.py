@@ -83,6 +83,14 @@ class InputSchema(BaseModel):
     diameter_min: Float64
     """Smallest diameter the section family offers, in millimeters."""
 
+    solve: bool = True
+    """Whether to run the sizing solve, or only the held check.
+
+    Read statically. False skips the bisection and echoes the held size and
+    its utilization through `diameter` and `utilization`, for the caller who
+    asked nothing about sizes; the adjoint of the echo is the held check's.
+    """
+
 
 class OutputSchema(BaseModel):
     """

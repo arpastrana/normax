@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from normax.sizing.blueprint import ActionCotangents
 from normax.sizing.blueprint import HostActions
 from normax.sizing.blueprint import HostFamily
 from normax.sizing.blueprint import SizeCotangents
@@ -69,17 +70,27 @@ def solve_sizes(raw: dict[str, Any]) -> dict[str, Any]:
     Returns
     -------
     outputs :
-        The required sizes, both utilizations and the clamp mask.
+        The required sizes, both utilizations and the clamp mask. Without the
+        solve, the held size and its utilization echoed, and no clamp claimed.
     """
     family = _read_family(raw)
     actions = _read_actions(raw)
-    sized = size_members(actions, family)
-    utilization_held = check_members(raw["diameter_held"], actions, family)
+    held = np.asarray(raw["diameter_held"], dtype=np.float64)
+    utilization_held = check_members(held, actions, family)
+    if raw["solve"]:
+        sized = size_members(actions, family)
+        diameter = sized.diameter
+        utilization = sized.utilization
+        clamped = sized.clamped.astype(np.float64)
+    else:
+        diameter = held
+        utilization = utilization_held
+        clamped = np.zeros_like(held)
     outputs = {
-        "diameter": sized.diameter,
-        "utilization": sized.utilization,
+        "diameter": diameter,
+        "utilization": utilization,
         "utilization_held": utilization_held,
-        "clamped": sized.clamped.astype(np.float64),
+        "clamped": clamped,
     }
 
     return outputs
@@ -100,18 +111,33 @@ def sizes_vjp(raw: dict[str, Any], seeds: dict[str, Any]) -> dict[str, Any]:
     -------
     gathered :
         Cotangent on every differentiable input.
+
+    Notes
+    -----
+    Without the solve, `diameter` is the held size and `utilization` is the
+    held check, so their seeds pull through the identity and the held rule.
     """
     family = _read_family(raw)
     actions = _read_actions(raw)
     held = np.asarray(raw["diameter_held"], dtype=np.float64)
-    sized_seed = SizeCotangents(seeds["diameter"], seeds["utilization"])
-    from_sizes = size_cotangents(actions, family, sized_seed)
-    from_held = check_cotangents(held, actions, family, seeds["utilization_held"])
+    if raw["solve"]:
+        sized_seed = SizeCotangents(seeds["diameter"], seeds["utilization"])
+        from_sizes = size_cotangents(actions, family, sized_seed)
+        held_seed = seeds["utilization_held"]
+        echoed = np.zeros_like(held)
+    else:
+        quiet_axial = np.zeros_like(actions.axial)
+        quiet_major = np.zeros_like(actions.end_major)
+        quiet_minor = np.zeros_like(actions.end_minor)
+        from_sizes = ActionCotangents(quiet_axial, quiet_major, quiet_minor)
+        held_seed = seeds["utilization_held"] + seeds["utilization"]
+        echoed = seeds["diameter"]
+    from_held = check_cotangents(held, actions, family, held_seed)
     gathered = {
         "axial_force": from_sizes.axial + from_held.actions.axial,
         "end_moments_major": from_sizes.end_major + from_held.actions.end_major,
         "end_moments_minor": from_sizes.end_minor + from_held.actions.end_minor,
-        "diameter_held": from_held.diameter_held,
+        "diameter_held": from_held.diameter_held + echoed,
     }
 
     return gathered

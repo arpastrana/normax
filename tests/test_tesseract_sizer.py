@@ -385,6 +385,32 @@ def test_the_pinned_utilization_has_no_derivative_where_the_check_decided(
     assert pulled["axial_force"][3] != 0.0
 
 
+def test_the_held_check_can_decline_the_solve(boundary, crossing):
+    quick = crossing.model_copy(update={"solve": False})
+    crossed = boundary.apply(quick)
+
+    assert np.array_equal(np.asarray(crossed["diameter"]), np.asarray(HELD))
+    assert np.array_equal(
+        np.asarray(crossed["utilization"]), np.asarray(crossed["utilization_held"])
+    )
+    assert np.all(np.asarray(crossed["clamped"]) == 0.0)
+
+
+def test_the_echoed_utilization_pulls_the_held_rule(boundary, crossing):
+    quick = crossing.model_copy(update={"solve": False})
+    seed = np.asarray([1.0, -2.0, 0.5, 3.0])
+    inputs = ["axial_force", "diameter_held"]
+    via_echo = boundary.vector_jacobian_product(
+        quick, inputs, ["utilization"], {"utilization": seed}
+    )
+    via_held = boundary.vector_jacobian_product(
+        quick, inputs, ["utilization_held"], {"utilization_held": seed}
+    )
+
+    assert np.array_equal(via_echo["axial_force"], via_held["axial_force"])
+    assert np.array_equal(via_echo["diameter_held"], via_held["diameter_held"])
+
+
 def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, family, remote):
     # Drive the EC3 sizer's buckling length to zero and set its moment
     # combination linear, and the two libraries size alike — exactly in
