@@ -11,3 +11,5 @@ build_config:
   # is a separate module so a second one can arrive without touching the schema.
   package_data:
     - [_backend_smax.py, /tesseract/_backend_smax.py]
+    - [_backend_opensees.py, /tesseract/_backend_opensees.py]
+    - [_backend_pynite.py, /tesseract/_backend_pynite.py]

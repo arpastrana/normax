@@ -1145,6 +1145,115 @@ eligibility and takes two minutes. Do it today.
 
 ---
 
+## P5e — A three-dimensional solver that ships (Aug 25) — **DONE**
+
+`smax` stays private and is pinned as a local path, so the three-dimensional
+analysis stage was unreproducible and the strongest-sounding backend was also
+the weakest argument: a JAX-native solver wrapped in machinery it does not need.
+**PyNite** (MIT, published, no derivative of any kind) now answers that stage
+across the analysis schema, with an adjoint this repository wrote.
+
+What landed: `normax/analysis/element.py` (the frame element in JAX), the
+adjoint and its guards in `normax/analysis/pynite.py`,
+`tesseracts/analysis/_backend_pynite.py`, the `pynite` value on
+`analysis.backend`, `experiments/27_pynite_agreement.py`, and
+`experiments/gridshell_16_crossed.yaml`. Numbers in `CHANGELOG.md`; the short
+form is element equality at 7.7e-18, roll invariance at 1.7e-16, and the
+gradient against `smax` at 1.3e-14 in process and 6.2e-14 crossed.
+
+**Swappability is now measured through the composed pipeline**, not just at the
+stage: at the shell's stored optimum, swapping smax for PyNite moves the whole
+1730-row constraint vector by **7.7e-13**. Swapping the *check* moves it by
+0.249, all of which is `blueprint.py`'s linear superposition of the two axis
+moments — a reading that is 1.39x the resultant on median and, being a sum of
+components, not frame-invariant. See `CHANGELOG.md`.
+
+**The complete crossed pipeline has now descended end to end** — jax-fdm,
+PyNite across the analysis schema, Blueprints across the check, augmented
+Lagrangian, no polish: **0.151023 -> 0.105635 t, the geometry buying 30.1%** in
+37 minutes. Swapping the analyzer alone costs -0.8%; swapping the check costs
++41.7%, all of it the linear superposition. With ec3x instead the same descent
+lands **0.074557 t, buying 50.6%**. Numbers and caveats in `CHANGELOG.md`.
+
+**Still open here.** The landing stopped on its round budget rather than its own
+test (violation 1.4e-05 on 8 of 1730 rows), so nothing is certified feasible;
+the SLSQP polish that would certify it needs a 1730-by-54 constraint Jacobian
+across both boundaries and was not run.
+The shell's stored 0.073013 t **survives** the frame-convention fix (0 of 1730
+rows violated after it), so it may still be quoted; the **truss** figures are
+the ones at risk, 77% and 82% of their members being in reversal. The 2D acts
+stay on OpenSees deliberately — it is what keeps P8's concurrency report
+reproducible.
+
+## P5f — A fast backward pass, and the appendix about building it (Aug 25) — **DONE**
+
+A crossed descent fell from **37 minutes to about 3** (0.92 s an evaluation to
+0.077), with the gradient's agreement to a traced solver unmoved at 2.9e-12.
+None of it was the boundary, which isolates at **12%**.
+
+`docs/fast_backward_pass.md` is the paper's appendix: six stages, each aimed at
+what the previous profile proved was expensive. It is worth including because
+the intuitions it overturns are the ones people bring to a differentiable
+boundary — the boundary was never the cost, rebuilding the model was 1%, a
+vector of zeros cost more than the factorization, an identical matrix was
+decomposed once per load case, and the schema change that looked necessary was
+not. It also reports the five ways we mismeasured, because most of them looked
+like results.
+
+**A third upstream contribution falls out of it**, friendlier than the two
+below: PyNite's linear analysis re-factorizes a bit-identical matrix once per
+load combination, and holds no factorization object anywhere. A one-block change
+gives ~3x on any multi-combination model, trivially reproducible.
+
+## P8 — File the two upstream Tesseract reports (before Aug 31) — **NOT DONE**
+
+**Do not let the deadline swallow these.** Both were found by composing Tesseract
+with a legacy solver, both are verified, and one of them is what made a segfault
+diagnosable at all. Filing them is also the best-hack case: a real concurrency
+defect in the framework, diagnosed to the line, with a working patch.
+
+Full drafts, the settled argument, and the preconditions are in the session
+memory note `normax-tesseract-upstream-prs`. Summary of what to file:
+
+1. **`pasteurlabs/tesseract-core` — a process-wide file-descriptor race.**
+   `redirect_fd` (`runtime/core.py:58`) saves *where fd 1 currently points*,
+   redirects it to this call's logfile, and restores the saved copy in a
+   `finally`. That is a save/restore stack, correct only under last-in-first-out
+   nesting on one thread. Two threads interleaving leave fd 1 pointing at a
+   finished call's logfile, permanently and process-wide — a library that never
+   touched Tesseract also loses its output. It is on by default
+   (`stream_logs=False` still enters `start_run`) with no flag, env var or lock
+   to disable or serialise it, and no guard anywhere in the path.
+
+   **⚠ Gate this one on a reproducer.** We hold the mechanism, from reading their
+   code, and the precondition, measured — 10 of 24 dispatches overlapping. We do
+   **not** hold evidence it fired: nobody checked where fd 1 pointed after a run,
+   and the symptoms first blamed on it have duller explanations (Python buffers
+   stdout to a file and a SIGSEGV loses the buffer; the misleading exit codes
+   were `tail` in a pipeline reporting its own status). So: write ~20 lines —
+   two threads, their own `redirect_stdio`, no JAX and no normax — and print the
+   final fd state. **File only if it corrupts. Otherwise withdraw**, because a
+   code smell is not a bug report. Do not claim it cost us time; it did not.
+
+   Preconditions to state up front: `LocalClient` only (`HTTPClient` redirects
+   inside the container), every endpoint but `openapi_schema`, and **fd-backed
+   stdout/stderr required** — `mpa.py` no-ops when `sys.stdout.fileno()` raises,
+   so it will not reproduce under Jupyter or fd-less pytest capture.
+2. **`pasteurlabs/tesseract-jax` — no way to serialise a dispatch.** File as an
+   **enhancement, not a bug**: JAX running host callbacks on runtime threads is
+   documented JAX behaviour. The defect is the *inconsistency* — their own served
+   runtime assumes endpoint calls are serialised (an `async def` handler calling
+   the endpoint synchronously, concurrency bought with processes, `dup2` per
+   call) while their own JAX client can have two in flight. Ask for an opt-in
+   `thread_safe=False` that pins dispatch to one owner thread, plus a
+   documentation note. `normax/tesseract.py::pin_dispatch_thread` is the patch,
+   working.
+
+**Disclose our own violation in the report** rather than let a maintainer find
+it: every JAX-native stage was allocating traced arrays inside the callback,
+against an explicit warning in `tesseract_compat.py`. Fixed on the way out for
+all four stages, and the traced execution that remains is inherent.
+
 ## P7 — Writeup + submit (Aug 29–30, almost entirely you)
 
 Draft the README skeleton in week one with numbers blank. Order it by the rubric:

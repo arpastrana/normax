@@ -46,6 +46,17 @@ OPENSEES_PACKAGES = ("openseespy",)
 
 OPENSEES_TESTS = ("test_backend_opensees.py",)
 
+# pynitefea is the "spike" optional extra too, and CI never installs it, so the
+# three-dimensional analysis backend is skipped wherever it is absent. It is
+# tested against smax, so it is listed under both guards, exactly as the planar
+# backend is. The import name is Pynite; the distribution is pynitefea.
+PYNITE_PACKAGES = ("Pynite",)
+
+PYNITE_TESTS = (
+    "test_backend_pynite.py",
+    "test_frame_convention.py",
+)
+
 # blue-prints (LGPL-2.1, experiment-only) is imported by normax.tesseract while
 # the blueprint sizer is prototyped, so every test importing that module — or
 # the sizer itself — is skipped without it, and no other pipeline test is.
@@ -62,9 +73,12 @@ collect_ignore = []
 if any(importlib.util.find_spec(name) is None for name in PIPELINE_PACKAGES):
     collect_ignore.extend(PIPELINE_TESTS)
     collect_ignore.extend(OPENSEES_TESTS)
+    collect_ignore.extend(PYNITE_TESTS)
     collect_ignore.extend(BLUEPRINT_TESTS)
 if any(importlib.util.find_spec(name) is None for name in OPENSEES_PACKAGES):
     collect_ignore.extend(OPENSEES_TESTS)
+if any(importlib.util.find_spec(name) is None for name in PYNITE_PACKAGES):
+    collect_ignore.extend(PYNITE_TESTS)
 if any(importlib.util.find_spec(name) is None for name in EC3X_PACKAGES):
     collect_ignore.extend(EC3X_TESTS)
 if any(importlib.util.find_spec(name) is None for name in BLUEPRINT_PACKAGES):

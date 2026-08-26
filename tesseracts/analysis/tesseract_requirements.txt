@@ -10,3 +10,8 @@
 # smax is not on PyPI yet, so this image does not build. Nothing else about the
 # stage waits on it: the composition imports this module in process instead.
 smax
+
+# The two foreign solvers. Both are published, so either backend builds into an
+# image on its own; it is smax above that holds the default one back.
+openseespy
+pynitefea

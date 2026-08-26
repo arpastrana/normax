@@ -438,10 +438,19 @@ class SubspaceConfig(NamedTuple):
 ANALYSIS_SMAX = "smax"
 ANALYSIS_SMAX_CROSSED = "smax_tesseract"
 ANALYSIS_OPENSEES = "opensees"
-ANALYSIS_BACKENDS = (ANALYSIS_SMAX, ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES)
+ANALYSIS_PYNITE = "pynite"
+ANALYSIS_BACKENDS = (
+    ANALYSIS_SMAX,
+    ANALYSIS_SMAX_CROSSED,
+    ANALYSIS_OPENSEES,
+    ANALYSIS_PYNITE,
+)
 
 # Which of them reach the solver across a boundary rather than in process.
-ANALYSIS_CROSSED = (ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES)
+ANALYSIS_CROSSED = (ANALYSIS_SMAX_CROSSED, ANALYSIS_OPENSEES, ANALYSIS_PYNITE)
+
+# Which of them are restricted to a plane, and so must be told which one.
+ANALYSIS_PLANAR = (ANALYSIS_OPENSEES,)
 
 # What the check may be answered by. Blueprints is reachable only crossed.
 SIZING_EC3 = "ec3"
@@ -460,9 +469,11 @@ class AnalysisConfig(NamedTuple):
     backend :
         Which solver answers the stage. `smax` traces in process,
         `smax_tesseract` is the same solver across a Tesseract boundary, and
-        `opensees` is a second solver across that same schema. The planar
-        solver is the two-dimensional demo alone — it refuses a geometry that
-        leaves its plane, so a shell may only ask for the other two.
+        `opensees` and `pynite` are two further solvers across that same
+        schema, neither of which differentiates itself. `opensees` is the
+        two-dimensional demo alone — it refuses a geometry that leaves its
+        plane — so a shell asks for `pynite`, which is a space frame and whose
+        adjoint is this repository's.
     """
 
     diameter: float
@@ -1944,12 +1955,12 @@ def built_analyzer(
     os.environ[BACKEND_VARIABLE] = config.analysis.backend.removesuffix("_tesseract")
     chain = local_chain()
 
-    # The traced solver measures the plane itself and needs no axis; the planar
-    # one is told which, and refuses a geometry that leaves it.
-    if config.analysis.backend == ANALYSIS_SMAX_CROSSED:
-        normal = None
-    else:
+    # Only a planar solver is told which plane; the traced one measures its own
+    # and the space-frame one has no such restriction to state.
+    if config.analysis.backend in ANALYSIS_PLANAR:
         normal = normal_axis(structure)
+    else:
+        normal = None
 
     return TesseractAnalyzer(structure, chain.analysis, family, normal)
 
@@ -4187,6 +4198,47 @@ def write_figures(
     descents.savefig(FIGURES / f"{prefix}_descent.png", dpi=200, bbox_inches="tight")
 
 
+def response_analyzer(
+    problem: RouteProblem,
+    sections: MemberSections,
+) -> AbstractFrameAnalyzer:
+    """
+    The analyzer a drawing reads its response from.
+
+    Parameters
+    ----------
+    problem :
+        The prepared structure and its pipeline.
+    sections :
+        The tubes the design landed on.
+
+    Returns
+    -------
+    analyzer :
+        The stage's own analyzer where it can report a full response, and a
+        traced one built for the occasion where it cannot.
+
+    Notes
+    -----
+    **A drawing wants more than the schema carries.** Deformation and force
+    diagrams are read off a whole response field, and the analysis schema serves
+    member end forces alone — so no crossed backend can answer this, and asking
+    one is how the viewer used to fail. Keyed on whether a response can be had
+    rather than on which backend it is, the same way the shear fallback is, so a
+    backend that grows the ability stops needing the substitute.
+
+    **The substitute is sound because the design is not the drawing's.** The
+    geometry and the diameters were decided by whatever pipeline the run
+    described; this only recomputes a response at that finished design, and the
+    backends agree there to a part in a million million.
+    """
+    analyzer = problem.pipeline.analyzer
+    if hasattr(analyzer, "solve_response"):
+        return analyzer
+
+    return SmaxAnalyzer(problem.structure, sections)
+
+
 def view_answers(
     problem: RouteProblem,
     reads: dict[str, RouteRead],
@@ -4253,13 +4305,14 @@ def view_answers(
         xyz = jnp.asarray(read.xyz)
         sections = problem.pipeline.sizer.family(jnp.asarray(read.diameters))
         frame = frame_model(problem.structure, xyz, sections)
+        drawn = response_analyzer(problem, sections)
         viewer.add(frame, name=route)
 
         for index, case_name in enumerate(problem.case_names):
             if not case_name.startswith(load_case):
                 continue
             case_loads = problem.loads.analysis[index]
-            response = problem.pipeline.analyzer.solve_response(
+            response = drawn.solve_response(
                 xyz,
                 sections.diameter,
                 case_loads,

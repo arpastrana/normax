@@ -191,6 +191,8 @@ def _selected_backend() -> Any:
         import _backend_smax as backend  # noqa: PLC0415
     elif selected == "opensees":
         import _backend_opensees as backend  # noqa: PLC0415
+    elif selected == "pynite":
+        import _backend_pynite as backend  # noqa: PLC0415
     else:
         raise ValueError(f"unknown analysis backend {selected!r}")
 

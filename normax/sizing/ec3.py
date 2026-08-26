@@ -26,6 +26,7 @@ so a second standard added beside it inherits none of ours.
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from ec3x.actions import MemberActions
 from ec3x.classification import ratio_at_class_limit
 from ec3x.classification import section_class_at_ratio
@@ -33,8 +34,8 @@ from ec3x.material import Steel
 from ec3x.section import Tube
 from ec3x.section import TubeCatalogue
 from ec3x.sizing import diameter_required
-from ec3x.sizing import end_moments
 from ec3x.sizing import governing_limit_state
+from ec3x.sizing import moment_factor_linear
 from ec3x.sizing import utilization_design
 from jaxtyping import Array
 from jaxtyping import Float
@@ -151,6 +152,69 @@ def neutral_sections(tubes: Tube) -> MemberSections:
     return MemberSections(tubes.diameter, tubes.thickness, grade)
 
 
+def axisymmetric_bending(
+    forces: MemberForces,
+) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
+    """
+    The design moment and its factor, read without naming a local axis.
+
+    Parameters
+    ----------
+    forces :
+        What every member carries under one load case, with no load case axis.
+
+    Returns
+    -------
+    design_and_factor :
+        The larger end moment in magnitude, and the moment ratio of Table B.3.
+
+    Notes
+    -----
+    **A circular hollow section has no major axis, so a check that reads one is
+    reading a convention.** Which of the two moments carries which part of one
+    physical bending is decided by the local frame a solver picked, and solvers
+    pick differently: one may take the vertical as its reference and another the
+    axis beside it, one may report the bending diagram and another the nodal
+    actions. Measured across two, every field the check consumes disagreed
+    except the axial force, and the sizes moved with them.
+
+    What does not depend on the frame is the length of each end's moment vector
+    and the angle between the two. The design moment is the longer vector, and
+    the ratio the table wants is how much the shorter one agrees with it, which
+    a dot product states without naming an axis:
+
+        psi = (M_first . M_second) / max(|M_first|, |M_second|)^2
+
+    **No reference is chosen, and that is the point.** Projecting both ends onto
+    the longer one also removes the frame, but *which* end is longer flips
+    between solvers when the two are close, and the projection flips with it.
+    A dot product has nothing to flip.
+
+    Collinear ends recover the signed reading exactly — every member of a plane
+    frame, where one moment is zero — so this costs nothing where the
+    convention was never in doubt. Where the bending plane turns along the
+    member the two readings differ, and there the notion of a reversal is
+    genuinely ambiguous rather than merely unmeasured.
+
+    **A future analysis should not need this.** The moments belong in the local
+    frames the analyzer itself defines, reported under a convention the schema
+    prescribes rather than one each solver chooses; then the check could read an
+    axis and mean it. This reads around the disagreement instead of settling it,
+    and only an axisymmetric section lets it.
+    """
+    first = jnp.stack([forces.moment_major[:, 0], forces.moment_minor[:, 0]], axis=-1)
+    second = jnp.stack([forces.moment_major[:, 1], forces.moment_minor[:, 1]], axis=-1)
+
+    together = jnp.sum(first * second, axis=-1)
+    larger = jnp.maximum(
+        jnp.linalg.norm(first, axis=-1), jnp.linalg.norm(second, axis=-1)
+    )
+    bent = larger > 0.0
+    ratio = jnp.where(bent, together / jnp.where(bent, larger, 1.0) ** 2, 1.0)
+
+    return larger, moment_factor_linear(ratio)
+
+
 def design_actions(forces: MemberForces) -> MemberActions:
     """
     Read one load case of an analysis in the terms the standard states.
@@ -178,23 +242,26 @@ def design_actions(forces: MemberForces) -> MemberActions:
 
     An analysis stops one step short of this and the step belongs to the check.
 
+    **The two moments are read as one, because the section is a tube.** A
+    circular hollow section has no weak axis, so the pair a solver reports is a
+    frame it chose rather than a property of the member; `axisymmetric_bending`
+    reads the bending without naming an axis. The minor moment comes back zero
+    and its factor one, which is what a section with a single bending resistance
+    has to say. A family that is not axisymmetric would need the two axes back.
+
     **One load case, and vectorized rather than indexed.** Every operation is
     elementwise over members, so several load cases are `jax.vmap` of this over
     the leading axis of a stacked container, and the check runs batched rather
     than looped.
     """
-    moment_major, factor_major = end_moments(
-        forces.moment_major[:, 0], forces.moment_major[:, 1]
-    )
-    moment_minor, factor_minor = end_moments(
-        forces.moment_minor[:, 0], forces.moment_minor[:, 1]
-    )
+    moment, factor = axisymmetric_bending(forces)
+    absent = jnp.zeros_like(moment)
     acting = MemberActions(
         forces.axial_force,
-        moment_major,
-        moment_minor,
-        factor_major,
-        factor_minor,
+        moment,
+        absent,
+        factor,
+        jnp.ones_like(factor),
     )
 
     return acting
