@@ -115,15 +115,17 @@ descending every free node height stalls in bending. On a truss, holding the
 plan leaves a null space of force densities to search, and
 `normax.form_finding.build_plan_basis` makes its basis coordinates the design
 variables. The rival routes — free heights without the form finder, and sizing
-alone at the drawn geometry — are form finders too, in
-`normax/extras/comparison.py`, so racing them swaps one block and nothing
-else; moving the geometry buys the larger share of the mass on both trusses.
+alone at the drawn geometry — are form finders too, implemented against the
+same interface in `tests/test_extras_comparison.py`, which is where the swap is
+checked: racing them swaps one block and nothing else, and moving the geometry
+buys the larger share of the mass on both trusses.
 Numbers, tolerances and the full protocol are in the accompanying paper and in
 `CHANGELOG.md`.
 
 ## Limitations
 
-**The nested fully-stressed route, kept in `normax/extras/`, omits `∂d/∂q`.**
+**The nested fully-stressed route, kept in `normax/optimization/nested.py`,
+omits `∂d/∂q`.**
 The shipped search is simultaneous — diameters are variables beside the force
 densities, so the design is self-consistent by construction and the gradient
 is complete. In the nested add-on the diameters the analysis runs at stay at
@@ -133,10 +135,10 @@ pass never enters; its cost is measured, and staggered re-sectioning closes it.
 **Shear and torsion are not designed for, and the exclusion is measured rather
 than assumed.** The check covers axial force with bending and leaves out
 EN 1993-1-1 §6.2.6–6.2.8, as clause 6.2.10 permits while the design shear
-stays under half the plastic shear resistance. `experiments/validation/20_shear_audit.py`
-reads that fraction off every converged design and no structure here
-approaches the threshold; `docs/shear_design.md` records what designing for
-shear would take.
+stays under half the plastic shear resistance. That fraction was read off every
+converged design rather than bounded, and no structure here approaches the
+threshold; `docs/shear_design.md` records the measurement and what designing
+for shear would take.
 
 **No lateral-torsional buckling check, by construction.** Every member is a
 circular hollow section, which is doubly symmetric, so lateral-torsional

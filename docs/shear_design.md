@@ -4,7 +4,8 @@
 this buys" below is why — every converged design passes 6.2.10 with room, so
 designing for shear would move no diameter, and the cost falls almost entirely on
 the hand-written NumPy duplicate of the Blueprints wrapper. What shipped instead
-is the audit (`experiments/20_shear_audit.py`), the tolerance check that now rides
+is the audit (retired 2026-08-27, see `retired_experiments.md`), the tolerance
+check that now rides
 in every truss and arch run, and the exclusion stated in the README, in
 `normax/sizing/blueprint.py` and in ec3x's `docs/clauses.md`.
 
@@ -166,8 +167,7 @@ whatever the check derives, the derived-equals-analyzed identity being pinned at
 
 ## What this buys — measured, not bounded
 
-`experiments/20_shear_audit.py` reads the analyzed shear off every converged
-design in the repo: the arch at 103's simultaneous optimum, and both trusses at
+The audit read the analyzed shear off every converged design in the repo: the arch at 103's simultaneous optimum, and both trusses at
 each of the three answers 18 and 19 descend to. Worst `V_Ed/V_pl,Rd` over members
 and load cases, Eq. 6.17 read once per shear component and taken at its worst:
 
@@ -264,6 +264,34 @@ shear appears only in the scope paragraph, the Blueprints inventory and open ite
   change to the container rather than to the sizer.
 - `tesseracts/ec3_check/` — a `member_length` input beside `buckling_length`, and
   the derived shear reported for audit.
+
+#### The container shrank under this plan, 2026-08-27
+
+`MemberForces` carried six fields when the section above was written. The
+condensation cut it to three — `axial_force`, `moment_major`, `moment_minor` —
+so the `DESIGN_AXES` line describes a container that no longer exists, and the
+scalar-default trap it warns about is gone with it. Restoring the components is
+now an addition rather than an edit, and it touches every analyzer: `smax`,
+`pynite`, `opensees`, and the analysis Tesseract's schema.
+
+**Experiment 20 cannot run for this reason alone.** Its audit reads
+`shear_major`, `shear_minor` and `torsion_moment` off the analysis, and a port
+away from the dissolved `normax.searches` does not reach them. The port was
+attempted and abandoned 2026-08-27; the experiment is kept for reimplementation
+alongside the clauses.
+
+**Shear is derivable without restoring the fields, and exactly.** Loads are
+applied at nodes alone, so the moment varies linearly along a member and the
+shear is the constant `ΔM / L`. That is the contract's own stated assumption
+rather than an approximation, and it means the audit could be revived ahead of
+the clauses if the measurement is wanted before the design work.
+
+**The recorded 0.36 is not reproducible as it stands.** It was read off the
+*drawn* Vierendeel — the sizing-only route at the drawn geometry — whose run
+descriptions were deleted 2026-08-27 with the other pre-condensation configs.
+Re-measuring on the shipped structures, at the start and at the optimum, is the
+path back to a number; it will not be the same number, and CLAUDE.md §3,
+README.md and this file quote the old ones.
 
 ### 3. normax — the Blueprints wrapper, both copies
 

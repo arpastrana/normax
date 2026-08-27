@@ -1,16 +1,4 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 Sizes as a solver's answer, and sizes as an optimizer's variables.
 
@@ -48,27 +36,29 @@ import numpy as np
 from jaxtyping import Float
 from scipy.optimize import minimize
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis.smax import SmaxAnalyzer
+from normax.config import SizingConfig
+from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
-from normax.design import settle_diameters
 from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import create_loads_uniform
+from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.optimization import minimize_bounded
-from normax.optimization import value_and_gradient
+from normax.optimization.nested import design_envelope
+from normax.optimization.nested import minimize_bounded
+from normax.optimization.nested import settle_diameters
+from normax.optimization.nested import value_and_gradient
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
 from normax.sections import TubeFamily
-from normax.sizing import DIAMETER_MINIMUM
-from normax.sizing import BlueprintSizer
+from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.structures import build_arch_2d
+from normax.tesseract import build_sizer
 
 TITLE = "Sizes as a solver's answer, and sizes as an optimizer's variables."
 
@@ -76,6 +66,10 @@ SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
 NUM_EDGES = 10
+
+# The cross-section check, across the boundary: the in-process sizer this
+# experiment used was dissolved into the Tesseract backend.
+SIZING = SizingConfig(3, "blueprint", False, False)
 
 SEED = 100.0
 RATIO = 50.0
@@ -189,10 +183,10 @@ def arch_problem() -> ArchProblem:
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
         SmaxAnalyzer(structure, family(SEED)),
-        BlueprintSizer(structure, family),
+        build_sizer(structure, family, SIZING),
     )
 
-    load_case = create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    load_case = load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
     loads = assemble_load_cases([load_case])
 
     trial = jnp.full(NUM_EDGES, -1.0)
@@ -205,12 +199,19 @@ def arch_problem() -> ArchProblem:
 
 def design_objective(problem: ArchProblem) -> Callable:
     """
-    The enveloped mass of a whole design, handing the design back beside it.
+    The mass of a whole design, handing the design back beside it.
     """
 
     def objective(params: DesignParameters):
-        design = problem.pipeline(params, problem.loads)
-        sized = design_envelope(design)
+        # The nested route asks the check for a size rather than a verdict, so
+        # it calls the sizer itself; calling the pipeline would run the held
+        # check and echo the diameters back unsized.
+        pipeline = problem.pipeline
+        loads = problem.loads
+        shape = pipeline.formfinder(params.coordinates, loads.formfinding)
+        forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
+        sizes = pipeline.sizer(forces, shape.lengths)
+        sized = design_envelope(Design(shape, forces, sizes))
         mass = compute_mass(sized)
 
         return mass, sized
@@ -235,7 +236,7 @@ def nested_fixed(problem: ArchProblem) -> RouteAnswer:
 
     started = time.perf_counter()
     settled = settle_diameters(objective, problem.params)
-    resized = DesignParameters(problem.params.force_densities, settled)
+    resized = DesignParameters(problem.params.coordinates, settled)
     mass, _ = compiled(resized)
     elapsed = time.perf_counter() - started
 
@@ -248,9 +249,7 @@ def simultaneous_fixed(problem: ArchProblem) -> tuple[RouteAnswer, SolverState]:
     """
     pipeline = problem.pipeline
     sizer = pipeline.sizer
-    shape = pipeline.formfinder(
-        problem.params.force_densities, problem.loads.formfinding
-    )
+    shape = pipeline.formfinder(problem.params.coordinates, problem.loads.formfinding)
     density = sizer.family.material.density
 
     def weigh(diameters):
@@ -345,7 +344,7 @@ def joint_bounds(problem: ArchProblem) -> list[tuple[float, float | None]]:
     """
     Box bounds for the joint search: force densities boxed, diameters floored.
     """
-    funicular = float(problem.params.force_densities[0])
+    funicular = float(problem.params.coordinates[0])
     lower = SPREAD_UP * funicular
     upper = SPREAD_DOWN * funicular
     force_box: list[tuple[float, float | None]] = [(lower, upper)] * NUM_EDGES
@@ -371,13 +370,13 @@ def nested_joint(problem: ArchProblem) -> RouteAnswer:
         return objective(DesignParameters(force_densities, seeds))
 
     compiled = value_and_gradient(compute_mass, has_aux=True)
-    compiled(problem.params.force_densities)
-    funicular = float(problem.params.force_densities[0])
+    compiled(problem.params.coordinates)
+    funicular = float(problem.params.coordinates[0])
 
     started = time.perf_counter()
     found = minimize_bounded(
         compute_mass,
-        problem.params.force_densities,
+        problem.params.coordinates,
         bounds=(SPREAD_UP * funicular, SPREAD_DOWN * funicular),
         iterations=DESCENT_ITERATIONS,
         has_aux=True,
@@ -430,7 +429,7 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
     compute_mass_and_gradient = jax.jit(jax.value_and_grad(weigh))
     slack_compiled = jax.jit(slack)
     slack_jacobian = jax.jit(jax.jacrev(slack))
-    seeded = jnp.concatenate([problem.params.force_densities, problem.params.diameters])
+    seeded = jnp.concatenate([problem.params.coordinates, problem.params.diameters])
     start = np.asarray(seeded)
     compute_mass_and_gradient(seeded)
     slack_compiled(seeded)

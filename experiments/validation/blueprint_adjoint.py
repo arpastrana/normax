@@ -1,16 +1,4 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 One non-differentiable code library, differentiated two ways and tabulated.
 
@@ -38,35 +26,46 @@ experiments/12_blueprint_sizer.py`.
 
 from collections.abc import Callable
 from collections.abc import Sequence
+from functools import partial
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis.smax import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
-from normax.loads import create_loads_uniform
+from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.optimization.nested import design_envelope
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
 from normax.sections import TubeFamily
-from normax.sizing import DIAMETER_MINIMUM
-from normax.sizing import GAMMA_M0
-from normax.sizing import BlueprintSizer
-from normax.sizing import Ec3Sizer
-from normax.sizing import coerce_section_family
-from normax.sizing import sized_diameter
+from normax.sizing import MemberSizes
+from normax.sizing.blueprint import DIAMETER_MINIMUM
+from normax.sizing.blueprint import GAMMA_M0
+from normax.sizing.blueprint import HostActions
+from normax.sizing.blueprint import HostFamily
+from normax.sizing.blueprint import SizeCotangents
+from normax.sizing.blueprint import _check_partials
+from normax.sizing.blueprint import check_cotangents
+from normax.sizing.blueprint import check_members
+from normax.sizing.blueprint import coerce_section_family
+from normax.sizing.blueprint import size_cotangents
+from normax.sizing.blueprint import size_members
+from normax.sizing.contract import AbstractMemberSizer
+from normax.sizing.ec3 import Ec3Sizer
+from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
 from normax.tesseract import open_tesseract_sizing
@@ -218,15 +217,281 @@ def central_difference(function: Callable[[float], float], x: float, step: float
     return (function(x + step) - function(x - step)) / (2.0 * step)
 
 
+# The in-process route: Blueprints behind a callback, with its own adjoint.
+#
+# Blueprints is scalar Python and cannot be traced, so the host call is wrapped
+# in `jax.pure_callback` and the derivative supplied by hand. The rule is the
+# package's own `size_cotangents`; what this script owns is the JAX plumbing
+# around it, which the package shed when the sizer moved across the boundary.
+
+
+def call_host_sizer(host, axial, end_major, end_minor):
+    """
+    Run Blueprints on the host and return the sizes it demands.
+    """
+    actions = HostActions(
+        np.asarray(axial), np.asarray(end_major), np.asarray(end_minor)
+    )
+    sized = size_members(actions, host)
+
+    return np.asarray(sized.diameter), np.asarray(sized.utilization)
+
+
+def build_sized_call(host: HostFamily) -> Callable:
+    """
+    A traceable sizing map over one host family, differentiated by hand.
+
+    Parameters
+    ----------
+    host :
+        The wall proportion, grade and floor the check is read at.
+
+    Returns
+    -------
+    sized :
+        Actions in, demanded diameter and utilization out, differentiable.
+    """
+
+    @jax.custom_vjp
+    def sized(axial, end_major, end_minor):
+        return primal(axial, end_major, end_minor)
+
+    def primal(axial, end_major, end_minor):
+        shapes = (
+            jax.ShapeDtypeStruct(axial.shape, axial.dtype),
+            jax.ShapeDtypeStruct(axial.shape, axial.dtype),
+        )
+        call = partial(call_host_sizer, host)
+
+        return jax.pure_callback(call, shapes, axial, end_major, end_minor)
+
+    def forward(axial, end_major, end_minor):
+        return primal(axial, end_major, end_minor), (axial, end_major, end_minor)
+
+    def backward(residual, cotangent):
+        axial, end_major, end_minor = residual
+        seeded = SizeCotangents(np.asarray(cotangent[0]), np.asarray(cotangent[1]))
+        actions = HostActions(
+            np.asarray(axial), np.asarray(end_major), np.asarray(end_minor)
+        )
+        pulled = size_cotangents(actions, host, seeded)
+
+        return (
+            jnp.asarray(pulled.axial),
+            jnp.asarray(pulled.end_major),
+            jnp.asarray(pulled.end_minor),
+        )
+
+    sized.defvjp(forward, backward)
+
+    return sized
+
+
+def call_host_check(host, diameters, axial, end_major, end_minor):
+    """
+    Run Blueprints' held check on the host and return the utilization.
+    """
+    axial = np.asarray(axial)
+    actions = HostActions(axial, np.asarray(end_major), np.asarray(end_minor))
+    # One size per member is checked in every case, so the held sizes carry the
+    # load case axis the check reports against.
+    held = np.broadcast_to(np.asarray(diameters), axial.shape)
+
+    return np.asarray(check_members(held, actions, host))
+
+
+def build_held_call(host: HostFamily) -> Callable:
+    """
+    A traceable held check over one host family, differentiated by hand.
+
+    Parameters
+    ----------
+    host :
+        The wall proportion, grade and floor the check is read at.
+
+    Returns
+    -------
+    held :
+        Sizes and actions in, utilization out, differentiable in both.
+    """
+
+    @jax.custom_vjp
+    def held(diameters, axial, end_major, end_minor):
+        return primal(diameters, axial, end_major, end_minor)
+
+    def primal(diameters, axial, end_major, end_minor):
+        shape = jax.ShapeDtypeStruct(axial.shape, axial.dtype)
+        call = partial(call_host_check, host)
+
+        return jax.pure_callback(call, shape, diameters, axial, end_major, end_minor)
+
+    def forward(diameters, axial, end_major, end_minor):
+        carried = (diameters, axial, end_major, end_minor)
+
+        return primal(*carried), carried
+
+    def backward(residual, cotangent):
+        diameters, axial, end_major, end_minor = residual
+        actions = HostActions(
+            np.asarray(axial), np.asarray(end_major), np.asarray(end_minor)
+        )
+        axial_host = np.asarray(axial)
+        held = np.broadcast_to(np.asarray(diameters), axial_host.shape)
+        pulled = check_cotangents(held, actions, host, np.asarray(cotangent))
+        by_size = jnp.asarray(pulled.diameter_held)
+        if by_size.ndim > jnp.ndim(diameters):
+            by_size = jnp.sum(by_size, axis=0)
+
+        return (
+            by_size,
+            jnp.asarray(pulled.actions.axial),
+            jnp.asarray(pulled.actions.end_major),
+            jnp.asarray(pulled.actions.end_minor),
+        )
+
+    held.defvjp(forward, backward)
+
+    return held
+
+
+class CallbackSizer(AbstractMemberSizer):
+    """
+    Blueprints in process, behind `jax.pure_callback` and a hand adjoint.
+
+    Attributes
+    ----------
+    structure :
+        The structure the block is built on.
+    family :
+        The tube family the sizes are drawn from.
+
+    Notes
+    -----
+    The same check the sizing Tesseract serves, reached without leaving the
+    process, so the two routes differ in the boundary alone.
+    """
+
+    structure: Structure
+    family: TubeFamily
+    host: HostFamily = eqx.field(static=True)
+    sized: Callable = eqx.field(static=True)
+    held: Callable = eqx.field(static=True)
+
+    def __init__(self, structure: Structure, family: TubeFamily) -> None:
+        """
+        Build the in-process sizer on a structure and its tube family.
+        """
+        self.structure = structure
+        self.family = family
+        self.host = coerce_section_family(float(family.ratio), family.material.f_y)
+        self.sized = build_sized_call(self.host)
+        self.held = build_held_call(self.host)
+
+    def __call__(self, forces, buckling_length) -> MemberSizes:
+        """
+        Size every member for every load case, each on its own.
+        """
+        diameter, utilization = self.sized(
+            forces.axial_force, forces.moment_major, forces.moment_minor
+        )
+        sections = self.family(diameter)
+
+        return MemberSizes(sections, utilization)
+
+    def compute_utilization(self, diameters, forces, buckling_length):
+        """
+        How hard the sizes the caller owns are worked, by the same check.
+        """
+        return self.held(
+            diameters, forces.axial_force, forces.moment_major, forces.moment_minor
+        )
+
+
+def call_host_partials(host, diameter, axial, moment):
+    """
+    The check's closed-form partials at one solved size, on the host.
+    """
+    partials = _check_partials(
+        np.asarray(diameter), np.asarray(axial), np.asarray(moment), host
+    )
+
+    return (
+        np.asarray(partials.slope),
+        np.asarray(partials.axial),
+        np.asarray(partials.moment),
+    )
+
+
+def build_member_call(host: HostFamily) -> Callable:
+    """
+    One member's fully-stressed diameter, with a forward tangent rule.
+
+    Parameters
+    ----------
+    host :
+        The wall proportion, grade and floor the check is read at.
+
+    Returns
+    -------
+    size_one :
+        Axial force and demand moment in, diameter out, differentiable both
+        ways: the rule is the tangent, and JAX transposes it for the adjoint.
+
+    Notes
+    -----
+    The implicit function theorem on the check's own residual, whose partials
+    the package computes in closed form. A tangent rule rather than a cotangent
+    one is what lets the same rule serve forward and reverse mode.
+    """
+
+    @jax.custom_jvp
+    def size_one(axial, moment):
+        shape = jax.ShapeDtypeStruct(jnp.shape(axial), jnp.result_type(float))
+        ends = jnp.stack([moment, moment], axis=-1)
+        zeros = jnp.zeros_like(ends)
+        call = partial(call_host_sizer, host)
+        diameter, _ = jax.pure_callback(call, (shape, shape), axial, ends, zeros)
+
+        return diameter
+
+    @size_one.defjvp
+    def size_one_jvp(primals, tangents):
+        axial, moment = primals
+        d_axial, d_moment = tangents
+        diameter = size_one(axial, moment)
+
+        shape = jax.ShapeDtypeStruct(jnp.shape(axial), jnp.result_type(float))
+        call = partial(call_host_partials, host)
+        slope, by_axial, by_moment = jax.pure_callback(
+            call, (shape, shape, shape), diameter, axial, moment
+        )
+        moved = by_axial * d_axial + by_moment * d_moment
+
+        return diameter, -moved / slope
+
+    return size_one
+
+
+# The check the single-member claims are read through, on the host.
+HOST_FAMILY = coerce_section_family(RATIO, YIELD_STRENGTH)
+
+# The same check, traceable: the single-member claims differentiate through it.
+SIZED_CALL = build_member_call(HOST_FAMILY)
+
+
 def diameter_of(case: MemberCase) -> Float[Array, ""]:
     """
     Fully-stressed diameter of one member, unclamped.
+
+    Notes
+    -----
+    The moment is carried at both ends, so the governing end is the moment the
+    case names whichever end the check reads.
     """
     axial = jnp.asarray([case.axial_force])
     moment = jnp.asarray([case.moment])
-    solved = sized_diameter(RATIO, YIELD_STRENGTH, axial, moment)
 
-    return solved[0]
+    return SIZED_CALL(axial, moment)[0]
 
 
 def closed_derivatives(case: MemberCase) -> tuple[float, float]:
@@ -312,7 +577,7 @@ def arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
     analyzer = SmaxAnalyzer(structure, family(SEED))
 
     local = StructuralDesignPipeline(
-        formfinder, analyzer, BlueprintSizer(structure, family)
+        formfinder, analyzer, CallbackSizer(structure, family)
     )
     crossed = StructuralDesignPipeline(
         formfinder,
@@ -329,7 +594,7 @@ def arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
     """
     structure = pipeline.sizer.structure
     trial = jnp.full(NUM_EDGES, -1.0)
-    loads = create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    loads = load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
     shape = pipeline.formfinder(trial, loads)
     reached = jnp.max(shape.xyz[:, 2])
 
@@ -338,15 +603,32 @@ def arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
 
 def mass_objective(pipeline: StructuralDesignPipeline, params: DesignParameters, loads):
     """
-    The enveloped mass as a compiled function of the force densities alone.
+    The mass as a compiled function of the force densities alone.
     """
 
     def objective(q):
         design = pipeline(DesignParameters(q, params.diameters), loads)
 
-        return compute_mass(design_envelope(design))
+        return compute_mass(design)
 
     return jax.jit(objective)
+
+
+def sized_design(pipeline: StructuralDesignPipeline, params, loads) -> Design:
+    """
+    The design the check demands, rather than a verdict on the one held.
+
+    Notes
+    -----
+    Calling the pipeline runs the held check and echoes the diameters back;
+    this experiment is about the sizing map, so it asks the sizer itself and
+    reconciles the load cases afterwards.
+    """
+    shape = pipeline.formfinder(params.coordinates, loads.formfinding)
+    forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
+    sizes = pipeline.sizer(forces, shape.lengths)
+
+    return design_envelope(Design(shape, forces, sizes))
 
 
 def report_derivatives(
@@ -375,8 +657,8 @@ def report_parity(report: Report, local: Design, crossed: Design) -> float:
     """
     The two routes' designs, member by member, and the worst gap between them.
     """
-    ours = np.asarray(local.sizes.sections.diameter[0])
-    theirs = np.asarray(crossed.sizes.sections.diameter[0])
+    ours = np.asarray(local.sizes.sections.diameter)
+    theirs = np.asarray(crossed.sizes.sections.diameter)
     gaps = [relative_gap(b, a) for a, b in zip(ours, theirs)]
     rows = [
         (f"{index}", a, b, gap)
@@ -424,10 +706,10 @@ def report_philosophy(report: Report, local: Design, params, loads) -> None:
         SmaxAnalyzer(structure, family(SEED)),
         Ec3Sizer(structure, family),
     )
-    checked = checked_pipeline(params, loads)
+    checked = sized_design(checked_pipeline, params, loads)
 
-    naive = np.asarray(local.sizes.sections.diameter[0])
-    strict = np.asarray(checked.sizes.sections.diameter[0])
+    naive = np.asarray(local.sizes.sections.diameter)
+    strict = np.asarray(checked.sizes.sections.diameter)
     rows = [
         (f"{index}", a, b, b / a) for index, (a, b) in enumerate(zip(naive, strict))
     ]
@@ -466,22 +748,23 @@ def main(verbose: bool = True) -> None:
     local_pipeline, crossed_pipeline = arch_problem()
     params = arch_parameters(local_pipeline)
     structure = local_pipeline.sizer.structure
-    loads = assemble_load_cases(
-        [create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
-    )
+    loads = assemble_load_cases([load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))])
 
-    local_design = local_pipeline(params, loads)
-    crossed_design = crossed_pipeline(params, loads)
+    local_design = sized_design(local_pipeline, params, loads)
+    crossed_design = sized_design(crossed_pipeline, params, loads)
     worst_parity = report_parity(report, local_design, crossed_design)
 
     local_mass = mass_objective(local_pipeline, params, loads)
     crossed_mass = mass_objective(crossed_pipeline, params, loads)
-    oracle = jax.grad(local_mass)(params.force_densities)
-    carried = jax.grad(crossed_mass)(params.force_densities)
+    oracle = jax.grad(local_mass)(params.coordinates)
+    carried = jax.grad(crossed_mass)(params.coordinates)
     worst_gradient = report_gradients(report, oracle, carried)
 
+    # Utilization keeps its load case axis; one section per member is checked
+    # in every case, so the floor mask is broadcast across them.
     used = np.asarray(local_design.sizes.utilization)
-    free = np.asarray(local_design.sizes.sections.diameter) > DIAMETER_MINIMUM
+    sized = np.asarray(local_design.sizes.sections.diameter) > DIAMETER_MINIMUM
+    free = np.broadcast_to(sized, used.shape)
     worst_unity = float(np.max(np.abs(used[free] - 1.0)))
 
     report_philosophy(report, local_design, params, loads)

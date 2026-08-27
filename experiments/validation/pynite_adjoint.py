@@ -1,16 +1,4 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 A solver with no derivative, given one, and held to a solver that has its own.
 
@@ -50,23 +38,23 @@ from jaxtyping import Array
 from jaxtyping import Float
 from Pynite import FEModel3D
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis import MemberForces
 from normax.analysis import pynite
 from normax.analysis.element import SectionRigidity
 from normax.analysis.element import assemble_stiffness_global
 from normax.analysis.element import assemble_stiffness_local
 from normax.analysis.element import compute_direction_cosines
+from normax.analysis.smax import SmaxAnalyzer
+from normax.config import AnalysisConfig
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
-from normax.sizing import build_section_family
+from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.structures import build_gridshell_3d
-from normax.tesseract import TesseractAnalyzer
-from normax.tesseract import analysis_backend
-from normax.tesseract import local_chain
+from normax.tesseract import build_analyzer
 
 jax.config.update("jax_enable_x64", True)
 
@@ -426,29 +414,25 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
     forces = pynite.compute_member_forces(
         problem, np.asarray(structure.nodes), sample.diameters, sample.loads
     )
-    jacobian = pynite.compute_force_jacobian(
-        problem, np.asarray(structure.nodes), sample.diameters
+    # The loss is a sum of squares, so its cotangent on each reported force is
+    # twice that force over the square of its scale — the same left factor the
+    # Jacobian contraction used to carry, handed to the rule instead.
+    seeded = MemberForces(
+        2.0 * np.asarray(forces.axial_force) / SCALE_FORCE**2,
+        2.0 * np.asarray(forces.moment_major) / SCALE_MOMENT**2,
+        2.0 * np.asarray(forces.moment_minor) / SCALE_MOMENT**2,
     )
-    axial = np.asarray(forces.axial_force) / SCALE_FORCE**2
-    major = np.asarray(forces.moment_major) / SCALE_MOMENT**2
-    minor = np.asarray(forces.moment_minor) / SCALE_MOMENT**2
-    by_node = 2.0 * (
-        np.einsum("m,mna->na", axial, jacobian.axial_force_xyz)
-        + np.einsum("me,mena->na", major, jacobian.moment_major_xyz)
-        + np.einsum("me,mena->na", minor, jacobian.moment_minor_xyz)
+    pulled = pynite.pull_back_cotangents(
+        problem, np.asarray(structure.nodes), sample.diameters, seeded
     )
-    by_member = 2.0 * (
-        np.einsum("m,mk->k", axial, jacobian.axial_force_diameter)
-        + np.einsum("me,mek->k", major, jacobian.moment_major_diameter)
-        + np.einsum("me,mek->k", minor, jacobian.moment_minor_diameter)
-    )
+    by_node = pulled.xyz
+    by_member = pulled.diameter
 
-    with analysis_backend("pynite"):
-        chain = local_chain()
-        crossed = TesseractAnalyzer(structure, chain.analysis, family, None)
-        served = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
-            structure.nodes, diameters
-        )
+    analysis = AnalysisConfig(SEED_DIAMETER, "pynite")
+    crossed = build_analyzer(structure, family, analysis)
+    served = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
+        structure.nodes, diameters
+    )
 
     node_gap = relative(by_node, reference[0])
     member_gap = relative(by_member, reference[1])
@@ -508,21 +492,13 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
     pynite.compute_member_forces(problem, nodes, sample.diameters, sample.loads)
     forward = time.perf_counter() - start
 
-    start = time.perf_counter()
-    pynite.compute_force_jacobian(problem, nodes, sample.diameters)
-    cold = time.perf_counter() - start
-
-    start = time.perf_counter()
-    pynite.compute_force_jacobian(problem, nodes, sample.diameters)
-    warm = time.perf_counter() - start
-
     stacked = np.stack([sample.loads, 0.6 * sample.loads, 0.4 * sample.loads])
     pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
     start = time.perf_counter()
     pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
     together = time.perf_counter() - start
 
-    seed = pynite.ReadingCotangent(
+    seed = MemberForces(
         axial_force=np.ones(members),
         moment_major=np.ones((members, 2)),
         moment_minor=np.ones((members, 2)),
@@ -551,13 +527,11 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
     rows = [
         ["one forward solve", forward, ""],
         ["three load cases, one call", together, f"{together / forward:.2f}x"],
-        ["exact jacobian, first call", cold, "compiles"],
-        ["exact jacobian, warm", warm, "1x"],
-        ["one reverse-mode gradient", adjoint, f"{adjoint / warm:.2f}x"],
+        ["one reverse-mode gradient", adjoint, "1x"],
         [
             "central differences, every parameter",
             differenced,
-            f"{differenced / warm:.0f}x",
+            f"{differenced / adjoint:.0f}x",
         ],
     ]
     report.write_table(columns, rows)
