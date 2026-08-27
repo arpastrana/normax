@@ -2,6 +2,135 @@
 
 ## Unreleased
 
+### The experiments are eight, and every one of them runs
+
+Ruled 2026-08-27: an experiment whose subject the package deliberately removed
+is not broken, it is finished. `experiments/` went from 28 scripts and 2.6 MB to
+8 and 164 KB, and the survivors are named for the claim they prove rather than
+the order they were written in.
+
+- **All 32 YAML run descriptions were deleted**, tested rather than assumed:
+  every one fails `parse_config` with `KeyError: 'form_finding'`, so none could
+  be fed to the working examples. The `experiments/archive/` directory went with
+  them, and `21_gridshell_view.py`, the one script no document cited.
+- **Three were ported rather than repaired.** `pynite_adjoint` contracted a
+  materialised Jacobian, which is the shape `docs/fast_backward_pass.md` Stage 3
+  exists to argue against; it now seeds `pull_back_cotangents` with the loss's
+  own cotangent and reproduces the recorded agreement — 1.14e-14 by node,
+  3.40e-14 crossed — while pricing central differences at 2327x.
+  `sizing_formulations` drives the Tesseract sizer and agrees to 1.08e-10.
+  `blueprint_adjoint` **took the in-process half into the script**: a
+  `pure_callback` wrapper, a `custom_jvp` tangent rule built from
+  `_check_partials`, and a held-check adjoint, about 180 lines that used to be
+  `BlueprintSizer`. The two routes agree exactly, 0.00e+00 on sizes and gradient.
+- **Ten were retired**, with `docs/retired_experiments.md` recording the ref
+  (`3d10e5a`, where they still carry their numbered names), what each measured,
+  what blocks it and what a port would cost. `shear_audit` and `buckling_audit`
+  are deferred rather than abandoned: they share six `normax.searches` functions,
+  so one harness revives both, and `shear_audit` additionally waits on shear
+  returning to `MemberForces`.
+- **Four sentences were rewritten** so no living document cites a deleted file.
+  The shear claim is unchanged and still measured; only the pointer moved, from
+  the script to `docs/shear_design.md` where the numbers are.
+
+**Two traps cost real time and are recorded, because neither announces itself.**
+The pipeline is a checker: calling it runs the held check and hands the diameters
+straight back, so an experiment wanting a fully-stressed design must call
+`pipeline.sizer(forces, lengths)` itself — the failure is a silent wrong answer,
+sizes equal to the seed, not an error. And the sizer's output carries a load case
+axis where the checker's does not, so an envelope over an already-reconciled
+design collapses the member axis into a zero-dimensional array a long way from
+its cause.
+
+### The drawn fit is held to its basis, and a malformed lens is a ValueError
+
+Two findings from a review of the previous commit, and the first is **not the
+defect it was reported as**.
+
+- **`DrawnShapeInitializer.fit_start` accepted a basis and ignored it**, where
+  its sibling `LensShapeInitializer` passes one through. It now does too. The
+  reported consequence — a fit landing outside the span, so the start reported
+  is not the start descended from — **does not occur on any real structure**:
+  `build_plan_basis` spans a horizontal equilibrium condition that full
+  equilibrium implies, so a converged drawn fit is in the span by construction.
+  Measured at 1.8e-14 on the Warren, 8.4e-15 on the gridshell, 3.1e-15 on the
+  diagrid. The change is a conditioning and intent fix, not a correctness one:
+  it tightens the shipped gridshell's round trip from 1.6e-12 to 2.8e-14 and
+  leaves its start unmoved at 16.405253.
+- **The two paths do diverge on a geometry the loads cannot balance**, and there
+  the restricted solve is worse, not better: at a gap of 0.53 the held fit blows
+  to 1.2e14 where the free one stays finite. That regime means `drawn` was the
+  wrong initializer. A gap check on `DensityFit` would be the real guard.
+- **`build_density_initializer` raised a bare `KeyError`** on a lens missing a
+  key, from a function documented to raise `ValueError`. It now matches the key
+  set exactly, so `held_plane` is caught as readily as an omission.
+
+### Extras is dissolved, and the invariant that made it safe is gone with it
+
+Ruled 2026-08-27. Each of the four modules went where its consumers already were.
+
+- **`slsqp.py` was deleted outright** — nothing imported it once the config
+  stopped naming a descent method, and its measurements are already recorded.
+  **`comparison.py` moved into `tests/test_comparison.py`**, the only thing that
+  ever built one. `nested.py` is now `optimization/nested.py`, `replay.py` is
+  `exporting/replay.py`, and the three tests lost the `extras` in their names.
+- **What the package lost is a stated invariant**: extras imported the core and
+  the core never imported extras, which made the whole directory removable in one
+  move. Deleting the nested route is now surgery in two packages.
+- **`optimization/` straddles the graph** as a result: its `__init__` imports
+  nothing from normax and `design.py` imports it, while `optimization/nested.py`
+  imports `design.py`. No cycle forms, because the `__init__` is a leaf; every
+  import order was checked.
+
+### The drawings are one package, and the viewer is guarded
+
+`figures.py` and `viewer.py` became `normax/visualization/`, the first landing as
+`plots.py`. `__init__.py` asks `find_spec` for `smax` and `vix` and binds
+`unavailable.py`'s stand-ins where either is missing, **so importing the package
+no longer imports an oracle** — verified by blocking both at the import system
+and importing every module. `find_spec` rather than a failed import, so a package
+that is present but raises is a fault to see and not a viewer silently declared
+absent. A run that asked for no viewer is unaffected; one that asked gets an
+`ImportError` at the end, after its report and record are written.
+
+**Every package `__init__` now holds re-exports and nothing else**: `analysis/`
+204 lines to 23 (`contract.py`, `supports.py`), `sizing/` 112 to 18,
+`optimization/` 399 to 29 (`auglag.py`), `exporting/` 93 to 15 (`records.py`).
+
+### One SPDX line, and the outputs fold under data
+
+- **The licence boilerplate is one line.** Apache 2.0 puts the block in a "we
+  recommend" appendix, and `LICENSE` plus `pyproject.toml`'s `license` field
+  carry the grant. Coverage went from 70 of 87 files to all of them, the 17
+  tests that carried nothing included.
+- **Six output directories became two.** `build/` and `dist/` are regenerable —
+  `build/` held a pre-restructure snapshot that had been answering greps for
+  weeks — and `artifacts/` and `designs/` were orphaned by modules that no
+  longer exist, the latter keyed by 14 run descriptions that are also gone.
+  `trajectories/` nests under `data/`. Its README was the **only** written
+  warning about how to plot that data and was itself untracked; it is folded
+  into `docs/fast_backward_pass.md`, whose 24-start table grew the median and
+  feasibility columns it carried. `ROADMAP.md` moved into `docs/`.
+
+### CI ran on three Pythons, two of which could never resolve
+
+`jax-fdm` 0.14.0 requires `>=3.11,<3.13`, so the 3.13 and 3.14 jobs died at
+*Install dependencies* before lint or tests ran, and 3.12 was cancelled by
+fail-fast without once finishing. The branch had been red since before the work
+above. Every other dependency allows 3.13 or later — tesseract-jax `<3.15`,
+tesseract-core `<3.15`, pynitefea `>=3.11`, blue-prints `>=3.12` — so `jax-fdm`
+alone binds, and `requires-python` is now `>=3.12,<3.13` with the matrix to
+match. Widen both when it ships 3.13 wheels.
+
+Triggers are `push` on `main` and `pull_request`, where they were `[push,
+pull_request]`: a push to a branch with an open PR fired the workflow twice on
+the same commit, once per trigger.
+
+**CI green covers 150 of the 363 tests.** It installs `--group dev`, so `smax`
+and `ec3x` are absent and `conftest` skips the twelve oracle-gated files — the
+parity evidence, that the crossed backends agree with a traced reference, has
+never been checked there and cannot be until those packages are installable.
+
 ### The form finder owns its basis, and the start is an initializer
 
 Ruled 2026-08-26: the held-plan basis is a property of form finding alone — it
