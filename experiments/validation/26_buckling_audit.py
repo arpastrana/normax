@@ -47,15 +47,15 @@ import jax.numpy as jnp
 import numpy as np
 from ec3x.resistance import SLENDERNESS_OFFSET
 from ec3x.resistance import reduction_buckling
+from normax.searches import StructureProfile
 
 from normax import searches
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
-from normax.searches import StructureProfile
+from normax.reporting import verify_checks
 from normax.sections import TubeFamily
-from normax.structures import member_lengths
+from normax.structures import compute_member_lengths
 
 # The run descriptions the examples take, and the folder this file sits in.
 EXPERIMENTS = Path(__file__).resolve().parents[1]
@@ -318,7 +318,7 @@ def read_a_structure(
         xyz = jnp.asarray(read.xyz)
         diameters = jnp.asarray(read.diameters)
         forces = problem.pipeline.analyzer(xyz, diameters, problem.loads.analysis)
-        lengths = member_lengths(xyz, problem.structure.edges)
+        lengths = compute_member_lengths(xyz, problem.structure.edges)
         reading = buckling_reading(
             f"{described.stem.split('_')[0]}, {search}",
             search != searches.SEARCH_DRAWN,
@@ -431,7 +431,7 @@ def main() -> None:
             "offset: " + ", ".join(frozen)
         )
 
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

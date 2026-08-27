@@ -53,14 +53,14 @@ from Pynite import FEModel3D
 from normax.analysis import SmaxAnalyzer
 from normax.analysis import pynite
 from normax.analysis.element import SectionRigidity
-from normax.analysis.element import member_frame
-from normax.analysis.element import stiffness_global
-from normax.analysis.element import stiffness_local
+from normax.analysis.element import assemble_stiffness_global
+from normax.analysis.element import assemble_stiffness_local
+from normax.analysis.element import compute_direction_cosines
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_gridshell_3d
@@ -279,8 +279,10 @@ def element_claim(report: Report) -> tuple[float, float]:
             torsional=jnp.asarray(shear * 2.0 * inertia),
         )
         length = jnp.asarray(float(np.linalg.norm(end - start)))
-        local = stiffness_local(length, rigidity)
-        spanned = stiffness_global(jnp.asarray(start), jnp.asarray(end), rigidity)
+        local = assemble_stiffness_local(length, rigidity)
+        spanned = assemble_stiffness_global(
+            jnp.asarray(start), jnp.asarray(end), rigidity
+        )
         worst_local = max(worst_local, relative(local, theirs.ke()))
         worst_global = max(worst_global, relative(spanned, theirs.Ke()))
 
@@ -334,11 +336,11 @@ def roll_claim(report: Report) -> float:
     )
     start = jnp.asarray([0.0, 0.0, 0.0])
     end = jnp.asarray([3.0, 1.0, 2.0])
-    spanned = np.asarray(stiffness_global(start, end, rigidity))
+    spanned = np.asarray(assemble_stiffness_global(start, end, rigidity))
     length = jnp.linalg.norm(end - start)
-    frame = np.asarray(member_frame(start, end))
+    frame = np.asarray(compute_direction_cosines(start, end))
     axis = frame[0]
-    local = np.asarray(stiffness_local(length, rigidity))
+    local = np.asarray(assemble_stiffness_local(length, rigidity))
 
     angles = (0.3, 0.9, 1.7, 2.6)
     rows = []
@@ -421,10 +423,10 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
     problem = pynite.FrameProblem(
         structure=structure, catalogue=family, loads=sample.loads
     )
-    forces = pynite.member_forces(
+    forces = pynite.compute_member_forces(
         problem, np.asarray(structure.nodes), sample.diameters, sample.loads
     )
-    jacobian = pynite.force_jacobian(
+    jacobian = pynite.compute_force_jacobian(
         problem, np.asarray(structure.nodes), sample.diameters
     )
     axial = np.asarray(forces.axial_force) / SCALE_FORCE**2
@@ -501,23 +503,23 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
 
     # Warmed first: the first call through either compiles, and a cost table
     # that reported a compilation would be measuring the wrong thing.
-    pynite.member_forces(problem, nodes, sample.diameters, sample.loads)
+    pynite.compute_member_forces(problem, nodes, sample.diameters, sample.loads)
     start = time.perf_counter()
-    pynite.member_forces(problem, nodes, sample.diameters, sample.loads)
+    pynite.compute_member_forces(problem, nodes, sample.diameters, sample.loads)
     forward = time.perf_counter() - start
 
     start = time.perf_counter()
-    pynite.force_jacobian(problem, nodes, sample.diameters)
+    pynite.compute_force_jacobian(problem, nodes, sample.diameters)
     cold = time.perf_counter() - start
 
     start = time.perf_counter()
-    pynite.force_jacobian(problem, nodes, sample.diameters)
+    pynite.compute_force_jacobian(problem, nodes, sample.diameters)
     warm = time.perf_counter() - start
 
     stacked = np.stack([sample.loads, 0.6 * sample.loads, 0.4 * sample.loads])
-    pynite.member_forces(problem, nodes, sample.diameters, stacked)
+    pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
     start = time.perf_counter()
-    pynite.member_forces(problem, nodes, sample.diameters, stacked)
+    pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
     together = time.perf_counter() - start
 
     seed = pynite.ReadingCotangent(
@@ -525,9 +527,9 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
         moment_major=np.ones((members, 2)),
         moment_minor=np.ones((members, 2)),
     )
-    pynite.force_cotangents(problem, nodes, sample.diameters, seed)
+    pynite.pull_back_cotangents(problem, nodes, sample.diameters, seed)
     start = time.perf_counter()
-    pynite.force_cotangents(problem, nodes, sample.diameters, seed)
+    pynite.pull_back_cotangents(problem, nodes, sample.diameters, seed)
     adjoint = time.perf_counter() - start
 
     differenced = 2.0 * width * forward
@@ -606,7 +608,7 @@ def main(verbose: bool = True) -> None:
         ),
     )
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

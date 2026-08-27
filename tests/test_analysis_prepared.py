@@ -4,14 +4,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import member_forces
+from normax.analysis.smax import compute_member_forces
 from normax.analysis.smax import prepare_model
-from normax.builders import build_section_family
 from normax.form_finding import FdmFormFinder
 from normax.loads import load_uniform
 from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.sections import TubeFamily
+from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 
 # A 10 m arch of ten members under a 20 kN load at every free node, in the XZ
@@ -91,8 +91,8 @@ def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
     from_start = prepare_model(structure, section)
     from_found = prepare_model(structure._replace(nodes=xyz), section)
 
-    a = member_forces(from_start, xyz, diameters, section, applied)
-    b = member_forces(from_found, xyz, diameters, section, applied)
+    a = compute_member_forces(from_start, xyz, diameters, section, applied)
+    b = compute_member_forces(from_found, xyz, diameters, section, applied)
 
     assert np.all(np.asarray(a.axial_force) == np.asarray(b.axial_force))
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
@@ -109,8 +109,8 @@ def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
     absurd = prepare_model(structure._replace(nodes=xyz * 3.0), absurd_family(999.0))
     honest = prepare_model(structure, section)
 
-    a = member_forces(absurd, xyz, diameters, section, applied)
-    b = member_forces(honest, xyz, diameters, section, applied)
+    a = compute_member_forces(absurd, xyz, diameters, section, applied)
+    b = compute_member_forces(honest, xyz, diameters, section, applied)
 
     assert np.all(np.asarray(a.axial_force) == np.asarray(b.axial_force))
     assert np.all(np.asarray(a.moment_major) == np.asarray(b.moment_major))
@@ -119,9 +119,9 @@ def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
 def test_a_prepared_model_carries_no_load_case_of_its_own(
     model, xyz, section, diameters, applied
 ):
-    once = member_forces(model, xyz, diameters, section, applied)
-    twice = member_forces(model, xyz, diameters, section, applied)
-    halved = member_forces(model, xyz, diameters, section, 0.5 * applied)
+    once = compute_member_forces(model, xyz, diameters, section, applied)
+    twice = compute_member_forces(model, xyz, diameters, section, applied)
+    halved = compute_member_forces(model, xyz, diameters, section, 0.5 * applied)
 
     assert np.all(np.asarray(once.axial_force) == np.asarray(twice.axial_force))
     assert np.allclose(
@@ -134,12 +134,15 @@ def test_the_geometry_and_the_diameters_are_live_leaves(
 ):
     def by_geometry(coords):
         return jnp.sum(
-            member_forces(model, coords, diameters, section, applied).axial_force ** 2
+            compute_member_forces(
+                model, coords, diameters, section, applied
+            ).axial_force
+            ** 2
         )
 
     def by_size(sizes):
         return jnp.sum(
-            member_forces(model, xyz, sizes, section, applied).moment_major ** 2
+            compute_member_forces(model, xyz, sizes, section, applied).moment_major ** 2
         )
 
     for gradient in (jax.grad(by_geometry)(xyz), jax.grad(by_size)(diameters)):
@@ -152,7 +155,7 @@ def test_the_modulus_is_a_live_leaf(model, xyz, steel, catalogue, diameters, app
     # compliance is what distinguishes an injected modulus from a baked one.
     def compliance(e_mod):
         graded = TubeFamily(catalogue.ratio, steel._replace(e_mod=e_mod))
-        member = member_forces(model, xyz, diameters, graded(DIAMETER), applied)
+        member = compute_member_forces(model, xyz, diameters, graded(DIAMETER), applied)
 
         return jnp.sum(member.moment_major**2) / e_mod
 
@@ -169,7 +172,7 @@ def test_the_analysis_and_its_gradient_trace_under_jit(
     model, xyz, section, diameters, applied
 ):
     def run(coords, sizes):
-        member = member_forces(model, coords, sizes, section, applied)
+        member = compute_member_forces(model, coords, sizes, section, applied)
 
         return member.axial_force, member.moment_major
 

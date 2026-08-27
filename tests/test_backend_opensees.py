@@ -28,16 +28,16 @@ import pytest
 
 from normax.analysis import opensees
 from normax.analysis import smax
-from normax.builders import build_section_family
 from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
-from normax.tesseract import analysis_tesseract
+from normax.tesseract import open_tesseract_analysis
 
 # The same 10 m arch rising 3 m under 180 kN the rest of the suite uses.
 SPAN = 10_000.0
@@ -82,9 +82,9 @@ def densities(structure, funicular):
     """
     The uniform force density that reaches the target rise.
     """
-    fdm = equilibrium_graph(structure)
+    fdm = build_equilibrium_graph(structure)
     trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(trial, structure.nodes[fdm.indices_fixed], fdm, funicular)
+    state = solve_equilibrium(trial, structure.nodes[fdm.indices_fixed], fdm, funicular)
 
     return trial * float(jnp.max(state.xyz[:, 2])) / RISE
 
@@ -124,8 +124,8 @@ def relative(actual, expected):
 @pytest.fixture(scope="module")
 def forces(prepared, xyz, diameters, family, funicular):
     ops, traced = prepared
-    mine = opensees.member_forces(ops, xyz, diameters, family, funicular)
-    theirs = smax.member_forces(traced, xyz, diameters, family(SEED), funicular)
+    mine = opensees.compute_member_forces(ops, xyz, diameters, family, funicular)
+    theirs = smax.compute_member_forces(traced, xyz, diameters, family(SEED), funicular)
 
     return mine, theirs
 
@@ -153,7 +153,7 @@ def test_a_plane_frame_carries_no_minor_axis_moment(forces):
 def blocks(prepared, xyz, diameters, family, funicular):
     ops, _ = prepared
 
-    return opensees.force_jacobian(ops, xyz, diameters, family, funicular)
+    return opensees.compute_force_jacobian(ops, xyz, diameters, family, funicular)
 
 
 @pytest.fixture(scope="module")
@@ -164,7 +164,9 @@ def traced(prepared, xyz, diameters, family, funicular):
     _, model = prepared
 
     def run(coords, sizes):
-        member = smax.member_forces(model, coords, sizes, family(SEED), funicular)
+        member = smax.compute_member_forces(
+            model, coords, sizes, family(SEED), funicular
+        )
 
         return {"axial_force": member.axial_force, "moment_major": member.moment_major}
 
@@ -206,7 +208,9 @@ def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
     _, model = prepared
 
     def run(coords):
-        member = smax.member_forces(model, coords, diameters, family(SEED), funicular)
+        member = smax.compute_member_forces(
+            model, coords, diameters, family(SEED), funicular
+        )
 
         return {"axial_force": member.axial_force, "moment_major": member.moment_major}
 
@@ -228,7 +232,7 @@ def test_a_frame_that_is_not_flat_is_refused(
     warped = jnp.asarray(xyz).at[1, NORMAL].set(500.0)
 
     with pytest.raises(ValueError, match="not planar"):
-        opensees.member_forces(ops, warped, diameters, family, funicular)
+        opensees.compute_member_forces(ops, warped, diameters, family, funicular)
 
 
 def test_a_load_out_of_the_plane_is_refused(
@@ -238,13 +242,13 @@ def test_a_load_out_of_the_plane_is_refused(
     pushed = jnp.asarray(funicular).at[1, NORMAL].set(1_000.0)
 
     with pytest.raises(ValueError, match="normal axis"):
-        opensees.member_forces(ops, xyz, diameters, family, pushed)
+        opensees.compute_member_forces(ops, xyz, diameters, family, pushed)
 
 
 def test_the_environment_selects_the_backend(
     structure, family, xyz, diameters, funicular, forces
 ):
-    client = analysis_tesseract("opensees")
+    client = open_tesseract_analysis("opensees")
     crossed = TesseractAnalyzer(structure, client, family, NORMAL)
     served = crossed(xyz, diameters, jnp.asarray(funicular)[None, ...])
     mine, _ = forces
@@ -274,7 +278,7 @@ def test_the_gradient_is_the_same_whichever_solver_produced_it(
         return axial + major
 
     crossed = TesseractAnalyzer(
-        structure, analysis_tesseract("opensees"), family, NORMAL
+        structure, open_tesseract_analysis("opensees"), family, NORMAL
     )
     mine = jax.grad(lambda q: loss(crossed, q))(densities)
 

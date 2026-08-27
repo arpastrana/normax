@@ -125,12 +125,12 @@ from normax.optimization import optimize_annealed
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sizing import Ec3Sizer
 from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
-from normax.structures import member_lengths
+from normax.structures import compute_member_lengths
 from normax.visualization import Form
 from normax.visualization import SearchTrace
 from normax.visualization import StartSpread
@@ -693,7 +693,7 @@ def heights_design(
     axially — here bending is whatever the heights imply.
     """
     xyz = problem.structure.nodes.at[problem.nodes_free, 2].set(heights)
-    lengths = member_lengths(xyz, problem.structure.edges)
+    lengths = compute_member_lengths(xyz, problem.structure.edges)
     shape = FormFoundShape(xyz, lengths)
 
     seed = problem.diameters_seed if diameters is None else diameters
@@ -913,7 +913,7 @@ def staggered_objective(
 
     Returns
     -------
-    weigh_design :
+    compute_mass_and_design :
         The mass and the design behind it, as the staggered driver requires.
 
     Notes
@@ -925,13 +925,15 @@ def staggered_objective(
     and settling needs the reconciled one-diameter-per-member it produces.
     """
 
-    def weigh_design(params: DesignParameters) -> tuple[Float[Array, ""], Design]:
+    def compute_mass_and_design(
+        params: DesignParameters,
+    ) -> tuple[Float[Array, ""], Design]:
         design = builder(problem, params.force_densities, params.diameters)
         envelope = design_envelope(design, sharpness)
 
         return compute_mass(envelope), envelope
 
-    return weigh_design
+    return compute_mass_and_design
 
 
 def run_staggered(
@@ -970,19 +972,25 @@ def run_staggered(
     finding about the start.
     """
     sharpness = jnp.asarray(search.beta_stop)
-    weigh_density = staggered_objective(problem, density_design, sharpness)
-    weigh_heights = staggered_objective(problem, heights_design, sharpness)
+    density_objective = staggered_objective(problem, density_design, sharpness)
+    heights_objective = staggered_objective(problem, heights_design, sharpness)
 
     jobs = []
     for start in starts:
         jobs.append(
-            (SEARCH_DENSITY, start.label, weigh_density, start.density, problem.bounds)
+            (
+                SEARCH_DENSITY,
+                start.label,
+                density_objective,
+                start.density,
+                problem.bounds,
+            )
         )
         jobs.append(
             (
                 SEARCH_HEIGHTS,
                 start.label,
-                weigh_heights,
+                heights_objective,
                 start.heights,
                 problem.heights_box,
             )
@@ -992,7 +1000,7 @@ def run_staggered(
             (
                 SEARCH_HEIGHTS,
                 extra.label,
-                weigh_heights,
+                heights_objective,
                 extra.heights,
                 problem.heights_box,
             )
@@ -1848,7 +1856,7 @@ def main(config_path: Path) -> None:
     beats_single = min(masses_heights) < min(masses_density)
 
     report.write_checks(checks)
-    passed = checks_passed(checks) and beats_single
+    passed = verify_checks(checks) and beats_single
 
     report.write_verdict(passed)
 

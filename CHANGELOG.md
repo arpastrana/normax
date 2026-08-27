@@ -2,6 +2,161 @@
 
 ## Unreleased
 
+### The verb sweep: sixty package functions renamed for what they do
+
+The 2026-08-26 ruling that a function leads with its verb, applied to the
+whole package (the examples went first, above). Same role, same name across
+the three analysis backends. No behavior touched; 61 files, ~500 lines.
+
+- **compute**: `member_forces` → `compute_member_forces` (opensees, pynite,
+  smax), `force_jacobian`, `member_rigidity`, `member_actions`, `member_mass`,
+  `member_lengths`, `tributary_areas` → `compute_*`; `member_frame` →
+  `compute_direction_cosines`; `augmented_penalty` → `compute_penalty`.
+- **assemble**: `frame_model` → `assemble_frame_model` (pynite, smax);
+  `bending_block`, `stiffness_local`, `stiffness_global`, `member_stiffness`,
+  `balance_rows`, `mirror_rows` → `assemble_*`.
+- **build / solve / prepare**: `equilibrium_graph`, `orbit_matrix` →
+  `build_*`; `equilibrium_state` → `solve_equilibrium`, `case_displacements` →
+  `solve_displacements`, `solved_state` → `solve_state`, `prepared_frame` →
+  `prepare_frame`.
+- **read / select / count / mask**: `member_densities` →
+  `read_member_densities`, `polar_plan` → `read_polar_plan`,
+  `axisymmetric_bending` → `read_axisymmetric_moment`; `free_nodes` →
+  `select_free_nodes`; `coordinate_count` → `count_coordinates`,
+  `governed_counts` → `count_governed_members`; `free_mask`, `deck_mask`,
+  `half_mask` → `mask_free_nodes`, `mask_deck_nodes`, `mask_half_span`.
+- **draw**: `figure_utilization`, `figure_mass_descent`, `design_figures` →
+  `draw_utilization`, `draw_mass_descent`, `draw_design_figures`.
+- **coerce**, for every boundary converter: ec3's `design_steel`,
+  `design_actions`, `neutral_sections` → `coerce_material`,
+  `coerce_member_actions`, `coerce_member_sections`; blueprint's `host_family`,
+  `host_actions` → `coerce_section_family`, `coerce_member_actions`.
+- **open**, for the in-process clients, since `load` is what a structure
+  carries: `load_tesseract`, `analysis_tesseract`, `sizing_tesseract` →
+  `open_tesseract`, `open_tesseract_analysis`, `open_tesseract_sizing`.
+- **one-offs**: `normal_axis` → `find_normal_axis`, `support_fixities` →
+  `restrain_supports`, `frame_plane` → `check_frame_plane`, `stiffness_frame` →
+  `choose_stiffness_frame`, `member_transform` → `tile_member_transform`,
+  `vertical_upward` → `swap_vertical`, `force_cotangents` →
+  `pull_back_cotangents`, `variable_bounds` → `bound_variables`,
+  `constraint_rows` → `evaluate_constraints`, `nodal_loads` →
+  `distribute_loads`, `shifted_multipliers` → `update_multipliers`,
+  `strayed_point` → `recoil_point_to_anchor`, `worst_violation` →
+  `measure_violation`, `table_lines` → `format_table`, `checks_passed` →
+  `verify_checks`, `demand_moment` → `reduce_moments`, `permuted_members` →
+  `permute_members`.
+- **`pinned_dispatch` is gone**: its one caller was `pin_dispatch_thread`, so
+  the wrapper is a closure inside it.
+- **Left alone**: `envelope_diameters` (the verb), and the `load_*` pattern
+  functions in `loads.py`, which do load the structure.
+
+`demand_moment` and `worst_violation` were also local variable names in
+`sizing/blueprint.py`, a test and an experiment; those variables keep their
+names, the sweep having matched calls, definitions and imports alone.
+
+### builders.py dissolved: every builder sits beside what it builds
+
+`build_*` had two meanings — "lives in `builders.py`" for five functions, and
+"constructs the thing named" for `build_plan_basis`, `build_member_spread`,
+`build_load_cases`, the structure generators and the examples' own
+`build_truss`. Ruled 2026-08-26 that the prefix means the second, so the module
+that existed to collect the first is gone (−224 lines), each builder moved next
+to its product:
+
+- `build_section_family` and `CLASS_LIMITS` → `sections.py`, with `TubeFamily`.
+- `build_analyzer`, `build_sizer`, `build_pipeline` and the `*_CROSSED` tuples
+  → `tesseract.py`, with the clients they pick between. That module is now the
+  one place every shipping backend is named; `design.py` stays ignorant of the
+  transport.
+- `build_design_constraints` → `design.py`, with `DesignConstraints`; this is
+  the one new dependence, `design` on `config`.
+
+No cycles: `builders.py` was a leaf, `tesseract.py` is imported only by the
+viewer, and `config.py` imports only `optimization`. Eighteen import sites
+moved — the four examples and fourteen tests — plus the README snippet. The
+alternative, pulling every `build_*` into `builders.py`, could never be
+consistent: the structure generators are `structures.py`, and the examples'
+builders cannot live in the package at all.
+
+### Every function starts with the verb for what it does
+
+Ruled 2026-08-26: a function's name leads with an action verb, after the
+precedent of `build_pipeline`, `optimize_design` and `read_design`. Noun
+phrases such as `member_families` or `compressive_start` said what came back
+and not what was done to get it. Renamed, no behavior touched:
+
+- **In the package:** `held_plan_basis` → `build_plan_basis`, `member_spread`
+  → `build_member_spread`, `lens_geometry` → `sketch_lens` (the YAML section
+  it reads is `sketch`), `signed_shift` → `shift_densities`, `case_labels` →
+  `label_load_cases`, `initial_variables` → `initialize_optimization_variables`.
+- **In the examples:** `signed_start` and `compressive_start`, one role in
+  parallel scripts, are both `initialize_densities`; `mirrored_nodes` →
+  `mirror_nodes`, `rotated_nodes` → `rotate_nodes`, `ring_nodes` →
+  `permute_rings`, `member_families` → `list_families`, `guarded_members` →
+  `select_guarded_members`, `chord_signs` → `sign_chords`.
+- **`DesignOutcome` is `DesignRecord`**, and what holds one is `record` — in
+  the examples and as the parameter of `report_design`, `export_design` and
+  `view_design`. The `.npz` path inside `export_design` is `archive`, so it no
+  longer shadows the record it is written from.
+- **JAX is configured in `normax/__init__.py` alone:** `float64`, the
+  compilation cache at the repository's `.jax_cache`, and the zero
+  minimum-compile-time threshold. The four examples and `tests/conftest.py`
+  carried the cache lines each; they import the package, so they inherit them.
+
+The wider package still holds some sixty noun-named functions (`member_forces`,
+`frame_model`, `nodal_loads`, `orbit_matrix`, …); they are a separate sweep.
+
+### An example's main is the computation and the descent, and nothing else
+
+Each example's `main()` ended in forty lines of printing and writing that
+outweighed the twenty of computation they reported on. Folded 2026-08-26 into
+one call per concern, every one gated by a flag in the run's file:
+
+- **`output:` replaces `viewer:` in the YAMLs** — `verbose`, `export` and
+  `viewer`, read into `OutputConfig` on `RunConfig`. A run with every flag off
+  is the computation alone.
+- **`DesignRecord`** in `normax.design` carries what a run arrived at — the
+  problem, the descent's answer, the start and answer designs, and the member
+  families — so the three consumers read one container instead of five names.
+- **`report_design(outcome, config, title)`** in `normax.reporting` owns the
+  banner, the backends block, the descent table, both designs, the families
+  and the saving; it builds its own quiet `Report` when the run is not
+  verbose. The per-design block that held the name is `summarize_design`.
+  The backends block used to print before the descent; it now prints with
+  everything else, after it.
+- **`export_design(outcome, config, target)`** in the new `normax.exporting`
+  writes the `.npz` record and the two figures to an `ExportTarget` — the stem
+  and the two folders, one module constant per example in place of the
+  `FIGURES`/`DATA` pair. The record's keys are unchanged.
+- **`view_design(outcome, config)`** in `normax.viewer` opens the start and
+  the answer, and returns at once when the run asks for no viewer.
+
+The four `main()`s are now seventeen to twenty-four lines below the config
+line, and identical in shape from the descent down.
+
+### Four names said how instead of what
+
+Renamed 2026-08-26, no behavior touched:
+
+- **`AugmentedBudget` → `OptimizationBudget`, `AugmentedAnswer` →
+  `OptimizationAnswer`.** The containers describe what any descent spends and
+  arrives at; naming them after the one method that reads them today tied the
+  run description to that method. The `augmented` field of `RunConfig` and its
+  YAML section keep their name — they select the method, the containers do not.
+- **`parse_run` → `parse_config`** in `normax.config`, and its four callers in
+  `examples/`. The function returns a `RunConfig`; the experiments that reach
+  into an example already called it `parse_config`.
+- **`_section_slopes` → `_section_sensitivity`** in `analysis/opensees.py`,
+  matching `_force_sensitivity` beside it.
+- **No `weigh_*` functions.** `weigh_shape` → `compute_mass`,
+  `weigh_and_slope` → `compute_mass_and_gradient`, `weigh_design` →
+  `compute_mass_and_design`,
+  `weigh_density`/`weigh_heights` → `density_objective`/`heights_objective`,
+  in experiments 13, 15 and 103. The bare `weigh` closure in 13 and 103 stays:
+  it carries no prefix, and it lives in unadapted experiments. The one closure
+  in `tests/test_extras_replay.py` is still `shape_objective`: its body calls the
+  package `compute_mass`, which the name would shadow.
+
 ### The in-process sizer dissolved into a swappable sizing Tesseract
 
 `BlueprintSizer` was the one block in the transport grid with no analysis-side

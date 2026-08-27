@@ -57,15 +57,15 @@ from jax_fdm.equilibrium import EquilibriumStructure
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis import member_forces as forces_smax
+from normax.analysis import compute_member_forces as forces_smax
 from normax.analysis import opensees as backend_opensees
 from normax.analysis import prepare_model as prepare_smax
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_uniform
@@ -162,7 +162,7 @@ class ArchSetup(NamedTuple):
         """
         The form-found geometry the analysis stage is handed.
         """
-        state = equilibrium_state(
+        state = solve_equilibrium(
             self.q,
             self.structure.nodes[self.graph.indices_fixed],
             self.graph,
@@ -289,11 +289,11 @@ def arch_setup(num_edges: int) -> ArchSetup:
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     structure = build_arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
     applied = create_loads_uniform(structure, TOTAL_LOAD / (num_edges - 1))
 
     trial = jnp.full(num_edges, -1.0)
-    state = equilibrium_state(
+    state = solve_equilibrium(
         trial, structure.nodes[graph.indices_fixed], graph, applied
     )
     reached = jnp.max(state.xyz[:, 2])
@@ -415,7 +415,7 @@ def stage_cost(setup: ArchSetup) -> BackendSeconds:
     prepared_smax = prepare_smax(setup.structure, family(SEED))
 
     def ddm():
-        return backend_opensees.force_jacobian(
+        return backend_opensees.compute_force_jacobian(
             prepared_ddm, xyz, diameters, family, setup.funicular
         )
 
@@ -467,7 +467,7 @@ def agreement(report: Report) -> float:
     )
     prepared_smax = prepare_smax(setup.structure, family(SEED))
 
-    mine = backend_opensees.member_forces(
+    mine = backend_opensees.compute_member_forces(
         prepared_ddm, xyz, diameters, family, setup.funicular
     )
     theirs = forces_smax(prepared_smax, xyz, diameters, family(SEED), setup.funicular)
@@ -487,7 +487,7 @@ def agreement(report: Report) -> float:
     report.write_heading("member forces, DDM backend against the traced one")
     report.write_table(force_columns, force_rows)
 
-    blocks = backend_opensees.force_jacobian(
+    blocks = backend_opensees.compute_force_jacobian(
         prepared_ddm, xyz, diameters, family, setup.funicular
     )
     run = traced_forces(prepared_smax, family(SEED), setup.funicular)
@@ -615,7 +615,7 @@ def blind(report: Report) -> None:
     )
 
     def positions(q):
-        state = equilibrium_state(
+        state = solve_equilibrium(
             q,
             setup.structure.nodes[setup.graph.indices_fixed],
             setup.graph,

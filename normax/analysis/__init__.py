@@ -99,7 +99,7 @@ class AbstractFrameAnalyzer(eqx.Module):
         """
 
 
-def normal_axis(structure: Structure) -> int | None:
+def find_normal_axis(structure: Structure) -> int | None:
     """
     The global axis a structure has no thickness along, if it has one.
 
@@ -142,7 +142,7 @@ def normal_axis(structure: Structure) -> int | None:
     return None
 
 
-def support_fixities(structure: Structure) -> Bool[np.ndarray, "nodes 6"]:
+def restrain_supports(structure: Structure) -> Bool[np.ndarray, "nodes 6"]:
     """
     Which degrees of freedom are restrained at every node.
 
@@ -166,7 +166,7 @@ def support_fixities(structure: Structure) -> Bool[np.ndarray, "nodes 6"]:
     -----
     **What a structure asks for is pinned supports, and what a solver needs is
     sometimes more than that.** The difference is worked out here rather than
-    handed in: the plane is measured with `normal_axis` and the restraints that
+    handed in: the plane is measured with `find_normal_axis` and the restraints that
     a three-dimensional solve of a planar structure additionally needs are
     added. Only the supports themselves cannot be supplied, a structure held
     nowhere being under-determined in a way no fixity describes.
@@ -207,7 +207,7 @@ def support_fixities(structure: Structure) -> Bool[np.ndarray, "nodes 6"]:
     flags = np.zeros((structure.num_nodes, DOF_PER_NODE), dtype=bool)
     flags[supports, :3] = True
 
-    normal = normal_axis(structure)
+    normal = find_normal_axis(structure)
     if normal is not None:
         flags[:, normal] = True
         rotations = [DOF_PER_NODE // 2 + axis for axis in (0, 1, 2) if axis != normal]

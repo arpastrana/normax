@@ -8,9 +8,8 @@ import pytest
 from conftest import load_tesseract_api
 from tesseract_jax import apply_tesseract
 
-from normax.analysis import normal_axis
+from normax.analysis import find_normal_axis
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -19,6 +18,7 @@ from normax.loads import assemble_load_cases
 from normax.loads import load_tributary
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.structures import build_arch_2d
@@ -26,8 +26,8 @@ from normax.structures import build_gridshell_3d
 from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
-from normax.tesseract import analysis_tesseract
-from normax.tesseract import sizing_tesseract
+from normax.tesseract import open_tesseract_analysis
+from normax.tesseract import open_tesseract_sizing
 
 # The same 10 m arch rising 3 m under 180 kN that the in-process pipeline is
 # tested on, so the two routes are compared on identical ground.
@@ -113,12 +113,12 @@ def params(force_densities):
 
 @pytest.fixture(scope="module")
 def opensees_client():
-    return analysis_tesseract("opensees")
+    return open_tesseract_analysis("opensees")
 
 
 @pytest.fixture(scope="module")
 def blueprint_client():
-    return sizing_tesseract("blueprint")
+    return open_tesseract_sizing("blueprint")
 
 
 @pytest.fixture(scope="module")
@@ -139,7 +139,7 @@ def oracle_pipeline(structure, family, shared_sizer):
 @pytest.fixture(scope="module")
 def crossed_pipeline(structure, family, opensees_client, shared_sizer):
     analyzer = TesseractAnalyzer(
-        structure, opensees_client, family, normal_axis(structure)
+        structure, opensees_client, family, find_normal_axis(structure)
     )
 
     return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, shared_sizer)
@@ -358,7 +358,7 @@ def shell_oracle(shell, family, shell_sizer):
 
 @pytest.fixture(scope="module")
 def shell_crossed(shell, family, shell_sizer):
-    analyzer = TesseractAnalyzer(shell, analysis_tesseract("pynite"), family, None)
+    analyzer = TesseractAnalyzer(shell, open_tesseract_analysis("pynite"), family, None)
 
     return StructuralDesignPipeline(FdmFormFinder(shell), analyzer, shell_sizer)
 

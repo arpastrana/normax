@@ -3,12 +3,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.optimization import AugmentedBudget
 from normax.optimization import ConstrainedMaps
-from normax.optimization import augmented_penalty
+from normax.optimization import OptimizationBudget
+from normax.optimization import compute_penalty
 from normax.optimization import descend_augmented
-from normax.optimization import shifted_multipliers
-from normax.optimization import strayed_point
+from normax.optimization import recoil_point_to_anchor
+from normax.optimization import update_multipliers
 
 # --------------------------------------------------------------------------- #
 # The augmented Lagrangian
@@ -20,7 +20,7 @@ from normax.optimization import strayed_point
 CORNER = np.array([1.0, 1.0])
 CORNER_START = np.array([3.0, 3.0])
 CORNER_BOXES = [(0.1, 10.0), (0.1, 10.0)]
-CORNER_BUDGET = AugmentedBudget(
+CORNER_BUDGET = OptimizationBudget(
     rounds=25,
     iterations=200,
     settled=100,
@@ -43,7 +43,7 @@ def hyperbola(x):
 
 def constrained_maps(weigh, slack):
     def augmented(x, multipliers, penalty, reference):
-        penalized = augmented_penalty(slack(x), multipliers, penalty)
+        penalized = compute_penalty(slack(x), multipliers, penalty)
 
         return weigh(x) / reference + penalized
 
@@ -58,13 +58,13 @@ def test_satisfied_rows_at_no_price_cost_nothing():
     slack = jnp.asarray([0.5, 1.0, 2.0])
     resting = jnp.zeros(3)
 
-    assert float(augmented_penalty(slack, resting, 10.0)) == pytest.approx(0.0)
+    assert float(compute_penalty(slack, resting, 10.0)) == pytest.approx(0.0)
 
 
 def test_a_violated_row_is_charged_the_square_of_its_violation():
     slack = jnp.asarray([-0.2])
     resting = jnp.zeros(1)
-    charged = float(augmented_penalty(slack, resting, 10.0))
+    charged = float(compute_penalty(slack, resting, 10.0))
 
     assert charged == pytest.approx(0.5 * 10.0 * 0.2**2)
 
@@ -73,32 +73,32 @@ def test_an_active_row_is_priced_at_its_own_multiplier():
     # The whole point of the shift: at zero slack the derivative in the row is
     # minus its multiplier, whatever the penalty, so first-order optimality of
     # the original problem is recovered without driving the penalty up.
-    priced = jax.grad(augmented_penalty)(jnp.zeros(1), jnp.asarray([3.5]), 10.0)
+    priced = jax.grad(compute_penalty)(jnp.zeros(1), jnp.asarray([3.5]), 10.0)
 
     assert float(priced[0]) == pytest.approx(-3.5)
 
 
 def test_the_price_of_an_active_row_does_not_move_with_the_penalty():
-    steep = jax.grad(augmented_penalty)(jnp.zeros(1), jnp.asarray([3.5]), 1.0e6)
+    steep = jax.grad(compute_penalty)(jnp.zeros(1), jnp.asarray([3.5]), 1.0e6)
 
     assert float(steep[0]) == pytest.approx(-3.5)
 
 
 def test_a_multiplier_never_goes_negative():
     # A row satisfied with room to spare would otherwise be paid to stay away.
-    shifted = shifted_multipliers(np.zeros(3), np.array([1.0, 2.0, 3.0]), 10.0, 1e8)
+    shifted = update_multipliers(np.zeros(3), np.array([1.0, 2.0, 3.0]), 10.0, 1e8)
 
     assert np.all(shifted == 0.0)
 
 
 def test_a_violated_row_raises_its_multiplier_in_proportion():
-    shifted = shifted_multipliers(np.zeros(1), np.array([-0.5]), 10.0, 1e8)
+    shifted = update_multipliers(np.zeros(1), np.array([-0.5]), 10.0, 1e8)
 
     assert float(shifted[0]) == pytest.approx(5.0)
 
 
 def test_a_multiplier_is_capped_at_its_ceiling():
-    shifted = shifted_multipliers(np.zeros(1), np.array([-1.0]), 1.0e9, 100.0)
+    shifted = update_multipliers(np.zeros(1), np.array([-1.0]), 1.0e9, 100.0)
 
     assert float(shifted[0]) == pytest.approx(100.0)
 
@@ -106,7 +106,7 @@ def test_a_multiplier_is_capped_at_its_ceiling():
 def test_a_point_outside_the_domain_is_worse_than_the_anchor():
     anchor = np.array([1.0, 1.0])
     strayed = np.array([5.0, 4.0])
-    value, _ = strayed_point(strayed, anchor, 2.0)
+    value, _ = recoil_point_to_anchor(strayed, anchor, 2.0)
 
     assert value > 2.0
 
@@ -114,7 +114,7 @@ def test_a_point_outside_the_domain_is_worse_than_the_anchor():
 def test_the_gradient_outside_the_domain_points_back_inside():
     anchor = np.array([1.0, 1.0])
     strayed = np.array([5.0, 4.0])
-    _, slope = strayed_point(strayed, anchor, 2.0)
+    _, slope = recoil_point_to_anchor(strayed, anchor, 2.0)
     homeward = anchor - strayed
 
     assert float(np.dot(-slope, homeward)) > 0.0
@@ -223,7 +223,7 @@ def test_a_non_finite_objective_is_treated_as_outside_the_model():
     # A solver that reports a NaN rather than raising would otherwise poison
     # every curvature estimate taken after it.
     def poisoned(x, multipliers, penalty, reference):
-        penalized = augmented_penalty(hyperbola(x), multipliers, penalty)
+        penalized = compute_penalty(hyperbola(x), multipliers, penalty)
         value = summed(x) / reference + penalized
 
         return jnp.where(x[0] < 0.9, jnp.nan, value)

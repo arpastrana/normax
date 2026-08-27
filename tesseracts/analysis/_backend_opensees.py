@@ -43,7 +43,7 @@ def solve_forces(frame: AnalyzedFrame) -> MemberForces:
     """
     model = opensees.prepare_model(frame.structure, frame.family, frame.normal)
 
-    return opensees.member_forces(
+    return opensees.compute_member_forces(
         model, frame.structure.nodes, frame.diameters, frame.family, frame.loads
     )
 
@@ -73,7 +73,7 @@ def forces_vjp(frame: AnalyzedFrame, cotangent: MemberForces) -> dict[str, np.nd
     cannot reach.
     """
     model = opensees.prepare_model(frame.structure, frame.family, frame.normal)
-    blocks = opensees.force_jacobian(
+    blocks = opensees.compute_force_jacobian(
         model, frame.structure.nodes, frame.diameters, frame.family, frame.loads
     )
     axial = np.asarray(cotangent.axial_force)

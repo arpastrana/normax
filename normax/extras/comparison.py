@@ -32,9 +32,9 @@ from jaxtyping import Int
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.form_finding import PlanBasis
-from normax.form_finding import free_nodes
+from normax.form_finding import select_free_nodes
 from normax.structures import Structure
-from normax.structures import member_lengths
+from normax.structures import compute_member_lengths
 
 
 def identity_basis(width: int) -> PlanBasis:
@@ -90,7 +90,7 @@ class HeightsFormFinder(AbstractFormFinder):
         structure :
             The structure supplying the plan, the members and the supports.
         """
-        nodes_free = free_nodes(structure)
+        nodes_free = select_free_nodes(structure)
 
         self.xyz = jnp.asarray(structure.nodes)
         self.edges = np.asarray(structure.edges)
@@ -118,7 +118,7 @@ class HeightsFormFinder(AbstractFormFinder):
             The geometry, and its member lengths.
         """
         xyz = self.xyz.at[self.nodes_free, 2].set(heights)
-        lengths = member_lengths(xyz, self.edges)
+        lengths = compute_member_lengths(xyz, self.edges)
 
         return FormFoundShape(xyz, lengths)
 
@@ -179,6 +179,6 @@ class DrawnFormFinder(AbstractFormFinder):
         shape :
             The drawn geometry, and its member lengths.
         """
-        lengths = member_lengths(self.xyz, self.edges)
+        lengths = compute_member_lengths(self.xyz, self.edges)
 
         return FormFoundShape(self.xyz, lengths)

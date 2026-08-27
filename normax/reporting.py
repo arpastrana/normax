@@ -21,14 +21,17 @@ verbosity, so a caller silences a whole report by constructing a quiet one.
 
 import textwrap
 from collections.abc import Sequence
+from typing import Any
 from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
 
+from normax.config import RunConfig
 from normax.design import Design
+from normax.design import DesignRecord
 from normax.design import compute_mass
-from normax.optimization import AugmentedAnswer
+from normax.optimization import OptimizationAnswer
 
 # Spaces of indentation given to anything printed under a heading.
 INDENT = "  "
@@ -97,7 +100,7 @@ def format_cell(value: CellValue, column: ReportColumn) -> str:
     return format(value, column.format_spec)
 
 
-def table_lines(
+def format_table(
     columns: Sequence[ReportColumn],
     rows: Sequence[Sequence[CellValue]],
 ) -> list[str]:
@@ -128,7 +131,7 @@ def table_lines(
     return lines
 
 
-def checks_passed(checks: Sequence[ToleranceCheck]) -> bool:
+def verify_checks(checks: Sequence[ToleranceCheck]) -> bool:
     """
     Whether every measurement stayed under its bound.
     """
@@ -226,7 +229,7 @@ class Report:
         if not self.verbose:
             return
 
-        for line in table_lines(columns, rows):
+        for line in format_table(columns, rows):
             self.write_line(line)
 
     def write_checks(self, checks: Sequence[ToleranceCheck]) -> None:
@@ -248,7 +251,7 @@ class Report:
         self.write_heading("PASS" if passed else "FAIL")
 
 
-def report_descent(report: Report, answer: AugmentedAnswer) -> None:
+def report_descent(report: Report, answer: OptimizationAnswer) -> None:
     """
     Every round of an augmented descent, its mass beside its violation.
 
@@ -273,7 +276,7 @@ def report_descent(report: Report, answer: AugmentedAnswer) -> None:
     report.write_entries(entries)
 
 
-def report_design(report: Report, design: Design, title: str) -> None:
+def summarize_design(report: Report, design: Design, title: str) -> None:
     """
     What a design weighs, how hard it is worked, and how it sits.
 
@@ -331,3 +334,46 @@ def report_families(
         used = worked[members]
         rows.append((name, sizes.min(), sizes.max(), used.min(), used.max()))
     report.write_table(columns, rows)
+
+
+def report_design(
+    record: DesignRecord,
+    config: RunConfig[Any, Any],
+    title: str,
+) -> None:
+    """
+    The whole report of a run, or nothing when the run is not verbose.
+
+    Parameters
+    ----------
+    record :
+        What the run arrived at.
+    config :
+        The run as described, naming its backends and whether it prints.
+    title :
+        Banner the report opens with.
+    """
+    report = Report(verbose=config.output.verbose)
+    report.write_banner(title)
+
+    entries = [
+        ("analysis", config.analysis.backend),
+        ("sizing", config.sizing.backend),
+    ]
+    if record.problem.basis is not None:
+        entries.append(("coordinates", str(record.problem.basis.width)))
+    entries.append(("variables", str(record.answer.variables.size)))
+    report.write_heading("Backends")
+    report.write_entries(entries)
+
+    report.write_heading("The descent")
+    report_descent(report, record.answer)
+    summarize_design(report, record.initial, "The start")
+    summarize_design(report, record.optimized, "The answer")
+    if record.families:
+        report_families(report, record.optimized, record.families)
+
+    mass_initial = float(compute_mass(record.initial))
+    mass_optimized = float(compute_mass(record.optimized))
+    saved = 1.0 - mass_optimized / mass_initial
+    report.write_entries([("saved", f"{100.0 * saved:.2f} %")])

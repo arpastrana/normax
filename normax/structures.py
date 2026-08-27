@@ -365,7 +365,7 @@ def build_gridshell_3d(
     return build_structure(nodes, edges, supports)
 
 
-def member_lengths(
+def compute_member_lengths(
     xyz: Float[Array, "nodes 3"],
     edges: Int[Array, "edges 2"],
 ) -> Float[Array, "edges"]:

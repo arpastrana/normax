@@ -43,19 +43,19 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import diagnose_mechanisms
 
-from normax.analysis import frame_model
-from normax.analysis import member_forces
+from normax.analysis import assemble_frame_model
+from normax.analysis import compute_member_forces
 from normax.analysis import prepare_model
 from normax.design import MemberForces
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sections import MemberSections
 from normax.sizing import build_section_family
 from normax.structures import Structure
@@ -188,9 +188,9 @@ def funicular_arch(load: float, force_density: float) -> FunicularArch:
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
     applied = create_loads_uniform(structure, load)
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
     q = jnp.full(NUM_EDGES, force_density)
-    state = equilibrium_state(q, structure.nodes[graph.indices_fixed], graph, applied)
+    state = solve_equilibrium(q, structure.nodes[graph.indices_fixed], graph, applied)
     axial_force = q * state.lengths[:, 0]
     arch = FunicularArch(structure, graph, state, axial_force, applied)
 
@@ -210,7 +210,9 @@ def handoff_gap(
     section = graded_section(arch.structure, grade)
     prepared = prepare_model(arch.structure, section)
     diameters = jnp.full(NUM_EDGES, diameter)
-    member = member_forces(prepared, arch.state.xyz, diameters, section, arch.loads)
+    member = compute_member_forces(
+        prepared, arch.state.xyz, diameters, section, arch.loads
+    )
 
     departure = jnp.abs(member.axial_force - arch.axial_force)
     axial = jnp.max(departure / jnp.abs(arch.axial_force))
@@ -358,9 +360,11 @@ def main(verbose: bool = True) -> None:
     section = graded_section(arch.structure, GRADE)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
     prepared = prepare_model(arch.structure, section)
-    member = member_forces(prepared, arch.state.xyz, diameters, section, arch.loads)
+    member = compute_member_forces(
+        prepared, arch.state.xyz, diameters, section, arch.loads
+    )
 
-    model = frame_model(arch.structure, arch.state.xyz, section)
+    model = assemble_frame_model(arch.structure, arch.state.xyz, section)
     mechanisms = diagnose_mechanisms(model).num_mechanisms
 
     report_shape(report, arch, mechanisms)
@@ -368,13 +372,15 @@ def main(verbose: bool = True) -> None:
     by_diameter = report_scaling(report)
 
     def objective(q):
-        state = equilibrium_state(
+        state = solve_equilibrium(
             q,
             arch.structure.nodes[arch.graph.indices_fixed],
             arch.graph,
             arch.loads,
         )
-        analyzed = member_forces(prepared, state.xyz, diameters, section, arch.loads)
+        analyzed = compute_member_forces(
+            prepared, state.xyz, diameters, section, arch.loads
+        )
 
         return jnp.sum(analyzed.axial_force**2)
 
@@ -407,7 +413,7 @@ def main(verbose: bool = True) -> None:
         ToleranceCheck("gradient error", worst_gradient, TOLERANCE_GRADIENT),
     )
     finite = bool(jnp.all(jnp.isfinite(gradient)))
-    passed = checks_passed(checks) and mechanisms == 0 and finite
+    passed = verify_checks(checks) and mechanisms == 0 and finite
 
     report.write_heading("Summary")
     report.write_checks(checks)

@@ -91,7 +91,7 @@ class HostFamily(NamedTuple):
     floor: float
 
 
-def host_family(
+def coerce_section_family(
     ratio: float,
     f_y: float,
     gamma_m0: float = GAMMA_M0,
@@ -172,7 +172,7 @@ def snapshot_family(family: TubeFamily) -> tuple[float, float]:
     """
     ratio = float(family.ratio)
     f_y = float(family.material.f_y)
-    host_family(ratio, f_y)
+    coerce_section_family(ratio, f_y)
 
     return ratio, f_y
 
@@ -411,7 +411,7 @@ class HostActions(NamedTuple):
     end_minor: Float[np.ndarray, "*load_cases members ends"]
 
 
-def host_actions(
+def coerce_member_actions(
     axial: Float[np.ndarray, "*load_cases members"],
     end_major: Float[np.ndarray, "*load_cases members ends"],
     end_minor: Float[np.ndarray, "*load_cases members ends"],
@@ -471,7 +471,7 @@ class DemandMoment(NamedTuple):
     minor: WinningEnd
 
 
-def demand_moment(actions: HostActions) -> DemandMoment:
+def reduce_moments(actions: HostActions) -> DemandMoment:
     """
     Reduce two end moments per axis to the one moment this check reads.
 
@@ -541,7 +541,7 @@ def _solve_fingerprint(actions: HostActions, family: HostFamily) -> bytes:
     return digest.digest()
 
 
-def solved_state(actions: HostActions, family: HostFamily) -> SolvedState:
+def solve_state(actions: HostActions, family: HostFamily) -> SolvedState:
     """
     The solved state these actions describe, searched for only once.
 
@@ -568,7 +568,7 @@ def solved_state(actions: HostActions, family: HostFamily) -> SolvedState:
     if held is not None:
         return held
 
-    demand = demand_moment(actions)
+    demand = reduce_moments(actions)
     unclamped = _solve_batch(actions.axial, demand.moment, family)
     diameter = np.maximum(unclamped, family.floor)
     state = SolvedState(family, actions.axial, demand, unclamped, diameter)
@@ -616,7 +616,7 @@ def size_members(actions: HostActions, family: HostFamily) -> SizedMembers:
         The floored diameters, the utilization re-read at them, and the mask
         of members the floor decided.
     """
-    state = solved_state(actions, family)
+    state = solve_state(actions, family)
     used = _check_batch(state.diameter, state.axial, state.demand.moment, family)
     clamped = state.unclamped < family.floor
 
@@ -646,7 +646,7 @@ def check_members(
         Demand over resistance of every member at the held size.
     """
     held = np.asarray(diameter_held, dtype=np.float64)
-    demand = demand_moment(actions)
+    demand = reduce_moments(actions)
 
     return _check_batch(held, actions.axial, demand.moment, family)
 
@@ -785,7 +785,7 @@ def size_cotangents(
     where the floor did. The reported utilization is the mirror image: pinned
     at one where the check decided, the bare partial at the floor otherwise.
     """
-    state = solved_state(actions, family)
+    state = solve_state(actions, family)
     demand = state.demand
     at_root = _check_partials(state.unclamped, state.axial, demand.moment, family)
     at_floor = _check_partials(state.diameter, state.axial, demand.moment, family)
@@ -853,7 +853,7 @@ def check_cotangents(
     """
     held = np.asarray(diameter_held, dtype=np.float64)
     pulled = np.asarray(cotangent, dtype=np.float64)
-    demand = demand_moment(actions)
+    demand = reduce_moments(actions)
     partials = _check_partials(held, actions.axial, demand.moment, family)
     on_actions = _action_cotangents(
         partials.axial * pulled, partials.moment * pulled, demand

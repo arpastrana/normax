@@ -43,6 +43,9 @@ from jaxtyping import Float
 
 from normax.materials import SteelGrade
 
+# EN 1993-1-1 Table 5.2 sheet 3: d/t limit per class, in multiples of epsilon squared.
+CLASS_LIMITS = {1: 50.0, 2: 70.0, 3: 90.0}
+
 
 class MemberSections(NamedTuple):
     """
@@ -203,3 +206,39 @@ class TubeFamily(NamedTuple):
         thickness = jnp.asarray(diameter) / self.ratio
 
         return MemberSections(diameter, thickness, self.material)
+
+
+def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
+    """
+    The section family as thin as a given class allows.
+
+    Parameters
+    ----------
+    grade :
+        The steel as a certificate states it.
+    section_class :
+        Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
+
+    Returns
+    -------
+    family :
+        The family whose ratio sits exactly on that class's limit.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 5.2 sheet 3, `d/t <= k epsilon^2` with `epsilon^2 =
+    235 / f_y`. Sitting on the limit maximizes the wall slenderness, and so
+    minimizes material, while staying inside the class, so classification is
+    exact by construction and needs no smoothing.
+    """
+    if section_class not in CLASS_LIMITS:
+        raise ValueError(f"section_class must be 1, 2 or 3, got {section_class}")
+
+    ratio = CLASS_LIMITS[section_class] * 235.0 / grade.f_y
+
+    return TubeFamily(ratio, grade)

@@ -58,9 +58,9 @@ from normax.design import StructuralDesignPipeline
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.tesseract import TesseractSizer
-from normax.tesseract import sizing_tesseract
+from normax.tesseract import open_tesseract_sizing
 
 # The two routes carry the same pulls, so their entries may differ only by
 # the client-side contraction's round-off; measured at zero, held with room.
@@ -627,11 +627,14 @@ def main(path: Path) -> None:
     report.write_banner("The Jacobian crossing — one boundary call, or one per row")
 
     report.write_heading("In process")
-    clients = (sizing_tesseract("blueprint"), sizing_tesseract("blueprint"))
+    clients = (open_tesseract_sizing("blueprint"), open_tesseract_sizing("blueprint"))
     checks = crossing_study(report, scaffold, clients, config.crossing.repeats)
 
     report.write_heading("End to end, experiment 103's search on both routes")
-    solve_clients = (sizing_tesseract("blueprint"), sizing_tesseract("blueprint"))
+    solve_clients = (
+        open_tesseract_sizing("blueprint"),
+        open_tesseract_sizing("blueprint"),
+    )
     routes = {
         "endpoint": route_problem(scaffold, solve_clients[0], None),
         "sequential": route_problem(scaffold, solve_clients[1], False),
@@ -642,7 +645,7 @@ def main(path: Path) -> None:
 
     report.write_heading("Summary")
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

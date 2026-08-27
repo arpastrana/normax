@@ -5,11 +5,11 @@ import pytest
 from ec3x.material import Steel
 from ec3x.section import TubeCatalogue
 
-from normax.builders import build_section_family
 from normax.materials import Steel355
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
+from normax.sections import build_section_family
 
 # The derived properties both libraries state. The two must agree bit for bit,
 # or the mass normax weighs and the resistance ec3x checks describe two

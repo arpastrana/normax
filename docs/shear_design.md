@@ -129,7 +129,7 @@ so `d(mass)/d(shear)` is identically zero, and a differentiable output advertisi
 a provably zero derivative would be worse than none.
 
 **What (A) did not do is let the check read it.** The demand crosses for the audit;
-`design_actions` still builds `MemberActions(axial_force, moment_major,
+`coerce_member_actions` still builds `MemberActions(axial_force, moment_major,
 moment_minor, moment_factor_major, moment_factor_minor)` and there is no field to
 put a shear in. So the fork below is narrowed rather than closed: the transport
 question is settled and only the check-side question remains.
@@ -159,7 +159,7 @@ it has been widened — and the crossed path is no longer blind. What survives i
 the separation of the two lengths, which is worth having for its own sake.
 
 **So (A) is now the route**, the transport being already paid for: give
-`MemberActions` a shear field, carry it through `design_actions`, and read it in
+`MemberActions` a shear field, carry it through `coerce_member_actions`, and read it in
 the check. `MemberForces`' analyzed shear then serves as the **oracle** for
 whatever the check derives, the derived-equals-analyzed identity being pinned at
 `rtol=1e-10` already.
@@ -253,7 +253,7 @@ shear appears only in the scope paragraph, the Blueprints inventory and open ite
 
 - `AbstractMemberSizer.__call__` gains the member length (decision C). `design.py:241`
   passes `shape.lengths` for it; `buckling_length` keeps its own meaning.
-- `normax/sizing/ec3.py:186-200` — `design_actions` grows the length argument and
+- `normax/sizing/ec3.py:186-200` — `coerce_member_actions` grows the length argument and
   fills the new `MemberActions` field.
 - **`DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)`** broadcasts the three
   new components rather than slicing them, and the `None`s are not an oversight —

@@ -32,12 +32,12 @@ from jaxtyping import Float
 from scipy.optimize import minimize
 
 from normax.design import DesignProblem
-from normax.design import constraint_rows
+from normax.design import bound_variables
 from normax.design import design_maps
+from normax.design import evaluate_constraints
 from normax.design import expand_variables
-from normax.design import variable_bounds
-from normax.optimization import AugmentedAnswer
-from normax.optimization import worst_violation
+from normax.optimization import OptimizationAnswer
+from normax.optimization import measure_violation
 
 # Violation a trial point is charged when its frame cannot be factorized.
 RECOIL_SLACK = 1e3
@@ -84,7 +84,7 @@ def slack_rows(
         params = expand_variables(problem, x)
         design = problem.pipeline(params, problem.loads)
 
-        return constraint_rows(problem, params, design)
+        return evaluate_constraints(problem, params, design)
 
     return slack
 
@@ -93,7 +93,7 @@ def descend_slsqp(
     problem: DesignProblem,
     start: Float[np.ndarray, "variables"],
     budget: SlsqpBudget,
-) -> AugmentedAnswer:
+) -> OptimizationAnswer:
     """
     SLSQP under the rows and the bounds, restarted from its answer until quiet.
 
@@ -123,7 +123,7 @@ def descend_slsqp(
     maps = design_maps(problem)
     slack = slack_rows(problem)
     jacobian = jax.jit(jax.jacfwd(slack))
-    boxes = variable_bounds(problem)
+    boxes = bound_variables(problem)
 
     x = np.asarray(start, dtype=np.float64)
     reference = abs(float(maps.objective(jnp.asarray(x))[0])) or 1.0
@@ -144,7 +144,7 @@ def descend_slsqp(
     def slack_jacobian(z):
         return np.asarray(jacobian(jnp.asarray(z)), dtype=np.float64)
 
-    violation, read = worst_violation(maps.slack, x)
+    violation, read = measure_violation(maps.slack, x)
     rows = read.size
     objectives = [reference]
     violations = [violation]
@@ -168,13 +168,13 @@ def descend_slsqp(
         spent += int(found.nfev)
         converged = found.status == 0
 
-        violation, _ = worst_violation(maps.slack, x)
+        violation, _ = measure_violation(maps.slack, x)
         objectives.append(abs(float(maps.objective(jnp.asarray(x))[0])))
         violations.append(violation)
         if found.nit <= 1:
             break
 
-    answer = AugmentedAnswer(
+    answer = OptimizationAnswer(
         x, np.asarray(objectives), np.asarray(violations), spent, converged
     )
 

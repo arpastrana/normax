@@ -39,42 +39,34 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
-from normax.builders import build_design_constraints
-from normax.builders import build_pipeline
-from normax.builders import build_section_family
 from normax.config import RunConfig
-from normax.config import case_labels
-from normax.config import parse_run
+from normax.config import parse_config
 from normax.design import DesignProblem
-from normax.design import compute_mass
-from normax.design import initial_variables
+from normax.design import DesignRecord
+from normax.design import build_design_constraints
+from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.design import read_design
-from normax.figures import design_figures
+from normax.exporting import ExportTarget
+from normax.exporting import export_design
 from normax.loads import build_load_cases
 from normax.materials import Steel355
-from normax.reporting import Report
-from normax.reporting import report_descent
 from normax.reporting import report_design
+from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.structures import build_arch_2d
-from normax.viewer import view_designs
+from normax.tesseract import build_pipeline
+from normax.viewer import view_design
 
 # The arch and the search, unless another file is named on the command line.
 CONFIG = Path(__file__).with_name("arch.yaml")
 
 REPO = Path(__file__).resolve().parent.parent
-FIGURES = REPO / "figures"
-DATA = REPO / "data"
-
-COMPILATION_CACHE = REPO / ".jax_cache"
-COMPILATION_CACHE.mkdir(exist_ok=True)
-jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+TITLE = "Arch — one search to a design"
+EXPORT = ExportTarget("arch", REPO / "data", REPO / "figures")
 
 
 class ArchConfig(NamedTuple):
@@ -136,11 +128,9 @@ def main(config_path: Path) -> None:
         File naming the arch and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[ArchConfig, SketchConfig] = parse_run(
+    config: RunConfig[ArchConfig, SketchConfig] = parse_config(
         config_path.read_text(), ArchConfig, SketchConfig
     )
-    report = Report()
-    report.write_banner("Arch — one search to a design")
 
     # The structure, its load cases, and the three blocks built on it. The
     # grade is named once, and both backends draw tubes from the same family.
@@ -156,47 +146,19 @@ def main(config_path: Path) -> None:
     # The start: a uniform force density, and the diameters a frozen-seed
     # analysis asks of it.
     q_start = np.full(structure.num_edges, config.sketch.force_density)
-    start = initial_variables(problem, q_start, config.analysis.diameter)
+    d_start = config.analysis.diameter
+    start = initialize_optimization_variables(problem, q_start, d_start)
     initial = read_design(problem, start)
-
-    report.write_heading("Backends")
-    entries = [
-        ("analysis", config.analysis.backend),
-        ("sizing", config.sizing.backend),
-        ("variables", str(start.size)),
-    ]
-    report.write_entries(entries)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
     found = optimize_design(problem, start, config.augmented)
     optimized = read_design(problem, found.variables)
 
-    report.write_heading("The descent")
-    report_descent(report, found)
-    report_design(report, initial, "The start")
-    report_design(report, optimized, "The answer")
-    saved = 1.0 - float(compute_mass(optimized)) / float(compute_mass(initial))
-    report.write_entries([("saved", f"{100.0 * saved:.2f} %")])
-
-    # The record, and the figures.
-    DATA.mkdir(exist_ok=True)
-    np.savez(
-        DATA / "arch.npz",
-        variables=found.variables,
-        objectives=found.objectives,
-        violations=found.violations,
-    )
-    FIGURES.mkdir(exist_ok=True)
-    designs = {"start": initial, "answer": optimized}
-    labels = case_labels(config.load_cases)
-    drawn, descended = design_figures(structure, designs, labels, found)
-    drawn.savefig(FIGURES / "arch_designs.png", dpi=200)
-    descended.savefig(FIGURES / "arch_descent.png", dpi=200)
-    written = [("figures", str(FIGURES)), ("data", str(DATA / "arch.npz"))]
-    report.write_entries(written)
-
-    if config.viewer:
-        view_designs(structure, pipeline.analyzer, loads, designs, labels)
+    # What the run arrived at; the report, the record and the viewer read it.
+    record = DesignRecord(problem, found, initial, optimized, ())
+    report_design(record, config, TITLE)
+    export_design(record, config, EXPORT)
+    view_design(record, config)
 
 
 if __name__ == "__main__":

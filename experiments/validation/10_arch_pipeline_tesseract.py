@@ -68,8 +68,8 @@ from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_uniform
@@ -77,7 +77,7 @@ from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sizing import Ec3Sizer
 from normax.sizing import build_section_family
 from normax.structures import Structure
@@ -311,12 +311,12 @@ def arch_setup() -> ArchSetup:
     The arch, its form-finding connectivity, and the `q` that reaches the rise.
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
     applied = create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
 
     trial = jnp.full(NUM_EDGES, -1.0)
     xyz_fixed = structure.nodes[graph.indices_fixed]
-    state = equilibrium_state(trial, xyz_fixed, graph, applied)
+    state = solve_equilibrium(trial, xyz_fixed, graph, applied)
     reached = jnp.max(state.xyz[:, 2])
     setup = ArchSetup(structure, graph, trial * reached / RISE)
 
@@ -725,7 +725,7 @@ def main(verbose: bool = True) -> None:
 
     report.write_heading("Summary")
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

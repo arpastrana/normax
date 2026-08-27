@@ -3,20 +3,20 @@ import numpy as np
 import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
 from normax.design import DesignProblem
 from normax.design import StructuralDesignPipeline
+from normax.design import bound_variables
 from normax.design import design_maps
-from normax.design import variable_bounds
 from normax.extras.comparison import DrawnFormFinder
 from normax.extras.comparison import HeightsFormFinder
 from normax.extras.comparison import identity_basis
-from normax.form_finding import free_nodes
+from normax.form_finding import select_free_nodes
 from normax.loads import assemble_load_cases
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
@@ -65,11 +65,11 @@ def test_the_heights_finder_composes_and_the_mass_has_a_gradient(
 ):
     finder = HeightsFormFinder(structure)
     problem = build_problem(structure, finder, family, loads)
-    heights = jnp.asarray(structure.nodes)[free_nodes(structure), 2] * 1.1
+    heights = jnp.asarray(structure.nodes)[select_free_nodes(structure), 2] * 1.1
     diameters = jnp.full(NUM_EDGES, SEED)
 
     design = problem.pipeline(DesignParameters(heights, diameters), loads)
-    assert jnp.allclose(design.shape.xyz[free_nodes(structure), 2], heights)
+    assert jnp.allclose(design.shape.xyz[select_free_nodes(structure), 2], heights)
     assert design.sizes.utilization.shape == (1, NUM_EDGES)
 
     x = jnp.concatenate([heights, diameters])
@@ -78,7 +78,7 @@ def test_the_heights_finder_composes_and_the_mass_has_a_gradient(
     slack = maps.slack(x)
 
     assert finder.width == NUM_EDGES - 1
-    assert len(variable_bounds(problem)) == x.size
+    assert len(bound_variables(problem)) == x.size
     assert np.isfinite(float(mass)) and float(mass) > 0.0
     assert np.all(np.isfinite(np.asarray(slope)))
     assert np.any(np.asarray(slope)[: finder.width] != 0.0)
@@ -100,7 +100,7 @@ def test_the_drawn_finder_composes_and_moves_the_diameters_alone(
     slack = maps.slack(diameters)
 
     assert finder.width == 0
-    assert len(variable_bounds(problem)) == NUM_EDGES
+    assert len(bound_variables(problem)) == NUM_EDGES
     assert np.isfinite(float(mass)) and float(mass) > 0.0
     assert np.all(np.asarray(slope) > 0.0)
     assert np.all(np.isfinite(np.asarray(slack)))

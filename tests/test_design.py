@@ -3,43 +3,43 @@ import numpy as np
 import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
 from normax.design import DesignProblem
 from normax.design import StructuralDesignPipeline
+from normax.design import bound_variables
 from normax.design import compute_mass
-from normax.design import constraint_rows
-from normax.design import coordinate_count
+from normax.design import compute_member_mass
+from normax.design import count_coordinates
 from normax.design import design_maps
 from normax.design import envelope_diameters
+from normax.design import evaluate_constraints
 from normax.design import expand_variables
 from normax.design import fold_variables
-from normax.design import initial_variables
-from normax.design import member_densities
-from normax.design import member_mass
+from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.design import read_coordinates
 from normax.design import read_design
+from normax.design import read_member_densities
 from normax.design import unfold_diameters
-from normax.design import variable_bounds
 from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
-from normax.form_finding import free_nodes
-from normax.form_finding import held_plan_basis
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import build_plan_basis
+from normax.form_finding import select_free_nodes
+from normax.form_finding import solve_equilibrium
 from normax.loads import assemble_load_cases
 from normax.loads import load_half_span
 from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.optimization import AugmentedBudget
+from normax.optimization import OptimizationBudget
 from normax.sections import TubeFamily
+from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.structures import build_warren_2d
 from normax.symmetry import SignGuard
-from normax.symmetry import member_spread
-from normax.symmetry import permuted_members
+from normax.symmetry import build_member_spread
+from normax.symmetry import permute_members
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
 # millimeters and newtons.
@@ -146,8 +146,8 @@ def warren_problem(warren, family):
         Ec3Sizer(warren, family),
     )
     loads = assemble_load_cases([load_uniform(warren, TOTAL_LOAD)])
-    basis = held_plan_basis(warren, warren_mirror(), pivoted=True)
-    spread = member_spread(warren, (warren_mirror(),))
+    basis = build_plan_basis(warren, warren_mirror(), pivoted=True)
+    spread = build_member_spread(warren, (warren_mirror(),))
     constraints = DesignConstraints(FLOOR, 0.0, None, None, None, None)
 
     return DesignProblem(warren, blocks, loads, basis, spread, constraints)
@@ -184,8 +184,8 @@ def test_the_sizer_refuses_a_class_four_family(structure, grade):
 def test_the_form_finder_matches_the_free_function(
     structure, force_densities, one_case
 ):
-    graph = equilibrium_graph(structure)
-    state = equilibrium_state(
+    graph = build_equilibrium_graph(structure)
+    state = solve_equilibrium(
         force_densities,
         structure.nodes[graph.indices_fixed],
         graph,
@@ -268,9 +268,9 @@ def test_the_mass_is_the_sum_of_what_the_members_weigh(pipeline, params, one_cas
     expected = tubes.material.density * jnp.sum(tubes.area * design.shape.lengths)
 
     assert float(compute_mass(design)) == pytest.approx(float(expected), rel=1e-14)
-    assert float(member_mass(design.sizes.sections, design.shape.lengths)) == float(
-        compute_mass(design)
-    )
+    assert float(
+        compute_member_mass(design.sizes.sections, design.shape.lengths)
+    ) == float(compute_mass(design))
 
 
 # --------------------------------------------------------------------------- #
@@ -281,7 +281,7 @@ def test_the_variable_vector_is_coordinates_then_diameters(problem, force_densit
     x = np.concatenate([np.asarray(force_densities), diameters])
     expanded = expand_variables(problem, jnp.asarray(x))
 
-    assert coordinate_count(problem) == NUM_EDGES
+    assert count_coordinates(problem) == NUM_EDGES
     assert np.allclose(np.asarray(expanded.coordinates), np.asarray(force_densities))
     assert np.allclose(np.asarray(expanded.diameters), diameters)
 
@@ -293,11 +293,11 @@ def test_folding_is_the_identity_without_a_subspace(problem, force_densities):
 
     assert np.array_equal(x, np.concatenate([q, diameters]))
     assert np.array_equal(read_coordinates(problem, q), q)
-    assert np.array_equal(np.asarray(member_densities(problem, jnp.asarray(q))), q)
+    assert np.array_equal(np.asarray(read_member_densities(problem, jnp.asarray(q))), q)
 
 
 def test_the_bounds_box_the_densities_and_floor_the_diameters(problem):
-    boxes = variable_bounds(problem)
+    boxes = bound_variables(problem)
 
     assert len(boxes) == 2 * NUM_EDGES
     assert boxes[:NUM_EDGES] == [BOUNDS] * NUM_EDGES
@@ -305,7 +305,7 @@ def test_the_bounds_box_the_densities_and_floor_the_diameters(problem):
 
 
 def test_subspace_coordinates_take_no_box(warren_problem):
-    boxes = variable_bounds(warren_problem)
+    boxes = bound_variables(warren_problem)
     width = warren_problem.basis.width
     patterns = warren_problem.spread.shape[1]
 
@@ -318,7 +318,9 @@ def test_member_densities_expands_the_basis(warren_problem):
     basis = warren_problem.basis
     xi = jnp.asarray(-1.0 - np.linspace(0.0, 1.0, basis.width))
 
-    assert jnp.array_equal(member_densities(warren_problem, xi), basis.densities(xi))
+    assert jnp.array_equal(
+        read_member_densities(warren_problem, xi), basis.densities(xi)
+    )
 
 
 def test_the_expansion_holds_the_drawn_plan(warren_problem, warren_q):
@@ -331,7 +333,7 @@ def test_the_expansion_holds_the_drawn_plan(warren_problem, warren_q):
     expanded = expand_variables(warren_problem, jnp.asarray(x))
 
     assert expanded.coordinates.shape == (warren_problem.structure.num_edges,)
-    assert coordinate_count(warren_problem) == width
+    assert count_coordinates(warren_problem) == width
     assert np.allclose(np.asarray(expanded.coordinates), warren_q)
 
 
@@ -341,7 +343,7 @@ def test_the_folded_diameters_keep_the_mirror(warren_problem, warren_q):
     x = fold_variables(warren_problem, warren_q, diameters)
 
     expanded = expand_variables(warren_problem, jnp.asarray(x))
-    targets = permuted_members(warren_mirror(), warren_problem.structure)
+    targets = permute_members(warren_mirror(), warren_problem.structure)
     unfolded = np.asarray(expanded.diameters)
 
     assert np.allclose(unfolded[targets], unfolded)
@@ -351,7 +353,7 @@ def test_the_folded_diameters_keep_the_mirror(warren_problem, warren_q):
 
 def test_reading_back_an_in_span_vector_is_exact(warren_problem, warren_q):
     xi = read_coordinates(warren_problem, warren_q)
-    rebuilt = member_densities(warren_problem, jnp.asarray(xi))
+    rebuilt = read_member_densities(warren_problem, jnp.asarray(xi))
 
     assert np.abs(np.asarray(rebuilt) - warren_q).max() < 1e-9
 
@@ -361,7 +363,7 @@ def test_reading_back_an_in_span_vector_is_exact(warren_problem, warren_q):
 # --------------------------------------------------------------------------- #
 def test_the_rows_start_with_the_utilization(problem, params):
     design = problem.pipeline(params, problem.loads)
-    rows = np.asarray(constraint_rows(problem, params, design))
+    rows = np.asarray(evaluate_constraints(problem, params, design))
     leading = 1.0 - np.asarray(design.sizes.utilization).ravel()
 
     assert rows.shape == (3 * NUM_EDGES,)
@@ -375,8 +377,8 @@ def test_each_optional_row_family_appears_when_asked(problem, params):
     asked = problem._replace(constraints=held)
 
     design = asked.pipeline(params, asked.loads)
-    rows = np.asarray(constraint_rows(asked, params, design))
-    heights = free_nodes(asked.structure).size
+    rows = np.asarray(evaluate_constraints(asked, params, design))
+    heights = select_free_nodes(asked.structure).size
 
     assert rows.size == 3 * NUM_EDGES + 2 * heights + NUM_EDGES + guarded.size
 
@@ -388,7 +390,7 @@ def test_the_sign_rows_read_the_guarded_densities(problem, params):
     asked = problem._replace(constraints=held)
 
     design = asked.pipeline(params, asked.loads)
-    rows = np.asarray(constraint_rows(asked, params, design))
+    rows = np.asarray(evaluate_constraints(asked, params, design))
     signed = -np.asarray(params.coordinates)[guarded]
 
     assert np.allclose(rows[-3:], (signed - guard.margin) / guard.scale)
@@ -427,9 +429,11 @@ def test_the_enveloped_start_respects_the_floor(problem, force_densities):
     assert np.all(diameters >= 500.0)
 
 
-def test_initial_variables_compose_the_two_reads(problem, force_densities):
+def test_initialize_optimization_variables_compose_the_two_reads(
+    problem, force_densities
+):
     q = np.asarray(force_densities)
-    start = initial_variables(problem, q, SEED)
+    start = initialize_optimization_variables(problem, q, SEED)
     diameters = envelope_diameters(problem, read_coordinates(problem, q), SEED)
 
     assert np.array_equal(start, fold_variables(problem, q, diameters))
@@ -438,7 +442,9 @@ def test_initial_variables_compose_the_two_reads(problem, force_densities):
 def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
     problem, force_densities
 ):
-    start = initial_variables(problem, np.asarray(force_densities), SEED)
+    start = initialize_optimization_variables(
+        problem, np.asarray(force_densities), SEED
+    )
     design = read_design(problem, start)
     expanded = expand_variables(problem, jnp.asarray(start))
     expected = problem.pipeline(expanded, problem.loads)
@@ -452,14 +458,16 @@ def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
 # --------------------------------------------------------------------------- #
 def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     maps = design_maps(problem)
-    start = initial_variables(problem, np.asarray(force_densities), SEED)
+    start = initialize_optimization_variables(
+        problem, np.asarray(force_densities), SEED
+    )
     x = jnp.asarray(start)
 
     design = read_design(problem, start)
     expanded = expand_variables(problem, x)
     weighed, _ = maps.objective(x)
     rows = np.asarray(maps.slack(x))
-    expected = np.asarray(constraint_rows(problem, expanded, design))
+    expected = np.asarray(evaluate_constraints(problem, expanded, design))
 
     assert float(weighed) == pytest.approx(float(compute_mass(design)), rel=1e-12)
     assert np.allclose(rows, expected, rtol=0.0, atol=1e-12)
@@ -484,8 +492,10 @@ def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
 
 
 def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_densities):
-    start = initial_variables(problem, np.asarray(force_densities), SEED)
-    budget = AugmentedBudget(
+    start = initialize_optimization_variables(
+        problem, np.asarray(force_densities), SEED
+    )
+    budget = OptimizationBudget(
         rounds=3,
         iterations=10,
         settled=10,

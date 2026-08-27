@@ -79,13 +79,6 @@ import nlopt
 import numpy as np
 import yaml
 from jaxtyping import Float
-from scipy.optimize import minimize
-
-from normax.optimization import AugmentedBudget
-from normax.optimization import ConstrainedMaps
-from normax.optimization import descend_augmented
-from normax.reporting import Report
-from normax.reporting import ReportColumn
 from normax.searches import AUGMENTED_DEFAULT
 from normax.searches import POLISH_ADMISSION
 from normax.searches import POLISH_ITERATIONS
@@ -98,6 +91,13 @@ from normax.searches import read_answer
 from normax.searches import search_boxes
 from normax.searches import search_maps
 from normax.searches import search_starts
+from scipy.optimize import minimize
+
+from normax.optimization import ConstrainedMaps
+from normax.optimization import OptimizationBudget
+from normax.optimization import descend_augmented
+from normax.reporting import Report
+from normax.reporting import ReportColumn
 
 # The profile driven when a run names no other.
 EXPERIMENT = Path(__file__).resolve().parents[2] / "examples" / "gridshell.py"
@@ -406,7 +406,7 @@ def drive_augmented(
     seed: tuple[
         Float[np.ndarray, "variables"], list[tuple[float | None, float | None]]
     ],
-    budget: AugmentedBudget,
+    budget: OptimizationBudget,
 ) -> DriverCall:
     """
     The augmented Lagrangian, then a short constrained polish.

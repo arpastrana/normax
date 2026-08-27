@@ -14,23 +14,23 @@ from conftest import load_tesseract_api
 from jax.test_util import check_grads
 
 from normax.analysis import MemberForces
-from normax.builders import build_section_family
 from normax.materials import Steel355
 from normax.sections import TubeFamily
+from normax.sections import build_section_family
 from normax.sizing import MemberSizes
 from normax.sizing import blueprint as blueprint_module
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
-from normax.sizing.blueprint import host_actions
-from normax.sizing.blueprint import host_family
+from normax.sizing.blueprint import coerce_member_actions
+from normax.sizing.blueprint import coerce_section_family
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
-from normax.tesseract import sizing_tesseract
+from normax.tesseract import open_tesseract_sizing
 
 # The proof this file makes: an external, non-differentiable, scalar code
 # library fills the sizing contract and carries an exact adjoint, reached only
@@ -85,12 +85,14 @@ def family():
 
 @pytest.fixture(scope="module")
 def host():
-    return host_family(RATIO, YIELD_SAMPLE)
+    return coerce_section_family(RATIO, YIELD_SAMPLE)
 
 
 @pytest.fixture(scope="module")
 def actions():
-    return host_actions(np.asarray(AXIAL), np.asarray(END_MAJOR), np.asarray(END_MINOR))
+    return coerce_member_actions(
+        np.asarray(AXIAL), np.asarray(END_MAJOR), np.asarray(END_MINOR)
+    )
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +102,7 @@ def forces():
 
 @pytest.fixture(scope="module")
 def remote(structure, family):
-    return TesseractSizer(structure, sizing_tesseract("blueprint"), family)
+    return TesseractSizer(structure, open_tesseract_sizing("blueprint"), family)
 
 
 def test_the_backend_names_no_ec3_library():
@@ -240,8 +242,12 @@ def test_tension_and_compression_size_alike(host):
     magnitude = np.abs(np.asarray(AXIAL))
     ends_major = np.asarray(END_MAJOR)
     ends_minor = np.asarray(END_MINOR)
-    pulled = size_members(host_actions(magnitude, ends_major, ends_minor), host)
-    pushed = size_members(host_actions(-magnitude, ends_major, ends_minor), host)
+    pulled = size_members(
+        coerce_member_actions(magnitude, ends_major, ends_minor), host
+    )
+    pushed = size_members(
+        coerce_member_actions(-magnitude, ends_major, ends_minor), host
+    )
 
     assert np.array_equal(pulled.diameter, pushed.diameter)
 
@@ -436,7 +442,7 @@ def test_the_diameter_floor_matches_the_catalogue(structure):
 
 def test_the_host_coefficients_match_the_sections(family):
     unit = family(1.0)
-    host = host_family(RATIO, YIELD_SAMPLE)
+    host = coerce_section_family(RATIO, YIELD_SAMPLE)
 
     assert float(unit.area) == host.area_coefficient
     assert float(2.0 * unit.second_moment) == pytest.approx(
@@ -447,7 +453,7 @@ def test_the_host_coefficients_match_the_sections(family):
 def test_the_private_evaluator_is_the_public_clause():
     # The bisection runs through Blueprints' `_evaluate`; if a release moves
     # it, this fails here rather than silently changing every size.
-    host = host_family(RATIO, YIELD_SAMPLE)
+    host = coerce_section_family(RATIO, YIELD_SAMPLE)
     generator = np.random.default_rng(20260825)
 
     assert blueprint_module.EVALUATOR_REACHED

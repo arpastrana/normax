@@ -32,7 +32,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from normax.design import Design
-from normax.optimization import AugmentedAnswer
+from normax.optimization import OptimizationAnswer
 from normax.structures import Structure
 
 # Points of line width given to the thickest member of a drawing.
@@ -208,7 +208,7 @@ class UtilizationForm(NamedTuple):
     utilization: Float[Array, "load_cases members"]
 
 
-def governed_counts(
+def count_governed_members(
     utilization: Float[Array, "load_cases members"],
 ) -> Int[np.ndarray, "load_cases"]:
     """
@@ -236,7 +236,7 @@ def governed_counts(
     return tied.sum(axis=1)
 
 
-def figure_utilization(
+def draw_utilization(
     edges: Int[Array, "members 2"],
     forms: Sequence[UtilizationForm],
     names: tuple[str, ...],
@@ -315,7 +315,7 @@ def figure_utilization(
     bar.set_label("envelope utilization", fontsize=9)
 
     for ax, form in zip(axes[1], forms):
-        counts = governed_counts(form.utilization)
+        counts = count_governed_members(form.utilization)
         ax.bar(np.arange(load_cases), counts, 0.6, color="#31688e")
         ax.set_xticks(np.arange(load_cases))
         ax.set_xticklabels(names, fontsize=8, rotation=15)
@@ -342,7 +342,7 @@ class DescentTrace(NamedTuple):
     mass: Float[np.ndarray, "rounds"]
 
 
-def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
+def draw_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
     """
     Constrained descents side by side, one line of objective per search.
 
@@ -375,11 +375,11 @@ def figure_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
     return figure
 
 
-def design_figures(
+def draw_design_figures(
     structure: Structure,
     designs: dict[str, Design],
     case_names: tuple[str, ...],
-    answer: AugmentedAnswer,
+    answer: OptimizationAnswer,
 ) -> tuple[Figure, Figure]:
     """
     The two figures a run draws: its designs, and the descent between them.
@@ -409,9 +409,9 @@ def design_figures(
             design.sizes.utilization,
         )
         forms.append(form)
-    drawn = figure_utilization(structure.edges, forms, case_names)
+    drawn = draw_utilization(structure.edges, forms, case_names)
 
     traces = (DescentTrace("augmented", answer.objectives),)
-    descended = figure_mass_descent(traces)
+    descended = draw_mass_descent(traces)
 
     return drawn, descended

@@ -82,14 +82,14 @@ from jaxtyping import Array
 from jaxtyping import Float
 from smax import CompiledStructure
 
-from normax.analysis import member_forces
+from normax.analysis import compute_member_forces
 from normax.analysis import prepare_model
 from normax.loads import create_loads_uniform
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
-from normax.sizing import neutral_sections
+from normax.reporting import verify_checks
+from normax.sizing import coerce_member_sections
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import BeamSizing
@@ -145,7 +145,7 @@ SECTION_CLASS = 3
 CATALOGUE = TubeCatalogue.at_class_limit(STEEL, SECTION_CLASS)
 # The analysis takes normax's neutral sections, so the standard's tube is
 # restated at the boundary rather than duck-typed through it.
-SECTION_SEED = neutral_sections(CATALOGUE(SEED))
+SECTION_SEED = coerce_member_sections(CATALOGUE(SEED))
 
 CLASSES = (2, 3)
 
@@ -159,7 +159,7 @@ LIMIT_NAMES = {
 
 # The reads the reports make, compiled. Left eager each one costs an XLA
 # compilation per primitive, which is most of what reporting a design costs.
-member_forces_compiled = eqx.filter_jit(member_forces)
+member_forces_compiled = eqx.filter_jit(compute_member_forces)
 governing_compiled = eqx.filter_jit(governing_limit_state)
 
 
@@ -332,8 +332,8 @@ def build(
     Compiled, which is what makes the staggered passes affordable: every caller
     here passes the same prepared model, so one trace serves all of them.
     """
-    section = neutral_sections(catalogue(SEED))
-    member = member_forces(
+    section = coerce_member_sections(catalogue(SEED))
+    member = compute_member_forces(
         setup.model,
         setup.structure.nodes,
         diameters,
@@ -700,7 +700,7 @@ def main(verbose: bool = True) -> None:
 
     # A nan fails every bound already; this says so rather than relying on it.
     is_finite = jnp.all(jnp.isfinite(design.diameters))
-    report.write_verdict(checks_passed(checks) and bool(is_finite))
+    report.write_verdict(verify_checks(checks) and bool(is_finite))
 
 
 if __name__ == "__main__":

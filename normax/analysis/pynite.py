@@ -22,11 +22,11 @@ so one factorization answers for every parameter.
 
 **Two frames must not be confused.** PyNite hard-codes its vertical as the
 second global axis, so coordinates are rotated into it and forces rotated back;
-and the bending components are reported in `member_frame`, whose transverse pair
-is completed against this repository's vertical. **PyNite's axial sign is
-inverted**: its local end-force vector reports tension as negative, so every
-reading is negated on the way out. A physical member segments wherever a load
-is attached along it, which nodal loading never does.
+and the bending components are reported in `compute_direction_cosines`, whose
+transverse pair is completed against this repository's vertical. **PyNite's
+axial sign is inverted**: its local end-force vector reports tension as
+negative, so every reading is negated on the way out. A physical member segments
+wherever a load is attached along it, which nodal loading never does.
 """
 
 import warnings
@@ -51,8 +51,8 @@ from normax.analysis import MemberForces
 from normax.analysis.element import DOF_PER_MEMBER
 from normax.analysis.element import REFERENCE_MARGIN
 from normax.analysis.element import SectionRigidity
-from normax.analysis.element import member_frame
-from normax.analysis.element import stiffness_global
+from normax.analysis.element import assemble_stiffness_global
+from normax.analysis.element import compute_direction_cosines
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
 from normax.structures import Structure
@@ -165,7 +165,7 @@ class PreparedFrame(NamedTuple):
     members: MemberState
 
 
-def vertical_upward(
+def swap_vertical(
     vectors: Float[np.ndarray, "rows 3"],
 ) -> Float[np.ndarray, "rows 3"]:
     """
@@ -205,7 +205,7 @@ def _member_name(member: int) -> str:
     return f"member-{member}"
 
 
-def frame_model(
+def assemble_frame_model(
     structure: Structure,
     xyz: Float[np.ndarray, "nodes 3"],
     sections: MemberSections,
@@ -264,7 +264,7 @@ def frame_model(
     return model
 
 
-def member_rigidity(
+def compute_member_rigidity(
     diameter: Float[Array, ""],
     catalogue: TubeFamily,
 ) -> SectionRigidity:
@@ -294,7 +294,7 @@ def member_rigidity(
     )
 
 
-def member_stiffness(
+def assemble_member_stiffness(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
     diameter: Float[Array, ""],
@@ -325,14 +325,14 @@ def member_stiffness(
     repository's, so the chain rule crosses the two conventions once, here.
     """
     turning = jnp.asarray(ROTATION)
-    rigidity = member_rigidity(diameter, catalogue)
+    rigidity = compute_member_rigidity(diameter, catalogue)
     first = turning @ start * MILLIMETER
     second = turning @ end * MILLIMETER
 
-    return stiffness_global(first, second, rigidity)
+    return assemble_stiffness_global(first, second, rigidity)
 
 
-def member_actions(
+def compute_member_actions(
     state: MemberState,
     catalogue: TubeFamily,
 ) -> Float[Array, "readings"]:
@@ -359,14 +359,16 @@ def member_actions(
     the displacement also replaces a Python loop over the solver's own end
     forces with one mapped pass.
     """
-    stiffness = member_stiffness(state.start, state.end, state.diameter, catalogue)
+    stiffness = assemble_member_stiffness(
+        state.start, state.end, state.diameter, catalogue
+    )
     acting = stiffness @ state.displacement
     inverse = jnp.asarray(ROTATION).T
 
     force = inverse @ acting[0:3]
     ends = jnp.stack([inverse @ acting[3:6], inverse @ acting[9:12]])
 
-    frame = member_frame(state.start, state.end)
+    frame = compute_direction_cosines(state.start, state.end)
     axial = -jnp.dot(force, frame[0])
     flip = jnp.asarray(DIAGRAM_SIGN)
     major = ends @ frame[1] * flip
@@ -386,7 +388,7 @@ def _pull_one_reading(
     """
 
     def reading(acting: MemberState) -> Float[Array, "readings"]:
-        return member_actions(acting, catalogue)
+        return compute_member_actions(acting, catalogue)
 
     _, backward = jax.vjp(reading, state)
     (pulled,) = backward(cotangent)
@@ -397,10 +399,13 @@ def _pull_one_reading(
 # Compiled once and reused: fixed programs over fixed shapes, and dispatching
 # them uncompiled costs far more than running them.
 _STIFFNESS_SLOPES = jax.jit(
-    jax.vmap(jax.jacfwd(member_stiffness, argnums=(0, 1, 2)), in_axes=(0, 0, 0, None))
+    jax.vmap(
+        jax.jacfwd(assemble_member_stiffness, argnums=(0, 1, 2)),
+        in_axes=(0, 0, 0, None),
+    )
 )
 
-_READ_MEMBERS = jax.vmap(member_actions, in_axes=(0, None))
+_READ_MEMBERS = jax.vmap(compute_member_actions, in_axes=(0, None))
 
 _READ_CASES = jax.jit(
     jax.vmap(_READ_MEMBERS, in_axes=(MemberState(None, None, None, 0), None))
@@ -448,9 +453,9 @@ def refuse_upright(
 
     Notes
     -----
-    The stiffness is invariant to the roll, but `member_frame` completes its
-    pair against the vertical and a vertical member has none. Nothing here is
-    refused for a shell, whose members all lean.
+    The stiffness is invariant to the roll, but `compute_direction_cosines`
+    completes its pair against the vertical and a vertical member has none.
+    Nothing here is refused for a shell, whose members all lean.
     """
     positions = np.asarray(xyz)
     spans = np.asarray(edges)
@@ -468,7 +473,7 @@ def refuse_upright(
         )
 
 
-def prepared_frame(
+def prepare_frame(
     problem: FrameProblem,
     xyz: Float[np.ndarray, "nodes 3"],
     diameters: Float[np.ndarray, "members"],
@@ -511,11 +516,11 @@ def prepared_frame(
     refuse_upright(positions, edges)
 
     upright = Structure(
-        nodes=vertical_upward(positions),
+        nodes=swap_vertical(positions),
         edges=edges,
         supports=np.asarray(structure.supports),
     )
-    model = frame_model(upright, upright.nodes, sections)
+    model = assemble_frame_model(upright, upright.nodes, sections)
     model.add_load_combo(COMBO_NAME, {CASE_NAME: 1.0})
     _prepare_model(model)
 
@@ -557,7 +562,7 @@ def prepared_frame(
     return PreparedFrame(free, decomposed, indexed, numbered, members)
 
 
-def case_displacements(
+def solve_displacements(
     prepared: PreparedFrame,
     loads: Float[np.ndarray, "load_cases nodes 3"],
 ) -> Float[np.ndarray, "load_cases dofs"]:
@@ -581,7 +586,7 @@ def case_displacements(
     The right-hand side is the nodal load scattered onto its degrees of freedom;
     under nodal loading the fixed-end reactions PyNite would subtract are zero.
     """
-    turned = np.stack([vertical_upward(load_case) for load_case in np.asarray(loads)])
+    turned = np.stack([swap_vertical(load_case) for load_case in np.asarray(loads)])
     cases = turned.shape[0]
     num_dofs = prepared.numbered.size * DOF_PER_NODE
 
@@ -600,7 +605,7 @@ def case_displacements(
     return displaced
 
 
-def member_forces(
+def compute_member_forces(
     problem: FrameProblem,
     xyz: Float[np.ndarray, "nodes 3"],
     diameters: Float[np.ndarray, "members"],
@@ -639,8 +644,8 @@ def member_forces(
     cases = applied if stacked else applied[None, ...]
 
     if prepared is None:
-        prepared = prepared_frame(problem, xyz, diameters)
-    displaced = case_displacements(prepared, cases)
+        prepared = prepare_frame(problem, xyz, diameters)
+    displaced = solve_displacements(prepared, cases)
     moved = prepared.members._replace(
         displacement=jnp.asarray(displaced[:, prepared.indexed])
     )
@@ -656,7 +661,7 @@ def member_forces(
     )
 
 
-def force_cotangents(
+def pull_back_cotangents(
     problem: FrameProblem,
     xyz: Float[np.ndarray, "nodes 3"],
     diameters: Float[np.ndarray, "members"],
@@ -694,8 +699,8 @@ def force_cotangents(
     derivative enters.
     """
     if prepared is None:
-        prepared = prepared_frame(problem, xyz, diameters)
-    displaced = case_displacements(prepared, np.asarray(problem.loads)[None, ...])[0]
+        prepared = prepare_frame(problem, xyz, diameters)
+    displaced = solve_displacements(prepared, np.asarray(problem.loads)[None, ...])[0]
     state = prepared.members._replace(
         displacement=jnp.asarray(displaced[prepared.indexed])
     )

@@ -99,7 +99,7 @@ Two boundaries are deliberate:
 `normax/design.py` and `normax/sizing/__init__.py` import nothing from `ec3x`
 — the same test the actions record passed in the previous extraction.
 
-Each backend converts at its own edge, the `design_actions` pattern:
+Each backend converts at its own edge, the `coerce_member_actions` pattern:
 
 - **`Ec3Sizer(structure, grade, section_class, resultant)`** builds its
   `TubeCatalogue` internally — choosing `d/t` from a class limit is Table 5.2,

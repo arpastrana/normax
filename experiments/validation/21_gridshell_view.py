@@ -52,7 +52,7 @@ import numpy as np
 import vix
 import yaml
 
-from normax.analysis import frame_model
+from normax.analysis import assemble_frame_model
 from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
@@ -60,7 +60,7 @@ from normax.sections import TubeFamily
 from normax.sizing import build_section_family
 from normax.structures import Structure
 from normax.structures import build_gridshell_3d
-from normax.structures import member_lengths
+from normax.structures import compute_member_lengths
 
 
 class GridshellSketch(NamedTuple):
@@ -236,7 +236,7 @@ def report_rings(
     grid = (sketch.num_rings, sketch.num_spokes)
     hooped = (sketch.num_rings - 1, sketch.num_spokes)
     ring_nodes = np.asarray(structure.nodes)[1:].reshape(*grid, 3)
-    lengths = np.asarray(member_lengths(structure.nodes, structure.edges))
+    lengths = np.asarray(compute_member_lengths(structure.nodes, structure.edges))
     radial = lengths[: grid[0] * grid[1]].reshape(grid)
     hoop = lengths[grid[0] * grid[1] :].reshape(hooped)
 
@@ -288,7 +288,7 @@ def report_seeds(
     The mass is the shell at one uniform diameter, `ρ Σ A L` over the drawn
     geometry — a starting point's price, not a design's.
     """
-    lengths = member_lengths(structure.nodes, structure.edges)
+    lengths = compute_member_lengths(structure.nodes, structure.edges)
 
     columns = (
         ReportColumn("seed d [mm]", ".1f"),
@@ -335,7 +335,7 @@ def view_seeds(
 
     for diameter in config.sections.seed_diameters:
         sections = family(jnp.asarray(diameter))
-        frame = frame_model(structure, structure.nodes, sections)
+        frame = assemble_frame_model(structure, structure.nodes, sections)
         viewer.add(frame, name=f"seed {diameter:g} mm")
 
     viewer.show()

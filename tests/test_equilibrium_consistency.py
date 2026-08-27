@@ -9,16 +9,16 @@ from smax import diagnose_mechanisms
 from smax import element_forces
 from smax import solve
 
-from normax.analysis import normal_axis
-from normax.analysis import support_fixities
-from normax.analysis.smax import frame_model
-from normax.analysis.smax import member_forces
+from normax.analysis import find_normal_axis
+from normax.analysis import restrain_supports
+from normax.analysis.smax import assemble_frame_model
+from normax.analysis.smax import compute_member_forces
 from normax.analysis.smax import prepare_model
-from normax.builders import build_section_family
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 
@@ -81,16 +81,16 @@ def q():
 
 @pytest.fixture(scope="module")
 def state(q, structure):
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
 
-    return equilibrium_state(
+    return solve_equilibrium(
         q, structure.nodes[graph.indices_fixed], graph, funicular(structure)
     )
 
 
 @pytest.fixture(scope="module")
 def member(model, state, section, structure):
-    return member_forces(
+    return compute_member_forces(
         model, state.xyz, jnp.full(NUM_EDGES, DIAMETER), section, funicular(structure)
     )
 
@@ -102,13 +102,13 @@ def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
     applied = funicular(structure, load)
     q = jnp.full(NUM_EDGES, force_density)
-    graph = equilibrium_graph(structure)
-    state = equilibrium_state(q, structure.nodes[graph.indices_fixed], graph, applied)
+    graph = build_equilibrium_graph(structure)
+    state = solve_equilibrium(q, structure.nodes[graph.indices_fixed], graph, applied)
 
     section = catalogue._replace(material=steel)(diameter)
     expected = q * state.lengths[:, 0]
     sizes = jnp.full(NUM_EDGES, diameter)
-    member = member_forces(
+    member = compute_member_forces(
         prepare_model(structure, section), state.xyz, sizes, section, applied
     )
 
@@ -117,9 +117,9 @@ def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY
 
 def span_field(structure, xyz, section):
     """
-    The whole span field, to check the assumptions `member_forces` collapses it under.
+    The whole span field, to check the assumptions `compute_member_forces` collapses it under.
     """
-    compiled = compile_structure(frame_model(structure, xyz, section))
+    compiled = compile_structure(assemble_frame_model(structure, xyz, section))
     response = solve(compiled, funicular(structure))
 
     return element_forces(compiled, response, num_samples=2)
@@ -132,7 +132,9 @@ def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
     structure, state, section
 ):
     assert (
-        diagnose_mechanisms(frame_model(structure, state.xyz, section)).num_mechanisms
+        diagnose_mechanisms(
+            assemble_frame_model(structure, state.xyz, section)
+        ).num_mechanisms
         == 0
     )
 
@@ -142,7 +144,7 @@ def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
 ):
     # Rotating the whole arch about the line joining its supports strains no
     # member and moves no support; without the normal restraint the solve is nan.
-    model = frame_model(structure, state.xyz, section)
+    model = assemble_frame_model(structure, state.xyz, section)
     unrestrained = Frame(
         model.nodes, model.elements, [PinnedSupport(0), PinnedSupport(NUM_EDGES)]
     )
@@ -151,17 +153,17 @@ def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
 
 
 def test_the_plane_of_the_arch_is_measured_rather_than_declared(structure):
-    assert normal_axis(structure) == NORMAL
+    assert find_normal_axis(structure) == NORMAL
 
 
 def test_a_structure_that_fills_space_has_no_normal_axis():
-    assert normal_axis(build_gridshell_3d()) is None
+    assert find_normal_axis(build_gridshell_3d()) is None
 
 
 def test_a_support_is_pinned_and_never_fixed(structure):
     # The rotation the in-plane bending happens about stays free; the two out of
     # the plane are held so that a straight structure is not a mechanism.
-    flags = support_fixities(structure)
+    flags = restrain_supports(structure)
     supports = np.asarray(structure.supports)
     out_of_plane = [3 + axis for axis in (0, 1, 2) if axis != NORMAL]
 
@@ -171,7 +173,7 @@ def test_a_support_is_pinned_and_never_fixed(structure):
 
 
 def test_a_free_node_is_restrained_only_out_of_the_plane(structure):
-    flags = support_fixities(structure)
+    flags = restrain_supports(structure)
     free = [n for n in range(structure.nodes.shape[0]) if n not in (0, NUM_EDGES)]
 
     for node in free:
@@ -181,14 +183,14 @@ def test_a_free_node_is_restrained_only_out_of_the_plane(structure):
 
 def test_a_three_dimensional_structure_restrains_nothing_beyond_its_supports():
     gridshell = build_gridshell_3d()
-    flags = support_fixities(gridshell)
+    flags = restrain_supports(gridshell)
 
     assert np.count_nonzero(flags) == 3 * gridshell.supports.shape[0]
 
 
 def test_a_structure_held_nowhere_is_refused(structure):
     with pytest.raises(ValueError):
-        support_fixities(structure._replace(supports=np.zeros(0, dtype=int)))
+        restrain_supports(structure._replace(supports=np.zeros(0, dtype=int)))
 
 
 # --------------------------------------------------------------------------- #
@@ -294,13 +296,13 @@ def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, catal
 def test_the_gradient_through_both_stages_matches_central_differences(
     q, structure, model, section
 ):
-    fdm = equilibrium_graph(structure)
+    fdm = build_equilibrium_graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
     applied = funicular(structure)
 
     def objective(q):
-        state = equilibrium_state(q, structure.nodes[fdm.indices_fixed], fdm, applied)
-        member = member_forces(model, state.xyz, diameters, section, applied)
+        state = solve_equilibrium(q, structure.nodes[fdm.indices_fixed], fdm, applied)
+        member = compute_member_forces(model, state.xyz, diameters, section, applied)
         return jnp.sum(member.axial_force**2)
 
     gradient = jax.grad(objective)(q)

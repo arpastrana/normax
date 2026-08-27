@@ -83,22 +83,22 @@ from jaxtyping import Int
 
 from normax.form_finding import DensityFit
 from normax.form_finding import PivotedBasis
+from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import density_basis
 from normax.form_finding import equilibrium_gap
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
 from normax.form_finding import fit_densities
 from normax.form_finding import pivoted_basis
 from normax.form_finding import positions_vertical
+from normax.form_finding import solve_equilibrium
 from normax.loads import create_loads_point
 from normax.reporting import Report
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 from normax.structures import build_warren_2d
-from normax.structures import member_lengths
+from normax.structures import compute_member_lengths
 from normax.visualization import SubspaceMode
 from normax.visualization import TrussForm
 from normax.visualization import figure_density_modes
@@ -603,7 +603,7 @@ def variation_forms(
         q = plan.basis @ stepped
         nodes = plan.structure.nodes
         xyz = positions_vertical(jnp.asarray(q), nodes, plan.graph, plan.loads)
-        lengths = member_lengths(xyz, plan.structure.edges)
+        lengths = compute_member_lengths(xyz, plan.structure.edges)
         forces = q * np.asarray(lengths)
         forms.append(TrussForm(title, np.asarray(xyz), forces))
 
@@ -665,7 +665,7 @@ def pivoted_variations(
         q = plan.basis @ stepped
         nodes = plan.structure.nodes
         xyz = positions_vertical(jnp.asarray(q), nodes, plan.graph, plan.loads)
-        lengths = member_lengths(xyz, plan.structure.edges)
+        lengths = compute_member_lengths(xyz, plan.structure.edges)
         forces = q * np.asarray(lengths)
         forms.append(TrussForm(title, np.asarray(xyz), forces))
 
@@ -711,7 +711,7 @@ def freeplan_form(
     grouped = np.concatenate(families)
 
     xyz_fixed = plan.structure.nodes[plan.graph.indices_fixed]
-    state = equilibrium_state(jnp.asarray(grouped), xyz_fixed, plan.graph, plan.loads)
+    state = solve_equilibrium(jnp.asarray(grouped), xyz_fixed, plan.graph, plan.loads)
     forces = grouped * np.asarray(state.lengths[:, 0])
 
     return TrussForm("free plan, grouped densities", state.xyz, forces)
@@ -805,7 +805,7 @@ def main(path: Path) -> None:
     report.write_banner("Warren truss — held-plan form finding")
 
     structure = build_warren_2d(bays, problem.span, problem.depth)
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
     loads = deck_loads(problem, structure)
 
     if problem.symmetric:
@@ -897,8 +897,8 @@ def main(path: Path) -> None:
     ]
     report.write_entries(entries)
 
-    lengths_lens = member_lengths(jnp.asarray(lens), structure.edges)
-    lengths_deck = member_lengths(jnp.asarray(deck), structure.edges)
+    lengths_lens = compute_member_lengths(jnp.asarray(lens), structure.edges)
+    lengths_deck = compute_member_lengths(jnp.asarray(deck), structure.edges)
     forms = [
         TrussForm("lens, deck suspended", lens, shifted.q * np.asarray(lengths_lens)),
         TrussForm(
@@ -945,7 +945,7 @@ def main(path: Path) -> None:
     )
     counted = basis.shape[1] == moving.size + 1
     counted = counted and pivot.basis.shape[1] == basis.shape[1]
-    passed = checks_passed(checks) and counted
+    passed = verify_checks(checks) and counted
 
     report.write_heading("Summary")
     report.write_checks(checks)

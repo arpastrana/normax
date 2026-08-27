@@ -497,7 +497,7 @@ def constrained_problem(
 
         return jnp.atleast_1d(rise - constraints.rise_target)
 
-    weigh_and_slope = jax.jit(jax.value_and_grad(weigh))
+    compute_mass_and_gradient = jax.jit(jax.value_and_grad(weigh))
     slack_compiled = jax.jit(slack)
     slack_jacobian = jax.jit(jax.jacrev(slack))
 
@@ -516,7 +516,7 @@ def constrained_problem(
     # The seed is uniform, so its first entries seed the shared layout too.
     seed_densities = params.force_densities[: layout.densities]
     start = jnp.concatenate([seed_densities, params.diameters])
-    weigh_and_slope(start)
+    compute_mass_and_gradient(start)
     slack_compiled(start)
     slack_jacobian(start)
     for held in geometry:
@@ -524,7 +524,11 @@ def constrained_problem(
         held.jacobian(start)
 
     return ConstrainedProblem(
-        weigh_and_slope, slack_compiled, slack_jacobian, tuple(geometry), start
+        compute_mass_and_gradient,
+        slack_compiled,
+        slack_jacobian,
+        tuple(geometry),
+        start,
     )
 
 

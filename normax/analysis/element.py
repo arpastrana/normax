@@ -17,11 +17,11 @@ The frame element, stated in JAX so a solver without derivatives can borrow one.
 An adjoint needs the derivative of the global element stiffness in the geometry
 and the section, and the exact way to get it is to state the element here and
 prove it is the element the foreign solver assembled. The proof is a test that
-holds `stiffness_local` and `stiffness_global` against the solver's own matrices
-to near machine precision. Two properties of a tube keep this short: one bending
-rigidity serves both transverse axes, and the global stiffness is invariant to a
-roll about the member axis, so the transverse basis may be chosen for
-conditioning alone.
+holds `assemble_stiffness_local` and `assemble_stiffness_global` against the
+solver's own matrices to near machine precision. Two properties of a tube keep
+this short: one bending rigidity serves both transverse axes, and the global
+stiffness is invariant to a roll about the member axis, so the transverse basis
+may be chosen for conditioning alone.
 """
 
 from typing import NamedTuple
@@ -73,7 +73,7 @@ class SectionRigidity(NamedTuple):
     torsional: Float[Array, "*members"]
 
 
-def bending_block(
+def assemble_bending_block(
     length: Float[Array, ""],
     bending: Float[Array, ""],
     sign: float,
@@ -109,7 +109,7 @@ def bending_block(
     return jnp.asarray(block)
 
 
-def stiffness_local(
+def assemble_stiffness_local(
     length: Float[Array, ""],
     rigidity: SectionRigidity,
 ) -> Float[Array, "dofs_member dofs_member"]:
@@ -144,16 +144,16 @@ def stiffness_local(
     stiffness = stiffness.at[axial].set(rigidity.axial / length * pair)
     stiffness = stiffness.at[torsion].set(rigidity.torsional / length * pair)
     stiffness = stiffness.at[bending_z].set(
-        bending_block(length, rigidity.bending, 1.0)
+        assemble_bending_block(length, rigidity.bending, 1.0)
     )
     stiffness = stiffness.at[bending_y].set(
-        bending_block(length, rigidity.bending, -1.0)
+        assemble_bending_block(length, rigidity.bending, -1.0)
     )
 
     return stiffness
 
 
-def stiffness_frame(
+def choose_stiffness_frame(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
 ) -> Float[Array, "3 3"]:
@@ -177,7 +177,7 @@ def stiffness_frame(
     Nothing may read this choice: the global stiffness of an axisymmetric
     section is invariant to it. The transverse pair is completed against the
     global axis the member leans on least, so every orientation stays well
-    conditioned. `member_frame` is the one that answers to a convention.
+    conditioned. `compute_direction_cosines` is the one that answers to a convention.
     """
     span = end - start
     axis = span / jnp.linalg.norm(span)
@@ -191,7 +191,7 @@ def stiffness_frame(
     return frame
 
 
-def member_frame(
+def compute_direction_cosines(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
 ) -> Float[Array, "3 3"]:
@@ -230,7 +230,7 @@ def member_frame(
     return frame
 
 
-def member_transform(
+def tile_member_transform(
     frame: Float[Array, "3 3"],
 ) -> Float[Array, "dofs_member dofs_member"]:
     """
@@ -252,7 +252,7 @@ def member_transform(
     return transform
 
 
-def stiffness_global(
+def assemble_stiffness_global(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
     rigidity: SectionRigidity,
@@ -280,10 +280,10 @@ def stiffness_global(
     implicit term, where equilibrium is differentiated, and the explicit one,
     where the member's own end forces are read back.
     """
-    frame = stiffness_frame(start, end)
-    transform = member_transform(frame)
+    frame = choose_stiffness_frame(start, end)
+    transform = tile_member_transform(frame)
     length = jnp.linalg.norm(end - start)
-    local = stiffness_local(length, rigidity)
+    local = assemble_stiffness_local(length, rigidity)
     stiffness = transform.T @ local @ transform
 
     return stiffness

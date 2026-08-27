@@ -30,53 +30,44 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Int
 
-from normax.builders import build_design_constraints
-from normax.builders import build_pipeline
-from normax.builders import build_section_family
 from normax.config import RunConfig
-from normax.config import case_labels
-from normax.config import parse_run
+from normax.config import parse_config
 from normax.design import DesignProblem
-from normax.design import compute_mass
-from normax.design import initial_variables
+from normax.design import DesignRecord
+from normax.design import build_design_constraints
+from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.design import read_design
-from normax.figures import design_figures
+from normax.exporting import ExportTarget
+from normax.exporting import export_design
 from normax.form_finding import PlanBasis
+from normax.form_finding import build_plan_basis
 from normax.form_finding import fit_densities
-from normax.form_finding import held_plan_basis
 from normax.loads import LoadCases
 from normax.loads import build_load_cases
 from normax.materials import Steel355
-from normax.reporting import Report
-from normax.reporting import report_descent
 from normax.reporting import report_design
-from normax.reporting import report_families
+from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.structures import build_vierendeel_2d
 from normax.symmetry import SignGuard
+from normax.symmetry import build_member_spread
 from normax.symmetry import guard_signs
-from normax.symmetry import lens_geometry
-from normax.symmetry import member_spread
-from normax.symmetry import signed_shift
-from normax.viewer import view_designs
+from normax.symmetry import shift_densities
+from normax.symmetry import sketch_lens
+from normax.tesseract import build_pipeline
+from normax.viewer import view_design
 
 # The truss and the search, unless another file is named on the command line.
 CONFIG = Path(__file__).with_name("vierendeel.yaml")
 
 REPO = Path(__file__).resolve().parent.parent
-FIGURES = REPO / "figures"
-DATA = REPO / "data"
-
-COMPILATION_CACHE = REPO / ".jax_cache"
-COMPILATION_CACHE.mkdir(exist_ok=True)
-jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+TITLE = "Vierendeel truss — one search to a design"
+EXPORT = ExportTarget("vierendeel", REPO / "data", REPO / "figures")
 
 
 class TrussConfig(NamedTuple):
@@ -121,7 +112,7 @@ def build_truss(config: TrussConfig) -> Structure:
     return build_vierendeel_2d(config.num_bays, config.span, config.depth)
 
 
-def mirrored_nodes(config: TrussConfig) -> Int[np.ndarray, "nodes"]:
+def mirror_nodes(config: TrussConfig) -> Int[np.ndarray, "nodes"]:
     """
     Mirror image of every node index about midspan, chord by chord.
     """
@@ -132,7 +123,7 @@ def mirrored_nodes(config: TrussConfig) -> Int[np.ndarray, "nodes"]:
     return np.concatenate([bottom, top])
 
 
-def member_families(config: TrussConfig) -> tuple[tuple[str, slice], ...]:
+def list_families(config: TrussConfig) -> tuple[tuple[str, slice], ...]:
     """
     Name and member slice of every family, in the generator's order.
     """
@@ -146,7 +137,7 @@ def member_families(config: TrussConfig) -> tuple[tuple[str, slice], ...]:
     return families
 
 
-def chord_signs(config: TrussConfig) -> tuple[np.ndarray, np.ndarray]:
+def sign_chords(config: TrussConfig) -> tuple[np.ndarray, np.ndarray]:
     """
     The sign each chord member must carry, and which members the chords are.
     """
@@ -157,7 +148,7 @@ def chord_signs(config: TrussConfig) -> tuple[np.ndarray, np.ndarray]:
     return signs, chords
 
 
-def signed_start(
+def initialize_densities(
     structure: Structure,
     basis: PlanBasis,
     loads: LoadCases,
@@ -190,12 +181,12 @@ def signed_start(
     balance exact, and its one self-stress is the split between hanging deck
     and arching top chord.
     """
-    lens = lens_geometry(structure, config.sketch.sag_lens, config.sketch.rise_lens)
+    lens = sketch_lens(structure, config.sketch.sag_lens, config.sketch.rise_lens)
     fit = fit_densities(structure, lens, loads.formfinding, basis)
 
-    signs, chords = chord_signs(config.structure)
+    signs, chords = sign_chords(config.structure)
     guard = guard_signs(fit.q, signs, chords, config.subspace.margin_fraction)
-    q = signed_shift(fit.q, fit.self_stresses[:, 0], guard)
+    q = shift_densities(fit.q, fit.self_stresses[:, 0], guard)
 
     return q, guard_signs(q, signs, chords, config.subspace.margin_fraction)
 
@@ -210,11 +201,9 @@ def main(config_path: Path) -> None:
         File naming the truss and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[TrussConfig, SketchConfig] = parse_run(
+    config: RunConfig[TrussConfig, SketchConfig] = parse_config(
         config_path.read_text(), TrussConfig, SketchConfig
     )
-    report = Report()
-    report.write_banner("Vierendeel truss — one search to a design")
 
     # The structure, its load cases, and the three blocks built on it.
     structure = build_truss(config.structure)
@@ -224,58 +213,29 @@ def main(config_path: Path) -> None:
 
     # The subspace holding the plan, in member coordinates, and the mirror
     # folding densities and diameters alike.
-    mirror = mirrored_nodes(config.structure) if config.subspace.symmetric else None
-    basis = held_plan_basis(structure, mirror, config.subspace.pivoted)
-    spread = member_spread(structure, (mirror,))
+    mirror = mirror_nodes(config.structure) if config.subspace.symmetric else None
+    basis = build_plan_basis(structure, mirror, config.subspace.pivoted)
+    spread = build_member_spread(structure, (mirror,))
 
     # The start, and the guard the descent runs under.
-    q_start, guard = signed_start(structure, basis, loads, config)
+    q_start, guard = initialize_densities(structure, basis, loads, config)
     guarded = guard if config.subspace.margin_fraction > 0.0 else None
     constraints = build_design_constraints(config.constraints, guarded)
     problem = DesignProblem(structure, pipeline, loads, basis, spread, constraints)
-    start = initial_variables(problem, q_start, config.analysis.diameter)
+    d_start = config.analysis.diameter
+    start = initialize_optimization_variables(problem, q_start, d_start)
     initial = read_design(problem, start)
-
-    report.write_heading("Backends")
-    entries = [
-        ("analysis", config.analysis.backend),
-        ("sizing", config.sizing.backend),
-        ("coordinates", str(basis.width)),
-        ("variables", str(start.size)),
-    ]
-    report.write_entries(entries)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
     found = optimize_design(problem, start, config.augmented)
     optimized = read_design(problem, found.variables)
 
-    report.write_heading("The descent")
-    report_descent(report, found)
-    report_design(report, initial, "The start")
-    report_design(report, optimized, "The answer")
-    report_families(report, optimized, member_families(config.structure))
-    saved = 1.0 - float(compute_mass(optimized)) / float(compute_mass(initial))
-    report.write_entries([("saved", f"{100.0 * saved:.2f} %")])
-
-    # The record, and the figures.
-    DATA.mkdir(exist_ok=True)
-    np.savez(
-        DATA / "vierendeel.npz",
-        variables=found.variables,
-        objectives=found.objectives,
-        violations=found.violations,
-    )
-    FIGURES.mkdir(exist_ok=True)
-    designs = {"start": initial, "answer": optimized}
-    labels = case_labels(config.load_cases)
-    drawn, descended = design_figures(structure, designs, labels, found)
-    drawn.savefig(FIGURES / "vierendeel_designs.png", dpi=200)
-    descended.savefig(FIGURES / "vierendeel_descent.png", dpi=200)
-    written = [("figures", str(FIGURES)), ("data", str(DATA / "vierendeel.npz"))]
-    report.write_entries(written)
-
-    if config.viewer:
-        view_designs(structure, pipeline.analyzer, loads, designs, labels)
+    # What the run arrived at; the report, the record and the viewer read it.
+    families = list_families(config.structure)
+    record = DesignRecord(problem, found, initial, optimized, families)
+    report_design(record, config, TITLE)
+    export_design(record, config, EXPORT)
+    view_design(record, config)
 
 
 if __name__ == "__main__":

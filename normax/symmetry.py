@@ -58,7 +58,7 @@ class SignGuard(NamedTuple):
     scale: float
 
 
-def orbit_matrix(
+def build_orbit_matrix(
     mappings: tuple[Int[np.ndarray, "items"], ...],
 ) -> Float[np.ndarray, "items patterns"]:
     """
@@ -111,7 +111,7 @@ def orbit_matrix(
     return np.stack(columns, axis=1)
 
 
-def permuted_members(
+def permute_members(
     nodes_permuted: Int[np.ndarray, "nodes"],
     structure: Structure,
 ) -> Int[np.ndarray, "members"]:
@@ -204,7 +204,7 @@ def unfold_values(
     return np.asarray(spread) @ np.asarray(values)
 
 
-def lens_geometry(
+def sketch_lens(
     structure: Structure,
     sag: float,
     rise: float,
@@ -270,7 +270,7 @@ def guard_signs(
     return SignGuard(signs, members, margin_fraction * scale, scale)
 
 
-def signed_shift(
+def shift_densities(
     q: Float[np.ndarray, "members"],
     mode: Float[np.ndarray, "members"],
     guard: SignGuard,
@@ -324,7 +324,7 @@ def signed_shift(
     return np.asarray(q) + shift * np.asarray(mode)
 
 
-def member_spread(
+def build_member_spread(
     structure: Structure,
     nodes_permuted: tuple[Int[np.ndarray, "nodes"] | None, ...],
 ) -> Float[np.ndarray, "members patterns"] | None:
@@ -349,6 +349,6 @@ def member_spread(
     if not offered:
         return None
 
-    generators = tuple(permuted_members(nodes, structure) for nodes in offered)
+    generators = tuple(permute_members(nodes, structure) for nodes in offered)
 
-    return orbit_matrix(generators)
+    return build_orbit_matrix(generators)

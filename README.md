@@ -36,8 +36,6 @@ without it those tests skip themselves and the rest of the suite runs.
 import jax
 import jax.numpy as jnp
 
-from normax.builders import build_pipeline
-from normax.builders import build_section_family
 from normax.config import AnalysisConfig
 from normax.config import SizingConfig
 from normax.design import DesignParameters
@@ -45,7 +43,9 @@ from normax.design import compute_mass
 from normax.loads import assemble_load_cases
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.structures import build_arch_2d
+from normax.tesseract import build_pipeline
 
 num_edges = 20
 section_class = 3
@@ -97,7 +97,8 @@ uv run python examples/gridshell.py
 ```
 
 Each reads the YAML beside it, prints what the descent bought, and writes its
-figures and a `data/*.npz` record.
+figures and a `data/*.npz` record; the file's `output` block turns the report,
+the export and the viewer on and off.
 
 ## What the gradient buys
 
@@ -108,7 +109,7 @@ gradient buys is a comparison rather than a demo. A form finder acts as a
 shape prior: descending one force density through it is start-proof where
 descending every free node height stalls in bending. On a truss, holding the
 plan leaves a null space of force densities to search, and
-`normax.form_finding.held_plan_basis` makes its basis coordinates the design
+`normax.form_finding.build_plan_basis` makes its basis coordinates the design
 variables. The rival routes — free heights without the form finder, and sizing
 alone at the drawn geometry — are form finders too, in
 `normax/extras/comparison.py`, so racing them swaps one block and nothing

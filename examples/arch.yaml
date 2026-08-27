@@ -61,5 +61,8 @@ augmented:
   tolerance: 1.0e-6
   quiet: 1.0e-6
 
-# A viewer blocks until its window closes, so the run reports first.
-viewer: false
+# What becomes of the answer; a viewer blocks, so it opens last.
+output:
+  verbose: true
+  export: true
+  viewer: false

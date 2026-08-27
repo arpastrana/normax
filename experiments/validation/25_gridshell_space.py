@@ -65,9 +65,6 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 from jaxtyping import Float
-
-from normax.reporting import Report
-from normax.reporting import ReportColumn
 from normax.searches import FIGURES
 from normax.searches import ChordSigns
 from normax.searches import DesignProblem
@@ -75,7 +72,10 @@ from normax.searches import HeightTruss
 from normax.searches import folding_maps
 from normax.searches import parse_shell
 from normax.searches import prepare_problem
-from normax.structures import member_lengths
+
+from normax.reporting import Report
+from normax.reporting import ReportColumn
+from normax.structures import compute_member_lengths
 from normax.visualization import ShapeVariation
 from normax.visualization import figure_shape_variations
 
@@ -271,7 +271,7 @@ def compressive(
         return True
 
     finder = problem.pipeline.formfinder
-    q = np.asarray(finder.member_densities(jnp.asarray(xi)))
+    q = np.asarray(finder.read_member_densities(jnp.asarray(xi)))
     signed = guard.signs * q[guard.chords]
 
     return bool(np.all(signed >= guard.margin))
@@ -413,7 +413,7 @@ def report_space(
     heights_cap = cap.xyz[:, 2]
     rows = []
     for shape in [cap, *shapes]:
-        q = np.asarray(finder.member_densities(jnp.asarray(shape.xi)))
+        q = np.asarray(finder.read_member_densities(jnp.asarray(shape.xi)))
         drift = shape.xyz[:, 2] - heights_cap
         rows.append(
             (
@@ -503,7 +503,7 @@ def main(path: Path) -> None:
     finder = problem.pipeline.formfinder
     xi_drawn = np.asarray(start.xi)
 
-    lengths_cap = member_lengths(jnp.asarray(start.lens), structure.edges)
+    lengths_cap = compute_member_lengths(jnp.asarray(start.lens), structure.edges)
     cap = SampledShape(
         "drawn cap",
         xi_drawn,

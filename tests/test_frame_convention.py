@@ -26,10 +26,10 @@ import pytest
 from normax.analysis import MemberForces
 from normax.analysis import pynite
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.loads import select_load_case
 from normax.materials import Steel355
-from normax.sizing.ec3 import design_actions
+from normax.sections import build_section_family
+from normax.sizing.ec3 import coerce_member_actions
 from normax.structures import Structure
 
 SECTION_CLASS = 3
@@ -102,7 +102,8 @@ def test_turning_the_local_frame_leaves_the_design_actions_alone(angle):
     )
 
     assert_same_actions(
-        design_actions(rotated_pair(forces, angle)), design_actions(forces)
+        coerce_member_actions(rotated_pair(forces, angle)),
+        coerce_member_actions(forces),
     )
 
 
@@ -116,7 +117,7 @@ def test_collinear_ends_keep_the_curvature_they_had():
         moment_minor=jnp.zeros((3, 2)),
     )
 
-    factor = np.asarray(design_actions(forces).moment_factor_major)
+    factor = np.asarray(coerce_member_actions(forces).moment_factor_major)
 
     # Table B.3, first row: one for a uniform moment, floored under reversal.
     assert factor[0] == pytest.approx(1.0)
@@ -137,8 +138,8 @@ def test_two_solvers_demand_the_same_design_actions(canopy, family):
     )
     traced = select_load_case(stacked, 0)
     problem = pynite.FrameProblem(structure=canopy, catalogue=family, loads=loads)
-    foreign = pynite.member_forces(
+    foreign = pynite.compute_member_forces(
         problem, np.asarray(canopy.nodes), np.asarray(diameters), loads
     )
 
-    assert_same_actions(design_actions(foreign), design_actions(traced))
+    assert_same_actions(coerce_member_actions(foreign), coerce_member_actions(traced))

@@ -15,12 +15,17 @@
 Designs drawn in the frame solver's own terms.
 """
 
+from typing import Any
+
 import vix
 from smax import LoadCase
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.analysis.smax import frame_model
+from normax.analysis.smax import assemble_frame_model
+from normax.config import RunConfig
+from normax.config import label_load_cases
 from normax.design import Design
+from normax.design import DesignRecord
 from normax.loads import LoadCases
 from normax.structures import Structure
 from normax.tesseract import TesseractAnalyzer
@@ -69,7 +74,7 @@ def view_designs(
     for name, design in designs.items():
         xyz = design.shape.xyz
         sections = design.sizes.sections
-        frame = frame_model(structure, xyz, sections)
+        frame = assemble_frame_model(structure, xyz, sections)
         viewer.add(frame, name=name)
 
         for index, case_name in enumerate(case_names):
@@ -91,3 +96,29 @@ def view_designs(
             )
 
     viewer.show()
+
+
+def view_design(record: DesignRecord, config: RunConfig[Any, Any]) -> None:
+    """
+    A run's start and answer in the viewer, or nothing when the run asks none.
+
+    Parameters
+    ----------
+    record :
+        What the run arrived at.
+    config :
+        The run as described, naming its load cases and whether it ends in a
+        viewer.
+
+    Notes
+    -----
+    Blocks until the window closes, so a run reports and exports first.
+    """
+    if not config.output.viewer:
+        return
+
+    problem = record.problem
+    designs = {"start": record.initial, "answer": record.optimized}
+    labels = label_load_cases(config.load_cases)
+    analyzer = problem.pipeline.analyzer
+    view_designs(problem.structure, analyzer, problem.loads, designs, labels)

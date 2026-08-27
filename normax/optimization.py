@@ -41,7 +41,7 @@ INNER_FLOOR = 1e-10
 EARNED_SHARE = 0.25
 
 
-class AugmentedBudget(NamedTuple):
+class OptimizationBudget(NamedTuple):
     """
     What an augmented Lagrangian descent may spend, and when it stops.
 
@@ -86,7 +86,7 @@ class AugmentedBudget(NamedTuple):
     quiet: float
 
 
-class AugmentedAnswer(NamedTuple):
+class OptimizationAnswer(NamedTuple):
     """
     What an augmented Lagrangian descent arrived at, and the road there.
 
@@ -144,7 +144,7 @@ class ConstrainedMaps(NamedTuple):
     slack: Callable
 
 
-def augmented_penalty(
+def compute_penalty(
     slack: Float[Array, "constraints"],
     multipliers: Float[Array, "constraints"],
     penalty: float | Float[Array, ""],
@@ -178,7 +178,7 @@ def augmented_penalty(
     return 0.5 * penalty * jnp.sum(shifted**2)
 
 
-def shifted_multipliers(
+def update_multipliers(
     multipliers: Float[np.ndarray, "constraints"],
     slack: Float[np.ndarray, "constraints"],
     penalty: float,
@@ -208,7 +208,7 @@ def shifted_multipliers(
     return np.clip(raised, 0.0, ceiling)
 
 
-def strayed_point(
+def recoil_point_to_anchor(
     x: Float[np.ndarray, "variables"],
     anchor: Float[np.ndarray, "variables"],
     held: float,
@@ -242,7 +242,7 @@ def strayed_point(
     return value, strayed
 
 
-def worst_violation(
+def measure_violation(
     slack: Callable[[Float[Array, "variables"]], Float[Array, "constraints"]],
     x: Float[np.ndarray, "variables"],
 ) -> tuple[float, Float[np.ndarray, "constraints"]]:
@@ -271,8 +271,8 @@ def descend_augmented(
     maps: ConstrainedMaps,
     start: Float[np.ndarray, "variables"],
     boxes: list[tuple[float | None, float | None]],
-    budget: AugmentedBudget,
-) -> AugmentedAnswer:
+    budget: OptimizationBudget,
+) -> OptimizationAnswer:
     """
     Minimize under inequality rows by an augmented Lagrangian, in box bounds.
 
@@ -304,7 +304,7 @@ def descend_augmented(
     Each round is one L-BFGS-B descent of the augmented objective, solved to
     precision in the opening rounds and only as far as the inherited violation
     afterwards. A trial point that raises or returns a non-finite number is
-    charged `strayed_point`; `RuntimeError` is caught alongside the value
+    charged `recoil_point_to_anchor`; `RuntimeError` is caught alongside the value
     errors because a solver failing inside a compiled program surfaces through
     a host callback as one. Deterministic: two runs of one budget agree bit
     for bit.
@@ -324,7 +324,7 @@ def descend_augmented(
         raise ValueError(f"the objective at the start is not usable: {reference}")
 
     scale = jnp.asarray(reference)
-    violation, rows = worst_violation(maps.slack, x)
+    violation, rows = measure_violation(maps.slack, x)
     multipliers = np.zeros(rows.size)
     penalty = float(budget.penalty)
 
@@ -340,9 +340,9 @@ def descend_augmented(
             value = float(value)
             slope = np.asarray(slope, dtype=np.float64)
         except (ValueError, FloatingPointError, RuntimeError):
-            return strayed_point(z, anchor, held)
+            return recoil_point_to_anchor(z, anchor, held)
         if not np.isfinite(value) or not np.all(np.isfinite(slope)):
-            return strayed_point(z, anchor, held)
+            return recoil_point_to_anchor(z, anchor, held)
         anchor = np.asarray(z, dtype=np.float64).copy()
         held = value
 
@@ -384,13 +384,13 @@ def descend_augmented(
         x = np.asarray(found.x, dtype=np.float64)
         spent += int(found.nfev)
 
-        violation, rows = worst_violation(maps.slack, x)
+        violation, rows = measure_violation(maps.slack, x)
         objective = abs(float(maps.objective(jnp.asarray(x))[0]))
         moved = abs(objective - objectives[-1]) / max(objective, reference)
         objectives.append(objective)
         violations.append(violation)
 
-        multipliers = shifted_multipliers(multipliers, rows, penalty, budget.ceiling)
+        multipliers = update_multipliers(multipliers, rows, penalty, budget.ceiling)
         if violation > EARNED_SHARE * inherited:
             penalty = min(penalty * budget.growth, budget.ceiling)
         inherited = violation
@@ -399,7 +399,7 @@ def descend_augmented(
             converged = True
             break
 
-    answer = AugmentedAnswer(
+    answer = OptimizationAnswer(
         x, np.asarray(objectives), np.asarray(violations), spent, converged
     )
 

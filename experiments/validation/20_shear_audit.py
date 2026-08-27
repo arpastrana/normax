@@ -41,14 +41,14 @@ from ec3x.resistance import SHEAR_THRESHOLD
 from ec3x.resistance import area_shear
 from ec3x.resistance import resistance_shear
 from ec3x.resistance import utilization_shear
+from normax.searches import StructureProfile
 
 from normax import searches
 from normax.analysis import MemberForces
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
-from normax.searches import StructureProfile
+from normax.reporting import verify_checks
 from normax.sections import TubeFamily
 
 # The run descriptions the examples take, and the folder this file sits in.
@@ -431,7 +431,7 @@ def main() -> None:
     )
     checks = shears + torsions
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

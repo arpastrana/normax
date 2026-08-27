@@ -41,7 +41,7 @@ from smax import solve
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
-from normax.analysis import support_fixities
+from normax.analysis import restrain_supports
 from normax.loads import stack_load_cases
 from normax.sections import MemberSections
 from normax.sections import TubeFamily
@@ -58,7 +58,7 @@ POISSONS_RATIO = 0.3
 TORSION_FACTOR = 2.0
 
 
-def frame_model(
+def assemble_frame_model(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
     section: MemberSections,
@@ -83,7 +83,7 @@ def frame_model(
     Notes
     -----
     Every member is a beam with six degrees of freedom at each node. The
-    supports are what `support_fixities` makes of the structure's own, measured
+    supports are what `restrain_supports` makes of the structure's own, measured
     from the geometry rather than declared.
     """
     steel = section.material
@@ -109,7 +109,7 @@ def frame_model(
             BeamElement(member, nodes=ends, material=material, section=pipe)
         )
 
-    flags = support_fixities(structure)
+    flags = restrain_supports(structure)
     supports = [
         Support(node, flags[node]) for node in range(xyz.shape[0]) if flags[node].any()
     ]
@@ -141,7 +141,7 @@ def prepare_model(
     Host-side and never traced. Only the shapes of the placeholder geometry and
     section survive into a result; their values are overwritten per call.
     """
-    frame = frame_model(structure, structure.nodes, section)
+    frame = assemble_frame_model(structure, structure.nodes, section)
 
     return compile_structure(frame)
 
@@ -219,7 +219,7 @@ def _injected_assembly(
     return compiled
 
 
-def member_forces(
+def compute_member_forces(
     model: CompiledStructure,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -357,7 +357,9 @@ class SmaxAnalyzer(AbstractFrameAnalyzer):
         """
         analyzed = []
         for load_case in loads:
-            forces = member_forces(self.model, xyz, diameters, self.section, load_case)
+            forces = compute_member_forces(
+                self.model, xyz, diameters, self.section, load_case
+            )
             analyzed.append(forces)
 
         return stack_load_cases(analyzed)

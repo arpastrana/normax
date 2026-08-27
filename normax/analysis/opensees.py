@@ -42,8 +42,8 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.analysis import normal_axis
-from normax.analysis import support_fixities
+from normax.analysis import find_normal_axis
+from normax.analysis import restrain_supports
 from normax.sections import TubeFamily
 from normax.structures import Structure
 from normax.units import MEGAPASCAL
@@ -163,7 +163,7 @@ class PlaneForces(NamedTuple):
     moments: Float[np.ndarray, "members ends"]
 
 
-def frame_plane(
+def check_frame_plane(
     structure: Structure,
     xyz: Float[Array, "nodes 3"],
     normal: int | None,
@@ -207,7 +207,7 @@ def frame_plane(
         spread = float(np.ptp(offsets))
         raise ValueError(f"nodes are not planar along axis {normal}; spread {spread}")
 
-    measured = normal_axis(structure)
+    measured = find_normal_axis(structure)
     if measured != normal:
         raise ValueError(f"the structure is restrained along axis {measured}")
 
@@ -243,7 +243,7 @@ def prepare_model(
     ValueError
         If the starting geometry does not lie in the plane named.
     """
-    spanned = frame_plane(structure, structure.nodes, normal)
+    spanned = check_frame_plane(structure, structure.nodes, normal)
 
     return Model(structure=structure, spanned=spanned)
 
@@ -372,7 +372,7 @@ def _build_model(model: Model, family: TubeFamily, given: FrameSolve) -> int:
     structure = model.structure
     spanned = model.spanned
 
-    frame_plane(structure, given.xyz, spanned.normal)
+    check_frame_plane(structure, given.xyz, spanned.normal)
 
     out_of_plane = np.asarray(given.loads)[:, spanned.normal]
     if np.any(out_of_plane != 0.0):
@@ -383,7 +383,7 @@ def _build_model(model: Model, family: TubeFamily, given: FrameSolve) -> int:
     coordinates = np.asarray(given.xyz)[:, list(spanned.axes)] * MILLIMETER
     edges = np.asarray(structure.edges)
     applied = np.asarray(given.loads)[:, list(spanned.axes)]
-    flags = support_fixities(structure)
+    flags = restrain_supports(structure)
 
     sections = family(jnp.asarray(given.diameters) * MILLIMETER)
     areas = np.asarray(sections.area)
@@ -471,7 +471,7 @@ def _read_forces(num_members: int) -> PlaneForces:
     return PlaneForces(axial, moments)
 
 
-def member_forces(
+def compute_member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -503,7 +503,7 @@ def member_forces(
 
     Notes
     -----
-    Not differentiable by tracing; `force_jacobian` carries the derivatives.
+    Not differentiable by tracing; `compute_force_jacobian` carries the derivatives.
     Plain NumPy arrays, because this runs inside an FFI callback that forbids
     allocating a JAX array.
     """
@@ -520,7 +520,7 @@ def member_forces(
     )
 
 
-def _section_slopes(
+def _section_sensitivity(
     diameters: Float[Array, "members"],
     family: TubeFamily,
 ) -> tuple[Float[np.ndarray, "members"], Float[np.ndarray, "members"]]:
@@ -529,7 +529,7 @@ def _section_slopes(
 
     Returns
     -------
-    slopes :
+    sensitivities :
         Derivative of the area and of the second moment, in SI per millimeter.
     """
     outer = jnp.asarray(diameters) * MILLIMETER
@@ -555,7 +555,7 @@ def _force_sensitivity(element: int, section: int, dof: int, tag: int) -> float:
     return float(reading[0]) if isinstance(reading, list) else float(reading)
 
 
-def force_jacobian(
+def compute_force_jacobian(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
@@ -627,7 +627,7 @@ def _assemble_blocks(
     -----
     Two changes of variable: the solver's two in-plane directions are scattered
     back into three global ones, leaving the normal column zero, and its area
-    and second moment are contracted with the section slopes into one derivative
+    and second moment are contracted with the section sensitivities into one derivative
     per diameter. Millimeters re-enter on both.
     """
     axial = sweep.axial
@@ -636,7 +636,7 @@ def _assemble_blocks(
     num_members = axial.shape[0]
 
     coordinates = 2 * num_nodes
-    d_area, d_inertia = _section_slopes(diameters, family)
+    d_area, d_inertia = _section_sensitivity(diameters, family)
 
     axial_force_xyz = np.zeros((num_members, num_nodes, 3))
     moment_major_xyz = np.zeros((num_members, 2, num_nodes, 3))

@@ -37,7 +37,7 @@ from jaxtyping import Int
 from scipy.linalg import qr
 
 from normax.structures import Structure
-from normax.symmetry import permuted_members
+from normax.symmetry import permute_members
 
 
 class FormFoundShape(NamedTuple):
@@ -96,7 +96,7 @@ class AbstractFormFinder(eqx.Module):
         """
 
 
-def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
+def build_equilibrium_graph(structure: Structure) -> EquilibriumStructure:
     """
     The connectivity the force density method solves on.
 
@@ -121,7 +121,7 @@ def equilibrium_graph(structure: Structure) -> EquilibriumStructure:
     return EquilibriumStructure(nodes, edges, supports)
 
 
-def equilibrium_state(
+def solve_equilibrium(
     q: Float[Array, "members"],
     xyz_fixed: Float[Array, "supports 3"],
     graph: EquilibriumStructure,
@@ -138,7 +138,7 @@ def equilibrium_state(
         Position of every supported node, in the order `graph.indices_fixed`
         gives them.
     graph :
-        The connectivity, from `equilibrium_graph`.
+        The connectivity, from `build_equilibrium_graph`.
     loads :
         Force applied at every node.
 
@@ -188,7 +188,7 @@ class FdmFormFinder(AbstractFormFinder):
         structure :
             The structure supplying the topology and the supported nodes.
         """
-        graph = equilibrium_graph(structure)
+        graph = build_equilibrium_graph(structure)
 
         self.xyz_fixed = structure.nodes[graph.indices_fixed]
         self.graph = graph
@@ -213,12 +213,12 @@ class FdmFormFinder(AbstractFormFinder):
         shape :
             The geometry at equilibrium, and its member lengths.
         """
-        state = equilibrium_state(q, self.xyz_fixed, self.graph, loads)
+        state = solve_equilibrium(q, self.xyz_fixed, self.graph, loads)
 
         return FormFoundShape(state.xyz, state.lengths[:, 0])
 
 
-def free_nodes(structure: Structure) -> Int[np.ndarray, "nodes_free"]:
+def select_free_nodes(structure: Structure) -> Int[np.ndarray, "nodes_free"]:
     """
     Indices of the unsupported nodes, in ascending order.
 
@@ -237,7 +237,7 @@ def free_nodes(structure: Structure) -> Int[np.ndarray, "nodes_free"]:
     return np.setdiff1d(every, np.asarray(structure.supports))
 
 
-def balance_rows(
+def assemble_balance_rows(
     structure: Structure,
     xyz: Float[np.ndarray, "nodes 3"],
     axes: tuple[int, ...],
@@ -262,7 +262,7 @@ def balance_rows(
     """
     edges = np.asarray(structure.edges)
     nodes = np.asarray(xyz)
-    nodes_free = free_nodes(structure)
+    nodes_free = select_free_nodes(structure)
     num_edges = edges.shape[0]
 
     incidence = np.zeros((num_edges, nodes.shape[0]))
@@ -274,7 +274,7 @@ def balance_rows(
     return np.concatenate(blocks, axis=0)
 
 
-def mirror_rows(
+def assemble_mirror_rows(
     structure: Structure,
     nodes_mirrored: Int[np.ndarray, "nodes"],
 ) -> Float[np.ndarray, "members members"]:
@@ -293,7 +293,7 @@ def mirror_rows(
     rows :
         One row per member, zero exactly when the densities are symmetric.
     """
-    members_mirrored = permuted_members(np.asarray(nodes_mirrored), structure)
+    members_mirrored = permute_members(np.asarray(nodes_mirrored), structure)
     rows = np.eye(structure.num_edges)
     rows[np.arange(structure.num_edges), members_mirrored] -= 1.0
 
@@ -375,7 +375,7 @@ class PlanBasis(NamedTuple):
         return np.asarray(q)[self.independents]
 
 
-def held_plan_basis(
+def build_plan_basis(
     structure: Structure,
     nodes_mirrored: Int[np.ndarray, "nodes"] | None,
     pivoted: bool,
@@ -407,9 +407,9 @@ def held_plan_basis(
     density of one member, and every dependent density a fixed linear function
     of them, at the price of columns that are not orthonormal.
     """
-    balance = balance_rows(structure, structure.nodes, (0, 1))
+    balance = assemble_balance_rows(structure, structure.nodes, (0, 1))
     if nodes_mirrored is not None:
-        symmetry = mirror_rows(structure, nodes_mirrored)
+        symmetry = assemble_mirror_rows(structure, nodes_mirrored)
         balance = np.concatenate([balance, symmetry], axis=0)
 
     if not pivoted:
@@ -491,8 +491,8 @@ def fit_densities(
     balance rows reaches every sketch, and the surplus returns as states of
     self-stress — directions to trade member signs along without moving a node.
     """
-    balance = balance_rows(structure, xyz, (0, 1, 2))
-    nodes_free = free_nodes(structure)
+    balance = assemble_balance_rows(structure, xyz, (0, 1, 2))
+    nodes_free = select_free_nodes(structure)
     columns = [np.asarray(loads)[nodes_free, axis] for axis in (0, 1, 2)]
     applied = np.concatenate(columns)
 

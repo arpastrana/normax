@@ -64,7 +64,7 @@ from normax.optimization import value_and_gradient
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sections import TubeFamily
 from normax.sizing import DIAMETER_MINIMUM
 from normax.sizing import BlueprintSizer
@@ -264,16 +264,16 @@ def simultaneous_fixed(problem: ArchProblem) -> tuple[RouteAnswer, SolverState]:
 
         return 1.0 - used.ravel()
 
-    weigh_and_slope = jax.jit(jax.value_and_grad(weigh))
+    compute_mass_and_gradient = jax.jit(jax.value_and_grad(weigh))
     slack_compiled = jax.jit(slack)
     slack_jacobian = jax.jit(jax.jacrev(slack))
     start = np.full(NUM_EDGES, SEED)
-    weigh_and_slope(jnp.asarray(start))
+    compute_mass_and_gradient(jnp.asarray(start))
     slack_compiled(jnp.asarray(start))
     slack_jacobian(jnp.asarray(start))
 
     def objective(x):
-        value, slope = weigh_and_slope(jnp.asarray(x))
+        value, slope = compute_mass_and_gradient(jnp.asarray(x))
 
         return float(value), np.asarray(slope, dtype=np.float64)
 
@@ -367,16 +367,16 @@ def nested_joint(problem: ArchProblem) -> RouteAnswer:
     objective = design_objective(problem)
     seeds = problem.params.diameters
 
-    def weigh_shape(force_densities):
+    def compute_mass(force_densities):
         return objective(DesignParameters(force_densities, seeds))
 
-    compiled = value_and_gradient(weigh_shape, has_aux=True)
+    compiled = value_and_gradient(compute_mass, has_aux=True)
     compiled(problem.params.force_densities)
     funicular = float(problem.params.force_densities[0])
 
     started = time.perf_counter()
     found = minimize_bounded(
-        weigh_shape,
+        compute_mass,
         problem.params.force_densities,
         bounds=(SPREAD_UP * funicular, SPREAD_DOWN * funicular),
         iterations=DESCENT_ITERATIONS,
@@ -427,17 +427,17 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
 
         return 1.0 - used.ravel()
 
-    weigh_and_slope = jax.jit(jax.value_and_grad(weigh))
+    compute_mass_and_gradient = jax.jit(jax.value_and_grad(weigh))
     slack_compiled = jax.jit(slack)
     slack_jacobian = jax.jit(jax.jacrev(slack))
     seeded = jnp.concatenate([problem.params.force_densities, problem.params.diameters])
     start = np.asarray(seeded)
-    weigh_and_slope(seeded)
+    compute_mass_and_gradient(seeded)
     slack_compiled(seeded)
     slack_jacobian(seeded)
 
     def objective(x):
-        value, slope = weigh_and_slope(jnp.asarray(x))
+        value, slope = compute_mass_and_gradient(jnp.asarray(x))
 
         return float(value), np.asarray(slope, dtype=np.float64)
 
@@ -547,7 +547,7 @@ def main(verbose: bool = True) -> None:
     )
     report.write_heading("Summary")
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

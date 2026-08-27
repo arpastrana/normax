@@ -17,7 +17,7 @@ What a run is described by, read from a file.
 Every section a design shares — the load cases, the two backends, the subspace,
 the constraints, the descent's budget — is a container here. What the structure
 is, and how its start is sketched, belongs to the example describing it, which
-hands its own container types to `parse_run`.
+hands its own container types to `parse_config`.
 """
 
 from typing import Generic
@@ -26,7 +26,7 @@ from typing import TypeVar
 
 import yaml
 
-from normax.optimization import AugmentedBudget
+from normax.optimization import OptimizationBudget
 
 StructureT = TypeVar("StructureT")
 SketchT = TypeVar("SketchT")
@@ -150,6 +150,25 @@ class ConstraintsConfig(NamedTuple):
     bounds: BoundsConfig | None
 
 
+class OutputConfig(NamedTuple):
+    """
+    What a run does with its answer once the descent has ended.
+
+    Attributes
+    ----------
+    verbose :
+        Whether the run prints its report.
+    export :
+        Whether the run writes its record and its figures.
+    viewer :
+        Whether the run ends in a viewer.
+    """
+
+    verbose: bool
+    export: bool
+    viewer: bool
+
+
 class RunConfig(NamedTuple, Generic[StructureT, SketchT]):
     """
     Everything a run is described by.
@@ -172,8 +191,8 @@ class RunConfig(NamedTuple, Generic[StructureT, SketchT]):
         What the design is held to beside the check.
     augmented :
         What the descent may spend, and when it stops.
-    viewer :
-        Whether the run ends in a viewer.
+    output :
+        What the run prints, writes and opens once the descent has ended.
     """
 
     structure: StructureT
@@ -183,11 +202,11 @@ class RunConfig(NamedTuple, Generic[StructureT, SketchT]):
     sizing: SizingConfig
     subspace: SubspaceConfig | None
     constraints: ConstraintsConfig
-    augmented: AugmentedBudget
-    viewer: bool
+    augmented: OptimizationBudget
+    output: OutputConfig
 
 
-def parse_run(
+def parse_config(
     text: str,
     structure_type: type[StructureT],
     sketch_type: type[SketchT] | None = None,
@@ -252,14 +271,14 @@ def parse_run(
         sizing=SizingConfig(**document["sizing"]),
         subspace=subspace,
         constraints=constraints,
-        augmented=AugmentedBudget(**budget),
-        viewer=bool(document["viewer"]),
+        augmented=OptimizationBudget(**budget),
+        output=OutputConfig(**document["output"]),
     )
 
     return config
 
 
-def case_labels(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
+def label_load_cases(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
     """
     A label per load case, the pattern's name and whatever options it took.
 

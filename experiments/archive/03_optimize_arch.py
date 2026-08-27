@@ -89,8 +89,8 @@ from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.design import governing_load_case
 from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_half_span
@@ -104,7 +104,7 @@ from normax.optimization import shortest_member
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sizing import Ec3Sizer
 from normax.sizing import build_section_family
 from normax.structures import Structure
@@ -335,11 +335,11 @@ def arch_problem() -> ArchProblem:
     cannot follow.
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
-    graph_fdm = equilibrium_graph(structure)
+    graph_fdm = build_equilibrium_graph(structure)
     loads = build_load_cases(structure)
 
     trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(
+    state = solve_equilibrium(
         trial,
         structure.nodes[graph_fdm.indices_fixed],
         graph_fdm,
@@ -851,7 +851,7 @@ def main(verbose: bool = True) -> None:
     checks = (ToleranceCheck("scaled gradient error", sweep.worst, TOLERANCE_GRADIENT),)
     adequate = worst_utilization < 1.0 + 1e-9
     beats_uniform = mass_loose < sweep.masses[sweep.best]
-    passed = checks_passed(checks) and sweep.interior and adequate and beats_uniform
+    passed = verify_checks(checks) and sweep.interior and adequate and beats_uniform
 
     report.write_verdict(passed)
 

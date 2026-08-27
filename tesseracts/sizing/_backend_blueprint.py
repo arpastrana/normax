@@ -31,8 +31,8 @@ from normax.sizing.blueprint import HostFamily
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
-from normax.sizing.blueprint import host_actions
-from normax.sizing.blueprint import host_family
+from normax.sizing.blueprint import coerce_member_actions
+from normax.sizing.blueprint import coerce_section_family
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 
@@ -41,7 +41,7 @@ def _read_family(inputs: dict[str, Any]) -> HostFamily:
     """
     The section family the flat schema scalars describe.
     """
-    return host_family(
+    return coerce_section_family(
         float(inputs["ratio"]),
         float(inputs["f_y"]),
         float(inputs["gamma_m0"]),
@@ -53,7 +53,7 @@ def _read_actions(inputs: dict[str, Any]) -> HostActions:
     """
     The member actions the schema arrays describe.
     """
-    return host_actions(
+    return coerce_member_actions(
         inputs["axial_force"], inputs["end_moments_major"], inputs["end_moments_minor"]
     )
 

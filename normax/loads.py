@@ -59,7 +59,7 @@ class LoadCases(NamedTuple):
     analysis: Float[Array, "load_cases nodes 3"]
 
 
-def nodal_loads(
+def distribute_loads(
     structure: Structure,
     magnitudes: Float[np.ndarray, "nodes"],
     total: float,
@@ -88,7 +88,7 @@ def nodal_loads(
     return jnp.zeros((structure.num_nodes, 3)).at[:, 2].set(-jnp.asarray(scaled))
 
 
-def free_mask(structure: Structure) -> Bool[np.ndarray, "nodes"]:
+def mask_free_nodes(structure: Structure) -> Bool[np.ndarray, "nodes"]:
     """
     Whether each node is free to move.
 
@@ -108,7 +108,7 @@ def free_mask(structure: Structure) -> Bool[np.ndarray, "nodes"]:
     return free
 
 
-def deck_mask(structure: Structure) -> Bool[np.ndarray, "nodes"]:
+def mask_deck_nodes(structure: Structure) -> Bool[np.ndarray, "nodes"]:
     """
     Whether each node sits on the deck, the lowest free nodes of a truss.
 
@@ -129,7 +129,7 @@ def deck_mask(structure: Structure) -> Bool[np.ndarray, "nodes"]:
         without a deck.
     """
     heights = np.asarray(structure.nodes)[:, 2]
-    free = free_mask(structure)
+    free = mask_free_nodes(structure)
     deck = free & np.isclose(heights, heights[free].min())
     if not deck.any():
         raise ValueError("no free node sits at the lowest height: there is no deck")
@@ -137,7 +137,7 @@ def deck_mask(structure: Structure) -> Bool[np.ndarray, "nodes"]:
     return deck
 
 
-def half_mask(structure: Structure, mirrored: bool) -> Bool[np.ndarray, "nodes"]:
+def mask_half_span(structure: Structure, mirrored: bool) -> Bool[np.ndarray, "nodes"]:
     """
     Whether each node sits on the near half of the span, or the far one.
 
@@ -163,7 +163,7 @@ def load_uniform(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
     """
     A total shared equally over every free node.
     """
-    return nodal_loads(structure, np.ones(structure.num_nodes), total)
+    return distribute_loads(structure, np.ones(structure.num_nodes), total)
 
 
 def load_half_span(
@@ -191,16 +191,16 @@ def load_half_span(
     loads :
         Force applied at every node.
     """
-    pattern = np.where(half_mask(structure, mirrored), 1.0, factor)
+    pattern = np.where(mask_half_span(structure, mirrored), 1.0, factor)
 
-    return nodal_loads(structure, pattern, total)
+    return distribute_loads(structure, pattern, total)
 
 
 def load_deck(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
     """
     A total shared equally over the deck nodes of a truss.
     """
-    return nodal_loads(structure, deck_mask(structure).astype(float), total)
+    return distribute_loads(structure, mask_deck_nodes(structure).astype(float), total)
 
 
 def load_deck_half(
@@ -228,10 +228,10 @@ def load_deck_half(
     loads :
         Force applied at every node.
     """
-    halved = np.where(half_mask(structure, mirrored), 1.0, factor)
-    pattern = np.where(deck_mask(structure), halved, 0.0)
+    halved = np.where(mask_half_span(structure, mirrored), 1.0, factor)
+    pattern = np.where(mask_deck_nodes(structure), halved, 0.0)
 
-    return nodal_loads(structure, pattern, total)
+    return distribute_loads(structure, pattern, total)
 
 
 def load_deck_point(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
@@ -240,11 +240,11 @@ def load_deck_point(structure: Structure, total: float) -> Float[Array, "nodes 3
     """
     along = np.asarray(structure.nodes)[:, 0]
     middle = 0.5 * (along.min() + along.max())
-    distance = np.where(deck_mask(structure), np.abs(along - middle), np.inf)
+    distance = np.where(mask_deck_nodes(structure), np.abs(along - middle), np.inf)
     pattern = np.zeros(structure.num_nodes)
     pattern[int(np.argmin(distance))] = 1.0
 
-    return nodal_loads(structure, pattern, total)
+    return distribute_loads(structure, pattern, total)
 
 
 class PolarPlan(NamedTuple):
@@ -270,7 +270,7 @@ class PolarPlan(NamedTuple):
     num_spokes: int
 
 
-def polar_plan(structure: Structure) -> PolarPlan:
+def read_polar_plan(structure: Structure) -> PolarPlan:
     """
     Read the rings and spokes of a polar grid off its drawn plan.
 
@@ -297,7 +297,7 @@ def polar_plan(structure: Structure) -> PolarPlan:
     return PolarPlan(ring, spoke, radii, num_spokes)
 
 
-def tributary_areas(structure: Structure) -> Float[np.ndarray, "nodes"]:
+def compute_tributary_areas(structure: Structure) -> Float[np.ndarray, "nodes"]:
     """
     Plan area every node of a polar cap carries.
 
@@ -319,7 +319,7 @@ def tributary_areas(structure: Structure) -> Float[np.ndarray, "nodes"]:
     outside itself. The areas sum to the plan exactly, which makes the
     supports' share readable as the pressure's total minus the applied total.
     """
-    plan = polar_plan(structure)
+    plan = read_polar_plan(structure)
     radii = plan.radii
     outermost = radii[-1]
 
@@ -352,10 +352,10 @@ def load_tributary(structure: Structure, pressure: float) -> Float[Array, "nodes
     loads :
         Force applied at every node, the supports' share going to ground.
     """
-    areas = tributary_areas(structure)
-    carried = float(np.sum(areas[free_mask(structure)]))
+    areas = compute_tributary_areas(structure)
+    carried = float(np.sum(areas[mask_free_nodes(structure)]))
 
-    return nodal_loads(structure, areas, pressure * carried)
+    return distribute_loads(structure, areas, pressure * carried)
 
 
 def load_sector(
@@ -393,17 +393,17 @@ def load_sector(
     roof rather than spotlighting a slice of it. A crown node sits on every
     sector's axis and is always inside.
     """
-    plan = polar_plan(structure)
+    plan = read_polar_plan(structure)
     reach = spokes // 2
     offset = (plan.spoke - center + reach) % plan.num_spokes
     crown = (plan.ring == 0) & np.isclose(plan.radii[0], 0.0)
     inside = (offset <= 2 * reach) | crown
 
-    areas = tributary_areas(structure)
-    carried = float(np.sum(areas[free_mask(structure)]))
+    areas = compute_tributary_areas(structure)
+    carried = float(np.sum(areas[mask_free_nodes(structure)]))
     pattern = np.where(inside, areas, factor * areas)
 
-    return nodal_loads(structure, pattern, pressure * carried)
+    return distribute_loads(structure, pattern, pressure * carried)
 
 
 LOAD_PATTERNS = {

@@ -77,7 +77,7 @@ def _prepared_frame(
     if held is not None:
         return held
 
-    prepared = pynite.prepared_frame(problem, frame.structure.nodes, frame.diameters)
+    prepared = pynite.prepare_frame(problem, frame.structure.nodes, frame.diameters)
     _PREPARED.clear()
     _PREPARED[fingerprint] = prepared
 
@@ -108,7 +108,7 @@ def solve_forces(frame: AnalyzedFrame) -> MemberForces:
     problem = _frame_problem(frame)
     prepared = _prepared_frame(problem, frame)
 
-    return pynite.member_forces(
+    return pynite.compute_member_forces(
         problem, frame.structure.nodes, frame.diameters, frame.loads, prepared
     )
 
@@ -137,7 +137,7 @@ def forces_vjp(frame: AnalyzedFrame, cotangent: MemberForces) -> dict[str, np.nd
     """
     problem = _frame_problem(frame)
     prepared = _prepared_frame(problem, frame)
-    pulled = pynite.force_cotangents(
+    pulled = pynite.pull_back_cotangents(
         problem, frame.structure.nodes, frame.diameters, cotangent, prepared
     )
 

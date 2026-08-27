@@ -40,6 +40,11 @@ from tesseract_jax.tesseract_compat import Jaxeract
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
+from normax.analysis import find_normal_axis
+from normax.config import AnalysisConfig
+from normax.config import SizingConfig
+from normax.design import StructuralDesignPipeline
+from normax.form_finding import FdmFormFinder
 from normax.loads import count_load_cases
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
@@ -50,6 +55,13 @@ from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.sizing.blueprint import snapshot_family
 from normax.structures import Structure
+
+# The crossed solvers, and which of them is planar and must be told its plane.
+ANALYSIS_CROSSED = ("opensees", "pynite")
+ANALYSIS_PLANAR = ("opensees",)
+
+# The crossed checks.
+SIZING_CROSSED = ("blueprint",)
 
 # Where the Tesseract API modules live, relative to the package.
 TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
@@ -77,32 +89,6 @@ def _dispatch_owned(work: Callable[..., Any], args: tuple, kwargs: dict) -> Any:
         _DISPATCHING.held = False
 
 
-def pinned_dispatch(work: Callable[..., Any]) -> Callable[..., Any]:
-    """
-    Run one Tesseract endpoint on the thread that owns every dispatch.
-
-    Parameters
-    ----------
-    work :
-        The client method to pin.
-
-    Returns
-    -------
-    pinned :
-        The same method, run on the owning thread and nowhere else.
-    """
-
-    @functools.wraps(work)
-    def pinned(*args: Any, **kwargs: Any) -> Any:
-        if getattr(_DISPATCHING, "held", False):
-            return work(*args, **kwargs)
-        submitted = _DISPATCH_OWNER.submit(_dispatch_owned, work, args, kwargs)
-
-        return submitted.result()
-
-    return pinned
-
-
 def pin_dispatch_thread() -> None:
     """
     Make every Tesseract endpoint run on one thread, for the whole process.
@@ -120,18 +106,29 @@ def pin_dispatch_thread() -> None:
     if os.environ.get("NORMAX_PIN_DISPATCH") == "0":
         return
 
+    def pin(work: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(work)
+        def pinned(*args: Any, **kwargs: Any) -> Any:
+            if getattr(_DISPATCHING, "held", False):
+                return work(*args, **kwargs)
+            submitted = _DISPATCH_OWNER.submit(_dispatch_owned, work, args, kwargs)
+
+            return submitted.result()
+
+        return pinned
+
     for name in PINNED_ENDPOINTS:
         work = getattr(Jaxeract, name, None)
         if work is None or getattr(work, "__wrapped__", None) is not None:
             continue
-        setattr(Jaxeract, name, pinned_dispatch(work))
+        setattr(Jaxeract, name, pin(work))
 
 
 # Armed on import: a crossed call is unsafe before it, so there is no window.
 pin_dispatch_thread()
 
 
-def load_tesseract(stage: str, root: Path = TESSERACTS) -> Tesseract:
+def open_tesseract(stage: str, root: Path = TESSERACTS) -> Tesseract:
     """
     A client that imports one stage's API module into this process.
 
@@ -164,7 +161,7 @@ def load_tesseract(stage: str, root: Path = TESSERACTS) -> Tesseract:
     return Tesseract.from_tesseract_api(module)
 
 
-def analysis_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
+def open_tesseract_analysis(backend: str, root: Path = TESSERACTS) -> Tesseract:
     """
     The analysis stage, its solver picked for the whole process.
 
@@ -188,10 +185,10 @@ def analysis_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
     """
     os.environ[ANALYSIS_VARIABLE] = backend
 
-    return load_tesseract("analysis", root)
+    return open_tesseract("analysis", root)
 
 
-def sizing_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
+def open_tesseract_sizing(backend: str, root: Path = TESSERACTS) -> Tesseract:
     """
     The sizing stage, its check picked for the whole process.
 
@@ -215,7 +212,7 @@ def sizing_tesseract(backend: str, root: Path = TESSERACTS) -> Tesseract:
     """
     os.environ[SIZING_VARIABLE] = backend
 
-    return load_tesseract("sizing", root)
+    return open_tesseract("sizing", root)
 
 
 class TesseractAnalyzer(AbstractFrameAnalyzer):
@@ -492,3 +489,109 @@ class TesseractSizer(AbstractMemberSizer):
         crossed = self.cross_check(forces, diameters, solve=False)
 
         return jnp.stack([answer["utilization_held"] for answer in crossed])
+
+
+def build_analyzer(
+    structure: Structure,
+    family: TubeFamily,
+    config: AnalysisConfig,
+) -> AbstractFrameAnalyzer:
+    """
+    The frame analysis a run description asks for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the block is built on.
+    family :
+        The section family the frame is analyzed with.
+    config :
+        The backend.
+
+    Returns
+    -------
+    analyzer :
+        The block, behind its boundary.
+
+    Raises
+    ------
+    ValueError
+        If the backend is not one this module knows.
+    """
+    if config.backend not in ANALYSIS_CROSSED:
+        raise ValueError(f"unknown analysis backend {config.backend!r}")
+
+    normal = find_normal_axis(structure) if config.backend in ANALYSIS_PLANAR else None
+    client = open_tesseract_analysis(config.backend)
+
+    return TesseractAnalyzer(structure, client, family, normal)
+
+
+def build_sizer(
+    structure: Structure,
+    family: TubeFamily,
+    config: SizingConfig,
+) -> AbstractMemberSizer:
+    """
+    The code check a run description asks for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the block is built on.
+    family :
+        The section family every size is drawn from.
+    config :
+        The backend.
+
+    Returns
+    -------
+    sizer :
+        The block, behind its boundary.
+
+    Raises
+    ------
+    ValueError
+        If the backend is not one this module knows.
+    """
+    if config.backend not in SIZING_CROSSED:
+        raise ValueError(f"unknown sizing backend {config.backend!r}")
+
+    client = open_tesseract_sizing(config.backend)
+
+    return TesseractSizer(structure, client, family)
+
+
+def build_pipeline(
+    structure: Structure,
+    family: TubeFamily,
+    analysis: AnalysisConfig,
+    sizing: SizingConfig,
+) -> StructuralDesignPipeline:
+    """
+    The three blocks a run composes, built on one structure.
+
+    Parameters
+    ----------
+    structure :
+        The structure every block is built from.
+    family :
+        The section family both the analysis and the check draw tubes from, so
+        whatever differs downstream is the check itself.
+    analysis :
+        Which solver fills the analysis slot.
+    sizing :
+        Which check fills the sizing slot.
+
+    Returns
+    -------
+    pipeline :
+        A form finder, a frame analysis and a code check, composed.
+    """
+    pipeline = StructuralDesignPipeline(
+        FdmFormFinder(structure),
+        build_analyzer(structure, family, analysis),
+        build_sizer(structure, family, sizing),
+    )
+
+    return pipeline

@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -22,12 +21,13 @@ from normax.extras.nested import shortest_member
 from normax.extras.nested import size_design
 from normax.extras.nested import value_and_gradient
 from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import assemble_load_cases
 from normax.loads import load_half_span
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
@@ -465,9 +465,9 @@ def structure():
 @pytest.fixture(scope="module")
 def force_densities(structure):
     """Force densities reaching the target rise, so the arch is the same one."""
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
     trial = jnp.full(NUM_EDGES, -1.0)
-    state = equilibrium_state(
+    state = solve_equilibrium(
         trial,
         structure.nodes[graph.indices_fixed],
         graph,

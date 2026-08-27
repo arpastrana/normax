@@ -44,7 +44,7 @@ from normax.sizing import MemberSizes
 from normax.structures import Structure
 
 
-def design_steel(grade: SteelGrade) -> Steel:
+def coerce_material(grade: SteelGrade) -> Steel:
     """
     Read a steel grade in the terms the standard states.
 
@@ -67,7 +67,7 @@ def design_steel(grade: SteelGrade) -> Steel:
     )
 
 
-def neutral_sections(tubes: Tube) -> MemberSections:
+def coerce_member_sections(tubes: Tube) -> MemberSections:
     """
     Restate the standard's tubes as the sections a design carries.
 
@@ -93,7 +93,7 @@ def neutral_sections(tubes: Tube) -> MemberSections:
     return MemberSections(tubes.diameter, tubes.thickness, grade)
 
 
-def axisymmetric_bending(
+def read_axisymmetric_moment(
     forces: MemberForces,
 ) -> tuple[Float[Array, "members"], Float[Array, "members"]]:
     """
@@ -131,7 +131,7 @@ def axisymmetric_bending(
     return larger, moment_factor_linear(ratio)
 
 
-def design_actions(forces: MemberForces) -> MemberActions:
+def coerce_member_actions(forces: MemberForces) -> MemberActions:
     """
     Read one load case of an analysis in the terms the standard states.
 
@@ -153,7 +153,7 @@ def design_actions(forces: MemberForces) -> MemberActions:
     the section is a tube, so the minor moment comes back zero and its factor
     one.
     """
-    moment, factor = axisymmetric_bending(forces)
+    moment, factor = read_axisymmetric_moment(forces)
     absent = jnp.zeros_like(moment)
     acting = MemberActions(
         forces.axial_force,
@@ -220,7 +220,7 @@ class Ec3Sizer(AbstractMemberSizer):
         ValueError
             If the family's ratio classifies as Class 4.
         """
-        steel = design_steel(family.material)
+        steel = coerce_material(family.material)
         section_class = section_class_at_ratio(family.ratio, steel.f_y)
         catalogue = TubeCatalogue(family.ratio, section_class, steel)
 
@@ -271,7 +271,7 @@ class Ec3Sizer(AbstractMemberSizer):
         """
 
         def size_case(carried: MemberForces):
-            acting = design_actions(carried)
+            acting = coerce_member_actions(carried)
             demanded = diameter_required(
                 acting,
                 buckling_length,
@@ -288,7 +288,7 @@ class Ec3Sizer(AbstractMemberSizer):
             return demanded, used
 
         demanded, used = jax.vmap(size_case)(forces)
-        sections = neutral_sections(self.catalogue(demanded))
+        sections = coerce_member_sections(self.catalogue(demanded))
 
         return MemberSizes(sections, used)
 
@@ -319,7 +319,7 @@ class Ec3Sizer(AbstractMemberSizer):
         tubes = self.catalogue(diameters)
 
         def utilization_case(carried: MemberForces):
-            acting = design_actions(carried)
+            acting = coerce_member_actions(carried)
 
             return utilization_design(
                 tubes,

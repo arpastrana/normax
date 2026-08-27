@@ -3,8 +3,7 @@ import numpy as np
 import pytest
 
 from normax.loads import assemble_load_cases
-from normax.loads import deck_mask
-from normax.loads import free_mask
+from normax.loads import compute_tributary_areas
 from normax.loads import load_deck
 from normax.loads import load_deck_half
 from normax.loads import load_deck_point
@@ -12,7 +11,8 @@ from normax.loads import load_half_span
 from normax.loads import load_sector
 from normax.loads import load_tributary
 from normax.loads import load_uniform
-from normax.loads import tributary_areas
+from normax.loads import mask_deck_nodes
+from normax.loads import mask_free_nodes
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 from normax.structures import build_vierendeel_2d
@@ -312,7 +312,7 @@ def test_loads_hang_from_free_nodes_only(structures):
     for structure in structures:
         loads = np.asarray(load_uniform(structure, 1.0))
         supports = np.asarray(structure.supports)
-        free = free_mask(structure)
+        free = mask_free_nodes(structure)
 
         assert np.all(loads[supports] == 0.0)
         assert np.all(loads[free, 2] < 0.0)
@@ -322,7 +322,7 @@ def test_loads_hang_from_free_nodes_only(structures):
 def test_a_uniform_load_case_shares_the_total_over_the_free_nodes(loaded):
     # A pattern carries a total, not a per-node value, so the sum is the spec.
     applied = np.asarray(load_uniform(loaded, TOTAL))
-    free = free_mask(loaded)
+    free = mask_free_nodes(loaded)
 
     assert -applied[:, 2].sum() == pytest.approx(TOTAL)
     assert np.allclose(applied[free, 2], applied[free, 2][0])
@@ -369,14 +369,14 @@ def test_a_mirrored_half_span_load_case_is_the_reflection_of_the_unmirrored_one(
 
 
 def test_the_deck_is_the_interior_bottom_chord(truss):
-    deck = deck_mask(truss)
+    deck = mask_deck_nodes(truss)
 
     assert np.flatnonzero(deck).tolist() == list(range(1, 8))
 
 
 def test_a_deck_load_case_shares_the_total_over_the_deck_alone(truss):
     applied = np.asarray(load_deck(truss, TOTAL))
-    deck = deck_mask(truss)
+    deck = mask_deck_nodes(truss)
 
     assert -applied[:, 2].sum() == pytest.approx(TOTAL)
     assert np.allclose(applied[deck, 2], applied[deck, 2][0])
@@ -385,7 +385,7 @@ def test_a_deck_load_case_shares_the_total_over_the_deck_alone(truss):
 
 def test_a_half_deck_load_case_stays_on_the_deck_and_grades_it(truss):
     applied = np.asarray(load_deck_half(truss, TOTAL, factor=0.25))
-    deck = deck_mask(truss)
+    deck = mask_deck_nodes(truss)
     along = np.asarray(truss.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
 
@@ -406,7 +406,7 @@ def test_a_deck_point_load_case_loads_the_deck_node_nearest_midspan(truss):
 
 
 def test_the_tributary_areas_tile_the_plan(shell):
-    areas = tributary_areas(shell)
+    areas = compute_tributary_areas(shell)
 
     assert np.all(areas > 0.0)
     assert areas.sum() == pytest.approx(np.pi * 5_000.0**2)
@@ -415,8 +415,8 @@ def test_the_tributary_areas_tile_the_plan(shell):
 def test_a_tributary_load_case_drops_the_supports_share(shell):
     pressure = 3.0e-3
     applied = np.asarray(load_tributary(shell, pressure))
-    free = free_mask(shell)
-    carried = tributary_areas(shell)[free].sum()
+    free = mask_free_nodes(shell)
+    carried = compute_tributary_areas(shell)[free].sum()
 
     assert np.all(applied[~free] == 0.0)
     assert -applied[:, 2].sum() == pytest.approx(pressure * carried)
@@ -424,8 +424,8 @@ def test_a_tributary_load_case_drops_the_supports_share(shell):
 
 def test_a_tributary_load_case_weighs_each_node_by_its_own_area(shell):
     applied = np.asarray(load_tributary(shell, 3.0e-3))
-    areas = tributary_areas(shell)
-    free = free_mask(shell)
+    areas = compute_tributary_areas(shell)
+    free = mask_free_nodes(shell)
 
     ratio = -applied[free, 2] / areas[free]
 
@@ -440,7 +440,7 @@ def test_a_sector_load_case_carries_the_uniform_pressure_total(shell):
 
     assert drifted[:, 2].sum() == pytest.approx(even[:, 2].sum())
     assert not np.allclose(drifted, even)
-    assert np.all(drifted[~free_mask(shell)] == 0.0)
+    assert np.all(drifted[~mask_free_nodes(shell)] == 0.0)
 
 
 def test_assembled_load_cases_are_shaped_by_their_first_case(loaded):

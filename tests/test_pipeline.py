@@ -8,12 +8,11 @@ import pytest
 from ec3x.section import DIAMETER_MINIMUM
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import member_mass
-from normax.figures import design_figures
+from normax.design import compute_member_mass
+from normax.figures import draw_design_figures
 from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
@@ -21,9 +20,10 @@ from normax.loads import load_half_span
 from normax.loads import load_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
-from normax.optimization import AugmentedAnswer
+from normax.optimization import OptimizationAnswer
+from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import design_actions
+from normax.sizing.ec3 import coerce_member_actions
 from normax.structures import build_arch_2d
 
 matplotlib.use("Agg")
@@ -198,7 +198,7 @@ def test_the_thinner_walled_class_is_the_lighter_one(
         sizes = pipeline.sizer(forces, shape.lengths)
         squeezed = pipeline.sizer.family(sizes.sections.diameter[0])
 
-        return sizes, float(member_mass(squeezed, shape.lengths))
+        return sizes, float(compute_member_mass(squeezed, shape.lengths))
 
     plastic, mass_plastic = class_mass(2)
     elastic, mass_elastic = class_mass(3)
@@ -214,7 +214,7 @@ def test_design_actions_reduce_the_two_ends(pipeline, force_densities, three_cas
     shape = pipeline.formfinder(force_densities, three_cases.formfinding)
     seeded = jnp.full(NUM_EDGES, SEED)
     forces = pipeline.analyzer(shape.xyz, seeded, three_cases.analysis)
-    acting = design_actions(select_load_case(forces, 1))
+    acting = coerce_member_actions(select_load_case(forces, 1))
 
     largest = jnp.max(jnp.abs(forces.moment_major[1]), axis=1)
 
@@ -288,7 +288,7 @@ def test_the_gradient_changes_sign_across_the_arch(pipeline, force_densities, on
         sizes = pipeline.sizer(forces, shape.lengths)
         sections = pipeline.sizer.family(sizes.sections.diameter[0])
 
-        return member_mass(sections, shape.lengths)
+        return compute_member_mass(sections, shape.lengths)
 
     gradient = jax.grad(objective)(force_densities)
 
@@ -398,11 +398,11 @@ def test_the_design_figures_build(structure, pipeline, force_densities, three_ca
         [float(compute_mass(design)), 0.9 * float(compute_mass(design))]
     )
     violations = np.asarray([0.1, 0.0])
-    answer = AugmentedAnswer(variables, objectives, violations, 12, True)
+    answer = OptimizationAnswer(variables, objectives, violations, 12, True)
 
     labels = ("LC1", "LC2", "LC3")
     designs = {"start": design, "answer": design}
-    drawn, descended = design_figures(structure, designs, labels, answer)
+    drawn, descended = draw_design_figures(structure, designs, labels, answer)
 
     assert len(drawn.axes) > 0
     assert len(descended.axes) > 0

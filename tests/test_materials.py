@@ -5,7 +5,7 @@ from ec3x.material import Steel
 
 from normax.materials import Steel355
 from normax.materials import SteelGrade
-from normax.sizing.ec3 import design_steel
+from normax.sizing.ec3 import coerce_material
 
 
 def test_the_default_grade_is_the_default_steel():
@@ -46,7 +46,7 @@ def test_a_named_grade_survives_a_pytree_round_trip():
 
 def test_the_standard_reads_a_grade_without_changing_it():
     grade = SteelGrade(f_y=460.0, f_u=540.0)
-    steel = design_steel(grade)
+    steel = coerce_material(grade)
 
     assert steel.f_y == grade.f_y
     assert steel.f_u == grade.f_u
@@ -55,7 +55,7 @@ def test_the_standard_reads_a_grade_without_changing_it():
 
 
 def test_the_standard_adds_only_its_own_factors():
-    assert design_steel(Steel355()) == Steel()
+    assert coerce_material(Steel355()) == Steel()
 
 
 def test_a_grade_carries_no_clause_field():

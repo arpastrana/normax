@@ -59,17 +59,17 @@ from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sections import TubeFamily
 from normax.sizing import DIAMETER_MINIMUM
 from normax.sizing import GAMMA_M0
 from normax.sizing import BlueprintSizer
 from normax.sizing import Ec3Sizer
-from normax.sizing import host_family
+from normax.sizing import coerce_section_family
 from normax.sizing import sized_diameter
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
-from normax.tesseract import sizing_tesseract
+from normax.tesseract import open_tesseract_sizing
 
 TITLE = "One non-differentiable code library, differentiated two ways."
 
@@ -240,7 +240,7 @@ def closed_derivatives(case: MemberCase) -> tuple[float, float]:
     `dd/db = 1 / (3 d^2 - a)` — a derivation that never states the check's
     utilization, and so shares no algebra with the implicit rule it judges.
     """
-    family = host_family(RATIO, YIELD_STRENGTH)
+    family = coerce_section_family(RATIO, YIELD_STRENGTH)
     demand_axial = (
         abs(case.axial_force) * GAMMA_M0 / (family.area_coefficient * family.f_y)
     )
@@ -317,7 +317,7 @@ def arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
     crossed = StructuralDesignPipeline(
         formfinder,
         analyzer,
-        TesseractSizer(structure, sizing_tesseract("blueprint"), family),
+        TesseractSizer(structure, open_tesseract_sizing("blueprint"), family),
     )
 
     return local, crossed
@@ -497,7 +497,7 @@ def main(verbose: bool = True) -> None:
     )
     report.write_heading("Summary")
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":

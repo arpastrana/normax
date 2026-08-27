@@ -71,8 +71,8 @@ from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import design_envelope
 from normax.form_finding import FdmFormFinder
-from normax.form_finding import equilibrium_graph
-from normax.form_finding import equilibrium_state
+from normax.form_finding import build_equilibrium_graph
+from normax.form_finding import solve_equilibrium
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
 from normax.loads import create_loads_uniform
@@ -80,10 +80,10 @@ from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sizing import Ec3Sizer
 from normax.sizing import build_section_family
-from normax.sizing import design_actions
+from normax.sizing import coerce_member_actions
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.visualization import MeshRefinement
@@ -149,7 +149,7 @@ LIMIT_NAMES = {
 # traced once and run from its compiled program afterwards. Left eager they cost
 # an XLA compilation per primitive per shape, which is most of what this
 # experiment used to spend its time on.
-equilibrium_state_compiled = eqx.filter_jit(equilibrium_state)
+equilibrium_state_compiled = eqx.filter_jit(solve_equilibrium)
 
 
 class ArchSetup(NamedTuple):
@@ -290,7 +290,7 @@ def arch_setup(num_edges: int) -> ArchSetup:
     Build the arch mesh, topologies, and rise-reaching force densities.
     """
     structure = build_arch_2d(num_edges=num_edges, span=SPAN, rise=RISE)
-    graph = equilibrium_graph(structure)
+    graph = build_equilibrium_graph(structure)
     # Standing a frame up needs a section, and every property of it is replaced
     # per call; the seed tube is drawn from the class-3 family as bare geometry.
     seeded = build_section_family(GRADE, 3)
@@ -496,7 +496,7 @@ def report_design(
     Write each member's actions, size, utilization, and governing limit.
     """
     diameters = design.sizes.sections.diameter
-    actions = jax.vmap(design_actions)(design.forces)
+    actions = jax.vmap(coerce_member_actions)(design.forces)
     codes = pipeline.sizer.governing(diameters, design.forces, design.shape.lengths)[0]
     limits = {LIMIT_NAMES[float(code)] for code in codes}
 
@@ -733,7 +733,7 @@ def main(verbose: bool = True) -> None:
 
     # A nan fails every bound already; this says so rather than relying on it.
     is_grad_finite = jnp.all(jnp.isfinite(gradient))
-    is_checks_passed = checks_passed(checks)
+    is_checks_passed = verify_checks(checks)
     report.write_verdict(is_checks_passed and is_grad_finite)
 
 

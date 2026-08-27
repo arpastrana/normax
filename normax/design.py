@@ -34,15 +34,16 @@ from jaxtyping import Float
 
 from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
+from normax.config import ConstraintsConfig
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.form_finding import PlanBasis
-from normax.form_finding import free_nodes
+from normax.form_finding import select_free_nodes
 from normax.loads import LoadCases
-from normax.optimization import AugmentedAnswer
-from normax.optimization import AugmentedBudget
 from normax.optimization import ConstrainedMaps
-from normax.optimization import augmented_penalty
+from normax.optimization import OptimizationAnswer
+from normax.optimization import OptimizationBudget
+from normax.optimization import compute_penalty
 from normax.optimization import descend_augmented
 from normax.sections import MemberSections
 from normax.sizing import AbstractMemberSizer
@@ -160,7 +161,7 @@ class StructuralDesignPipeline(eqx.Module):
         return Design(shape, forces, sizes)
 
 
-def member_mass(
+def compute_member_mass(
     sections: MemberSections,
     lengths: Float[Array, "members"],
 ) -> Float[Array, ""]:
@@ -198,7 +199,7 @@ def compute_mass(design: Design) -> Float[Array, ""]:
     mass :
         Total mass of the members.
     """
-    return member_mass(design.sizes.sections, design.shape.lengths)
+    return compute_member_mass(design.sizes.sections, design.shape.lengths)
 
 
 class DesignConstraints(NamedTuple):
@@ -272,7 +273,33 @@ class DesignProblem(NamedTuple):
     constraints: DesignConstraints
 
 
-def coordinate_count(problem: DesignProblem) -> int:
+class DesignRecord(NamedTuple):
+    """
+    What a run arrived at, for the report, the record and the viewer to read.
+
+    Attributes
+    ----------
+    problem :
+        The problem the descent ran on.
+    answer :
+        What the descent arrived at, and the road there.
+    initial :
+        The design at the start.
+    optimized :
+        The design at the answer.
+    families :
+        Name and member slice of every member family, or none to read the
+        design whole.
+    """
+
+    problem: DesignProblem
+    answer: OptimizationAnswer
+    initial: Design
+    optimized: Design
+    families: tuple[tuple[str, slice], ...]
+
+
+def count_coordinates(problem: DesignProblem) -> int:
     """
     How many coordinates the form finder is called with.
 
@@ -312,8 +339,8 @@ def expand_variables(
         The coordinates as the form finder takes them, and one diameter per
         member.
     """
-    width = coordinate_count(problem)
-    coordinates = member_densities(problem, x[:width])
+    width = count_coordinates(problem)
+    coordinates = read_member_densities(problem, x[:width])
     folded = x[width:]
     diameters = folded if problem.spread is None else problem.spread @ folded
 
@@ -374,7 +401,7 @@ def read_coordinates(
     return problem.basis.coordinates(q)
 
 
-def member_densities(
+def read_member_densities(
     problem: DesignProblem,
     coordinates: Float[Array, "coordinates"],
 ) -> Float[Array, "members"]:
@@ -399,7 +426,7 @@ def member_densities(
     return problem.basis.densities(coordinates)
 
 
-def variable_bounds(
+def bound_variables(
     problem: DesignProblem,
 ) -> list[tuple[float | None, float | None]]:
     """
@@ -419,7 +446,7 @@ def variable_bounds(
     """
     held = problem.constraints
     boxed = (None, None) if held.bounds is None else held.bounds
-    width = coordinate_count(problem)
+    width = count_coordinates(problem)
     patterns = problem.structure.num_edges
     if problem.spread is not None:
         patterns = int(problem.spread.shape[1])
@@ -427,7 +454,7 @@ def variable_bounds(
     return [boxed] * width + [(held.diameter_floor, None)] * patterns
 
 
-def constraint_rows(
+def evaluate_constraints(
     problem: DesignProblem,
     params: DesignParameters,
     design: Design,
@@ -454,7 +481,7 @@ def constraint_rows(
     held = problem.constraints
     rows = [1.0 - design.sizes.utilization.ravel()]
 
-    heights = design.shape.xyz[free_nodes(problem.structure), 2]
+    heights = design.shape.xyz[select_free_nodes(problem.structure), 2]
     if held.rise_ceiling is not None:
         rows.append((held.rise_ceiling - heights) / held.rise_ceiling)
     if held.sag_floor is not None:
@@ -499,16 +526,16 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
         shape = pipeline.formfinder(params.coordinates, loads.formfinding)
         sections = pipeline.sizer.family(params.diameters)
 
-        return member_mass(sections, shape.lengths)
+        return compute_member_mass(sections, shape.lengths)
 
     def slack(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
         params = expand_variables(problem, x)
         design = pipeline(params, loads)
 
-        return constraint_rows(problem, params, design)
+        return evaluate_constraints(problem, params, design)
 
     def augmented(x, multipliers, penalty, reference):
-        penalized = augmented_penalty(slack(x), multipliers, penalty)
+        penalized = compute_penalty(slack(x), multipliers, penalty)
 
         return weigh(x) / reference + penalized
 
@@ -524,8 +551,8 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
 def optimize_design(
     problem: DesignProblem,
     start: Float[np.ndarray, "variables"],
-    budget: AugmentedBudget,
-) -> AugmentedAnswer:
+    budget: OptimizationBudget,
+) -> OptimizationAnswer:
     """
     Descend the mass under the check and the constraints, from a start.
 
@@ -544,7 +571,7 @@ def optimize_design(
         The variables, the mass and violation of every round, and how it ended.
     """
     maps = design_maps(problem)
-    boxes = variable_bounds(problem)
+    boxes = bound_variables(problem)
 
     return descend_augmented(maps, start, boxes, budget)
 
@@ -575,7 +602,7 @@ def envelope_diameters(
     """
     pipeline = problem.pipeline
     seeded = jnp.full(problem.structure.num_edges, seed)
-    q = member_densities(problem, jnp.asarray(coordinates))
+    q = read_member_densities(problem, jnp.asarray(coordinates))
     shape = pipeline.formfinder(q, problem.loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, seeded, problem.loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
@@ -584,7 +611,7 @@ def envelope_diameters(
     return np.maximum(demanded, problem.constraints.diameter_floor)
 
 
-def initial_variables(
+def initialize_optimization_variables(
     problem: DesignProblem,
     q: Float[np.ndarray, "members"],
     seed: float,
@@ -655,4 +682,36 @@ def unfold_diameters(
     diameters :
         Outer diameter of every member.
     """
-    return unfold_values(np.asarray(x)[coordinate_count(problem) :], problem.spread)
+    return unfold_values(np.asarray(x)[count_coordinates(problem) :], problem.spread)
+
+
+def build_design_constraints(
+    config: ConstraintsConfig,
+    guard: SignGuard | None,
+) -> DesignConstraints:
+    """
+    What the design is held to, read off a run description.
+
+    Parameters
+    ----------
+    config :
+        The floors, the height limits and the density box the file names.
+    guard :
+        The sign guard the start scaled, or None for none.
+
+    Returns
+    -------
+    constraints :
+        Everything the descent is held to beside the check.
+    """
+    bounds = None if config.bounds is None else (config.bounds.min, config.bounds.max)
+    constraints = DesignConstraints(
+        config.diameter_floor,
+        config.length_floor,
+        config.rise_ceiling,
+        config.sag_floor,
+        guard,
+        bounds,
+    )
+
+    return constraints

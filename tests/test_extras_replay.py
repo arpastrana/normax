@@ -5,7 +5,6 @@ import pytest
 from matplotlib.figure import Figure
 
 from normax.analysis.smax import SmaxAnalyzer
-from normax.builders import build_section_family
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -23,6 +22,7 @@ from normax.loads import assemble_load_cases
 from normax.loads import load_half_span
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
@@ -90,7 +90,7 @@ def run_search(pipeline, loads, diameters, sharpness):
     A short bounded descent whose trajectory the replay is measured against.
     """
 
-    def weigh_shape(force_densities):
+    def shape_objective(force_densities):
         design = size_design(
             pipeline, DesignParameters(force_densities, diameters), loads
         )
@@ -108,7 +108,7 @@ def run_search(pipeline, loads, diameters, sharpness):
     stamped = 0.0 if sharpness is None else sharpness
 
     return minimize_bounded(
-        weigh_shape,
+        shape_objective,
         jnp.full(NUM_EDGES, -100.0),
         bounds=BOUNDS,
         iterations=ITERATIONS,

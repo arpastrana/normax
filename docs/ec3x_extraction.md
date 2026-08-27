@@ -75,7 +75,7 @@ the thing being fixed, and doing it one module higher is still doing it.
 
 and `AbstractMemberSizer.utilization` and `Ec3Sizer.governing` take the
 `MemberForces` a design already carries, each sizer applying its own reduction
-internally. `design_actions` goes down into `normax/sizing/ec3.py`, since applying
+internally. `coerce_member_actions` goes down into `normax/sizing/ec3.py`, since applying
 Table B.3 is clause work. The reduction is elementwise and stateless, so
 re-deriving it inside the `vmap` those methods already run is exact and nearly
 free.
@@ -91,7 +91,7 @@ free.
   when `design.forces.axial_force[load_case]` is the same array from the stage that
   produced it. The analysis is reading its own output through the check's copy of
   it.
-- `design_actions` sits in the contract module today while applying a clause, one
+- `coerce_member_actions` sits in the contract module today while applying a clause, one
   import away from the backend that owns it.
 
 **What stays is `Tube`, and the distinction is shape against clause.**
@@ -183,7 +183,7 @@ rather than assuming 1890 survived it.
 ### 1. `normax/sizing.py` becomes `normax/sizing/`
 
 `__init__.py` takes `MemberSizes` and `AbstractMemberSizer`; `ec3.py` takes
-`Ec3Sizer` and `design_actions`. **No re-export from `__init__.py`** —
+`Ec3Sizer` and `coerce_member_actions`. **No re-export from `__init__.py`** —
 `normax/analysis/__init__.py` imports neither of its backends and every call site
 reads `from normax.analysis.smax import SmaxAnalyzer`, so the check mirrors the
 analysis rather than inventing a second convention. Eight call sites:
@@ -195,7 +195,7 @@ Structural only. No number moves in this phase.
 ### 2. Take the actions record out of the contract
 
 `MemberSizes` becomes `(sections, utilization)`. `AbstractMemberSizer.utilization`
-and `Ec3Sizer.governing` take `MemberForces` and call `design_actions` inside the
+and `Ec3Sizer.governing` take `MemberForces` and call `coerce_member_actions` inside the
 `vmap` they already run, one line each. `frame_stability` reads
 `design.forces.axial_force[load_case]`. `design_envelope` rebuilds a two-field
 container. The parity walk gains an explicit comparison of the two moment factors

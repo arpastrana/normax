@@ -50,7 +50,7 @@ from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
-from normax.reporting import checks_passed
+from normax.reporting import verify_checks
 from normax.sections import TubeFamily
 from normax.sizing import BlueprintSizer
 from normax.sizing import Ec3Sizer
@@ -297,7 +297,7 @@ def main(verbose: bool = True) -> None:
     )
     report.write_heading("Summary")
     report.write_checks(checks)
-    report.write_verdict(checks_passed(checks))
+    report.write_verdict(verify_checks(checks))
 
 
 if __name__ == "__main__":
