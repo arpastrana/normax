@@ -57,8 +57,8 @@ from day one even while only one backend exists.
 
    If this fails (usually Docker permissions), fix it now, not on the 14th.
 
-   That check now lives in `experiments/00_toolchain_smoke.py` — run it by hand
-   before P3 rather than trusting that the toolchain still works.
+   That check lived in a smoke-test script, retired 2026-08-27 — see
+   `retired_experiments.md` for how to get it back.
 
 **Scope:**
 > This repo was bootstrapped from the `simonw/python-lib` cookiecutter: flat
@@ -302,7 +302,7 @@ one bisection for both.
 > - Tension: closed form, no buckling.
 > - Backward: `jax.grad` on the residual for ∂R/∂d and ∂R/∂L; hand-derive only
 >   the implicit inversion. Branch on sign(N_Ed).
-> Then `experiments/01_single_strut_gradcheck.py`: verify `jax.grad` of
+> Then `experiments/validation/strut_gradients.py`: verify `jax.grad` of
 > utilization w.r.t. N_Ed against central differences AND a hand-derived
 > expression. Target 1e-8.
 
@@ -320,7 +320,7 @@ that de-risks everything — do not start step 2 until it passes.**
 > strictly decreases in `d`. Same bisection, same `custom_vjp`, same IFT
 > inversion. Only the residual changes; do not restructure the module.
 > Guard `n` away from 0 (`n^1.7` has unbounded second derivative at the origin).
-> Add `experiments/02_pipeline_gradcheck.py`: gradcheck w.r.t. N_Ed, M_y, M_z and
+> Add `experiments/validation/interaction_gradients.py`: gradcheck w.r.t. N_Ed, M_y, M_z and
 > L independently, plus a check that setting M = 0 reproduces step 1 exactly.
 
 **Step 2 done when:** gradchecks pass for all four inputs, and the M = 0 case
@@ -328,7 +328,7 @@ reproduces step 1 to 1e-12.
 
 ### Aug 12 — OpenSees DDM spike — **DONE** (run Aug 9)
 
-All four steps ran. `experiments/07_opensees_ddm_spike.py`; full write-up in
+All four steps ran. `experiments/validation/opensees_ddm.py`; full write-up in
 `CHANGELOG.md` under `## OpenSees DDM spike`; the rules it produced are in the P5
 block below.
 
@@ -379,7 +379,7 @@ therefore out of scope for this pipeline** — do not run it through T2 and expe
 sense. The arch and the gridshell are the targets.
 
 **Scope:**
-> `experiments/08_arch_formfind_analyze.py`. Take the 2D funicular arch from
+> `experiments/validation/handoff_forces.py`. Take the 2D funicular arch from
 > `normax/structures.py`, form-find it with `jax-fdm` under LC1, and hand **only
 > the geometry** to `smax`, which analyzes it from an unstressed reference state.
 > **Write the unit adapter first and test it on its own**: `smax` works in
@@ -397,7 +397,7 @@ sense. The arch and the gridshell are the targets.
 demonstrably secondary, and `jax.grad` of a scalar of `smax`'s output w.r.t. `q`
 is finite and matches central differences.~~ — **PASSED.** Recorded tolerances
 **2.5e-4 axial and 1.0e-3 bending at `d = 100 mm`**, gradient to **2.9e-10**.
-`experiments/08_arch_formfind_analyze.py`, 29 cases in
+`experiments/validation/handoff_forces.py`, 29 cases in
 `tests/test_equilibrium_consistency.py`. Full write-up in `CHANGELOG.md` under
 `## P3 step 1`.
 
@@ -958,7 +958,7 @@ than the input.
 ### The ratio stays a field
 
 §3 wants it freeable, `tests/test_sizing_gradients.py` differentiates the map in
-it, and `experiments/05_class_ratio_sweep.py` sweeps it across two class
+it, and `experiments/validation/class_ratio_sweep.py` sweeps it across two class
 boundaries. A class named beside an explicit ratio is **verified when the ratio is
 concrete and trusted when it is not** — `isinstance(value, jax.core.Tracer)`,
 which is warning-free here. Every production call site builds a catalogue on the
@@ -1035,7 +1035,7 @@ catalogue, 58 reads of `sections.diameters` became `sections.diameter`, and 66
   EN 10210 profiles across several classes. Both label the family by
   classification rather than by assertion, and the repeated
   `TubeCatalogue(RATIO)(d)` in four files collapsed into one named family each.
-- **`experiments/05_class_ratio_sweep.py` lost a container.** `ClassBranch` paired
+- **`experiments/validation/class_ratio_sweep.py` lost a container.** `ClassBranch` paired
   a class with the family whose ratio sits at its limit, which is what a catalogue
   now is, so it is deleted and `behavior_of(catalogue)` is the one thing it knew
   that a family does not.
@@ -1156,7 +1156,7 @@ across the analysis schema, with an adjoint this repository wrote.
 What landed: `normax/analysis/element.py` (the frame element in JAX), the
 adjoint and its guards in `normax/analysis/pynite.py`,
 `tesseracts/analysis/_backend_pynite.py`, the `pynite` value on
-`analysis.backend`, `experiments/27_pynite_agreement.py`, and
+`analysis.backend`, `experiments/validation/pynite_adjoint.py`, and
 `experiments/gridshell_16_crossed.yaml`. Numbers in `CHANGELOG.md`; the short
 form is element equality at 7.7e-18, roll invariance at 1.7e-16, and the
 gradient against `smax` at 1.3e-14 in process and 6.2e-14 crossed.
@@ -1749,5 +1749,5 @@ same number. **The choice cannot bite until the 3D gridshell**, where the two
 moments are both live and the population is known to be large. Decide it there,
 and treat it as a headline caveat at that point rather than this one.
 
-Flip it with one keyword and rerun `experiments/05_class_ratio_sweep.py`, which
+Flip it with one keyword and rerun `experiments/validation/class_ratio_sweep.py`, which
 already tabulates both.

@@ -27,16 +27,11 @@ CLAUDE.md
 *.webp
 *.pdf
 *.mp4
-artifacts/
 
-# Descended answers, kept so that looking at a design again is a read rather
-# than a rerun. Reproducible from the run description that names them.
-designs/
+# Everything a run leaves behind: the answer it descended to, and under
+# trajectories/, the multi-start landings, logs and descent paths behind the
+# reported numbers. Reproducible from the run description that names it.
 data/
-
-# Multi-start landings, logs and descent paths. All of it regenerates from a
-# fixed seed against the run description that names it.
-trajectories/
 
 # Viewer state polyscope writes beside wherever it ran.
 .polyscope.ini
