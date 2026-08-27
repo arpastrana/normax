@@ -14,13 +14,13 @@ ORACLE_PACKAGES = ("smax", "ec3x")
 # guarded, so an install without smax stands the viewer in for instead.
 ORACLE_TESTS = (
     "test_analysis_prepared.py",
+    "test_comparison.py",
     "test_design.py",
     "test_equilibrium_consistency.py",
-    "test_extras_comparison.py",
-    "test_extras_nested.py",
-    "test_extras_replay.py",
     "test_materials.py",
+    "test_nested.py",
     "test_pipeline.py",
+    "test_replay.py",
     "test_second_sizer.py",
     "test_sections.py",
     "test_tesseract_parity.py",

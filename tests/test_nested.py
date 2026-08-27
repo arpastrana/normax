@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -8,18 +9,6 @@ from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.extras.nested import annealing_schedule
-from normax.extras.nested import design_envelope
-from normax.extras.nested import diameter_envelope
-from normax.extras.nested import governing_load_case
-from normax.extras.nested import minimize_bounded
-from normax.extras.nested import optimize_annealed
-from normax.extras.nested import optimize_staggered
-from normax.extras.nested import penalized_mass
-from normax.extras.nested import settle_diameters
-from normax.extras.nested import shortest_member
-from normax.extras.nested import size_design
-from normax.extras.nested import value_and_gradient
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import solve_equilibrium
@@ -27,6 +16,18 @@ from normax.loads import assemble_load_cases
 from normax.loads import load_half_span
 from normax.loads import load_uniform
 from normax.materials import Steel355
+from normax.optimization.nested import annealing_schedule
+from normax.optimization.nested import design_envelope
+from normax.optimization.nested import diameter_envelope
+from normax.optimization.nested import governing_load_case
+from normax.optimization.nested import minimize_bounded
+from normax.optimization.nested import optimize_annealed
+from normax.optimization.nested import optimize_staggered
+from normax.optimization.nested import penalized_mass
+from normax.optimization.nested import settle_diameters
+from normax.optimization.nested import shortest_member
+from normax.optimization.nested import size_design
+from normax.optimization.nested import value_and_gradient
 from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d

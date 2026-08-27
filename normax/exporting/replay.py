@@ -1,16 +1,4 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 A recorded nested search, turned back into the designs it walked through.
 
@@ -40,11 +28,11 @@ from matplotlib.figure import Figure
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.extras.nested import Trajectory
-from normax.extras.nested import design_envelope
-from normax.extras.nested import governing_load_case
-from normax.extras.nested import size_design
 from normax.loads import LoadCases
+from normax.optimization.nested import Trajectory
+from normax.optimization.nested import design_envelope
+from normax.optimization.nested import governing_load_case
+from normax.optimization.nested import size_design
 
 # Color of everything that is a reference rather than a result.
 GREY = "0.55"

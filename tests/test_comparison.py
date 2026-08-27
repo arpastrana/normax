@@ -1,40 +1,41 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""
-Form finders that make the two comparison searches a swapped block.
-
-The end-to-end search moves force densities through the force density method.
-Its two foils move something else through the same pipeline: free heights,
-which write the nodes' z directly and are not funicular, and nothing at all,
-which sizes the drawn geometry as it stands. Both are form finders here, so a
-`DesignProblem` over either differs from the headline in one block and an
-identity basis of the right width.
-"""
-
+# SPDX-License-Identifier: Apache-2.0
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
 
+from normax.analysis.smax import SmaxAnalyzer
+from normax.design import DesignConstraints
+from normax.design import DesignParameters
+from normax.design import DesignProblem
+from normax.design import StructuralDesignPipeline
+from normax.design import bound_variables
+from normax.design import design_maps
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
 from normax.form_finding import PlanBasis
 from normax.form_finding import select_free_nodes
+from normax.loads import assemble_load_cases
+from normax.loads import load_uniform
+from normax.materials import Steel355
+from normax.sections import build_section_family
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
+from normax.structures import build_arch_2d
 from normax.structures import compute_member_lengths
+
+# A small arch under 180 kN, in millimeters and newtons.
+SPAN = 4_000.0
+RISE = 1_200.0
+TOTAL_LOAD = 180_000.0
+NUM_EDGES = 4
+
+# The diameter every member starts at, and the floor under it.
+SEED = 120.0
+DIAMETER_FLOOR = 20.0
 
 
 class HeightsFormFinder(AbstractFormFinder):
@@ -180,3 +181,76 @@ class DrawnFormFinder(AbstractFormFinder):
         lengths = compute_member_lengths(self.xyz, self.edges)
 
         return FormFoundShape(self.xyz, lengths)
+
+
+@pytest.fixture(scope="module")
+def structure():
+    return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
+
+
+@pytest.fixture(scope="module")
+def loads(structure):
+    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
+
+
+@pytest.fixture(scope="module")
+def family():
+    return build_section_family(Steel355(), 3)
+
+
+def build_problem(structure, formfinder, family, loads):
+    """
+    A design problem over a comparison finder, whose coordinates are its own.
+    """
+    pipeline = StructuralDesignPipeline(
+        formfinder, SmaxAnalyzer(structure, family(SEED)), Ec3Sizer(structure, family)
+    )
+    constraints = DesignConstraints(DIAMETER_FLOOR, 0.0, None, None, None, None)
+
+    return DesignProblem(structure, pipeline, loads, constraints)
+
+
+def test_the_heights_finder_composes_and_the_mass_has_a_gradient(
+    structure, family, loads
+):
+    finder = HeightsFormFinder(structure)
+    problem = build_problem(structure, finder, family, loads)
+    heights = jnp.asarray(structure.nodes)[select_free_nodes(structure), 2] * 1.1
+    diameters = jnp.full(NUM_EDGES, SEED)
+
+    design = problem.pipeline(DesignParameters(heights, diameters), loads)
+    assert jnp.allclose(design.shape.xyz[select_free_nodes(structure), 2], heights)
+    assert design.sizes.utilization.shape == (1, NUM_EDGES)
+
+    x = jnp.concatenate([heights, diameters])
+    maps = design_maps(problem)
+    mass, slope = maps.objective(x)
+    slack = maps.slack(x)
+
+    assert finder.width == NUM_EDGES - 1
+    assert len(bound_variables(problem)) == x.size
+    assert np.isfinite(float(mass)) and float(mass) > 0.0
+    assert np.all(np.isfinite(np.asarray(slope)))
+    assert np.any(np.asarray(slope)[: finder.width] != 0.0)
+    assert np.all(np.isfinite(np.asarray(slack)))
+
+
+def test_the_drawn_finder_composes_and_moves_the_diameters_alone(
+    structure, family, loads
+):
+    finder = DrawnFormFinder(structure)
+    problem = build_problem(structure, finder, family, loads)
+    diameters = jnp.full(NUM_EDGES, SEED)
+
+    design = problem.pipeline(DesignParameters(jnp.zeros(0), diameters), loads)
+    assert jnp.array_equal(design.shape.xyz, jnp.asarray(structure.nodes))
+
+    maps = design_maps(problem)
+    mass, slope = maps.objective(diameters)
+    slack = maps.slack(diameters)
+
+    assert finder.width == 0
+    assert len(bound_variables(problem)) == NUM_EDGES
+    assert np.isfinite(float(mass)) and float(mass) > 0.0
+    assert np.all(np.asarray(slope) > 0.0)
+    assert np.all(np.isfinite(np.asarray(slack)))
