@@ -1,12 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.form_finding import DrawnShapeInitializer
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import LensShapeInitializer
 from normax.form_finding import SignGuardSpec
 from normax.form_finding import assemble_balance_rows
+from normax.form_finding import build_density_initializer
 from normax.form_finding import build_plan_basis
 from normax.form_finding import fit_densities
 from normax.form_finding import select_free_nodes
@@ -389,3 +392,23 @@ def test_a_held_lens_fit_needs_a_basis(warren, warren_loads):
     initializer = LensShapeInitializer(0.06 * SPAN, 0.08 * SPAN, True)
     with pytest.raises(ValueError):
         initializer(warren, np.asarray(warren_loads), None, None)
+
+
+def test_a_drawn_fit_is_held_to_the_basis(warren, warren_loads):
+    # A balanceable drawn geometry lands in the span either way, to 1e-14, so
+    # the guard is that the restricted solve is the one actually run.
+    basis = build_plan_basis(warren, None, "svd")
+    loads = np.asarray(warren_loads)
+    xyz = np.asarray(warren.nodes)
+    fit = DrawnShapeInitializer().fit_start(warren, loads, basis)
+    held = fit_densities(warren, xyz, loads, basis)
+    free = fit_densities(warren, xyz, loads)
+
+    assert np.array_equal(fit.q, held.q)
+    assert not np.array_equal(fit.q, free.q)
+
+
+def test_a_lens_missing_a_key_is_rejected_as_a_value():
+    described = {"lens": {"sag": 0.6, "rise": 0.8}}
+    with pytest.raises(ValueError):
+        build_density_initializer(described)

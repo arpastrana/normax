@@ -820,8 +820,18 @@ class DrawnShapeInitializer(AbstractDensityInitializer):
     ) -> DensityFit:
         """
         Fit the densities that balance the loads on the drawn nodes.
+
+        Notes
+        -----
+        The fit is held to the basis wherever there is one, since a basis is
+        built to hold this same drawn plan and the search moves nowhere else.
+        Fitting freely would be right only by luck: the densities would have
+        to land in the span unasked, and where they did not, the start
+        reported would not be the start descended from.
         """
-        return fit_densities(structure, np.asarray(structure.nodes), loads)
+        xyz = np.asarray(structure.nodes)
+
+        return fit_densities(structure, xyz, loads, basis)
 
 
 def build_density_initializer(
@@ -854,9 +864,16 @@ def build_density_initializer(
         return DrawnShapeInitializer()
     if isinstance(described, dict) and set(described) == {"lens"}:
         lens = described["lens"]
-        return LensShapeInitializer(
-            float(lens["sag"]), float(lens["rise"]), bool(lens["held_plan"])
-        )
+        wanted = {"sag", "rise", "held_plan"}
+        if set(lens) != wanted:
+            raise ValueError(
+                f"lens must name {', '.join(sorted(wanted))}, got {sorted(lens)}"
+            )
+        sag = float(lens["sag"])
+        rise = float(lens["rise"])
+        held_plan = bool(lens["held_plan"])
+
+        return LensShapeInitializer(sag, rise, held_plan)
 
     raise ValueError(
         f"force_density must be a number, 'drawn' or {{lens: ...}}, got {described!r}"
