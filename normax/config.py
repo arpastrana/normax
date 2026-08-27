@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-What a run is described by, read from a file.
+What a run is configured by, read from a file.
 
 Every section a design shares — the load cases, the two backends, the subspace,
 the constraints, the descent's budget — is a container here. What the structure
-is, and how its start is sketched, belongs to the example describing it, which
-hands its own container types to `parse_config`.
+is (`normax.structures`) and where its search starts (`normax.form_finding`)
+vary by structure, so an example hands those two container types to
+`parse_config`.
 """
 
 from typing import Generic
@@ -29,7 +30,7 @@ import yaml
 from normax.optimization import OptimizationBudget
 
 StructureT = TypeVar("StructureT")
-SketchT = TypeVar("SketchT")
+StartT = TypeVar("StartT")
 
 
 class LoadCaseConfig(NamedTuple):
@@ -98,14 +99,10 @@ class SubspaceConfig(NamedTuple):
     pivoted :
         Whether the coordinates are the densities of members elected
         independent, rather than projections on an orthonormal basis.
-    margin_fraction :
-        Sign margin guarded members must clear, as a share of their median
-        density. Zero or less turns the guard off.
     """
 
     symmetric: bool
     pivoted: bool
-    margin_fraction: float
 
 
 class BoundsConfig(NamedTuple):
@@ -130,23 +127,27 @@ class ConstraintsConfig(NamedTuple):
 
     Attributes
     ----------
-    diameter_floor :
+    diameter_min :
         Smallest diameter any member may take, as a bound.
-    length_floor :
+    length_min :
         Smallest length any member may keep, as rows. Zero turns it off.
-    rise_ceiling :
-        Height no free node may rise above, or None for no ceiling.
-    sag_floor :
+    rise_max :
+        Height no free node may rise above, or None for no cap.
+    sag_min :
         Height no free node may hang below, or None for no floor.
+    sign_margin_fraction :
+        Sign margin the guarded force densities must clear, as a share of
+        their median at the start. Zero or less turns the sign guard off.
     bounds :
         The box on the force densities, or None where the densities are not
         the coordinates.
     """
 
-    diameter_floor: float
-    length_floor: float
-    rise_ceiling: float | None
-    sag_floor: float | None
+    diameter_min: float
+    length_min: float
+    rise_max: float | None
+    sag_min: float | None
+    sign_margin_fraction: float
     bounds: BoundsConfig | None
 
 
@@ -169,16 +170,20 @@ class OutputConfig(NamedTuple):
     viewer: bool
 
 
-class RunConfig(NamedTuple, Generic[StructureT, SketchT]):
+class RunConfig(NamedTuple, Generic[StructureT, StartT]):
     """
-    Everything a run is described by.
+    Everything a run is configured by.
 
     Attributes
     ----------
     structure :
-        The structure to build, in the example's own terms.
-    sketch :
-        How the start is sketched, in the example's own terms, or None.
+        Parameters the structure is generated from — an `ArchDescription`,
+        `TrussDescription` or `ShellDescription` from `normax.structures`, never
+        the built `Structure`; the example's builder turns one into the other.
+    start :
+        Parameters the starting force densities are generated from — a
+        `UniformDensityInitializer` or `LensShapeInitializer` from
+        `normax.form_finding` — or None where the drawn geometry is the start.
     load_cases :
         The cases the structure carries, the first of which shapes it.
     analysis :
@@ -189,45 +194,48 @@ class RunConfig(NamedTuple, Generic[StructureT, SketchT]):
         The held-plan subspace, or None to move every force density freely.
     constraints :
         What the design is held to beside the check.
-    augmented :
+    optimization :
         What the descent may spend, and when it stops.
     output :
         What the run prints, writes and opens once the descent has ended.
     """
 
     structure: StructureT
-    sketch: SketchT | None
+    start: StartT | None
     load_cases: tuple[LoadCaseConfig, ...]
     analysis: AnalysisConfig
     sizing: SizingConfig
     subspace: SubspaceConfig | None
     constraints: ConstraintsConfig
-    augmented: OptimizationBudget
+    optimization: OptimizationBudget
     output: OutputConfig
 
 
 def parse_config(
     text: str,
     structure_type: type[StructureT],
-    sketch_type: type[SketchT] | None = None,
-) -> RunConfig[StructureT, SketchT]:
+    start_type: type[StartT] | None = None,
+) -> RunConfig[StructureT, StartT]:
     """
-    The run a file describes.
+    The run config a file holds.
 
     Parameters
     ----------
     text :
         Text of the file describing the run.
     structure_type :
-        Container the `structure` section is read into.
-    sketch_type :
-        Container the `sketch` section is read into, or None for a run whose
-        start needs no sketch.
+        Description the `structure` section is read into: `ArchDescription`,
+        `TrussDescription` or `ShellDescription`, the parameters of one generator
+        in `normax.structures`.
+    start_type :
+        Initializer the `start` section is read into, from `normax.form_finding`,
+        or None for a run whose drawn geometry is the start.
 
     Returns
     -------
     config :
-        The run.
+        The run config: its structure description, its start initializer, and
+        every shared section.
 
     Raises
     ------
@@ -242,9 +250,9 @@ def parse_config(
     """
     document = yaml.safe_load(text)
 
-    sketch = None
-    if sketch_type is not None:
-        sketch = sketch_type(**document["sketch"])
+    start = None
+    if start_type is not None:
+        start = start_type(**document["start"])
 
     subspace = None
     if document.get("subspace") is not None:
@@ -256,8 +264,13 @@ def parse_config(
         bounds = BoundsConfig(**bounds)
     constraints = ConstraintsConfig(bounds=bounds, **held)
 
-    counts = ("rounds", "iterations", "settled", "opening")
-    named = document["augmented"]
+    counts = (
+        "rounds_max",
+        "rounds_warmup",
+        "iterations_warmup",
+        "iterations_after_warmup",
+    )
+    named = document["optimization"]
     budget = {key: int(value) for key, value in named.items() if key in counts}
     scales = {key: float(value) for key, value in named.items() if key not in counts}
     budget.update(scales)
@@ -265,36 +278,14 @@ def parse_config(
 
     config = RunConfig(
         structure=structure_type(**document["structure"]),
-        sketch=sketch,
+        start=start,
         load_cases=load_cases,
         analysis=AnalysisConfig(**document["analysis"]),
         sizing=SizingConfig(**document["sizing"]),
         subspace=subspace,
         constraints=constraints,
-        augmented=OptimizationBudget(**budget),
+        optimization=OptimizationBudget(**budget),
         output=OutputConfig(**document["output"]),
     )
 
     return config
-
-
-def label_load_cases(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
-    """
-    A label per load case, the pattern's name and whatever options it took.
-
-    Parameters
-    ----------
-    load_cases :
-        The cases as described.
-
-    Returns
-    -------
-    labels :
-        One label per case, in order.
-    """
-    labels = []
-    for load_case in load_cases:
-        options = " ".join(f"{key}={value}" for key, value in load_case.options.items())
-        labels.append(f"{load_case.name} {options}".strip())
-
-    return tuple(labels)

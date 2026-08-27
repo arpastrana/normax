@@ -349,7 +349,7 @@ def report_design(
     record :
         What the run arrived at.
     config :
-        The run as described, naming its backends and whether it prints.
+        The run config, naming its backends and whether it prints.
     title :
         Banner the report opens with.
     """

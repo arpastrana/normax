@@ -7,7 +7,7 @@ structure:
   rise: 3000.0
 
 # Every force density starts here. Negative in compression.
-sketch:
+start:
   force_density: -80.0
 
 # The first case shapes the arch; every case is checked.
@@ -37,12 +37,14 @@ sizing:
 subspace: null
 
 constraints:
-  diameter_floor: 21.3
+  diameter_min: 21.3
   # Without a floor the search collapses members instead of improving the
   # form, a member being both free and unbucklable as it vanishes.
-  length_floor: 600.0
-  rise_ceiling: null
-  sag_floor: null
+  length_min: 600.0
+  rise_max: null
+  sag_min: null
+  # No sign guard: a chain has one sign, and the bounds keep it.
+  sign_margin_fraction: 0.0
   # Not a design constraint: the bounds keep the densities away from zero,
   # where the force density system is singular.
   bounds: {min: -100.0, max: -1.0e-3}
@@ -50,16 +52,16 @@ constraints:
 # The opening penalty is the one setting that decides the answer rather than
 # the speed; every other entry is a budget. Signed exponents, or YAML reads
 # them as strings.
-augmented:
-  rounds: 10
-  iterations: 400
-  settled: 100
-  opening: 3
-  penalty: 0.1
-  growth: 10.0
-  ceiling: 1.0e+8
-  tolerance: 1.0e-6
-  quiet: 1.0e-6
+optimization:
+  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_warmup: 3              # first rounds given the larger inner budget
+  iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
+  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  penalty_start: 0.1            # penalty parameter of the first round
+  penalty_growth: 10.0          # penalty multiplier when a round earns too little
+  penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
+  violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
+  objective_rtol: 1.0e-6        # relative objective change per round counting as none
 
 # What becomes of the answer; a viewer blocks, so it opens last.
 output:

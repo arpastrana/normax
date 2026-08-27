@@ -264,7 +264,7 @@ def draw_utilization(
 
     Notes
     -----
-    The colorbar is capped at one, the ceiling fully stressed members sit on,
+    The colorbar is capped at one, the cap fully stressed members sit on,
     and floored just under the least worked member across the designs.
     """
     envelopes = [np.asarray(form.utilization).max(axis=0) for form in forms]
@@ -411,7 +411,7 @@ def draw_design_figures(
         forms.append(form)
     drawn = draw_utilization(structure.edges, forms, case_names)
 
-    traces = (DescentTrace("augmented", answer.objectives),)
+    traces = (DescentTrace("auglag", answer.objectives),)
     descended = draw_mass_descent(traces)
 
     return drawn, descended

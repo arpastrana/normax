@@ -452,6 +452,28 @@ def build_load_cases(
     return assemble_load_cases(applied)
 
 
+def label_load_cases(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
+    """
+    A label per load case, the pattern's name and whatever options it took.
+
+    Parameters
+    ----------
+    load_cases :
+        The cases as described.
+
+    Returns
+    -------
+    labels :
+        One label per case, in order.
+    """
+    labels = []
+    for load_case in load_cases:
+        options = " ".join(f"{key}={value}" for key, value in load_case.options.items())
+        labels.append(f"{load_case.name} {options}".strip())
+
+    return tuple(labels)
+
+
 def assemble_load_cases(
     load_cases: Sequence[Float[Array, "nodes 3"]],
 ) -> LoadCases:

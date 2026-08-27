@@ -14,12 +14,12 @@ from normax.design import count_coordinates
 from normax.design import design_maps
 from normax.design import envelope_diameters
 from normax.design import evaluate_constraints
+from normax.design import evaluate_design
 from normax.design import expand_variables
 from normax.design import fold_variables
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.design import read_coordinates
-from normax.design import read_design
 from normax.design import read_member_densities
 from normax.design import unfold_diameters
 from normax.form_finding import FdmFormFinder
@@ -422,7 +422,7 @@ def test_the_enveloped_start_covers_every_load_case(problem, force_densities):
 
 def test_the_enveloped_start_respects_the_floor(problem, force_densities):
     raised = problem._replace(
-        constraints=problem.constraints._replace(diameter_floor=500.0)
+        constraints=problem.constraints._replace(diameter_min=500.0)
     )
     diameters = envelope_diameters(raised, np.asarray(force_densities), SEED)
 
@@ -445,7 +445,7 @@ def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
     start = initialize_optimization_variables(
         problem, np.asarray(force_densities), SEED
     )
-    design = read_design(problem, start)
+    design = evaluate_design(problem, start)
     expanded = expand_variables(problem, jnp.asarray(start))
     expected = problem.pipeline(expanded, problem.loads)
 
@@ -463,7 +463,7 @@ def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     )
     x = jnp.asarray(start)
 
-    design = read_design(problem, start)
+    design = evaluate_design(problem, start)
     expanded = expand_variables(problem, x)
     weighed, _ = maps.objective(x)
     rows = np.asarray(maps.slack(x))
@@ -486,9 +486,9 @@ def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
 
     reference = jnp.asarray(float(maps.objective(x)[0]))
     resting = jnp.zeros(rows.size)
-    augmented, _ = maps.augmented(x, resting, reference, reference)
+    lagrangian, _ = maps.augmented_lagrangian(x, resting, reference, reference)
 
-    assert float(augmented) == pytest.approx(1.0, rel=1e-12)
+    assert float(lagrangian) == pytest.approx(1.0, rel=1e-12)
 
 
 def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_densities):
@@ -496,22 +496,22 @@ def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_den
         problem, np.asarray(force_densities), SEED
     )
     budget = OptimizationBudget(
-        rounds=3,
-        iterations=10,
-        settled=10,
-        opening=1,
-        penalty=1.0,
-        growth=4.0,
-        ceiling=1e8,
-        tolerance=1e-3,
-        quiet=1e-8,
+        rounds_max=3,
+        iterations_warmup=10,
+        iterations_after_warmup=10,
+        rounds_warmup=1,
+        penalty_start=1.0,
+        penalty_growth=4.0,
+        penalty_cap=1e8,
+        violation_tol=1e-3,
+        objective_rtol=1e-8,
     )
     answer = optimize_design(problem, start, budget)
-    landed = compute_mass(read_design(problem, answer.variables))
+    landed = compute_mass(evaluate_design(problem, answer.variables))
 
     assert answer.objectives.shape == answer.violations.shape
     assert answer.variables.shape == start.shape
     assert float(answer.objectives[0]) == pytest.approx(
-        float(compute_mass(read_design(problem, start))), rel=1e-12
+        float(compute_mass(evaluate_design(problem, start))), rel=1e-12
     )
     assert float(answer.objectives[-1]) == pytest.approx(float(landed), rel=1e-12)

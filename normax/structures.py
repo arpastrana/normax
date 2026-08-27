@@ -70,6 +70,25 @@ class Structure(NamedTuple):
         return int(self.nodes.shape[0])
 
 
+class ArchDescription(NamedTuple):
+    """
+    The arch to build.
+
+    Attributes
+    ----------
+    num_edges :
+        Number of members the arch is discretized into.
+    span :
+        Horizontal distance between the two supports.
+    rise :
+        Height of the parabola the starting geometry rises along.
+    """
+
+    num_edges: int
+    span: float
+    rise: float
+
+
 def build_arch_2d(
     num_edges: int = 10,
     span: float = 10.0,
@@ -108,6 +127,25 @@ def build_arch_2d(
     supports = np.array([0, num_edges])
 
     return build_structure(nodes, edges, supports)
+
+
+class TrussDescription(NamedTuple):
+    """
+    A Warren or a Vierendeel truss to build.
+
+    Attributes
+    ----------
+    num_bays :
+        Number of bottom-chord segments the span is divided into.
+    span :
+        Horizontal distance between the two supports.
+    depth :
+        Height of the top chord above the bottom chord, as drawn.
+    """
+
+    num_bays: int
+    span: float
+    depth: float
 
 
 def build_warren_2d(
@@ -238,6 +276,41 @@ def build_vierendeel_2d(
     supports = np.array([0, num_bays, num_bays + 1, 2 * num_bays + 1])
 
     return build_structure(nodes, edges, supports)
+
+
+class ShellDescription(NamedTuple):
+    """
+    The gridshell to build.
+
+    Attributes
+    ----------
+    num_rings :
+        Number of rings between the apex and the boundary, boundary included.
+    num_spokes :
+        Number of spokes radiating from the apex.
+    radius :
+        Radius of the circular plan of the cap.
+    rise :
+        Height of the apex above the plane of the boundary.
+    oculus :
+        Whether the crown is open.
+    braced :
+        Whether the quads are triangulated.
+    polar_diameters :
+        Whether the diameters are folded by the polar symmetry as well as the
+        mirror, one section per ring per family.
+    guard_hoops :
+        Whether the compression guard covers the hoops as well as the radials.
+    """
+
+    num_rings: int
+    num_spokes: int
+    radius: float
+    rise: float
+    oculus: bool
+    braced: bool
+    polar_diameters: bool
+    guard_hoops: bool
 
 
 def build_gridshell_3d(

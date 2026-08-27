@@ -7,7 +7,7 @@ structure:
   depth: 1000.0
 
 # The lens the start is fitted to: bottom chord hung, top chord arched.
-sketch:
+start:
   sag_lens: 600.0
   rise_lens: 800.0
 
@@ -36,32 +36,33 @@ sizing:
   backend: blueprint
 
 # The held-plan subspace the densities move in: an orthonormal basis, folded
-# by the midspan mirror. The margin signs the chords at the start alone.
+# by the midspan mirror.
 subspace:
   symmetric: true
   pivoted: false
-  margin_fraction: 0.1
 
 constraints:
-  diameter_floor: 21.3
-  length_floor: 500.0
-  rise_ceiling: 2000.0
-  sag_floor: -1000.0
+  diameter_min: 21.3
+  length_min: 500.0
+  rise_max: 2000.0
+  sag_min: -1000.0
+  # The sign margin signs the chords at the start alone; no guard rows follow.
+  sign_margin_fraction: 0.1
   bounds: null
 
 # The opening penalty is the one setting that decides the answer rather than
 # the speed; this truss is flat across two decades of it, so the conservative
 # end is kept.
-augmented:
-  rounds: 10
-  iterations: 400
-  settled: 100
-  opening: 3
-  penalty: 0.1
-  growth: 10.0
-  ceiling: 1.0e+8
-  tolerance: 1.0e-6
-  quiet: 1.0e-6
+optimization:
+  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_warmup: 3              # first rounds given the larger inner budget
+  iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
+  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  penalty_start: 0.1            # penalty parameter of the first round
+  penalty_growth: 10.0          # penalty multiplier when a round earns too little
+  penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
+  violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
+  objective_rtol: 1.0e-6        # relative objective change per round counting as none
 
 # What becomes of the answer; a viewer blocks, so it opens last.
 output:

@@ -23,10 +23,10 @@ from smax import LoadCase
 from normax.analysis.smax import SmaxAnalyzer
 from normax.analysis.smax import assemble_frame_model
 from normax.config import RunConfig
-from normax.config import label_load_cases
 from normax.design import Design
 from normax.design import DesignRecord
 from normax.loads import LoadCases
+from normax.loads import label_load_cases
 from normax.structures import Structure
 from normax.tesseract import TesseractAnalyzer
 
@@ -107,7 +107,7 @@ def view_design(record: DesignRecord, config: RunConfig[Any, Any]) -> None:
     record :
         What the run arrived at.
     config :
-        The run as described, naming its load cases and whether it ends in a
+        The run config, naming its load cases and whether it ends in a
         viewer.
 
     Notes

@@ -25,9 +25,9 @@ from typing import NamedTuple
 import numpy as np
 
 from normax.config import RunConfig
-from normax.config import label_load_cases
 from normax.design import DesignRecord
 from normax.figures import draw_design_figures
+from normax.loads import label_load_cases
 from normax.reporting import Report
 
 # Resolution every figure is written at.
@@ -66,7 +66,7 @@ def export_design(
     record :
         What the run arrived at.
     config :
-        The run as described, naming its load cases and whether it exports.
+        The run config, naming its load cases and whether it exports.
     target :
         Where the files go.
 

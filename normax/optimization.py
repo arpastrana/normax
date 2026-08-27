@@ -47,43 +47,43 @@ class OptimizationBudget(NamedTuple):
 
     Attributes
     ----------
-    rounds :
+    rounds_max :
         Most multiplier updates to spend.
-    iterations :
-        Most inner iterations in each opening round.
-    settled :
-        Most inner iterations in every round after the opening ones.
-    opening :
-        How many rounds count as opening ones.
-    penalty :
+    iterations_warmup :
+        Most inner iterations in each warmup round.
+    iterations_after_warmup :
+        Most inner iterations in every round after the warmup ones.
+    rounds_warmup :
+        How many of the first rounds get the warmup budget of iterations.
+    penalty_start :
         Penalty parameter of the first round.
-    growth :
+    penalty_growth :
         What the penalty is multiplied by when a round fails to earn its share
         of the violation it inherited.
-    ceiling :
+    penalty_cap :
         Largest penalty the loop may reach, and the largest multiplier with it.
-    tolerance :
+    violation_tol :
         Violation at or under which the rows count as satisfied.
-    quiet :
+    objective_rtol :
         Relative movement of the objective between rounds that counts as none.
 
     Notes
     -----
-    A small opening penalty decides the answer rather than the speed: it leaves
+    A small starting penalty decides the answer rather than the speed: it leaves
     the objective in charge of the first rounds, so the search crosses the
     infeasible region and returns to the constraint surface somewhere a method
     confined to feasible points cannot reach.
     """
 
-    rounds: int
-    iterations: int
-    settled: int
-    opening: int
-    penalty: float
-    growth: float
-    ceiling: float
-    tolerance: float
-    quiet: float
+    rounds_max: int
+    iterations_warmup: int
+    iterations_after_warmup: int
+    rounds_warmup: int
+    penalty_start: float
+    penalty_growth: float
+    penalty_cap: float
+    violation_tol: float
+    objective_rtol: float
 
 
 class OptimizationAnswer(NamedTuple):
@@ -124,7 +124,7 @@ class ConstrainedMaps(NamedTuple):
 
     Attributes
     ----------
-    augmented :
+    augmented_lagrangian :
         Value and gradient of the augmented objective in the variables, taking
         the multipliers, the penalty and the objective's reference beside them.
     objective :
@@ -139,7 +139,7 @@ class ConstrainedMaps(NamedTuple):
     covers the whole outer loop.
     """
 
-    augmented: Callable
+    augmented_lagrangian: Callable
     objective: Callable
     slack: Callable
 
@@ -182,7 +182,7 @@ def update_multipliers(
     multipliers: Float[np.ndarray, "constraints"],
     slack: Float[np.ndarray, "constraints"],
     penalty: float,
-    ceiling: float,
+    penalty_cap: float,
 ) -> Float[np.ndarray, "constraints"]:
     """
     The multiplier estimates a round of the outer loop leaves behind.
@@ -195,7 +195,7 @@ def update_multipliers(
         How far above zero every row sits at the round's answer.
     penalty :
         Penalty parameter the round was solved at.
-    ceiling :
+    penalty_cap :
         Largest value any multiplier may take.
 
     Returns
@@ -205,12 +205,12 @@ def update_multipliers(
     """
     raised = multipliers - penalty * slack
 
-    return np.clip(raised, 0.0, ceiling)
+    return np.clip(raised, 0.0, penalty_cap)
 
 
-def recoil_point_to_anchor(
+def recoil_point_to_last_good(
     x: Float[np.ndarray, "variables"],
-    anchor: Float[np.ndarray, "variables"],
+    last_good: Float[np.ndarray, "variables"],
     held: float,
 ) -> tuple[float, Float[np.ndarray, "variables"]]:
     """
@@ -220,10 +220,10 @@ def recoil_point_to_anchor(
     ----------
     x :
         The trial point that could not be evaluated.
-    anchor :
+    last_good :
         The last point that could be, which the walk heads back towards.
     held :
-        Objective at that anchor.
+        Objective at that last_good.
 
     Returns
     -------
@@ -232,10 +232,10 @@ def recoil_point_to_anchor(
 
     Notes
     -----
-    A distant quadratic centered on the anchor: strictly worse than the anchor
+    A distant quadratic centered on the last_good: strictly worse than the last_good
     and pointing home, evaluated only at points the search goes on to reject.
     """
-    strayed = np.asarray(x, dtype=np.float64) - anchor
+    strayed = np.asarray(x, dtype=np.float64) - last_good
     scale = max(abs(held), 1.0)
     value = RECOIL_GROWTH * scale + 0.5 * float(strayed @ strayed)
 
@@ -267,7 +267,7 @@ def measure_violation(
     return violation, rows
 
 
-def descend_augmented(
+def descend_augmented_lagrangian(
     maps: ConstrainedMaps,
     start: Float[np.ndarray, "variables"],
     boxes: list[tuple[float | None, float | None]],
@@ -302,21 +302,24 @@ def descend_augmented(
     Notes
     -----
     Each round is one L-BFGS-B descent of the augmented objective, solved to
-    precision in the opening rounds and only as far as the inherited violation
+    precision in the warmup rounds and only as far as the inherited violation
     afterwards. A trial point that raises or returns a non-finite number is
-    charged `recoil_point_to_anchor`; `RuntimeError` is caught alongside the value
+    charged `recoil_point_to_last_good`; `RuntimeError` is caught alongside the value
     errors because a solver failing inside a compiled program surfaces through
     a host callback as one. Deterministic: two runs of one budget agree bit
     for bit.
     """
-    if budget.rounds < 1 or budget.iterations < 1 or budget.settled < 1:
+    counts = (
+        budget.rounds_max,
+        budget.iterations_warmup,
+        budget.iterations_after_warmup,
+    )
+    if min(counts) < 1:
         raise ValueError(f"rounds and iterations must be positive, got {budget}")
-    if budget.penalty <= 0.0 or budget.ceiling < budget.penalty:
-        raise ValueError(
-            f"the penalty must be positive and under its ceiling: {budget}"
-        )
-    if budget.growth <= 1.0:
-        raise ValueError(f"the penalty must grow, got {budget.growth}")
+    if budget.penalty_start <= 0.0 or budget.penalty_cap < budget.penalty_start:
+        raise ValueError(f"the penalty must be positive and under its cap: {budget}")
+    if budget.penalty_growth <= 1.0:
+        raise ValueError(f"the penalty must grow, got {budget.penalty_growth}")
 
     x = np.asarray(start, dtype=np.float64)
     reference = abs(float(maps.objective(jnp.asarray(x))[0]))
@@ -326,24 +329,26 @@ def descend_augmented(
     scale = jnp.asarray(reference)
     violation, rows = measure_violation(maps.slack, x)
     multipliers = np.zeros(rows.size)
-    penalty = float(budget.penalty)
+    penalty = float(budget.penalty_start)
 
     resting = jnp.zeros(rows.size)
-    opened = maps.augmented(jnp.asarray(x), resting, scale, scale)[0]
-    anchor = x.copy()
+    opened = maps.augmented_lagrangian(jnp.asarray(x), resting, scale, scale)[0]
+    last_good = x.copy()
     held = float(opened)
 
-    def evaluate_augmented(z, carried, charged):
-        nonlocal anchor, held
+    def evaluate_augmented_lagrangian(z, carried, charged):
+        nonlocal last_good, held
         try:
-            value, slope = maps.augmented(jnp.asarray(z), carried, charged, scale)
+            value, slope = maps.augmented_lagrangian(
+                jnp.asarray(z), carried, charged, scale
+            )
             value = float(value)
             slope = np.asarray(slope, dtype=np.float64)
         except (ValueError, FloatingPointError, RuntimeError):
-            return recoil_point_to_anchor(z, anchor, held)
+            return recoil_point_to_last_good(z, last_good, held)
         if not np.isfinite(value) or not np.all(np.isfinite(slope)):
-            return recoil_point_to_anchor(z, anchor, held)
-        anchor = np.asarray(z, dtype=np.float64).copy()
+            return recoil_point_to_last_good(z, last_good, held)
+        last_good = np.asarray(z, dtype=np.float64).copy()
         held = value
 
         return value, slope
@@ -354,18 +359,18 @@ def descend_augmented(
     converged = False
     inherited = violation
 
-    for round_index in range(budget.rounds):
+    for round_index in range(budget.rounds_max):
         carried = jnp.asarray(multipliers)
         charged = jnp.asarray(penalty)
-        if round_index < budget.opening:
-            inner = budget.iterations
+        if round_index < budget.rounds_warmup:
+            inner = budget.iterations_warmup
             precision = INNER_FLOOR
         else:
-            inner = budget.settled
+            inner = budget.iterations_after_warmup
             precision = max(INNER_FLOOR, INNER_SHARE * inherited)
 
         def round_objective(z, carried=carried, charged=charged):
-            return evaluate_augmented(z, carried, charged)
+            return evaluate_augmented_lagrangian(z, carried, charged)
 
         options = {
             "maxiter": inner,
@@ -390,12 +395,12 @@ def descend_augmented(
         objectives.append(objective)
         violations.append(violation)
 
-        multipliers = update_multipliers(multipliers, rows, penalty, budget.ceiling)
+        multipliers = update_multipliers(multipliers, rows, penalty, budget.penalty_cap)
         if violation > EARNED_SHARE * inherited:
-            penalty = min(penalty * budget.growth, budget.ceiling)
+            penalty = min(penalty * budget.penalty_growth, budget.penalty_cap)
         inherited = violation
 
-        if violation <= budget.tolerance and moved <= budget.quiet:
+        if violation <= budget.violation_tol and moved <= budget.objective_rtol:
             converged = True
             break
 

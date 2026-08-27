@@ -196,7 +196,7 @@ def recorded_descent(maps, opening, boxes, budget):
         The answer, every visited point, and the mass at each of them.
     """
     visited = []
-    inner = maps.augmented
+    inner = maps.augmented_lagrangian
 
     def watched(variables, multipliers, penalty, scale):
         visited.append(np.asarray(variables, dtype=np.float64).copy())
@@ -204,7 +204,7 @@ def recorded_descent(maps, opening, boxes, budget):
         return inner(variables, multipliers, penalty, scale)
 
     answer = searches.descend_augmented_search(
-        maps._replace(augmented=watched), opening, boxes, budget
+        maps._replace(augmented_lagrangian=watched), opening, boxes, budget
     )
     steps = np.stack(visited)
     masses = np.array([abs(float(maps.weigh(jnp.asarray(z))[0])) for z in steps])

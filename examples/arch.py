@@ -37,7 +37,6 @@ Run with `uv run python examples/arch.py [arch.yaml]`.
 
 import sys
 from pathlib import Path
-from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -47,15 +46,17 @@ from normax.config import parse_config
 from normax.design import DesignProblem
 from normax.design import DesignRecord
 from normax.design import build_design_constraints
+from normax.design import evaluate_design
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
-from normax.design import read_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
+from normax.form_finding import UniformDensityInitializer
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
 from normax.sections import build_section_family
+from normax.structures import ArchDescription
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import build_pipeline
@@ -69,45 +70,13 @@ TITLE = "Arch — one search to a design"
 EXPORT = ExportTarget("arch", REPO / "data", REPO / "figures")
 
 
-class ArchConfig(NamedTuple):
-    """
-    The arch to build.
-
-    Attributes
-    ----------
-    num_edges :
-        Number of members the arch is discretized into.
-    span :
-        Horizontal distance between the two supports.
-    rise :
-        Height of the parabola the starting geometry rises along.
-    """
-
-    num_edges: int
-    span: float
-    rise: float
-
-
-class SketchConfig(NamedTuple):
-    """
-    Where the search starts.
-
-    Attributes
-    ----------
-    force_density :
-        Force density every member starts at. Negative in compression.
-    """
-
-    force_density: float
-
-
-def build_arch(config: ArchConfig) -> Structure:
+def build_arch(description: ArchDescription) -> Structure:
     """
     The arch, as topology and a starting geometry.
 
     Parameters
     ----------
-    config :
+    description :
         The arch to build.
 
     Returns
@@ -115,7 +84,7 @@ def build_arch(config: ArchConfig) -> Structure:
     structure :
         A funicular arch between two pinned supports.
     """
-    return build_arch_2d(config.num_edges, config.span, config.rise)
+    return build_arch_2d(description.num_edges, description.span, description.rise)
 
 
 def main(config_path: Path) -> None:
@@ -128,8 +97,8 @@ def main(config_path: Path) -> None:
         File naming the arch and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[ArchConfig, SketchConfig] = parse_config(
-        config_path.read_text(), ArchConfig, SketchConfig
+    config: RunConfig[ArchDescription, UniformDensityInitializer] = parse_config(
+        config_path.read_text(), ArchDescription, UniformDensityInitializer
     )
 
     # The structure, its load cases, and the three blocks built on it. The
@@ -145,14 +114,14 @@ def main(config_path: Path) -> None:
 
     # The start: a uniform force density, and the diameters a frozen-seed
     # analysis asks of it.
-    q_start = np.full(structure.num_edges, config.sketch.force_density)
+    q_start = np.full(structure.num_edges, config.start.force_density)
     d_start = config.analysis.diameter
     start = initialize_optimization_variables(problem, q_start, d_start)
-    initial = read_design(problem, start)
+    initial = evaluate_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
-    found = optimize_design(problem, start, config.augmented)
-    optimized = read_design(problem, found.variables)
+    found = optimize_design(problem, start, config.optimization)
+    optimized = evaluate_design(problem, found.variables)
 
     # What the run arrived at; the report, the record and the viewer read it.
     record = DesignRecord(problem, found, initial, optimized, ())

@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+### The structure and start containers moved into the package
+
+The examples each defined the container their `structure:` and `start:`
+sections were read into — `TrussConfig` twice, identically, and `StartConfig`
+three times in two shapes — on the reasoning that a structure's vocabulary was
+the example's own. It was `structures.py`'s: every field mirrored a generator's
+signature. Moved 2026-08-26:
+
+- **`ArchDescription`, `TrussDescription`, `ShellDescription`** in `normax/structures.py`, each
+  beside the generator whose arguments it names. `Description`, not `Config`:
+  the `*Config` containers are the run description's own and live in
+  `config.py` alone. `ShellDescription` still carries `polar_diameters` and `guard_hoops`, which
+  describe the subspace rather than the shell; where they belong is open.
+- **`UniformDensityInitializer(force_density)` and `LensShapeInitializer(sag_lens, rise_lens)`** in
+  `normax/form_finding.py`, before `fit_densities`, the start generator that
+  consumes them: one force density in every member, or a lens the densities
+  are fitted to. The gridshell names neither; its drawn cap is the start.
+
+`parse_config` keeps taking the two types as arguments and `RunConfig` its two
+type parameters, so each example still reads a fully typed description. The
+experiments that reached an example's containers through `importlib` can now
+import them.
+
+### The run description names its sections for what they are
+
+Three renames of 2026-08-26 in the YAML the examples read and the containers
+behind it, no behavior touched:
+
+- **`augmented:` → `optimization:`**, and `RunConfig.augmented` →
+  `optimization`. The section is any descent's budget; the method is named by
+  the code that runs it. In that code, `ConstrainedMaps.augmented` →
+  `augmented_objective`, and the one figure trace labeled `"augmented"` is
+  `"auglag"`: in a plot or a printout the method is always `auglag`, since
+  "augmented" alone says nothing about a Lagrangian.
+- **`sketch:` → `start:`**, `SketchConfig` → `StartConfig`, `RunConfig.sketch`
+  → `start`, `parse_config(sketch_type=)` → `start_type=`. The section is where
+  the search starts: a lens the trusses fit their densities to, one uniform
+  density for the arch, nothing for the gridshell. "Sketch" described the
+  trusses' case alone. `sketch_lens` keeps its name — it does sketch a lens.
+- **A `*Description` is bound as `description`, never `config`**: the fourteen
+  example functions taking one (`build_truss`, `mirror_nodes`, `list_families`,
+  …) name the parameter for what it is; `config` is reserved for a `RunConfig`.
+  `RunConfig.structure` keeps its name — fields there name their YAML section,
+  as `optimization` holds an `OptimizationBudget` — and its docstring, with
+  `parse_config`'s, now says it holds a setup, never the built `Structure`.
+- **`margin_fraction` → `constraints.sign_margin_fraction`**, in the YAML and
+  on `ConstraintsConfig`. It sized the sign guard — a constraint, the rows
+  `(sign·q − margin)/scale ≥ 0` — yet sat on `SubspaceConfig`, which is about
+  the basis alone. The arch states `0.0`: no container carries a default.
+- **Bounds say `min`/`max`, not `floor`/`ceiling`**: `diameter_floor` →
+  `diameter_min`, `length_floor` → `length_min`, `sag_floor` → `sag_min`,
+  `rise_ceiling` → `rise_max`, in the YAML `constraints:` section,
+  `ConstraintsConfig` and `DesignConstraints` alike.
+- **Every augmented-Lagrangian identifier says so**: `descend_augmented` →
+  `descend_augmented_lagrangian`, `ConstrainedMaps.augmented_objective` →
+  `augmented_lagrangian`, `evaluate_augmented` → `evaluate_augmented_lagrangian`.
+  "Augmented" alone can mean anything.
+- **The `optimization:` block names what each number bounds**: `rounds` →
+  `rounds_max`, `opening` → `rounds_warmup`, `iterations` → `iterations_warmup`,
+  `settled` → `iterations_after_warmup`, `penalty` → `penalty_start`, `growth`
+  → `penalty_growth`, `tolerance` → `violation_tol`, `quiet` → `objective_rtol`;
+  three prefixes for the outer loop, the inner solver and the penalty schedule.
+  With them, three more building words retired from non-building meanings:
+  `recoil_point_to_anchor`'s `anchor` is `last_good`, the Blueprints family's
+  `floor` is `diameter_min` (`at_floor` → `at_minimum`), and the two docstrings
+  that said "ceiling" say "cap".
+- **`OptimizationBudget.ceiling` → `penalty_cap`**, in the YAML `optimization:`
+  section and `update_multipliers`' parameter with it. A ceiling is a part of
+  a building; this is the largest penalty and multiplier the loop may reach.
+- **`read_design` → `evaluate_design`**: it expands a variable vector and runs
+  the whole pipeline once; `read_*` in `design.py` is a linear-map lookup, which
+  this is not. The two start containers are `UniformDensityInitializer` and
+  `LensShapeInitializer`.
+- **`label_load_cases` moved from `config.py` to `loads.py`**, beside
+  `build_load_cases`; it reads `LoadCaseConfig`s, which is the loads module's
+  business, not the parser's.
+
 ### The verb sweep: sixty package functions renamed for what they do
 
 The 2026-08-26 ruling that a function leads with its verb, applied to the
@@ -141,8 +218,8 @@ Renamed 2026-08-26, no behavior touched:
 - **`AugmentedBudget` → `OptimizationBudget`, `AugmentedAnswer` →
   `OptimizationAnswer`.** The containers describe what any descent spends and
   arrives at; naming them after the one method that reads them today tied the
-  run description to that method. The `augmented` field of `RunConfig` and its
-  YAML section keep their name — they select the method, the containers do not.
+  run description to that method. The `augmented` YAML section and the
+  `RunConfig` field reading it followed, as `optimization`.
 - **`parse_run` → `parse_config`** in `normax.config`, and its four callers in
   `examples/`. The function returns a `RunConfig`; the experiments that reach
   into an example already called it `parse_config`.

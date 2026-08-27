@@ -27,7 +27,6 @@ Run with `uv run python examples/warren.py [warren.yaml]`.
 
 import sys
 from pathlib import Path
-from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -38,11 +37,12 @@ from normax.config import parse_config
 from normax.design import DesignProblem
 from normax.design import DesignRecord
 from normax.design import build_design_constraints
+from normax.design import evaluate_design
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
-from normax.design import read_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
+from normax.form_finding import LensShapeInitializer
 from normax.form_finding import build_plan_basis
 from normax.form_finding import fit_densities
 from normax.loads import LoadCases
@@ -51,6 +51,7 @@ from normax.materials import Steel355
 from normax.reporting import report_design
 from normax.sections import build_section_family
 from normax.structures import Structure
+from normax.structures import TrussDescription
 from normax.structures import build_warren_2d
 from normax.symmetry import build_member_spread
 from normax.symmetry import guard_signs
@@ -67,64 +68,29 @@ TITLE = "Warren truss — one search to a design"
 EXPORT = ExportTarget("warren", REPO / "data", REPO / "figures")
 
 
-class TrussConfig(NamedTuple):
-    """
-    The truss to build.
-
-    Attributes
-    ----------
-    num_bays :
-        Number of bottom-chord segments the span is divided into.
-    span :
-        Horizontal distance between the two supports.
-    depth :
-        Height of the top chord above the bottom chord, as drawn.
-    """
-
-    num_bays: int
-    span: float
-    depth: float
-
-
-class SketchConfig(NamedTuple):
-    """
-    The lens the start is fitted to.
-
-    Attributes
-    ----------
-    sag_lens :
-        Depth the sketch hangs its bottom chord to at midspan.
-    rise_lens :
-        Height the sketch arches its top chord to at midspan.
-    """
-
-    sag_lens: float
-    rise_lens: float
-
-
-def build_truss(config: TrussConfig) -> Structure:
+def build_truss(description: TrussDescription) -> Structure:
     """
     The truss as drawn.
     """
-    return build_warren_2d(config.num_bays, config.span, config.depth)
+    return build_warren_2d(description.num_bays, description.span, description.depth)
 
 
-def mirror_nodes(config: TrussConfig) -> Int[np.ndarray, "nodes"]:
+def mirror_nodes(description: TrussDescription) -> Int[np.ndarray, "nodes"]:
     """
     Mirror image of every node index about midspan, chord by chord.
     """
-    bays = config.num_bays
+    bays = description.num_bays
     bottom = bays - np.arange(bays + 1)
     top = 2 * bays - np.arange(bays)
 
     return np.concatenate([bottom, top])
 
 
-def list_families(config: TrussConfig) -> tuple[tuple[str, slice], ...]:
+def list_families(description: TrussDescription) -> tuple[tuple[str, slice], ...]:
     """
     Name and member slice of every family, in the generator's order.
     """
-    bays = config.num_bays
+    bays = description.num_bays
     families = (
         ("bottom chord", slice(0, bays)),
         ("top chord", slice(bays, 2 * bays - 1)),
@@ -138,7 +104,7 @@ def list_families(config: TrussConfig) -> tuple[tuple[str, slice], ...]:
 def initialize_densities(
     structure: Structure,
     loads: LoadCases,
-    config: RunConfig[TrussConfig, SketchConfig],
+    config: RunConfig[TrussDescription, LensShapeInitializer],
 ) -> np.ndarray:
     """
     The lens fit, shifted along its self-stress until both chords are signed.
@@ -150,7 +116,7 @@ def initialize_densities(
     loads :
         The load cases, the first of which the fit balances.
     config :
-        The run description, read for the sketch and the sign margin.
+        The run config, read for the sketch and the sign margin.
 
     Returns
     -------
@@ -164,12 +130,12 @@ def initialize_densities(
     densities hold the plan, so they already live in its span.
     """
     bays = config.structure.num_bays
-    lens = sketch_lens(structure, config.sketch.sag_lens, config.sketch.rise_lens)
+    lens = sketch_lens(structure, config.start.sag_lens, config.start.rise_lens)
     fit = fit_densities(structure, lens, loads.formfinding)
 
     signs = np.concatenate([np.ones(bays), -np.ones(bays - 1)])
     chords = np.arange(2 * bays - 1)
-    guard = guard_signs(fit.q, signs, chords, config.subspace.margin_fraction)
+    guard = guard_signs(fit.q, signs, chords, config.constraints.sign_margin_fraction)
 
     return shift_densities(fit.q, fit.self_stresses[:, 0], guard)
 
@@ -184,8 +150,8 @@ def main(config_path: Path) -> None:
         File naming the truss and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[TrussConfig, SketchConfig] = parse_config(
-        config_path.read_text(), TrussConfig, SketchConfig
+    config: RunConfig[TrussDescription, LensShapeInitializer] = parse_config(
+        config_path.read_text(), TrussDescription, LensShapeInitializer
     )
 
     # The structure, its load cases, and the three blocks built on it.
@@ -207,11 +173,11 @@ def main(config_path: Path) -> None:
     q_start = initialize_densities(structure, loads, config)
     d_start = config.analysis.diameter
     start = initialize_optimization_variables(problem, q_start, d_start)
-    initial = read_design(problem, start)
+    initial = evaluate_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
-    found = optimize_design(problem, start, config.augmented)
-    optimized = read_design(problem, found.variables)
+    found = optimize_design(problem, start, config.optimization)
+    optimized = evaluate_design(problem, found.variables)
 
     # What the run arrived at; the report, the record and the viewer read it.
     families = list_families(config.structure)

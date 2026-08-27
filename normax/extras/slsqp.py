@@ -150,11 +150,11 @@ def descend_slsqp(
     violations = [violation]
 
     held = {"type": "ineq", "fun": guarded_slack, "jac": slack_jacobian}
-    options = {"maxiter": budget.iterations, "ftol": budget.tolerance}
+    options = {"maxiter": budget.iterations_warmup, "ftol": budget.violation_tol}
 
     spent = 0
     converged = False
-    for _ in range(budget.rounds):
+    for _ in range(budget.rounds_max):
         found = minimize(
             scaled_objective,
             x,

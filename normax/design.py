@@ -44,7 +44,7 @@ from normax.optimization import ConstrainedMaps
 from normax.optimization import OptimizationAnswer
 from normax.optimization import OptimizationBudget
 from normax.optimization import compute_penalty
-from normax.optimization import descend_augmented
+from normax.optimization import descend_augmented_lagrangian
 from normax.sections import MemberSections
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
@@ -208,13 +208,13 @@ class DesignConstraints(NamedTuple):
 
     Attributes
     ----------
-    diameter_floor :
+    diameter_min :
         Smallest diameter any member may take, held as a bound.
-    length_floor :
+    length_min :
         Smallest length any member may keep, held as rows. Zero turns it off.
-    rise_ceiling :
+    rise_max :
         Height no free node may rise above, or None.
-    sag_floor :
+    sag_min :
         Height no free node may hang below, or None.
     sign_guard :
         The sign guarded densities must keep, or None.
@@ -228,10 +228,10 @@ class DesignConstraints(NamedTuple):
     is its own length, so as it shortens it becomes both free and unbucklable.
     """
 
-    diameter_floor: float
-    length_floor: float
-    rise_ceiling: float | None
-    sag_floor: float | None
+    diameter_min: float
+    length_min: float
+    rise_max: float | None
+    sag_min: float | None
     sign_guard: SignGuard | None
     bounds: tuple[float, float] | None
 
@@ -451,7 +451,7 @@ def bound_variables(
     if problem.spread is not None:
         patterns = int(problem.spread.shape[1])
 
-    return [boxed] * width + [(held.diameter_floor, None)] * patterns
+    return [boxed] * width + [(held.diameter_min, None)] * patterns
 
 
 def evaluate_constraints(
@@ -482,13 +482,13 @@ def evaluate_constraints(
     rows = [1.0 - design.sizes.utilization.ravel()]
 
     heights = design.shape.xyz[select_free_nodes(problem.structure), 2]
-    if held.rise_ceiling is not None:
-        rows.append((held.rise_ceiling - heights) / held.rise_ceiling)
-    if held.sag_floor is not None:
-        scale = abs(held.sag_floor) or abs(held.rise_ceiling or 1.0)
-        rows.append((heights - held.sag_floor) / scale)
-    if held.length_floor > 0.0:
-        rows.append((design.shape.lengths - held.length_floor) / held.length_floor)
+    if held.rise_max is not None:
+        rows.append((held.rise_max - heights) / held.rise_max)
+    if held.sag_min is not None:
+        scale = abs(held.sag_min) or abs(held.rise_max or 1.0)
+        rows.append((heights - held.sag_min) / scale)
+    if held.length_min > 0.0:
+        rows.append((design.shape.lengths - held.length_min) / held.length_min)
     if held.sign_guard is not None:
         guard = held.sign_guard
         signed = guard.signs * params.coordinates[guard.members]
@@ -534,13 +534,13 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
 
         return evaluate_constraints(problem, params, design)
 
-    def augmented(x, multipliers, penalty, reference):
+    def augmented_lagrangian(x, multipliers, penalty, reference):
         penalized = compute_penalty(slack(x), multipliers, penalty)
 
         return weigh(x) / reference + penalized
 
     maps = ConstrainedMaps(
-        jax.jit(jax.value_and_grad(augmented)),
+        jax.jit(jax.value_and_grad(augmented_lagrangian)),
         jax.jit(jax.value_and_grad(weigh)),
         jax.jit(slack),
     )
@@ -573,7 +573,7 @@ def optimize_design(
     maps = design_maps(problem)
     boxes = bound_variables(problem)
 
-    return descend_augmented(maps, start, boxes, budget)
+    return descend_augmented_lagrangian(maps, start, boxes, budget)
 
 
 def envelope_diameters(
@@ -608,7 +608,7 @@ def envelope_diameters(
     sizes = pipeline.sizer(forces, shape.lengths)
     demanded = np.asarray(jnp.max(sizes.sections.diameter, axis=0))
 
-    return np.maximum(demanded, problem.constraints.diameter_floor)
+    return np.maximum(demanded, problem.constraints.diameter_min)
 
 
 def initialize_optimization_variables(
@@ -639,7 +639,7 @@ def initialize_optimization_variables(
     return fold_variables(problem, q, diameters)
 
 
-def read_design(
+def evaluate_design(
     problem: DesignProblem,
     x: Float[np.ndarray, "variables"],
 ) -> Design:
@@ -690,7 +690,7 @@ def build_design_constraints(
     guard: SignGuard | None,
 ) -> DesignConstraints:
     """
-    What the design is held to, read off a run description.
+    What the design is held to, read off a run config.
 
     Parameters
     ----------
@@ -706,10 +706,10 @@ def build_design_constraints(
     """
     bounds = None if config.bounds is None else (config.bounds.min, config.bounds.max)
     constraints = DesignConstraints(
-        config.diameter_floor,
-        config.length_floor,
-        config.rise_ceiling,
-        config.sag_floor,
+        config.diameter_min,
+        config.length_min,
+        config.rise_max,
+        config.sag_min,
         guard,
         bounds,
     )

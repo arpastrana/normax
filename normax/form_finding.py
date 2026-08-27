@@ -438,6 +438,35 @@ def build_plan_basis(
     return PlanBasis(columns, independents)
 
 
+class UniformDensityInitializer(NamedTuple):
+    """
+    Where a search starts: one force density in every member.
+
+    Attributes
+    ----------
+    force_density :
+        Force density every member starts at. Negative in compression.
+    """
+
+    force_density: float
+
+
+class LensShapeInitializer(NamedTuple):
+    """
+    Where a search starts: the lens its densities are fitted to.
+
+    Attributes
+    ----------
+    sag_lens :
+        Depth the sketch hangs its bottom chord to at midspan.
+    rise_lens :
+        Height the sketch arches its top chord to at midspan.
+    """
+
+    sag_lens: float
+    rise_lens: float
+
+
 class DensityFit(NamedTuple):
     """
     Force densities that put a drawn geometry in equilibrium with its loads.

@@ -95,7 +95,7 @@ from scipy.optimize import minimize
 
 from normax.optimization import ConstrainedMaps
 from normax.optimization import OptimizationBudget
-from normax.optimization import descend_augmented
+from normax.optimization import descend_augmented_lagrangian
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 
@@ -454,7 +454,7 @@ def drive_augmented(
 
     clock = time.perf_counter()
     try:
-        found = descend_augmented(programs, opened, boxes, budget)
+        found = descend_augmented_lagrangian(programs, opened, boxes, budget)
         rounds = int(found.violations.size) - 1
         stopped = "converged" if found.converged else "round budget"
         reached = float(found.violations[-1])

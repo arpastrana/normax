@@ -50,7 +50,7 @@ from normax.sections import TubeFamily
 # EN 1993-1-1 §6.1, the recommended value.
 GAMMA_M0 = 1.0
 
-# The smallest tube the section family offers, the catalogue floor.
+# The smallest tube the section family offers, the catalogue minimum.
 DIAMETER_MINIMUM = 21.3
 
 # Halvings of a log-diameter bracket at most sqrt(2) + cbrt(2) wide.
@@ -80,7 +80,7 @@ class HostFamily(NamedTuple):
         Yield strength of the family's grade.
     gamma_m0 :
         Partial factor for cross-section resistance.
-    floor :
+    diameter_min :
         Smallest diameter the family offers.
     """
 
@@ -88,14 +88,14 @@ class HostFamily(NamedTuple):
     modulus_coefficient: float
     f_y: float
     gamma_m0: float
-    floor: float
+    diameter_min: float
 
 
 def coerce_section_family(
     ratio: float,
     f_y: float,
     gamma_m0: float = GAMMA_M0,
-    floor: float = DIAMETER_MINIMUM,
+    diameter_min: float = DIAMETER_MINIMUM,
 ) -> HostFamily:
     """
     Reduce a section family to the coefficients the scalar check reads.
@@ -108,7 +108,7 @@ def coerce_section_family(
         Yield strength of the family's grade.
     gamma_m0 :
         Partial factor for cross-section resistance.
-    floor :
+    diameter_min :
         Smallest diameter the family offers.
 
     Returns
@@ -119,7 +119,7 @@ def coerce_section_family(
     Raises
     ------
     ValueError
-        If the ratio leaves no wall, or the floor is no diameter.
+        If the ratio leaves no wall, or the minimum is no diameter.
 
     Notes
     -----
@@ -129,8 +129,8 @@ def coerce_section_family(
     """
     if ratio <= 2.0:
         raise ValueError(f"a ratio of {ratio} leaves no wall: need d/t > 2")
-    if floor <= 0.0:
-        raise ValueError(f"a floor of {floor} is no diameter: need one above zero")
+    if diameter_min <= 0.0:
+        raise ValueError(f"a minimum of {diameter_min} is no diameter: need > 0")
 
     wall = 1.0 / ratio
     bore = 1.0 - 2.0 * wall
@@ -139,7 +139,11 @@ def coerce_section_family(
     modulus_coefficient = 2.0 * second_moment
 
     return HostFamily(
-        area_coefficient, modulus_coefficient, float(f_y), float(gamma_m0), float(floor)
+        area_coefficient,
+        modulus_coefficient,
+        float(f_y),
+        float(gamma_m0),
+        float(diameter_min),
     )
 
 
@@ -514,7 +518,7 @@ class SolvedState(NamedTuple):
     unclamped :
         The root of each member's check, zero where a member is unloaded.
     diameter :
-        The root with the catalogue floor applied.
+        The root with the catalogue minimum applied.
     """
 
     family: HostFamily
@@ -570,7 +574,7 @@ def solve_state(actions: HostActions, family: HostFamily) -> SolvedState:
 
     demand = reduce_moments(actions)
     unclamped = _solve_batch(actions.axial, demand.moment, family)
-    diameter = np.maximum(unclamped, family.floor)
+    diameter = np.maximum(unclamped, family.diameter_min)
     state = SolvedState(family, actions.axial, demand, unclamped, diameter)
     if len(_SOLVED) >= SOLVED_ROOM:
         _SOLVED.pop(next(iter(_SOLVED)))
@@ -589,9 +593,9 @@ class SizedMembers(NamedTuple):
         Outer diameter of every member, floored at the family's minimum.
     utilization :
         Demand over resistance at that diameter — one where the check decided
-        the size, below one where the floor did.
+        the size, below one where the minimum did.
     clamped :
-        Whether the floor decided each member's size.
+        Whether the minimum decided each member's size.
     """
 
     diameter: Float[np.ndarray, "*load_cases members"]
@@ -614,11 +618,11 @@ def size_members(actions: HostActions, family: HostFamily) -> SizedMembers:
     -------
     sized :
         The floored diameters, the utilization re-read at them, and the mask
-        of members the floor decided.
+        of members the minimum decided.
     """
     state = solve_state(actions, family)
     used = _check_batch(state.diameter, state.axial, state.demand.moment, family)
-    clamped = state.unclamped < family.floor
+    clamped = state.unclamped < family.diameter_min
 
     return SizedMembers(state.diameter, used, clamped)
 
@@ -782,20 +786,20 @@ def size_cotangents(
     -----
     The implicit function theorem at the root `U(D; N, M) = 1`: the size moves
     as `-U_N/U_d` and `-U_M/U_d` where the check decided it, and not at all
-    where the floor did. The reported utilization is the mirror image: pinned
-    at one where the check decided, the bare partial at the floor otherwise.
+    where the minimum did. The reported utilization is the mirror image: pinned
+    at one where the check decided, the bare partial at the minimum otherwise.
     """
     state = solve_state(actions, family)
     demand = state.demand
     at_root = _check_partials(state.unclamped, state.axial, demand.moment, family)
-    at_floor = _check_partials(state.diameter, state.axial, demand.moment, family)
+    at_minimum = _check_partials(state.diameter, state.axial, demand.moment, family)
 
-    free = state.unclamped >= family.floor
+    free = state.unclamped >= family.diameter_min
     divisor = np.where(free, at_root.slope, -1.0)
     size_axial = np.where(free, -at_root.axial / divisor, 0.0)
     size_moment = np.where(free, -at_root.moment / divisor, 0.0)
-    check_axial = np.where(free, 0.0, at_floor.axial)
-    check_moment = np.where(free, 0.0, at_floor.moment)
+    check_axial = np.where(free, 0.0, at_minimum.axial)
+    check_moment = np.where(free, 0.0, at_minimum.moment)
 
     pulled_diameter = np.asarray(cotangents.diameter, dtype=np.float64)
     pulled_used = np.asarray(cotangents.utilization, dtype=np.float64)

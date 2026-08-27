@@ -140,7 +140,7 @@ def save_trajectory(
 
 def load_trajectory(path: Path) -> TrajectoryArtifact:
     """
-    Read a search and its run description back out of an npz artifact.
+    Read a search and its run config back out of an npz artifact.
 
     Parameters
     ----------

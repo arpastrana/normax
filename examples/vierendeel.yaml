@@ -7,7 +7,7 @@ structure:
   depth: 1000.0
 
 # The lens the start is fitted to: bottom chord hung, top chord arched.
-sketch:
+start:
   sag_lens: 600.0
   rise_lens: 800.0
 
@@ -35,35 +35,34 @@ sizing:
   backend: blueprint
 
 # The held-plan subspace in member coordinates, pivoted the TNA way: two
-# uniform chord families and the free verticals. The margin signs the chords
-# at the start and guards them through the descent, where a chord crossing
-# zero would hand the form finder a singular stiffness.
+# uniform chord families and the free verticals.
 subspace:
   symmetric: true
   pivoted: true
-  margin_fraction: 0.1
 
 constraints:
-  diameter_floor: 21.3
+  diameter_min: 21.3
   # The verticals may not collapse: a vanishing member is free and unbucklable.
-  length_floor: 1000.0
-  rise_ceiling: 2000.0
-  sag_floor: -1000.0
+  length_min: 1000.0
+  rise_max: 2000.0
+  sag_min: -1000.0
+  # Signs the chords at the start and guards them through the descent.
+  sign_margin_fraction: 0.1
   bounds: null
 
 # The opening penalty decides the answer on this truss: below a value between
 # 0.1 and 0.03 the descent settles inside its own infeasible dive and reports
 # half the feasible mass. Read the violation column before believing a mass.
-augmented:
-  rounds: 10
-  iterations: 400
-  settled: 100
-  opening: 3
-  penalty: 0.1
-  growth: 10.0
-  ceiling: 1.0e+8
-  tolerance: 1.0e-6
-  quiet: 1.0e-6
+optimization:
+  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_warmup: 3              # first rounds given the larger inner budget
+  iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
+  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  penalty_start: 0.1            # penalty parameter of the first round
+  penalty_growth: 10.0          # penalty multiplier when a round earns too little
+  penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
+  violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
+  objective_rtol: 1.0e-6        # relative objective change per round counting as none
 
 # What becomes of the answer; a viewer blocks, so it opens last.
 output:

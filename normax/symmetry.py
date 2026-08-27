@@ -14,7 +14,7 @@
 """
 Symmetries of a structure, and what a search may fold or sign by them.
 
-Arrays in, arrays out. Nothing here reads a run description: a mirror is a
+Arrays in, arrays out. Nothing here reads a run config: a mirror is a
 node permutation, a folding is the orbits several permutations generate, and a
 sign guard is a set of members with the sign each must keep.
 """

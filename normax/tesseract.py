@@ -497,7 +497,7 @@ def build_analyzer(
     config: AnalysisConfig,
 ) -> AbstractFrameAnalyzer:
     """
-    The frame analysis a run description asks for.
+    The frame analysis a run config asks for.
 
     Parameters
     ----------
@@ -533,7 +533,7 @@ def build_sizer(
     config: SizingConfig,
 ) -> AbstractMemberSizer:
     """
-    The code check a run description asks for.
+    The code check a run config asks for.
 
     Parameters
     ----------
