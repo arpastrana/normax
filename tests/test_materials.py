@@ -1,12 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
 import jax
 import jax.numpy as jnp
 import pytest
 from ec3x.material import Steel
 
-from normax.materials import Steel235
 from normax.materials import Steel355
 from normax.materials import SteelGrade
-from normax.sizing import design_steel
+from normax.sizing.ec3 import coerce_material
 
 
 def test_the_default_grade_is_the_default_steel():
@@ -21,14 +21,12 @@ def test_the_default_grade_is_the_default_steel():
     assert grade.density == steel.density
 
 
-def test_each_grade_states_its_certificate():
+def test_the_grade_states_its_certificate():
     s355 = Steel355()
-    s235 = Steel235()
 
     assert (s355.f_y, s355.f_u) == (355.0, 490.0)
-    assert (s235.f_y, s235.f_u) == (235.0, 360.0)
-    assert s235.e_mod == s355.e_mod
-    assert s235.density == s355.density
+    assert s355.e_mod == 210000.0
+    assert s355.density == 7.85e-9
 
 
 def test_a_bare_grade_names_its_strengths_or_is_refused():
@@ -38,18 +36,18 @@ def test_a_bare_grade_names_its_strengths_or_is_refused():
 
 
 def test_a_named_grade_survives_a_pytree_round_trip():
-    # JAX rebuilds a namedtuple positionally as type(x)(*leaves), so the
-    # subclasses must keep the base constructor signature.
-    leaves, treedef = jax.tree.flatten(Steel235())
+    # JAX rebuilds a namedtuple positionally, so the subclass must keep the
+    # base constructor signature.
+    leaves, treedef = jax.tree.flatten(Steel355())
     rebuilt = jax.tree.unflatten(treedef, leaves)
 
-    assert type(rebuilt) is Steel235
-    assert rebuilt == Steel235()
+    assert type(rebuilt) is Steel355
+    assert rebuilt == Steel355()
 
 
 def test_the_standard_reads_a_grade_without_changing_it():
     grade = SteelGrade(f_y=460.0, f_u=540.0)
-    steel = design_steel(grade)
+    steel = coerce_material(grade)
 
     assert steel.f_y == grade.f_y
     assert steel.f_u == grade.f_u
@@ -58,11 +56,7 @@ def test_the_standard_reads_a_grade_without_changing_it():
 
 
 def test_the_standard_adds_only_its_own_factors():
-    # What the reading adds is the clause half at its defaults, so a grade
-    # crossed into EC3 is exactly the default Steel wherever it says nothing.
-    steel = design_steel(Steel355())
-
-    assert steel == Steel()
+    assert coerce_material(Steel355()) == Steel()
 
 
 def test_a_grade_carries_no_clause_field():

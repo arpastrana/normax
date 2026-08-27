@@ -4,7 +4,8 @@
 this buys" below is why — every converged design passes 6.2.10 with room, so
 designing for shear would move no diameter, and the cost falls almost entirely on
 the hand-written NumPy duplicate of the Blueprints wrapper. What shipped instead
-is the audit (`experiments/20_shear_audit.py`), the tolerance check that now rides
+is the audit (retired 2026-08-27, see `retired_experiments.md`), the tolerance
+check that now rides
 in every truss and arch run, and the exclusion stated in the README, in
 `normax/sizing/blueprint.py` and in ec3x's `docs/clauses.md`.
 
@@ -129,7 +130,7 @@ so `d(mass)/d(shear)` is identically zero, and a differentiable output advertisi
 a provably zero derivative would be worse than none.
 
 **What (A) did not do is let the check read it.** The demand crosses for the audit;
-`design_actions` still builds `MemberActions(axial_force, moment_major,
+`coerce_member_actions` still builds `MemberActions(axial_force, moment_major,
 moment_minor, moment_factor_major, moment_factor_minor)` and there is no field to
 put a shear in. So the fork below is narrowed rather than closed: the transport
 question is settled and only the check-side question remains.
@@ -159,15 +160,14 @@ it has been widened — and the crossed path is no longer blind. What survives i
 the separation of the two lengths, which is worth having for its own sake.
 
 **So (A) is now the route**, the transport being already paid for: give
-`MemberActions` a shear field, carry it through `design_actions`, and read it in
+`MemberActions` a shear field, carry it through `coerce_member_actions`, and read it in
 the check. `MemberForces`' analyzed shear then serves as the **oracle** for
 whatever the check derives, the derived-equals-analyzed identity being pinned at
 `rtol=1e-10` already.
 
 ## What this buys — measured, not bounded
 
-`experiments/20_shear_audit.py` reads the analyzed shear off every converged
-design in the repo: the arch at 103's simultaneous optimum, and both trusses at
+The audit read the analyzed shear off every converged design in the repo: the arch at 103's simultaneous optimum, and both trusses at
 each of the three answers 18 and 19 descend to. Worst `V_Ed/V_pl,Rd` over members
 and load cases, Eq. 6.17 read once per shear component and taken at its worst:
 
@@ -253,7 +253,7 @@ shear appears only in the scope paragraph, the Blueprints inventory and open ite
 
 - `AbstractMemberSizer.__call__` gains the member length (decision C). `design.py:241`
   passes `shape.lengths` for it; `buckling_length` keeps its own meaning.
-- `normax/sizing/ec3.py:186-200` — `design_actions` grows the length argument and
+- `normax/sizing/ec3.py:186-200` — `coerce_member_actions` grows the length argument and
   fills the new `MemberActions` field.
 - **`DESIGN_AXES = MemberForces(0, 0, 0, None, None, None)`** broadcasts the three
   new components rather than slicing them, and the `None`s are not an oversight —
@@ -264,6 +264,34 @@ shear appears only in the scope paragraph, the Blueprints inventory and open ite
   change to the container rather than to the sizer.
 - `tesseracts/ec3_check/` — a `member_length` input beside `buckling_length`, and
   the derived shear reported for audit.
+
+#### The container shrank under this plan, 2026-08-27
+
+`MemberForces` carried six fields when the section above was written. The
+condensation cut it to three — `axial_force`, `moment_major`, `moment_minor` —
+so the `DESIGN_AXES` line describes a container that no longer exists, and the
+scalar-default trap it warns about is gone with it. Restoring the components is
+now an addition rather than an edit, and it touches every analyzer: `smax`,
+`pynite`, `opensees`, and the analysis Tesseract's schema.
+
+**Experiment 20 cannot run for this reason alone.** Its audit reads
+`shear_major`, `shear_minor` and `torsion_moment` off the analysis, and a port
+away from the dissolved `normax.searches` does not reach them. The port was
+attempted and abandoned 2026-08-27; the experiment is kept for reimplementation
+alongside the clauses.
+
+**Shear is derivable without restoring the fields, and exactly.** Loads are
+applied at nodes alone, so the moment varies linearly along a member and the
+shear is the constant `ΔM / L`. That is the contract's own stated assumption
+rather than an approximation, and it means the audit could be revived ahead of
+the clauses if the measurement is wanted before the design work.
+
+**The recorded 0.36 is not reproducible as it stands.** It was read off the
+*drawn* Vierendeel — the sizing-only route at the drawn geometry — whose run
+descriptions were deleted 2026-08-27 with the other pre-condensation configs.
+Re-measuring on the shipped structures, at the start and at the optimum, is the
+path back to a number; it will not be the same number, and CLAUDE.md §3,
+README.md and this file quote the old ones.
 
 ### 3. normax — the Blueprints wrapper, both copies
 
@@ -282,12 +310,12 @@ The expensive half, and the reason this is one job rather than two.
   and `test_the_cubic_root_agrees_with_the_bisection` both need re-deriving. Take
   fidelity and redo the bracket; do not buy the test back by summing terms the
   standard does not sum.
-- `tesseracts/blueprint_check/tesseract_api.py` — the no-JAX duplicate. New
+- `tesseracts/sizing/_backend_blueprint.py` — the no-JAX duplicate. New
   differentiable schema fields, three partials per channel on `HandPartials:157`
   across all three clamp regimes (`free`, `bound`, `positive`), a fourth pull table
   on `AdjointState:611`, and a branch in both endpoints — the `else: raise` at
   `:752` is what makes a forgotten field fail loudly instead of silently.
-- `normax/tesseract.py:739-756` and `:805-821` — `BlueprintClient` builds its
+- `normax/tesseract.py:739-756` and `:805-821` — `TesseractSizer` builds its
   payload literally, twice.
 - Tests that break and must be extended, not deleted: `:284` (cubic root), `:642`
   (hardcodes the slope literal), `:673` (ec3-vs-blueprint agreement at `rtol=1e-7`

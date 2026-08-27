@@ -1,35 +1,10 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
-The load cases a structure is shaped by and checked against, and their axis.
+The load cases a structure is shaped by and checked against.
 
-A load case is an array of nodal forces and nothing else, so a case built here
-adds to any other and none of them belongs to a structure. Every generator takes
-a structure and returns a pattern over its nodes, zeroed at the supports, which
-is what lets a name in a configuration file select one.
-
-**Everything that knows what a load case axis means lives here**, which is three
-operations: stacking several cases of a container into one, taking one back out,
-and counting them. They are generic over the container because none of them
-reads a field — a pytree map is the whole implementation — so the analysis
-stage's internal forces and the check's design actions share them rather than
-each carrying its own. Two stages that stacked their own would be free to
-disagree about the order of that axis, which is a bug no shape catches.
-
-A leaf otherwise. Nothing here computes an equilibrium, a resistance or a
-geometry, so any stage can speak about load cases without importing the stage
-beside it.
+Every pattern is a function of a structure and one magnitude, reading the
+pattern's own geometry — a deck off the lowest free nodes, a tributary area
+off a polar plan — from the structure alone, so a case can be named in a file.
 """
 
 from collections.abc import Sequence
@@ -38,277 +13,16 @@ from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array
+from jaxtyping import Bool
 from jaxtyping import Float
 
+from normax.config import LoadCaseConfig
 from normax.structures import Structure
 
 # Any container whose fields take a leading load case axis, at either rank.
 LoadCaseAxis = TypeVar("LoadCaseAxis", bound=tuple)
-
-
-def create_loads_uniform(
-    structure: Structure,
-    load: float,
-) -> Float[Array, "nodes 3"]:
-    """
-    A downward point load of the same size on every free node.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Notes
-    -----
-    The load case a funicular structure is form-found under, so the geometry carries
-    it in pure tension or compression and the members see no bending. Every
-    other load case is a departure from it, and the bending that appears is what a
-    frame analysis exists to report.
-    """
-    return _nodal_loads(structure, jnp.ones(structure.num_nodes) * load)
-
-
-def create_loads_half_span_mirrored(
-    structure: Structure,
-    load: float,
-) -> Float[Array, "nodes 3"]:
-    """
-    A downward point load on the far half of the span, and nothing on the near one.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load on the loaded half.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Notes
-    -----
-    The exact reflection of `create_loads_half_span` on a structure whose nodes are
-    symmetric about midspan, a node sitting exactly at midspan being loaded
-    either way. One asymmetric case on its own biases a search towards the half
-    it leaves light; the pair does not.
-    """
-    return create_loads_half_span(structure, load, axis=0, factor=0.0, mirrored=True)
-
-
-def create_loads_half_span(
-    structure: Structure,
-    load: float,
-    *,
-    axis: int = 0,
-    factor: float = 0.0,
-    mirrored: bool = False,
-) -> Float[Array, "nodes 3"]:
-    """
-    A downward point load on one half of the span and a fraction on the other.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load on the loaded half.
-    axis :
-        Index of the global axis the span is measured along.
-    factor :
-        Fraction of that load carried by the other half.
-    mirrored :
-        Whether to load the far half instead of the near one.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Raises
-    ------
-    ValueError
-        If the axis is not 0, 1 or 2.
-    """
-    if axis not in (0, 1, 2):
-        raise ValueError(f"axis must be 0, 1 or 2, got {axis}")
-
-    along = structure.nodes[:, axis]
-    middle = 0.5 * (jnp.min(along) + jnp.max(along))
-    loaded = along >= middle if mirrored else along <= middle
-    applied = jnp.where(loaded, load, load * factor)
-
-    return _nodal_loads(structure, applied)
-
-
-def create_loads_point(
-    structure: Structure,
-    load: float,
-    *,
-    node: int,
-) -> Float[Array, "nodes 3"]:
-    """
-    A single downward point load at one node.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    load :
-        Magnitude of the downward point load.
-    node :
-        Index of the node carrying it.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Notes
-    -----
-    Adds to any other load case, being an array like the rest, so a concentrated
-    load on top of a distributed one is a sum and needs no separate generator.
-    A load placed on a support is discarded, since the support carries it
-    straight to ground.
-    """
-    magnitudes = jnp.zeros(structure.num_nodes).at[node].set(load)
-
-    return _nodal_loads(structure, magnitudes)
-
-
-def create_loads_tributary(
-    structure: Structure,
-    pressure: float,
-    areas: Float[Array, "nodes"],
-) -> Float[Array, "nodes 3"]:
-    """
-    A surface pressure resolved onto the nodes that share the surface out.
-
-    Parameters
-    ----------
-    structure :
-        The structure to load.
-    pressure :
-        Downward force per unit of plan area.
-    areas :
-        Plan area every node carries.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Notes
-    -----
-    **The areas are the caller's to compute**, a tributary area being a property
-    of the mesh rather than of the load: a polar grid divides its plan by rings
-    and spokes, a rectangular one by panels, and neither division is derivable
-    from a node list alone. What is fixed here is the conversion, so a pressure
-    is stated once and never re-derived per case.
-
-    **The pressure acts on the plan projection**, not on the developed surface,
-    which is how an imposed or snow load is stated. A steeper shell therefore
-    collects no more of it, and the total a structure carries is the pressure
-    times the plan area — but only over the nodes that are free. The share
-    belonging to supported nodes is zeroed like every other case here, going
-    straight to ground, so the applied total falls short of pressure times the
-    whole plan by exactly the supports' tributary share. Report both rather than
-    let the shortfall pass as a rounding error.
-
-    Not in `LOAD_CASE_REGISTRY`: every generator a name selects takes a
-    structure and a single magnitude, and an area per node is not that.
-    """
-    return _nodal_loads(structure, pressure * jnp.asarray(areas))
-
-
-def _nodal_loads(
-    structure: Structure,
-    magnitudes: Float[Array, "nodes"],
-) -> Float[Array, "nodes 3"]:
-    """
-    Downward forces of given magnitudes, zeroed at the supports.
-
-    Parameters
-    ----------
-    structure :
-        The structure supplying the node count and the supported nodes.
-    magnitudes :
-        Size of the downward force at every node.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-    """
-    vertical = jnp.zeros((structure.num_nodes, 3)).at[:, 2].set(-magnitudes)
-
-    return vertical.at[structure.supports, :].set(0.0)
-
-
-LOAD_CASE_REGISTRY = {
-    "uniform": create_loads_uniform,
-    "half_span": create_loads_half_span,
-    "half_span_mirrored": create_loads_half_span_mirrored,
-}
-
-
-def create_loads_by_name(
-    name: str,
-    structure: Structure,
-    magnitude: float,
-) -> Float[Array, "nodes 3"]:
-    """
-    Build a named load case carrying a given total.
-
-    Parameters
-    ----------
-    name :
-        Name of the pattern, one of the keys of `LOAD_CASE_REGISTRY`.
-    structure :
-        The structure to load.
-    magnitude :
-        Total downward force the case carries.
-
-    Returns
-    -------
-    loads :
-        Force applied at every node.
-
-    Raises
-    ------
-    ValueError
-        If no pattern goes by that name.
-
-    Notes
-    -----
-    **The magnitude is a total and not a nodal force**, which is what makes two
-    cases comparable: a case on half the span carries the same total over fewer
-    nodes rather than the same nodal force over fewer of them. The generator is
-    called at unit load for its shape alone and the result scaled, so how a
-    pattern spreads itself stays the generator's business.
-
-    Named rather than passed as a function so that a load case can be written
-    down in a configuration file, which is the only reason this indirection
-    exists.
-    """
-    if name not in LOAD_CASE_REGISTRY:
-        known = ", ".join(sorted(LOAD_CASE_REGISTRY))
-        raise ValueError(f"unknown load case {name!r}, expected one of {known}")
-
-    pattern = LOAD_CASE_REGISTRY[name](structure, 1.0)
-    carried = jnp.abs(jnp.sum(pattern[:, 2]))
-    applied = pattern * (magnitude / carried)
-
-    return applied
 
 
 class LoadCases(NamedTuple):
@@ -324,27 +38,435 @@ class LoadCases(NamedTuple):
 
     Notes
     -----
-    **One case shapes the structure and several check it, and the asymmetry is
-    the point.** A funicular shape carries exactly one load case axially, which
-    is what makes it funicular; every other case is a departure from it, and the
-    bending that appears is the reason a frame analysis is in the pipeline at
-    all. Form-finding under each case in turn would mean a different structure
-    per case rather than one structure asked to survive all of them.
-
-    The form-finding case is usually also one of the checked ones. Nothing here
-    requires it, since a structure may be shaped by a load case that is never
-    checked on its own.
+    A funicular shape carries exactly one load case axially; every other case
+    is a departure from it, and the bending that appears is the reason a frame
+    analysis sits between the form finder and the check.
     """
 
     formfinding: Float[Array, "nodes 3"]
     analysis: Float[Array, "load_cases nodes 3"]
 
 
+def distribute_loads(
+    structure: Structure,
+    magnitudes: Float[np.ndarray, "nodes"],
+    total: float,
+) -> Float[Array, "nodes 3"]:
+    """
+    Downward forces in a given pattern, zeroed at the supports, carrying a total.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the node count and the supported nodes.
+    magnitudes :
+        Relative size of the downward force at every node.
+    total :
+        Total downward force the free nodes carry once rescaled.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+    """
+    pattern = np.asarray(magnitudes, dtype=np.float64).copy()
+    pattern[np.asarray(structure.supports)] = 0.0
+    scaled = pattern * (total / pattern.sum())
+
+    return jnp.zeros((structure.num_nodes, 3)).at[:, 2].set(-jnp.asarray(scaled))
+
+
+def mask_free_nodes(structure: Structure) -> Bool[np.ndarray, "nodes"]:
+    """
+    Whether each node is free to move.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the supports.
+
+    Returns
+    -------
+    free :
+        True at every node that is not a support.
+    """
+    free = np.ones(structure.num_nodes, dtype=bool)
+    free[np.asarray(structure.supports)] = False
+
+    return free
+
+
+def mask_deck_nodes(structure: Structure) -> Bool[np.ndarray, "nodes"]:
+    """
+    Whether each node sits on the deck, the lowest free nodes of a truss.
+
+    Parameters
+    ----------
+    structure :
+        The truss as drawn.
+
+    Returns
+    -------
+    deck :
+        True at every free node drawn at the lowest free height.
+
+    Raises
+    ------
+    ValueError
+        If no free node sits at the lowest free height, which is a structure
+        without a deck.
+    """
+    heights = np.asarray(structure.nodes)[:, 2]
+    free = mask_free_nodes(structure)
+    deck = free & np.isclose(heights, heights[free].min())
+    if not deck.any():
+        raise ValueError("no free node sits at the lowest height: there is no deck")
+
+    return deck
+
+
+def mask_half_span(structure: Structure, mirrored: bool) -> Bool[np.ndarray, "nodes"]:
+    """
+    Whether each node sits on the near half of the span, or the far one.
+
+    Parameters
+    ----------
+    structure :
+        The structure, its span measured along the first axis.
+    mirrored :
+        Whether to pick the far half instead of the near one.
+
+    Returns
+    -------
+    half :
+        True on the picked half, midspan included either way.
+    """
+    along = np.asarray(structure.nodes)[:, 0]
+    middle = 0.5 * (along.min() + along.max())
+
+    return along >= middle if mirrored else along <= middle
+
+
+def load_uniform(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
+    """
+    A total shared equally over every free node.
+    """
+    return distribute_loads(structure, np.ones(structure.num_nodes), total)
+
+
+def load_half_span(
+    structure: Structure,
+    total: float,
+    factor: float = 0.0,
+    mirrored: bool = False,
+) -> Float[Array, "nodes 3"]:
+    """
+    A total on one half of the span, the other half keeping a fraction.
+
+    Parameters
+    ----------
+    structure :
+        The structure to load.
+    total :
+        Total downward force the case carries.
+    factor :
+        Fraction of the nodal load the other half keeps, before rescaling.
+    mirrored :
+        Whether to load the far half instead of the near one.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+    """
+    pattern = np.where(mask_half_span(structure, mirrored), 1.0, factor)
+
+    return distribute_loads(structure, pattern, total)
+
+
+def load_deck(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
+    """
+    A total shared equally over the deck nodes of a truss.
+    """
+    return distribute_loads(structure, mask_deck_nodes(structure).astype(float), total)
+
+
+def load_deck_half(
+    structure: Structure,
+    total: float,
+    factor: float = 0.0,
+    mirrored: bool = False,
+) -> Float[Array, "nodes 3"]:
+    """
+    A total on one half of the deck, the other half keeping a fraction.
+
+    Parameters
+    ----------
+    structure :
+        The truss to load.
+    total :
+        Total downward force the case carries.
+    factor :
+        Fraction of the nodal load the other half keeps, before rescaling.
+    mirrored :
+        Whether to load the far half instead of the near one.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node.
+    """
+    halved = np.where(mask_half_span(structure, mirrored), 1.0, factor)
+    pattern = np.where(mask_deck_nodes(structure), halved, 0.0)
+
+    return distribute_loads(structure, pattern, total)
+
+
+def load_deck_point(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
+    """
+    A total concentrated on the deck node nearest midspan.
+    """
+    along = np.asarray(structure.nodes)[:, 0]
+    middle = 0.5 * (along.min() + along.max())
+    distance = np.where(mask_deck_nodes(structure), np.abs(along - middle), np.inf)
+    pattern = np.zeros(structure.num_nodes)
+    pattern[int(np.argmin(distance))] = 1.0
+
+    return distribute_loads(structure, pattern, total)
+
+
+class PolarPlan(NamedTuple):
+    """
+    A polar grid read off its drawn plan.
+
+    Attributes
+    ----------
+    ring :
+        Index of the ring every node sits on, the apex counting as ring zero
+        of radius zero where there is one.
+    spoke :
+        Index of the spoke every node sits on, zero at the apex.
+    radii :
+        Plan radius of every ring, ascending.
+    num_spokes :
+        Number of spokes, read off the outermost ring.
+    """
+
+    ring: np.ndarray
+    spoke: np.ndarray
+    radii: np.ndarray
+    num_spokes: int
+
+
+def read_polar_plan(structure: Structure) -> PolarPlan:
+    """
+    Read the rings and spokes of a polar grid off its drawn plan.
+
+    Parameters
+    ----------
+    structure :
+        The cap as drawn, its plan centered on the origin.
+
+    Returns
+    -------
+    plan :
+        Which ring and spoke every node sits on.
+    """
+    plan = np.asarray(structure.nodes)[:, :2]
+    rho = np.linalg.norm(plan, axis=1)
+    radii = np.unique(np.round(rho, 6))
+    ring = np.searchsorted(radii, np.round(rho, 6))
+
+    num_spokes = int(np.sum(ring == ring.max()))
+    angle = np.arctan2(plan[:, 1], plan[:, 0])
+    spoke = np.rint(angle / (2.0 * np.pi / num_spokes)).astype(int) % num_spokes
+    spoke[np.isclose(rho, 0.0)] = 0
+
+    return PolarPlan(ring, spoke, radii, num_spokes)
+
+
+def compute_tributary_areas(structure: Structure) -> Float[np.ndarray, "nodes"]:
+    """
+    Plan area every node of a polar cap carries.
+
+    Parameters
+    ----------
+    structure :
+        The cap as drawn.
+
+    Returns
+    -------
+    areas :
+        Plan area of every node.
+
+    Notes
+    -----
+    Each ring owns the annulus reaching halfway to its neighbors, split evenly
+    between its spokes; an apex owns the disc inside the first boundary, and an
+    open crown carries nothing, so the first ring then owns only the annulus
+    outside itself. The areas sum to the plan exactly, which makes the
+    supports' share readable as the pressure's total minus the applied total.
+    """
+    plan = read_polar_plan(structure)
+    radii = plan.radii
+    outermost = radii[-1]
+
+    inner = np.concatenate([[radii[0]], 0.5 * (radii[:-1] + radii[1:])])
+    outer = np.concatenate([0.5 * (radii[:-1] + radii[1:]), [outermost]])
+    if np.isclose(radii[0], 0.0):
+        inner[0] = 0.0
+    ring_areas = np.pi * (outer**2 - inner**2)
+
+    areas = ring_areas[plan.ring] / plan.num_spokes
+    if np.isclose(radii[0], 0.0):
+        areas[plan.ring == 0] = ring_areas[0]
+
+    return areas
+
+
+def load_tributary(structure: Structure, pressure: float) -> Float[Array, "nodes 3"]:
+    """
+    A plan pressure resolved onto the nodes by tributary area.
+
+    Parameters
+    ----------
+    structure :
+        The cap to load.
+    pressure :
+        Downward force per unit of plan area.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node, the supports' share going to ground.
+    """
+    areas = compute_tributary_areas(structure)
+    carried = float(np.sum(areas[mask_free_nodes(structure)]))
+
+    return distribute_loads(structure, areas, pressure * carried)
+
+
+def load_sector(
+    structure: Structure,
+    pressure: float,
+    center: int,
+    spokes: int,
+    factor: float,
+) -> Float[Array, "nodes 3"]:
+    """
+    A plan pressure kept whole over one sector and graded outside it.
+
+    Parameters
+    ----------
+    structure :
+        The cap to load.
+    pressure :
+        Downward force per unit of plan area.
+    center :
+        Spoke the sector is centered on.
+    spokes :
+        How many spokes the sector covers, odd so it centers on a spoke.
+    factor :
+        Fraction of the pressure the plan outside the sector keeps.
+
+    Returns
+    -------
+    loads :
+        Force applied at every node, rescaled to the uniform pressure's total
+        so no case wins by carrying less.
+
+    Notes
+    -----
+    The trusses' half-span construction read onto a disc: a drift grades the
+    roof rather than spotlighting a slice of it. A crown node sits on every
+    sector's axis and is always inside.
+    """
+    plan = read_polar_plan(structure)
+    reach = spokes // 2
+    offset = (plan.spoke - center + reach) % plan.num_spokes
+    crown = (plan.ring == 0) & np.isclose(plan.radii[0], 0.0)
+    inside = (offset <= 2 * reach) | crown
+
+    areas = compute_tributary_areas(structure)
+    carried = float(np.sum(areas[mask_free_nodes(structure)]))
+    pattern = np.where(inside, areas, factor * areas)
+
+    return distribute_loads(structure, pattern, pressure * carried)
+
+
+LOAD_PATTERNS = {
+    "uniform": load_uniform,
+    "half_span": load_half_span,
+    "deck": load_deck,
+    "deck_half": load_deck_half,
+    "deck_point": load_deck_point,
+    "tributary": load_tributary,
+    "sector": load_sector,
+}
+
+
+def build_load_cases(
+    structure: Structure,
+    described: Sequence[LoadCaseConfig],
+) -> LoadCases:
+    """
+    The load case a structure is shaped by, and every case it is checked against.
+
+    Parameters
+    ----------
+    structure :
+        The structure to load.
+    described :
+        The cases to build, the first of which shapes the structure.
+
+    Returns
+    -------
+    loads :
+        The form-finding case and the checked cases.
+
+    Raises
+    ------
+    ValueError
+        If a case names a pattern that does not exist.
+    """
+    applied = []
+    for load_case in described:
+        if load_case.name not in LOAD_PATTERNS:
+            known = ", ".join(sorted(LOAD_PATTERNS))
+            raise ValueError(f"unknown load case {load_case.name!r}, expected {known}")
+        pattern = LOAD_PATTERNS[load_case.name]
+        applied.append(pattern(structure, load_case.magnitude, **load_case.options))
+
+    return assemble_load_cases(applied)
+
+
+def label_load_cases(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
+    """
+    A label per load case, the pattern's name and whatever options it took.
+
+    Parameters
+    ----------
+    load_cases :
+        The cases as described.
+
+    Returns
+    -------
+    labels :
+        One label per case, in order.
+    """
+    labels = []
+    for load_case in load_cases:
+        options = " ".join(f"{key}={value}" for key, value in load_case.options.items())
+        labels.append(f"{load_case.name} {options}".strip())
+
+    return tuple(labels)
+
+
 def assemble_load_cases(
     load_cases: Sequence[Float[Array, "nodes 3"]],
 ) -> LoadCases:
     """
-    The load case a structure is shaped by, and the ones it is checked against.
+    Stack checked cases, the first of them shaping the structure.
 
     Parameters
     ----------
@@ -356,21 +478,8 @@ def assemble_load_cases(
     loads :
         The checked cases stacked along a leading axis, and the first of them
         again as the case the shape answers to.
-
-    Notes
-    -----
-    **The first case is the one the structure is form-found under**, which is
-    the convention a list of cases has to carry somehow and the only one that
-    needs no second argument. A structure shaped by a case it is never checked
-    against is expressible by building the container directly.
-
-    Stacking here rather than at every call site is what keeps a load case axis
-    from being assembled differently by two callers.
     """
-    formfinding_case = load_cases[0]
-    analysis_cases = jnp.stack(list(load_cases))
-
-    return LoadCases(formfinding_case, analysis_cases)
+    return LoadCases(load_cases[0], jnp.stack(list(load_cases)))
 
 
 def stack_load_cases(per_case: Sequence[LoadCaseAxis]) -> LoadCaseAxis:
@@ -386,23 +495,13 @@ def stack_load_cases(per_case: Sequence[LoadCaseAxis]) -> LoadCaseAxis:
     -------
     stacked :
         The same container, every field carrying a leading load case axis.
-
-    Notes
-    -----
-    **The one place a load case axis is added.** A solver or a check answers one
-    case at a time and never sees the axis; this is what puts the answers side
-    by side, in the order the cases were given.
-
-    A pytree map is what makes it generic: it reads the container's structure
-    rather than its field names, so a container that gains a field needs no
-    change here and one holding a nested container stacks to the same depth.
     """
     return jax.tree.map(lambda *cases: jnp.stack(cases), *per_case)
 
 
 def select_load_case(stacked: LoadCaseAxis, load_case: int) -> LoadCaseAxis:
     """
-    One load case of a stacked container.
+    One load case of a stacked container, without the axis.
 
     Parameters
     ----------
@@ -414,13 +513,7 @@ def select_load_case(stacked: LoadCaseAxis, load_case: int) -> LoadCaseAxis:
     Returns
     -------
     selected :
-        The same container, for that load case alone and without the axis.
-
-    Notes
-    -----
-    The inverse of `stack_load_cases`, and generic for the same reason. What
-    comes back is the rank a clause and a solver both work at, neither of them
-    having anything to say about the other cases.
+        The same container, for that load case alone.
     """
     return jax.tree.map(lambda field: field[load_case], stacked)
 
@@ -437,13 +530,7 @@ def count_load_cases(stacked: LoadCaseAxis) -> int:
     Returns
     -------
     count :
-        Number of load cases.
-
-    Notes
-    -----
-    Read from the first leaf, every field of a stacked container sharing the
-    axis by construction. A static Python integer, so it may drive a loop
-    inside a traced function.
+        Number of load cases, a static Python integer.
     """
     leaves = jax.tree.leaves(stacked)
 

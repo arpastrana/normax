@@ -1,16 +1,4 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 A circular hollow section as geometry, and the family that generates one.
 
@@ -42,6 +30,9 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.materials import SteelGrade
+
+# EN 1993-1-1 Table 5.2 sheet 3: d/t limit per class, in multiples of epsilon squared.
+CLASS_LIMITS = {1: 50.0, 2: 70.0, 3: 90.0}
 
 
 class MemberSections(NamedTuple):
@@ -146,49 +137,6 @@ class MemberSections(NamedTuple):
 
         return (jnp.pi / 64.0) * (outer**4 - bore**4)
 
-    @property
-    def radius_of_gyration(self) -> Float[Array, "*load_cases members"]:
-        """
-        Radius of gyration about any centroidal axis.
-
-        Returns
-        -------
-        radius_of_gyration :
-            Radius of gyration.
-
-        Notes
-        -----
-        Proportional to the diameter whenever the wall is, which is what a
-        family guarantees.
-        """
-        return jnp.sqrt(self.second_moment / self.area)
-
-    @property
-    def modulus_elastic(self) -> Float[Array, "*load_cases members"]:
-        """
-        Elastic section modulus.
-
-        Returns
-        -------
-        modulus_elastic :
-            Second moment over the outer radius.
-        """
-        return 2.0 * self.second_moment / jnp.asarray(self.diameter)
-
-    @property
-    def modulus_plastic(self) -> Float[Array, "*load_cases members"]:
-        """
-        Plastic section modulus.
-
-        Returns
-        -------
-        modulus_plastic :
-            Plastic section modulus.
-        """
-        outer = jnp.asarray(self.diameter)
-
-        return (outer**3 - self.diameter_inner**3) / 6.0
-
 
 class TubeFamily(NamedTuple):
     """
@@ -246,3 +194,39 @@ class TubeFamily(NamedTuple):
         thickness = jnp.asarray(diameter) / self.ratio
 
         return MemberSections(diameter, thickness, self.material)
+
+
+def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
+    """
+    The section family as thin as a given class allows.
+
+    Parameters
+    ----------
+    grade :
+        The steel as a certificate states it.
+    section_class :
+        Class 1, 2 or 3, whose Table 5.2 limit fixes the wall proportion.
+
+    Returns
+    -------
+    family :
+        The family whose ratio sits exactly on that class's limit.
+
+    Raises
+    ------
+    ValueError
+        If the class is not 1, 2 or 3.
+
+    Notes
+    -----
+    EN 1993-1-1 Table 5.2 sheet 3, `d/t <= k epsilon^2` with `epsilon^2 =
+    235 / f_y`. Sitting on the limit maximizes the wall slenderness, and so
+    minimizes material, while staying inside the class, so classification is
+    exact by construction and needs no smoothing.
+    """
+    if section_class not in CLASS_LIMITS:
+        raise ValueError(f"section_class must be 1, 2 or 3, got {section_class}")
+
+    ratio = CLASS_LIMITS[section_class] * 235.0 / grade.f_y
+
+    return TubeFamily(ratio, grade)

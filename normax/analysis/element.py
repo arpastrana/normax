@@ -1,53 +1,23 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
-The frame element, so a solver that carries no derivative can borrow one.
+The frame element, stated in JAX so a solver without derivatives can borrow one.
 
-A foreign solver assembles, factorizes and solves; what it cannot do is say how
-its answer moves. An adjoint needs one thing from the element level — the
-derivative of the global element stiffness with respect to the geometry and the
-section — and the way to obtain it exactly is to state the element here, in JAX,
-and prove it is the same element the solver assembled.
-
-**The proof is a test, not a claim.** `stiffness_local` and `stiffness_global`
-are held against the foreign solver's own matrices to near machine precision, so
-differentiating this module differentiates that solver's model rather than a
-lookalike. Nothing here is approximate and no step size enters.
-
-Two properties of a circular hollow section are what make this short, and both
-were measured rather than assumed.
-
-**One bending rigidity, not two.** A doubly symmetric tube has equal second
-moments about both transverse axes, so the element takes a single bending term
-and the two directions cannot disagree.
-
-**The global element stiffness does not know how the frame was rolled.** Turning
-a member's transverse axes about its own axis leaves the global matrix
-unchanged — exactly, to a part in ten thousand trillion, when the two second
-moments are equal. That is why the transverse basis below may be chosen for
-conditioning alone and needs to match no other convention: two solvers that
-orient a tube differently still assemble the same stiffness.
+An adjoint needs the derivative of the global element stiffness in the geometry
+and the section, and the exact way to get it is to state the element here and
+prove it is the element the foreign solver assembled. The proof is a test that
+holds `assemble_stiffness_local` and `assemble_stiffness_global` against the
+solver's own matrices to near machine precision. Two properties of a tube keep
+this short: one bending rigidity serves both transverse axes, and the global
+stiffness is invariant to a roll about the member axis, so the transverse basis
+may be chosen for conditioning alone.
 """
 
 from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
-from jaxtyping import Int
 
 # Translations and rotations at both ends of one member.
 DOF_PER_MEMBER = 12
@@ -60,6 +30,15 @@ REFERENCE_AXIS = 2
 
 # How square to the vertical a member must stay for that reference to hold.
 REFERENCE_MARGIN = 1.0e-6
+
+# Which local degrees of freedom each rigidity couples, at both ends.
+DOFS_AXIAL = (0, 6)
+DOFS_TORSION = (3, 9)
+DOFS_BENDING_Z = (1, 5, 7, 11)
+DOFS_BENDING_Y = (2, 4, 8, 10)
+
+# How a rigidity over a length couples two ends.
+PAIR_COUPLING = np.array([[1.0, -1.0], [-1.0, 1.0]])
 
 
 class SectionRigidity(NamedTuple):
@@ -75,12 +54,6 @@ class SectionRigidity(NamedTuple):
         both transverse directions because the section is axisymmetric.
     torsional :
         Product of the shear modulus and the torsion constant.
-
-    Notes
-    -----
-    The element stiffness is exactly linear in each of these three, which is why
-    a derivative with respect to a diameter needs no perturbation: the chain
-    rule closes on the section geometry alone.
     """
 
     axial: Float[Array, "*members"]
@@ -88,7 +61,43 @@ class SectionRigidity(NamedTuple):
     torsional: Float[Array, "*members"]
 
 
-def stiffness_local(
+def assemble_bending_block(
+    length: Float[Array, ""],
+    bending: Float[Array, ""],
+    sign: float,
+) -> Float[Array, "4 4"]:
+    """
+    Bernoulli-Euler bending stiffness of one member in one transverse plane.
+
+    Parameters
+    ----------
+    length :
+        Distance between the member's ends.
+    bending :
+        Product of the elastic modulus and the second moment.
+    sign :
+        Sign of the shear-rotation coupling, which the two planes take opposite.
+
+    Returns
+    -------
+    block :
+        Four by four, ordered translation and rotation at each end.
+    """
+    shear = 12.0 * bending / length**3
+    coupling = sign * 6.0 * bending / length**2
+    near = 4.0 * bending / length
+    far = 2.0 * bending / length
+    block = [
+        [shear, coupling, -shear, coupling],
+        [coupling, near, -coupling, far],
+        [-shear, -coupling, shear, -coupling],
+        [coupling, far, -coupling, near],
+    ]
+
+    return jnp.asarray(block)
+
+
+def assemble_stiffness_local(
     length: Float[Array, ""],
     rigidity: SectionRigidity,
 ) -> Float[Array, "dofs_member dofs_member"]:
@@ -110,195 +119,29 @@ def stiffness_local(
 
     Notes
     -----
-    Bernoulli–Euler: no shear area enters, so a deep member is stiffer here than
-    it is in reality. That matches the foreign solver this stands in for, which
-    is the property that matters — an adjoint must differentiate the model that
-    was solved, not a better one.
+    Bernoulli-Euler with no shear area, matching the foreign solver this stands
+    in for: an adjoint must differentiate the model that was solved.
     """
-    axial = rigidity.axial / length
-    torsion = rigidity.torsional / length
-    shear = 12.0 * rigidity.bending / length**3
-    coupling = 6.0 * rigidity.bending / length**2
-    bending_near = 4.0 * rigidity.bending / length
-    bending_far = 2.0 * rigidity.bending / length
-    empty = jnp.zeros_like(axial)
+    pair = jnp.asarray(PAIR_COUPLING)
+    axial = np.ix_(DOFS_AXIAL, DOFS_AXIAL)
+    torsion = np.ix_(DOFS_TORSION, DOFS_TORSION)
+    bending_z = np.ix_(DOFS_BENDING_Z, DOFS_BENDING_Z)
+    bending_y = np.ix_(DOFS_BENDING_Y, DOFS_BENDING_Y)
 
-    block = [
-        [
-            axial,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-            -axial,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-        ],
-        [
-            empty,
-            shear,
-            empty,
-            empty,
-            empty,
-            coupling,
-            empty,
-            -shear,
-            empty,
-            empty,
-            empty,
-            coupling,
-        ],
-        [
-            empty,
-            empty,
-            shear,
-            empty,
-            -coupling,
-            empty,
-            empty,
-            empty,
-            -shear,
-            empty,
-            -coupling,
-            empty,
-        ],
-        [
-            empty,
-            empty,
-            empty,
-            torsion,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-            -torsion,
-            empty,
-            empty,
-        ],
-        [
-            empty,
-            empty,
-            -coupling,
-            empty,
-            bending_near,
-            empty,
-            empty,
-            empty,
-            coupling,
-            empty,
-            bending_far,
-            empty,
-        ],
-        [
-            empty,
-            coupling,
-            empty,
-            empty,
-            empty,
-            bending_near,
-            empty,
-            -coupling,
-            empty,
-            empty,
-            empty,
-            bending_far,
-        ],
-        [
-            -axial,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-            axial,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-        ],
-        [
-            empty,
-            -shear,
-            empty,
-            empty,
-            empty,
-            -coupling,
-            empty,
-            shear,
-            empty,
-            empty,
-            empty,
-            -coupling,
-        ],
-        [
-            empty,
-            empty,
-            -shear,
-            empty,
-            coupling,
-            empty,
-            empty,
-            empty,
-            shear,
-            empty,
-            coupling,
-            empty,
-        ],
-        [
-            empty,
-            empty,
-            empty,
-            -torsion,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-            torsion,
-            empty,
-            empty,
-        ],
-        [
-            empty,
-            empty,
-            -coupling,
-            empty,
-            bending_far,
-            empty,
-            empty,
-            empty,
-            coupling,
-            empty,
-            bending_near,
-            empty,
-        ],
-        [
-            empty,
-            coupling,
-            empty,
-            empty,
-            empty,
-            bending_far,
-            empty,
-            -coupling,
-            empty,
-            empty,
-            empty,
-            bending_near,
-        ],
-    ]
-    stiffness = jnp.asarray(block)
+    stiffness = jnp.zeros((DOF_PER_MEMBER, DOF_PER_MEMBER))
+    stiffness = stiffness.at[axial].set(rigidity.axial / length * pair)
+    stiffness = stiffness.at[torsion].set(rigidity.torsional / length * pair)
+    stiffness = stiffness.at[bending_z].set(
+        assemble_bending_block(length, rigidity.bending, 1.0)
+    )
+    stiffness = stiffness.at[bending_y].set(
+        assemble_bending_block(length, rigidity.bending, -1.0)
+    )
 
     return stiffness
 
 
-def stiffness_frame(
+def choose_stiffness_frame(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
 ) -> Float[Array, "3 3"]:
@@ -319,16 +162,10 @@ def stiffness_frame(
 
     Notes
     -----
-    **The choice carries no meaning and nothing may read it.** It exists only to
-    build the global element stiffness, which is invariant to a roll about the
-    member axis when the section is axisymmetric — so this returns whichever
-    frame is best conditioned rather than whichever one a convention would
-    prefer. The transverse pair is completed against the global axis the member
-    leans on least, which is what keeps the cross product away from zero for
-    every orientation, vertical members included.
-
-    `member_frame` is the one to read: it answers to a stated convention and
-    turns smoothly, at the price of degenerating for a vertical member.
+    Nothing may read this choice: the global stiffness of an axisymmetric
+    section is invariant to it. The transverse pair is completed against the
+    global axis the member leans on least, so every orientation stays well
+    conditioned. `compute_direction_cosines` is the one that answers to a convention.
     """
     span = end - start
     axis = span / jnp.linalg.norm(span)
@@ -342,7 +179,7 @@ def stiffness_frame(
     return frame
 
 
-def member_frame(
+def compute_direction_cosines(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
 ) -> Float[Array, "3 3"]:
@@ -363,20 +200,12 @@ def member_frame(
 
     Notes
     -----
-    The transverse pair is completed against the vertical, which is the ordinary
-    structural convention and, unlike a per-member choice, turns smoothly as the
-    geometry moves — a member that leans further does not suddenly report its
-    bending about a different axis. **It degenerates for a vertical member**,
-    where the cross product vanishes and the pair is undefined; a caller that
-    can present one is expected to refuse it, `REFERENCE_MARGIN` being how
-    square to the vertical a member has to stay.
-
-    The global element stiffness is invariant to a roll about the member axis
-    when the section is axisymmetric, so this convention has to agree with no
-    other one, and no other backend's components can be compared against it.
-    What survives the choice is the pair's invariants — the bending magnitude
-    and the angle between the two ends — and those are what a check of an
-    axisymmetric section reads.
+    The transverse pair is completed against the vertical, the ordinary
+    structural convention, which turns smoothly with the geometry. **It
+    degenerates for a vertical member**, where the cross product vanishes, and
+    `REFERENCE_MARGIN` is how square to the vertical a member has to stay. Only
+    the pair's invariants survive the convention, and those are what a check of
+    an axisymmetric section reads.
     """
     span = end - start
     axis = span / jnp.linalg.norm(span)
@@ -389,7 +218,7 @@ def member_frame(
     return frame
 
 
-def member_transform(
+def tile_member_transform(
     frame: Float[Array, "3 3"],
 ) -> Float[Array, "dofs_member dofs_member"]:
     """
@@ -411,7 +240,7 @@ def member_transform(
     return transform
 
 
-def stiffness_global(
+def assemble_stiffness_global(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
     rigidity: SectionRigidity,
@@ -435,45 +264,14 @@ def stiffness_global(
 
     Notes
     -----
-    This is the one object an adjoint needs from the element level. It serves
-    both terms at once — the implicit one, where equilibrium is differentiated,
-    and the explicit one, where the member's own end forces are read back — so
-    nothing else about the element has to be differentiated at all.
+    The one object an adjoint needs from the element level: it serves the
+    implicit term, where equilibrium is differentiated, and the explicit one,
+    where the member's own end forces are read back.
     """
-    frame = stiffness_frame(start, end)
-    transform = member_transform(frame)
+    frame = choose_stiffness_frame(start, end)
+    transform = tile_member_transform(frame)
     length = jnp.linalg.norm(end - start)
-    local = stiffness_local(length, rigidity)
+    local = assemble_stiffness_local(length, rigidity)
     stiffness = transform.T @ local @ transform
-
-    return stiffness
-
-
-def stiffness_members(
-    xyz: Float[Array, "nodes 3"],
-    edges: Int[np.ndarray, "members 2"],
-    rigidity: SectionRigidity,
-) -> Float[Array, "members dofs_member dofs_member"]:
-    """
-    Elastic stiffness of every member, about the global axes.
-
-    Parameters
-    ----------
-    xyz :
-        Position of every node.
-    edges :
-        The two nodes every member spans, as static index data.
-    rigidity :
-        The three products of a modulus and a section property, per member.
-
-    Returns
-    -------
-    stiffness :
-        One twelve by twelve block per member.
-    """
-    starts = xyz[edges[:, 0]]
-    ends = xyz[edges[:, 1]]
-    over_members = jax.vmap(stiffness_global)
-    stiffness = over_members(starts, ends, rigidity)
 
     return stiffness

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+import subprocess
+import sys
 from pathlib import Path
 
 import equinox as eqx
@@ -9,47 +12,32 @@ from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.analysis import MemberForces
-from normax.analysis import SmaxAnalyzer
-from normax.design import DesignParameters
-from normax.design import StructuralDesignPipeline
-from normax.design import compute_mass
-from normax.design import design_envelope
-from normax.form_finding import FdmFormFinder
-from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import create_loads_uniform
 from normax.materials import Steel355
 from normax.sections import TubeFamily
+from normax.sections import build_section_family
 from normax.sizing import AbstractMemberSizer
-from normax.sizing import Ec3Sizer
 from normax.sizing import MemberSizes
-from normax.sizing import build_section_family
+from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 
-# The proof this file exists to make: the sizing contract is fillable without
-# the EC3 library, by a *different design philosophy* rather than a
-# reimplementation — allowable-stress design, the pre-limit-state format, one
-# global safety factor and no stability check. Nothing here selects a clause,
-# so nothing here needs one.
+# The proof this file makes: the sizing contract is fillable without any
+# standard's library, by a different design philosophy rather than a
+# reimplementation — allowable-stress design, one global safety factor and no
+# stability check. Nothing here selects a clause, so nothing here needs one.
 
-SPAN = 10_000.0
-RISE = 3_000.0
-TOTAL_LOAD = 180_000.0
-NUM_EDGES = 10
+NUM_EDGES = 6
 
-# The diameter the frame is analyzed with before the check has spoken.
-SEED = 100.0
-
-# A wall proportion this test picks for itself: no class limit chose it,
-# because no standard is present to have an opinion.
+# A wall proportion this test picks for itself: no class limit chose it.
 RATIO = 50.0
 
 # The classic ASD factor of safety on yield.
 SAFETY_FACTOR = 1.67
 
-# Invariant 6.5 of CLAUDE.md, philosophy-independent: a fully-stressed sizer
-# returns sizes worked to exactly one.
+# Invariant 6.5 of CLAUDE.md, philosophy-independent.
 TOLERANCE_UTILIZATION = 1e-9
+
+LENGTHS = jnp.full(NUM_EDGES, 2000.0)
 
 
 class AllowableStressSizer(AbstractMemberSizer):
@@ -67,16 +55,10 @@ class AllowableStressSizer(AbstractMemberSizer):
 
     Notes
     -----
-    Deliberately naive: one allowable stress, `f_y` over a factor of safety,
-    against the axial force alone — no buckling, no moment interaction, no
-    partial-factor format. The point is not that this is a good standard; it is
-    that a philosophy this different fills the same contract, because the
-    contract carries forces in, sections and a utilization out, and no field of
-    either names any standard's vocabulary.
-
-    The fully-stressed size is closed form. With the wall proportional to the
-    diameter, the area is quadratic in it, so the diameter that works the
-    allowable stress exactly is a square root — no residual, no root find.
+    Deliberately naive: one allowable stress against the axial force alone —
+    no buckling, no moment, no partial-factor format. With the wall
+    proportional to the diameter the area is quadratic in it, so the
+    fully-stressed size is a square root and no root find is needed.
     """
 
     structure: Structure
@@ -95,11 +77,7 @@ class AllowableStressSizer(AbstractMemberSizer):
         buckling_length: Float[Array, "members"],
     ) -> MemberSizes:
         """
-        Size every member for every load case, each on its own.
-
-        The buckling length is accepted and ignored, which is this philosophy's
-        statement rather than an oversight: allowable-stress design as written
-        here checks stress and nothing else.
+        Size every member for every load case; the length is ignored.
         """
         ratio = jnp.asarray(self.family.ratio)
         demanded_area = jnp.abs(forces.axial_force) / self.allowable_stress()
@@ -125,107 +103,98 @@ class AllowableStressSizer(AbstractMemberSizer):
 
 @pytest.fixture(scope="module")
 def structure():
-    return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
+    return build_arch_2d(num_edges=NUM_EDGES)
 
 
 @pytest.fixture(scope="module")
-def pipeline(structure):
-    grade = Steel355()
-    family = TubeFamily(RATIO, grade)
-
-    return StructuralDesignPipeline(
-        FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        AllowableStressSizer(structure, family),
-    )
+def sizer(structure):
+    return AllowableStressSizer(structure, TubeFamily(RATIO, Steel355()))
 
 
 @pytest.fixture(scope="module")
-def params(structure):
-    trial = jnp.full(NUM_EDGES, -1.0)
-    shape = FdmFormFinder(structure)(trial, funicular(structure))
-    reached = jnp.max(shape.xyz[:, 2])
+def forces():
+    generator = np.random.default_rng(20260826)
+    axial = jnp.asarray(generator.uniform(-6.0e5, -1.0e5, (2, NUM_EDGES)))
+    major = jnp.asarray(generator.uniform(-1.0e6, 1.0e6, (2, NUM_EDGES, 2)))
+    minor = jnp.asarray(generator.uniform(-1.0e5, 1.0e5, (2, NUM_EDGES, 2)))
 
-    return DesignParameters(trial * reached / RISE, jnp.full(NUM_EDGES, SEED))
-
-
-def funicular(structure):
-    """
-    The uniform load case the arch is form-found under.
-    """
-    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
-
-
-@pytest.fixture(scope="module")
-def one_case(structure):
-    return load_cases_of([funicular(structure)])
+    return MemberForces(axial, major, minor)
 
 
 def test_this_file_names_no_standard_library():
-    # The drift alarm for the whole claim: the second sizer only proves the
-    # seam if it is written without the EC3 library. The one EC3 name here is
-    # normax's own adapter, imported to be disagreed with in the last test.
+    # The one EC3 name here is normax's own adapter, imported to be disagreed with.
     source = Path(__file__).read_text()
     imported = [line for line in source.splitlines() if line.startswith("from ")]
 
     assert not any("ec3x" in line for line in imported)
 
 
-def test_a_second_philosophy_fills_the_contract(pipeline, params, one_case):
-    design = pipeline(params, one_case)
+def test_the_contract_imports_no_standard():
+    # `import normax.sizing` must pull neither clause library along.
+    script = (
+        "import sys, normax.sizing; "
+        "assert 'ec3x' not in sys.modules and 'blueprints' not in sys.modules"
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
 
-    assert isinstance(design.sizes, MemberSizes)
-    assert np.all(np.asarray(design.sizes.sections.diameter) > 0.0)
+    assert finished.returncode == 0, finished.stderr
 
 
-def test_the_second_sizer_is_fully_stressed_too(pipeline, params, one_case):
-    # The invariant is the sizing map's, not EN 1993-1-1's: whatever the
-    # philosophy, the size returned is worked to exactly one.
-    design = pipeline(params, one_case)
+def test_a_sizer_without_a_family_cannot_be_built(structure):
+    class FamilylessSizer(AbstractMemberSizer):
+        structure: Structure
+
+        def compute_utilization(self, diameters, forces, buckling_length):
+            return jnp.zeros_like(forces.axial_force)
+
+        def __call__(self, forces, buckling_length):
+            return MemberSizes(None, jnp.zeros_like(forces.axial_force))
+
+    with pytest.raises(TypeError):
+        FamilylessSizer(structure)
+
+
+def test_a_second_philosophy_fills_the_contract(sizer, forces):
+    sizes = sizer(forces, LENGTHS)
+
+    assert isinstance(sizes, MemberSizes)
+    assert isinstance(sizer.family, TubeFamily)
+    assert np.all(np.asarray(sizes.sections.diameter) > 0.0)
+
+
+def test_the_second_sizer_is_fully_stressed_too(sizer, forces):
+    sizes = sizer(forces, LENGTHS)
 
     assert np.allclose(
-        np.asarray(design.sizes.utilization),
-        1.0,
-        rtol=0.0,
-        atol=TOLERANCE_UTILIZATION,
+        np.asarray(sizes.utilization), 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION
     )
 
 
-def test_the_reread_agrees_with_the_sizes(pipeline, params, one_case):
-    design = pipeline(params, one_case)
-    reread = pipeline.sizer.compute_utilization(
-        design.sizes.sections.diameter[0], design.forces, design.shape.lengths
-    )
+def test_the_reread_agrees_with_the_sizes(sizer, forces):
+    sizes = sizer(forces, LENGTHS)
+    reread = sizer.compute_utilization(sizes.sections.diameter[0], forces, LENGTHS)
 
-    assert np.allclose(np.asarray(reread), 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION)
+    assert np.allclose(np.asarray(reread[0]), 1.0, rtol=0.0, atol=TOLERANCE_UTILIZATION)
 
 
-def test_the_mass_still_differentiates_end_to_end(pipeline, params, one_case):
-    # The composition's whole point survives the swap: force densities to a
-    # mass, one exact gradient across all three blocks, no block asked how.
-    def objective(q):
-        design = pipeline(DesignParameters(q, params.diameters), one_case)
+def test_the_check_differentiates_in_the_diameters(sizer, forces):
+    def total(diameters):
+        return jnp.sum(sizer.compute_utilization(diameters, forces, LENGTHS))
 
-        return compute_mass(design_envelope(design))
-
-    gradient = jax.grad(objective)(params.force_densities)
+    gradient = jax.grad(total)(jnp.full(NUM_EDGES, 100.0))
 
     assert np.all(np.isfinite(np.asarray(gradient)))
-    assert float(jnp.min(jnp.abs(gradient))) > 0.0
+    assert np.all(np.asarray(gradient) < 0.0)
 
 
-def test_the_two_philosophies_disagree_about_the_sizes(
-    structure, pipeline, params, one_case
-):
-    # A different standard, not a reimplementation: EC3 sees buckling and this
-    # sizer does not, so a compressed arch is sized differently by the two.
-    limit_state = StructuralDesignPipeline(
-        pipeline.formfinder,
-        pipeline.analyzer,
-        Ec3Sizer(structure, build_section_family(Steel355(), 3)),
-    )
+def test_the_two_philosophies_disagree_about_the_sizes(structure, sizer, forces):
+    # A different standard, not a reimplementation: EC3 sees buckling and
+    # bending and this sizer sees neither, so compressed members differ.
+    limit_state = Ec3Sizer(structure, build_section_family(Steel355(), 3))
 
-    naive = pipeline(params, one_case).sizes.sections.diameter
-    checked = limit_state(params, one_case).sizes.sections.diameter
+    naive = sizer(forces, LENGTHS).sections.diameter
+    checked = limit_state(forces, LENGTHS).sections.diameter
 
     assert not np.allclose(np.asarray(naive), np.asarray(checked), rtol=1e-2)

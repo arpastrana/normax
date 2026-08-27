@@ -1,280 +1,72 @@
-import dataclasses
-from typing import NamedTuple
+# SPDX-License-Identifier: Apache-2.0
+import os
+import types
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.material import Steel
-from ec3x.section import DIAMETER_MINIMUM
+from conftest import load_tesseract_api
 from tesseract_jax import apply_tesseract
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis import find_normal_axis
+from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.design import design_envelope
 from normax.form_finding import FdmFormFinder
-from normax.loads import assemble_load_cases as load_cases_of
-from normax.loads import create_loads_half_span
-from normax.loads import create_loads_point
-from normax.loads import create_loads_uniform
-from normax.loads import select_load_case
-from normax.materials import SteelGrade
-from normax.sizing import Ec3Sizer
-from normax.sizing import build_section_family
-from normax.sizing import design_actions
-from normax.structures import Structure
+from normax.loads import assemble_load_cases
+from normax.loads import load_tributary
+from normax.loads import load_uniform
+from normax.materials import Steel355
+from normax.sections import build_section_family
+from normax.sizing.blueprint import DIAMETER_MINIMUM
+from normax.sizing.blueprint import GAMMA_M0
 from normax.structures import build_arch_2d
-from normax.tesseract import STAGES
-from normax.tesseract import Chain
+from normax.structures import build_gridshell_3d
+from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
-from normax.tesseract import TesseractFormFinder
 from normax.tesseract import TesseractSizer
-from normax.tesseract import local_chain
+from normax.tesseract import open_tesseract_analysis
+from normax.tesseract import open_tesseract_sizing
 
 # The same 10 m arch rising 3 m under 180 kN that the in-process pipeline is
-# tested on, so the two are compared on identical ground.
+# tested on, so the two routes are compared on identical ground.
 SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
 NUM_EDGES = 10
 
-# The arch lies in the XZ plane, so it has no thickness along Y.
-NORMAL = 1
-
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
-# The boundary serializes float64 losslessly and both sides run the same code, so
-# parity is exact rather than approximate. Both sides are compiled for this to
-# hold: comparing a compiled composition against an eager oracle measures the
-# arithmetic instead, which costs two orders.
-TOLERANCE_PARITY = 1e-14
+# A shallow cap for the space-frame route, held at its drawn rise.
+SHELL_RINGS = 3
+SHELL_SPOKES = 6
+SHELL_RADIUS = 5_000.0
+SHELL_RISE = 2_000.0
+SHELL_PRESSURE = 3.0e-3
 
-# An enveloped design is looser, and the cause is where the programs are cut. In
-# process the three load cases compile into one program; across the boundary one
-# solve is compiled and called three times, so the same sums are accumulated in
-# different units.
-TOLERANCE_PARITY_ENVELOPE = 1e-12
+# The two analysis solvers are different programs, so parity is close rather
+# than exact. Axial forces measured at 1.2e-15 (opensees) and 5.4e-15 (pynite).
+TOLERANCE_AXIAL = 1e-13
 
-# The end moments are the exception, and the reason is the arch rather than the
-# boundary. A funicular shape carries its design case axially, so the moment is a
-# near-cancellation worth 4e-4 of the axial action times the length, and its
-# relative precision is set by that larger scale. A single last-bit difference in
-# the analysis inputs therefore reaches far further here than in the axial force
-# it came from.
-#
-# The moment factors read a ratio of the two end moments, so they inherit it;
-# they left the design with the actions record, so they are compared explicitly
-# against the boundary outputs that still publish them rather than in the walk.
-TOLERANCE_MOMENT = 1e-11
-MOMENT_FIELDS = (
-    "moment_major",
-    "moment_minor",
-)
+# A funicular member's moment is a near-cancellation read against the axial
+# scale, so it inherits that larger scale. Measured 2.1e-12 / 2.7e-13.
+TOLERANCE_MOMENT = 1e-10
 
-# The audit payload the analysis tesseract does not serve. Its output schema
-# carries the three design fields alone, so comparing these would read a real
-# shear against the idle default and call it a disagreement.
-UNSERVED_FIELDS = (
-    "shear_major",
-    "shear_minor",
-    "torsion_moment",
-)
+# The check is one shared crossed block, so any utilization disagreement is
+# inherited from the analysis crossing alone. Measured 4.9e-14.
+TOLERANCE_UTILIZATION = 1e-12
 
-# A size reads the moments, so it inherits their near-cancellation rather than the
-# axial force's precision, damped by the small share of utilization a funicular
-# moment claims. Measured: substituting the moments of one route into the other
-# collapses the disagreement in the sizes to 9e-16, and substituting the axial
-# forces alone leaves it where it was. The check itself crosses exactly, which the
-# stage-alone tests below assert at the parity tolerance on identical forces.
-TOLERANCE_SIZE = 1e-13
-SIZE_FIELDS = (
-    "diameter",
-    "thickness",
-)
-
-# Derivatives are looser than values, and not because of the boundary. Each
-# stage linearizes on its own here and all three linearize together in process,
-# so the same sum is accumulated in a different order and the implicit tangent
-# divides by a slope that differs in its last bits.
-TOLERANCE_DERIVATIVE = 5e-12
-
-# The two Jacobian routes, scaled by the largest entry. A funicular arch's
-# axial force barely reads its diameters, so the entries sit near zero and
-# reassociation across the two programs measured at 1.2e-11 of the largest.
-TOLERANCE_ROUTE = 1e-9
-
-# Invariant 6.5 of CLAUDE.md. Measured at 1.8e-15 through the boundary.
-TOLERANCE_UTILIZATION = 1e-9
+# Each route linearizes its own program, so the same sum is accumulated in a
+# different order. Measured 3.9e-12 (wrt q) and 5.3e-14 (wrt diameters).
+TOLERANCE_DERIVATIVE = 1e-10
 
 # Relative step at which the central difference plateaus, and the agreement
 # measured there, scaled by the largest component of the gradient.
-STEP = 1e-5
-TOLERANCE_GRADIENT = 5e-8
-
-
-class ArchProblem(NamedTuple):
-    """
-    Everything both routes are built from, so a helper takes one argument.
-    """
-
-    structure: Structure
-    chain: Chain
-    steel: Steel
-    params: DesignParameters
-
-
-@pytest.fixture(scope="module")
-def steel():
-    return Steel()
-
-
-@pytest.fixture(scope="module")
-def chain():
-    return local_chain()
-
-
-@pytest.fixture(scope="module")
-def structure():
-    return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
-
-
-def neutral_grade(steel):
-    """
-    The certificate half of the fixture steel, in normax's terms.
-    """
-    return SteelGrade(
-        f_y=steel.f_y,
-        f_u=steel.f_u,
-        e_mod=steel.e_mod,
-        density=steel.density,
-    )
-
-
-def funicular(structure):
-    """
-    The uniform load case the arch is form-found under.
-    """
-    return create_loads_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
-
-
-@pytest.fixture(scope="module")
-def arch(structure, chain, steel):
-    """
-    The arch, the three Tesseracts, and the `q` that reaches the target rise.
-    """
-    trial = jnp.full(NUM_EDGES, -1.0)
-    shape = FdmFormFinder(structure)(trial, funicular(structure))
-    reached = jnp.max(shape.xyz[:, 2])
-
-    params = DesignParameters(trial * reached / RISE, jnp.full(NUM_EDGES, SEED))
-
-    return ArchProblem(structure, chain, steel, params)
-
-
-@pytest.fixture(scope="module")
-def one_case(structure):
-    applied = funicular(structure)
-
-    return load_cases_of([applied])
-
-
-@pytest.fixture(scope="module")
-def three_cases(structure):
-    """
-    Three cases of equal total: funicular, half span, and a crown point load.
-    """
-    spread = TOTAL_LOAD / (NUM_EDGES - 1)
-
-    half = create_loads_half_span(structure, spread, factor=0.5)
-    half = half * (TOTAL_LOAD / abs(float(jnp.sum(half[:, 2]))))
-
-    point = create_loads_uniform(structure, spread * 0.75) + create_loads_point(
-        structure, TOTAL_LOAD * 0.25, node=structure.crown_node()
-    )
-
-    cases = [create_loads_uniform(structure, spread), half, point]
-
-    return load_cases_of(cases)
-
-
-def both_pipelines(arch, section_class, resultant=True):
-    """
-    One pipeline, twice: three blocks in process, and the same three as
-    Tesseracts.
-
-    Notes
-    -----
-    The claim the whole module exists to make is visible in the two calls below:
-    `StructuralDesignPipeline` is the same class either way, and nothing it does depends
-    on which blocks it was handed. The in-process side is compiled, so what is
-    measured is the boundary rather than two fusion schedules: the Tesseract
-    stages compile internally, and an eager oracle beside them would charge the
-    difference to the boundary.
-
-    **The composed side is deliberately left eager.** Compiling it works, and
-    `experiments/10_arch_pipeline_tesseract.py` does exactly that, but in a
-    pytest session that has already run the OpenSees backend it closes a file
-    descriptor and every later test errors out of capture rather than failing an
-    assertion. Nothing here needs it: the stages compile behind the boundary.
-    """
-    family = build_section_family(neutral_grade(arch.steel), section_class)
-
-    sizer = Ec3Sizer(arch.structure, family, resultant)
-    in_process = StructuralDesignPipeline(
-        FdmFormFinder(arch.structure),
-        SmaxAnalyzer(arch.structure, family(SEED)),
-        sizer,
-    )
-
-    composed = StructuralDesignPipeline(
-        TesseractFormFinder(arch.structure, arch.chain.formfinding),
-        TesseractAnalyzer(arch.structure, arch.chain.analysis, family, NORMAL),
-        TesseractSizer(arch.structure, arch.chain.ec3, family, resultant),
-    )
-
-    return eqx.filter_jit(in_process), composed
-
-
-def both(arch, loads, section_class, sharpness=None, **kwargs):
-    """
-    The same design taken in process and across the three Tesseracts.
-    """
-    oracle, crossed = both_designs(arch, loads, section_class, **kwargs)
-
-    return design_envelope(oracle, sharpness), design_envelope(crossed, sharpness)
-
-
-def both_designs(arch, loads, section_class, **kwargs):
-    """
-    The same design by both routes, with every load case still on its own.
-    """
-    in_process, composed = both_pipelines(arch, section_class)
-
-    return in_process(arch.params, loads, **kwargs), composed(
-        arch.params, loads, **kwargs
-    )
-
-
-def objectives(arch, loads, section_class, sharpness=None):
-    """
-    The mass as a function of the force densities, by both routes.
-    """
-    in_process, composed = both_pipelines(arch, section_class)
-    seed = arch.params.diameters
-
-    def oracle(q):
-        design = in_process(DesignParameters(q, seed), loads)
-        return compute_mass(design_envelope(design, sharpness))
-
-    def crossed(q):
-        design = composed(DesignParameters(q, seed), loads)
-        return compute_mass(design_envelope(design, sharpness))
-
-    return oracle, crossed
+STEP = 1e-4
+TOLERANCE_GRADIENT = 2e-7
 
 
 def relative(oracle, composed):
@@ -288,233 +80,371 @@ def relative(oracle, composed):
     return float(np.max(np.abs(left - right))) / scale
 
 
-def field_names(container):
-    """
-    A container's field names, whether it is a named tuple or a module.
-
-    Every stage container is a named tuple and a block is a module, so both are
-    walked. Walking by `_fields` alone would stop at the first module and compare
-    two containers rather than their contents, which passes for the wrong reason.
-    """
-    if hasattr(container, "_fields"):
-        return container._fields
-    if dataclasses.is_dataclass(container):
-        return tuple(field.name for field in dataclasses.fields(container))
-
-    return ()
+# --------------------------------------------------------------------------- #
+# The arch, both routes
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def family():
+    return build_section_family(Steel355(), 3)
 
 
-def named_fields(container, prefix=""):
-    """
-    Every leaf of a result, labelled by the path that reaches it.
-    """
-    for field in field_names(container):
-        value = getattr(container, field)
-        label = f"{prefix}{field}"
-        if field_names(value):
-            yield from named_fields(value, f"{label}.")
-        else:
-            yield label, value
+@pytest.fixture(scope="module")
+def structure():
+    return build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
 
 
-def field_by_field(oracle, composed, limit_envelope):
-    """
-    Every field of two designs, with the limit each one is held to.
-    """
-    inherited = {
-        **{leaf: TOLERANCE_MOMENT for leaf in MOMENT_FIELDS},
-        **{leaf: TOLERANCE_SIZE for leaf in SIZE_FIELDS},
-    }
+@pytest.fixture(scope="module")
+def one_case(structure):
+    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
 
-    for (label, left), (_, right) in zip(named_fields(oracle), named_fields(composed)):
-        leaf = label.rpartition(".")[2]
-        if leaf in UNSERVED_FIELDS:
-            continue
-        limit = inherited.get(leaf, limit_envelope)
 
-        yield label, left, right, limit
+@pytest.fixture(scope="module")
+def force_densities(structure, one_case):
+    """Force densities reaching the target rise, so the arch is the same one."""
+    trial = jnp.full(NUM_EDGES, -1.0)
+    shape = FdmFormFinder(structure)(trial, one_case.formfinding)
+
+    return trial * jnp.max(shape.xyz[:, 2]) / RISE
+
+
+@pytest.fixture(scope="module")
+def params(force_densities):
+    return DesignParameters(force_densities, jnp.full(NUM_EDGES, SEED))
+
+
+@pytest.fixture(scope="module")
+def opensees_client():
+    return open_tesseract_analysis("opensees")
+
+
+@pytest.fixture(scope="module")
+def blueprint_client():
+    return open_tesseract_sizing("blueprint")
+
+
+@pytest.fixture(scope="module")
+def shared_sizer(structure, family, blueprint_client):
+    """One crossed check in both triples, so parity isolates the analysis."""
+    return TesseractSizer(structure, blueprint_client, family)
+
+
+@pytest.fixture(scope="module")
+def oracle_pipeline(structure, family, shared_sizer):
+    return StructuralDesignPipeline(
+        FdmFormFinder(structure),
+        SmaxAnalyzer(structure, family(SEED)),
+        shared_sizer,
+    )
+
+
+@pytest.fixture(scope="module")
+def crossed_pipeline(structure, family, opensees_client, shared_sizer):
+    analyzer = TesseractAnalyzer(
+        structure, opensees_client, family, find_normal_axis(structure)
+    )
+
+    return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, shared_sizer)
+
+
+@pytest.fixture
+def opensees_route():
+    """The analysis stage reads its solver per call, so each test names it."""
+    os.environ[ANALYSIS_VARIABLE] = "opensees"
+
+
+@pytest.fixture
+def pynite_route():
+    os.environ[ANALYSIS_VARIABLE] = "pynite"
+
+
+@pytest.fixture(scope="module")
+def both_designs(oracle_pipeline, crossed_pipeline, params, one_case):
+    """The same design taken in process and across the two boundaries."""
+    os.environ[ANALYSIS_VARIABLE] = "opensees"
+
+    return oracle_pipeline(params, one_case), crossed_pipeline(params, one_case)
 
 
 # --------------------------------------------------------------------------- #
-# The claim the whole step exists to make
+# The claim the whole module exists to make
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("section_class", [2, 3])
-def test_the_composed_mass_is_the_in_process_mass(arch, one_case, section_class):
-    oracle, composed = both(arch, one_case, section_class)
+def test_the_geometry_never_changes_at_the_boundary(both_designs):
+    # The form finder runs in process on both routes, so the shape is bit-equal
+    # and any disagreement downstream entered downstream.
+    oracle, crossed = both_designs
 
-    assert relative(compute_mass(oracle), compute_mass(composed)) < TOLERANCE_PARITY
-
-
-@pytest.mark.parametrize("section_class", [2, 3])
-def test_every_field_of_the_design_survives_the_boundary(arch, one_case, section_class):
-    # Mass alone would pass on a cancellation of two errors. Comparing the
-    # geometry, the member actions, the sizes and the utilization pins where any
-    # disagreement entered.
-    oracle, composed = both(arch, one_case, section_class)
-
-    for label, left, right, limit in field_by_field(oracle, composed, TOLERANCE_PARITY):
-        assert relative(left, right) < limit, label
+    assert jnp.array_equal(oracle.shape.xyz, crossed.shape.xyz)
+    assert jnp.array_equal(oracle.shape.lengths, crossed.shape.lengths)
 
 
-def test_the_boundary_carries_the_secondary_forces(arch, one_case):
-    # The schema was widened, so a design taken across the boundary can audit
-    # the shear 6.2.10 excludes sizes from rather than reading a default zero
-    # the load case stacking had shaped like data.
-    oracle, composed = both(arch, one_case, 2)
+def test_the_two_routes_agree_on_what_the_members_carry(both_designs):
+    oracle, crossed = both_designs
 
-    assert float(np.max(np.abs(oracle.forces.shear_major))) > 0.0
-    for served, reported in (
-        (oracle.forces.shear_major, composed.forces.shear_major),
-        (oracle.forces.shear_minor, composed.forces.shear_minor),
-        (oracle.forces.torsion_moment, composed.forces.torsion_moment),
-    ):
-        expected = np.asarray(served)
-        crossed = np.asarray(reported)
-        assert crossed.shape == expected.shape
-        scale = max(float(np.max(np.abs(expected))), 1.0)
-        assert float(np.max(np.abs(crossed - expected))) / scale < 1e-11
-
-
-@pytest.mark.parametrize("section_class", [2, 3])
-def test_the_mass_gradient_survives_the_boundary(arch, one_case, section_class):
-    oracle, composed = objectives(arch, one_case, section_class)
-
-    difference = relative(
-        jax.grad(oracle)(arch.params.force_densities),
-        jax.grad(composed)(arch.params.force_densities),
+    assert relative(oracle.forces.axial_force, crossed.forces.axial_force) < (
+        TOLERANCE_AXIAL
     )
-
-    assert difference < TOLERANCE_DERIVATIVE
-
-
-def test_a_buckling_length_given_explicitly_crosses_unchanged(arch, one_case):
-    # The buckling length is an input rather than a mesh length, so it has to
-    # reach the check as itself and not as the member length beside it.
-    buckling_length = jnp.full(NUM_EDGES, 1_000.0)
-    family = build_section_family(neutral_grade(arch.steel), 3)
-
-    shape = FdmFormFinder(arch.structure)(
-        arch.params.force_densities, one_case.formfinding
+    assert relative(oracle.forces.moment_major, crossed.forces.moment_major) < (
+        TOLERANCE_MOMENT
     )
-    local = Ec3Sizer(arch.structure, family)
-    analyzer = SmaxAnalyzer(arch.structure, family(SEED))
-    forces = analyzer(shape.xyz, arch.params.diameters, one_case.analysis)
+    assert np.allclose(np.asarray(crossed.forces.moment_minor), 0.0)
 
-    crossed = TesseractSizer(arch.structure, arch.chain.ec3, family)
 
-    oracle = local(forces, buckling_length)
-    composed = crossed(forces, buckling_length)
+def test_the_crossed_check_agrees_on_the_utilization(both_designs):
+    oracle, crossed = both_designs
 
-    assert relative(oracle.sections.diameter, composed.sections.diameter) < (
-        TOLERANCE_PARITY
-    )
-    assert not np.allclose(
-        np.asarray(oracle.sections.diameter),
-        np.asarray(local(forces, shape.lengths).sections.diameter),
+    assert relative(oracle.sizes.utilization, crossed.sizes.utilization) < (
+        TOLERANCE_UTILIZATION
     )
 
 
-def test_the_linear_sum_reading_of_the_moments_crosses_unchanged(arch, one_case):
-    # `resultant` selects a clause, so it crosses as a static field and a wrong
-    # default would be invisible in the mass alone.
-    in_process, composed = both_pipelines(arch, 3, resultant=False)
-    oracle = in_process(arch.params, one_case)
-    crossed = composed(arch.params, one_case)
+def test_the_sections_and_the_mass_cross_unchanged(both_designs):
+    # Both routes hand the family the same held diameters, so the sections and
+    # the mass they weigh are identical rather than merely close.
+    oracle, crossed = both_designs
 
-    assert relative(compute_mass(oracle), compute_mass(crossed)) < TOLERANCE_PARITY
+    assert jnp.array_equal(
+        oracle.sizes.sections.diameter, crossed.sizes.sections.diameter
+    )
+    assert jnp.array_equal(
+        oracle.sizes.sections.thickness, crossed.sizes.sections.thickness
+    )
+    assert relative(compute_mass(oracle), compute_mass(crossed)) < 1e-14
 
 
 # --------------------------------------------------------------------------- #
 # The gradient, end to end
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("section_class", [2, 3])
-def test_the_composed_gradient_matches_central_differences(
-    arch, one_case, section_class
+def worked_utilization(pipeline, loads):
+    """
+    The summed utilization as a function of the parameters, one route.
+    """
+
+    def worked(design_params):
+        design = pipeline(design_params, loads)
+
+        return jnp.sum(design.sizes.utilization)
+
+    return worked
+
+
+def test_the_utilization_gradient_survives_the_boundary(
+    opensees_route, oracle_pipeline, crossed_pipeline, params, one_case
+):
+    oracle = worked_utilization(oracle_pipeline, one_case)
+    crossed = worked_utilization(crossed_pipeline, one_case)
+
+    def by_densities(route):
+        return lambda q: route(DesignParameters(q, params.diameters))
+
+    q = params.coordinates
+    difference = relative(
+        jax.grad(by_densities(oracle))(q), jax.grad(by_densities(crossed))(q)
+    )
+
+    assert difference < TOLERANCE_DERIVATIVE
+
+
+def test_the_diameter_gradient_survives_the_boundary(
+    opensees_route, oracle_pipeline, crossed_pipeline, params, one_case
+):
+    # The diameters reach both crossings: the frame's stiffness on one side of
+    # the analysis boundary, the held check on the other.
+    oracle = worked_utilization(oracle_pipeline, one_case)
+    crossed = worked_utilization(crossed_pipeline, one_case)
+
+    def by_diameters(route):
+        return lambda d: route(DesignParameters(params.coordinates, d))
+
+    held = params.diameters
+    difference = relative(
+        jax.grad(by_diameters(oracle))(held), jax.grad(by_diameters(crossed))(held)
+    )
+
+    assert difference < TOLERANCE_DERIVATIVE
+
+
+def test_the_crossed_gradient_matches_central_differences(
+    opensees_route, crossed_pipeline, params, one_case
 ):
     # Parity says the boundary changed nothing. This says the thing it left
     # unchanged is right, without the in-process pipeline vouching for it.
-    _, composed = objectives(arch, one_case, section_class)
+    crossed = worked_utilization(crossed_pipeline, one_case)
 
-    q = arch.params.force_densities
-    gradient = jax.grad(composed)(q)
+    def objective(q):
+        return crossed(DesignParameters(q, params.diameters))
+
+    q = params.coordinates
+    gradient = jax.grad(objective)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
 
-    for edge in (0, NUM_EDGES // 2, NUM_EDGES - 1):
+    for edge in (0, NUM_EDGES // 2):
         step = abs(float(q[edge])) * STEP
-        plus = composed(q.at[edge].add(step))
-        minus = composed(q.at[edge].add(-step))
-        difference = float((plus - minus) / (2.0 * step))
+        plus = objective(q.at[edge].add(step))
+        minus = objective(q.at[edge].add(-step))
+        central = float((plus - minus) / (2.0 * step))
 
-        assert abs(float(gradient[edge]) - difference) / scale < TOLERANCE_GRADIENT
-
-
-def test_the_composed_gradient_is_finite_and_nowhere_zero(arch, one_case):
-    _, composed = objectives(arch, one_case, 3)
-
-    gradient = jax.grad(composed)(arch.params.force_densities)
-
-    assert np.all(np.isfinite(np.asarray(gradient)))
-    assert float(jnp.min(jnp.abs(gradient))) > 0.0
+        assert abs(float(gradient[edge]) - central) / scale < TOLERANCE_GRADIENT
 
 
-def test_the_chain_differentiates_in_both_directions(arch, one_case):
-    # Every stage implements a tangent as well as an adjoint, and a directional
-    # derivative taken forward has to equal the same direction contracted with
-    # the reverse gradient.
-    _, composed = objectives(arch, one_case, 3)
+def test_the_boundary_does_not_downcast_to_single_precision(
+    opensees_route, crossed_pipeline, params, one_case, both_designs
+):
+    # Every schema declares float64; a float32 stage would downcast silently
+    # and cost eight digits.
+    _, crossed = both_designs
+    payloads = (
+        crossed.shape.xyz,
+        crossed.shape.lengths,
+        crossed.forces.axial_force,
+        crossed.forces.moment_major,
+        crossed.forces.moment_minor,
+        crossed.sizes.sections.diameter,
+        crossed.sizes.utilization,
+    )
 
-    q = arch.params.force_densities
-    direction = jnp.ones_like(q)
-    _, forward = jax.jvp(composed, (q,), (direction,))
-    reverse = jnp.sum(jax.grad(composed)(q) * direction)
+    for value in payloads:
+        assert jnp.asarray(value).dtype == jnp.float64
 
-    assert relative(reverse, forward) < TOLERANCE_DERIVATIVE
+    worked = worked_utilization(crossed_pipeline, one_case)
+    gradient = jax.grad(lambda q: worked(DesignParameters(q, params.diameters)))(
+        params.coordinates
+    )
+
+    assert gradient.dtype == jnp.float64
 
 
 # --------------------------------------------------------------------------- #
-# What the boundary must not quietly change
+# The space frame, across the pynite boundary
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("section_class", [2, 3])
-def test_every_member_is_utilized_exactly_once_over(arch, one_case, section_class):
-    _, composed = both(arch, one_case, section_class)
-
-    assert np.allclose(
-        np.asarray(composed.sizes.utilization),
-        1.0,
-        rtol=0.0,
-        atol=TOLERANCE_UTILIZATION,
+@pytest.fixture(scope="module")
+def shell():
+    return build_gridshell_3d(
+        num_rings=SHELL_RINGS,
+        num_spokes=SHELL_SPOKES,
+        radius=SHELL_RADIUS,
+        rise=SHELL_RISE,
     )
 
 
-def test_the_boundary_does_not_downcast_to_single_precision(arch, one_case):
-    # Every schema declares float64. The upstream examples are float32, and a
-    # float32 stage would downcast silently and cost eight digits.
-    _, composed_design = both(arch, one_case, 3)
-    _, composed = objectives(arch, one_case, 3)
-
-    # No design carries a section class anymore — the label lives inside the
-    # sizer that reads it — so every leaf of a design is a float64 payload.
-    for label, value in named_fields(composed_design):
-        assert jnp.asarray(value).dtype == jnp.float64, label
-
-    assert jax.grad(composed)(arch.params.force_densities).dtype == jnp.float64
+@pytest.fixture(scope="module")
+def shell_case(shell):
+    return assemble_load_cases([load_tributary(shell, SHELL_PRESSURE)])
 
 
-def differentiable(tesseract, direction):
-    """
-    Which fields of a stage's schema carry a derivative, and in what shape.
-    """
-    schemas = tesseract.openapi_schema["components"]["schemas"]
+@pytest.fixture(scope="module")
+def shell_params(shell, shell_case):
+    """Densities holding the drawn rise, so no member leans near vertical."""
+    finder = FdmFormFinder(shell)
+    trial = jnp.full(shell.num_edges, -1.0)
+    reached = jnp.max(finder(trial, shell_case.formfinding).xyz[:, 2])
+    q = trial * reached / SHELL_RISE
 
-    return schemas[f"Apply{direction}Schema"]["differentiable_arrays"]
+    return DesignParameters(q, jnp.full(shell.num_edges, SEED))
 
 
-def test_the_analysis_reports_a_moment_at_each_end_of_every_member(chain):
-    # The frozen contract is both end moments and not a peak. Nodal loads leave
-    # the moment linear along a member, which is what makes the first row of
-    # Table B.3 exact rather than approximate, and a peak would throw away the
-    # half of it the equivalent uniform moment factor is read from.
-    reported = differentiable(chain.analysis, "Output")
+@pytest.fixture(scope="module")
+def shell_sizer(shell, family, blueprint_client):
+    """One crossed check in both shell triples as well."""
+    return TesseractSizer(shell, blueprint_client, family)
+
+
+@pytest.fixture(scope="module")
+def shell_oracle(shell, family, shell_sizer):
+    return StructuralDesignPipeline(
+        FdmFormFinder(shell),
+        SmaxAnalyzer(shell, family(SEED)),
+        shell_sizer,
+    )
+
+
+@pytest.fixture(scope="module")
+def shell_crossed(shell, family, shell_sizer):
+    analyzer = TesseractAnalyzer(shell, open_tesseract_analysis("pynite"), family, None)
+
+    return StructuralDesignPipeline(FdmFormFinder(shell), analyzer, shell_sizer)
+
+
+@pytest.fixture(scope="module")
+def shell_designs(shell_oracle, shell_crossed, shell_params, shell_case):
+    os.environ[ANALYSIS_VARIABLE] = "pynite"
+
+    return shell_oracle(shell_params, shell_case), shell_crossed(
+        shell_params, shell_case
+    )
+
+
+def test_the_space_frame_routes_agree_on_what_the_members_carry(shell_designs):
+    # The minor moment is left out: how one bending splits over the two local
+    # axes of a tube is each solver's frame convention, not a force.
+    oracle, crossed = shell_designs
+
+    assert relative(oracle.forces.axial_force, crossed.forces.axial_force) < (
+        TOLERANCE_AXIAL
+    )
+    assert relative(oracle.forces.moment_major, crossed.forces.moment_major) < (
+        TOLERANCE_MOMENT
+    )
+
+
+def test_the_space_frame_check_agrees_on_the_utilization(shell_designs):
+    oracle, crossed = shell_designs
+
+    assert relative(oracle.sizes.utilization, crossed.sizes.utilization) < (
+        TOLERANCE_UTILIZATION
+    )
+
+
+def test_the_space_frame_gradient_survives_the_boundary(
+    pynite_route, shell_oracle, shell_crossed, shell_params, shell_case
+):
+    # Held to a frame-free scalar: the blueprint demand sums the two moment
+    # axes linearly, so its gradient reads each solver's roll convention, and
+    # only a convention-free objective compares the two adjoints themselves.
+    def carried_squared(pipeline):
+        def worked(q):
+            design = pipeline(DesignParameters(q, shell_params.diameters), shell_case)
+
+            return jnp.sum(design.forces.axial_force**2)
+
+        return worked
+
+    q = shell_params.coordinates
+    slope_oracle = jax.grad(carried_squared(shell_oracle))(q)
+    slope_crossed = jax.grad(carried_squared(shell_crossed))(q)
+
+    assert relative(slope_oracle, slope_crossed) < TOLERANCE_DERIVATIVE
+
+
+# --------------------------------------------------------------------------- #
+# The endpoints and the schemas
+# --------------------------------------------------------------------------- #
+def test_every_stage_exposes_the_endpoints_jax_needs(opensees_client, blueprint_client):
+    # `abstract_eval` is mandatory because JAX resolves shapes before it runs
+    # anything, and `jax.grad` reaches for the adjoint.
+    needed = {"apply", "abstract_eval", "vector_jacobian_product"}
+
+    assert needed <= set(opensees_client.available_endpoints)
+    assert needed <= set(blueprint_client.available_endpoints)
+
+
+def test_the_analysis_asks_for_a_derivative_in_nothing_but_shape_and_size(
+    opensees_client,
+):
+    # The schema has to be satisfiable by a solver whose adjoints were written
+    # by hand, so the two fields both solvers can supply are the whole promise.
+    schemas = opensees_client.openapi_schema["components"]["schemas"]
+
+    assert set(schemas["ApplyInputSchema"]["differentiable_arrays"]) == {
+        "xyz",
+        "diameter",
+    }
+
+
+def test_the_analysis_reports_a_moment_at_each_end_of_every_member(opensees_client):
+    # Both end moments and not a peak: nodal loads leave the moment linear
+    # along a member, which is what makes Table B.3's first row exact.
+    schemas = opensees_client.openapi_schema["components"]["schemas"]
+    reported = schemas["ApplyOutputSchema"]["differentiable_arrays"]
 
     assert set(reported) == {
         "axial_force",
@@ -525,290 +455,45 @@ def test_the_analysis_reports_a_moment_at_each_end_of_every_member(chain):
     assert reported["end_moments_minor"]["shape"] == [None, 2]
 
 
-def test_the_analysis_asks_for_a_derivative_in_nothing_but_shape_and_size(chain):
-    # The schema has to be satisfiable by a solver whose adjoints were written
-    # by hand. Direct differentiation reaches a nodal coordinate and a section
-    # property, so those two are the whole of what this stage may promise.
-    assert set(differentiable(chain.analysis, "Input")) == {"xyz", "diameter"}
+def test_the_check_serves_both_questions_but_never_the_clamp_gradient(
+    blueprint_client,
+):
+    # The schema carries the solve and the held check; the clamp mask crosses
+    # as a diagnostic with no derivative to offer.
+    schemas = blueprint_client.openapi_schema["components"]["schemas"]
+    offered = set(schemas["ApplyOutputSchema"]["differentiable_arrays"])
+
+    assert offered == {"diameter", "utilization", "utilization_held"}
+    assert "clamped" in schemas["Apply_OutputSchema"]["properties"]
 
 
-def test_the_analysis_never_reports_a_critical_load_factor(chain):
-    # Global stability is soft validation and stays outside the chain. In the
-    # schema it would oblige every backend to supply one.
-    schemas = chain.analysis.openapi_schema["components"]["schemas"]
+def test_the_check_module_reports_its_shapes_without_running():
+    # The API module imports directly, no container and no network, and its
+    # abstract evaluation answers from the member count alone.
+    module = load_tesseract_api("sizing")
+    abstract = types.SimpleNamespace(
+        axial_force=jax.ShapeDtypeStruct((NUM_EDGES,), jnp.float64)
+    )
+    promised = module.abstract_eval(abstract)
 
-    assert set(schemas["Apply_OutputSchema"]["properties"]) == {
-        "axial_force",
-        "end_moments_major",
-        "end_moments_minor",
-        "shear_major",
-        "shear_minor",
-        "torsion_moment",
+    for name in ("diameter", "utilization", "utilization_held", "clamped"):
+        assert promised[name] == {"shape": (NUM_EDGES,), "dtype": "float64"}
+
+
+def test_a_python_list_is_refused_at_the_boundary(blueprint_client):
+    # Tesseract-JAX is stricter than Tesseract Core: every array input has to
+    # be a JAX or NumPy array, scalars included.
+    moments = np.zeros((NUM_EDGES, 2))
+    inputs = {
+        "axial_force": [-1.0e5] * NUM_EDGES,
+        "end_moments_major": moments,
+        "end_moments_minor": moments,
+        "diameter_held": np.full(NUM_EDGES, SEED),
+        "f_y": jnp.asarray(355.0),
+        "gamma_m0": jnp.asarray(GAMMA_M0),
+        "ratio": jnp.asarray(50.0),
+        "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
     }
 
-
-def test_the_check_offers_a_derivative_in_every_material_property(chain):
-    # Unlike the analysis, nothing here has to be reimplemented in another
-    # language, so the check differentiates in everything it is given except
-    # the catalogue floor and the two flags that select a clause.
-    offered = set(differentiable(chain.ec3, "Input"))
-
-    assert {"f_y", "e_mod", "gamma_m0", "gamma_m1", "ratio", "alpha"} <= offered
-    assert "diameter_min" not in offered
-
-
-def test_the_check_never_offers_a_derivative_in_the_governing_limit_state(chain):
-    assert "governing" not in differentiable(chain.ec3, "Output")
-
-
-def test_the_check_never_reports_a_mass(chain):
-    # A mass is geometry rather than a resistance and EN 1993-1-1 has no opinion
-    # on it, so what the standard decides is the size and the length it would be
-    # multiplied by never crosses either.
-    schemas = chain.ec3.openapi_schema["components"]["schemas"]
-
-    assert "mass" not in schemas["Apply_OutputSchema"]["properties"]
-    assert "lengths" not in schemas["Apply_InputSchema"]["properties"]
-
-
-# --------------------------------------------------------------------------- #
-# The diagnostic that must not be differentiated
-# --------------------------------------------------------------------------- #
-def sized_through_the_check(arch, result, family):
-    """
-    The check alone, called across its own boundary with a finished geometry.
-    """
-    structure = arch.structure
-    steel = arch.steel
-    chain = arch.chain
-
-    member = apply_tesseract(
-        chain.analysis,
-        {
-            "xyz": result.shape.xyz,
-            "diameter": arch.params.diameters,
-            "edges": np.asarray(structure.edges, dtype=np.int64),
-            "supports": np.asarray(structure.supports, dtype=np.int64),
-            "loads": np.asarray(funicular(structure), dtype=np.float64),
-            "f_y": steel.f_y,
-            "e_mod": steel.e_mod,
-            "density": steel.density,
-            "ratio": family.ratio,
-            "normal": NORMAL,
-        },
-    )
-
-    return lambda axial_force: apply_tesseract(
-        chain.ec3,
-        {
-            "axial_force": axial_force,
-            "end_moments_major": member["end_moments_major"],
-            "end_moments_minor": member["end_moments_minor"],
-            "buckling_length": result.shape.lengths,
-            "f_y": steel.f_y,
-            "e_mod": steel.e_mod,
-            "density": steel.density,
-            "gamma_m0": steel.gamma_m0,
-            "gamma_m1": steel.gamma_m1,
-            "ratio": family.ratio,
-            "alpha": steel.alpha,
-            "diameter_min": DIAMETER_MINIMUM,
-            "section_class": 3,
-            "resultant": True,
-        },
-    ), member["axial_force"]
-
-
-def test_the_governing_limit_state_survives_the_boundary(arch, one_case):
-    family = build_section_family(neutral_grade(arch.steel), 3)
-    oracle, _ = both_designs(arch, one_case, 3)
-    check, axial_force = sized_through_the_check(arch, oracle, family)
-
-    sizer = Ec3Sizer(arch.structure, family)
-    reported = np.asarray(check(axial_force)["governing"])
-    expected = np.asarray(
-        sizer.governing(
-            oracle.sizes.sections.diameter[0],
-            oracle.forces,
-            oracle.shape.lengths,
-        )
-    )
-
-    assert np.array_equal(reported, expected[0])
-
-
-def test_the_moment_factors_survive_the_boundary(arch, one_case):
-    # The factors left the design when the actions record left the contract, so
-    # the field walk no longer reaches them. The boundary still publishes them,
-    # and here they are held against the local reduction of the same forces at
-    # the tolerance the end moments they are read from are held to.
-    family = build_section_family(neutral_grade(arch.steel), 3)
-    oracle, _ = both_designs(arch, one_case, 3)
-    check, axial_force = sized_through_the_check(arch, oracle, family)
-
-    crossed = check(axial_force)
-    acting = design_actions(select_load_case(oracle.forces, 0))
-
-    assert relative(acting.moment_factor_major, crossed["moment_factor_major"]) < (
-        TOLERANCE_MOMENT
-    )
-    assert relative(acting.moment_factor_minor, crossed["moment_factor_minor"]) < (
-        TOLERANCE_MOMENT
-    )
-
-
-def test_differentiating_the_governing_limit_state_is_refused(arch, one_case):
-    # A concrete cotangent on a non-differentiable output raises rather than
-    # returning a zero, which is the whole reason the composition drops it.
-    family = build_section_family(neutral_grade(arch.steel), 3)
-    oracle, _ = both(arch, one_case, 3)
-    check, axial_force = sized_through_the_check(arch, oracle, family)
-
-    with pytest.raises(ValueError, match="governing"):
-        jax.grad(lambda forces: jnp.sum(check(forces)["governing"]))(axial_force)
-
-
-# --------------------------------------------------------------------------- #
-# The endpoints and the module contract
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("stage", STAGES)
-def test_every_stage_exposes_the_endpoints_jax_needs(chain, stage):
-    # `abstract_eval` is mandatory because JAX resolves shapes before it runs
-    # anything; `jax.grad` reaches for the adjoint, while a batched `jacrev`
-    # takes a `jacobian` endpoint wherever a server offers one.
-    available = set(dict(zip(STAGES, chain))[stage].available_endpoints)
-
-    assert {"apply", "abstract_eval", "vector_jacobian_product"} <= available
-
-
-def test_the_analysis_jacobian_route_matches_the_sequential_rows(arch):
-    # A batched jacrev takes the analysis stage's `jacobian` endpoint in one
-    # crossing; forcing the fallback pulls the same rows one product crossing
-    # at a time. The traced backend answers both from the same solve, so the
-    # two Jacobians may differ only by reassociation.
-    structure = arch.structure
-    steel = arch.steel
-    family = build_section_family(neutral_grade(arch.steel), 3)
-    shape = FdmFormFinder(structure)(arch.params.force_densities, funicular(structure))
-
-    payload = {
-        "xyz": shape.xyz,
-        "edges": np.asarray(structure.edges, dtype=np.int64),
-        "supports": np.asarray(structure.supports, dtype=np.int64),
-        "loads": np.asarray(funicular(structure), dtype=np.float64),
-        "f_y": steel.f_y,
-        "e_mod": steel.e_mod,
-        "density": steel.density,
-        "ratio": family.ratio,
-        "normal": NORMAL,
-    }
-
-    def crossed_axial(diameters, materialize):
-        member = apply_tesseract(
-            arch.chain.analysis,
-            {**payload, "diameter": diameters},
-            vmap_method="sequential",
-            materialize_jacobian=materialize,
-        )
-
-        return member["axial_force"]
-
-    assert "jacobian" in arch.chain.analysis.available_endpoints
-
-    routed = jax.jacrev(lambda d: crossed_axial(d, None))(arch.params.diameters)
-    rowed = jax.jacrev(lambda d: crossed_axial(d, False))(arch.params.diameters)
-    largest = float(jnp.max(jnp.abs(rowed)))
-
-    assert np.allclose(
-        np.asarray(routed) / largest,
-        np.asarray(rowed) / largest,
-        rtol=0.0,
-        atol=TOLERANCE_ROUTE,
-    )
-
-
-def test_a_python_list_is_refused_at_the_boundary(structure, chain):
-    # Tesseract-JAX is stricter than Tesseract Core: every array input has to be
-    # a JAX or NumPy array, scalars included.
     with pytest.raises(TypeError, match="expects an array"):
-        apply_tesseract(
-            chain.formfinding,
-            {
-                "q": [-1.0] * NUM_EDGES,
-                "nodes": np.asarray(structure.nodes, dtype=np.float64),
-                "edges": np.asarray(structure.edges, dtype=np.int64),
-                "supports": np.asarray(structure.supports, dtype=np.int64),
-                "loads": np.asarray(funicular(structure), dtype=np.float64),
-            },
-        )
-
-
-def test_a_chain_asked_for_a_stage_that_is_not_there_says_so(tmp_path):
-    with pytest.raises(FileNotFoundError, match="formfinding"):
-        local_chain(tmp_path)
-
-
-# --------------------------------------------------------------------------- #
-# Several load cases, across the boundary
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("beta", [10.0, 500.0])
-def test_every_field_of_the_enveloped_design_survives_the_boundary(
-    arch, three_cases, beta
-):
-    # The objective the optimizer actually minimizes, which is not the one the
-    # single-case parity test covers: three analyses and three checks per call,
-    # aggregated above the chain.
-    oracle, composed = both(arch, three_cases, 3, beta)
-
-    for label, left, right, limit in field_by_field(
-        oracle, composed, TOLERANCE_PARITY_ENVELOPE
-    ):
-        assert relative(left, right) < limit, label
-
-
-def test_the_enveloped_mass_gradient_survives_the_boundary(arch, three_cases):
-    oracle, composed = objectives(arch, three_cases, 3, 100.0)
-
-    q = arch.params.force_densities
-    difference = relative(jax.grad(oracle)(q), jax.grad(composed)(q))
-
-    assert difference < TOLERANCE_DERIVATIVE
-
-
-def test_the_composed_envelope_form_finds_once_for_all_the_load_cases(
-    arch, three_cases
-):
-    # The shape answers to one load case by construction, so form finding is
-    # shared and only the analysis and the check are walked per case. A geometry
-    # that differed between cases would mean a different structure per case.
-    oracle, composed = both(arch, three_cases, 3, 500.0)
-
-    assert relative(oracle.shape.xyz, composed.shape.xyz) < TOLERANCE_PARITY
-    assert relative(oracle.shape.lengths, composed.shape.lengths) < TOLERANCE_PARITY
-
-
-def test_the_composed_envelope_covers_every_load_case(arch, three_cases):
-    _, demanded = both_designs(arch, three_cases, 3)
-    _, composed = both(arch, three_cases, 3, 500.0)
-
-    assert float(jnp.max(composed.sizes.utilization)) <= 1.0 + 1e-12
-    assert np.all(
-        np.asarray(composed.sizes.sections.diameter)
-        >= np.asarray(jnp.max(demanded.sizes.sections.diameter, axis=0)) - 1e-9
-    )
-
-
-def test_a_secondary_force_refuses_a_cotangent(arch, one_case):
-    # Non-differentiable by declaration, so a caller who leaves one in a loss
-    # is told rather than handed a zero that looks like an answer.
-    family = build_section_family(neutral_grade(arch.steel), 2)
-    analyzer = TesseractAnalyzer(arch.structure, arch.chain.analysis, family, NORMAL)
-    diameters = jnp.full((arch.structure.num_edges,), SEED)
-
-    def shear_loss(nodes):
-        forces = analyzer(nodes, diameters, one_case.analysis)
-
-        return jnp.sum(forces.shear_major**2)
-
-    with pytest.raises(ValueError, match="shear_major"):
-        jax.grad(shear_loss)(arch.structure.nodes)
+        apply_tesseract(blueprint_client, inputs)

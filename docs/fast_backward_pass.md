@@ -2,7 +2,7 @@
 
 *An appendix. Every number here was measured on the 16×16 gridshell — 257 nodes,
 496 members, 1267 differentiable parameters, three load cases — unless it says
-otherwise. Reproduce them with `experiments/27_pynite_agreement.py`.*
+otherwise. Reproduce them with `experiments/validation/pynite_adjoint.py`.*
 
 PyNite is a space-frame analysis in plain Python. It has no tape, no tangent and
 no sensitivity command, and no configuration produces one. Giving it a gradient
@@ -295,11 +295,11 @@ was going to discover it.
 of the three routes — 4h20 of unattended compute, only affordable because of the
 work above:
 
-| route | best [t] | spread across starts | coefficient of variation |
-|---|---|---|---|
-| end to end | 0.074724 | 53.7% | 14.5% |
-| free heights | 0.136011 | 24.0% | 6.1% |
-| sizing only | 0.145735 | 2.3% | 0.5% |
+| route | best [t] | median | spread across starts | coefficient of variation | feasible |
+|---|---|---|---|---|---|
+| end to end | 0.074724 | 0.075659 | 53.7% | 14.5% | 23/24 |
+| free heights | 0.136011 | 0.144273 | 24.0% | 6.1% | 24/24 |
+| sizing only | 0.145735 | 0.148004 | 2.3% | 0.5% | 24/24 |
 
 Three things the single-start numbers had hidden.
 
@@ -321,3 +321,44 @@ So the closing lesson is not "report a range" but something narrower and more
 uncomfortable: **a comparison of two pipelines is only as good as the search
 behind each side of it**, and matching the method on both sides is not a
 refinement, it is the difference between a result and an artifact.
+
+# The record those numbers came from, and how to plot it
+
+The measurement is kept rather than regenerated, in `data/trajectories/`, and it
+splits by what it cost.
+
+**The expensive part.** `*_starts.json` and `*.log` — 92 KB holding all 24
+fixed-seed starts per route, and behind them the 4h20 above. Every landing:
+mass, worst violation, violated rows, evaluations, wall clock, and the design
+variables. This is where the table comes from.
+
+**The cheap part.** `*.npz` — about 2 MB and nine minutes, the path of each
+route's winning start at one frame per objective evaluation, kept for the
+descent animations. Each file holds `opening` (the start), `steps` (every
+evaluation's variables), `masses` (mass per frame), `rounds` (the per-round
+trail the method reports), `landing`, `route` and `start`.
+
+**Regeneration was by fixed seed, not by luck.** The starts were drawn from a
+fixed `SCATTER_SEED`, so a winner reconstructed exactly, and all three
+re-descents reproduced their recorded mass to every digit — which is what says
+the reconstruction was the same descent rather than a near neighbour.
+
+**The script that made them is gone, deleted 2026-08-27.** It drove the
+dissolved `normax.searches` through thirteen call sites, seven of them the
+scattered multi-start apparatus and unique to it, so reviving it was a rebuild
+rather than a repair. These files are therefore a record rather than a
+regenerable output: what is on disk is what there is.
+
+## Two things to know before plotting
+
+**The paths dive below where they land, and that is the method working.** End to
+end reaches 0.073284 mid-descent and settles at 0.074724; sizing only touches
+0.116707 and settles at 0.145735. A small opening penalty lets the mass lead
+until the multipliers pull it back onto the constraint surface, so those minima
+are infeasible points and not better answers. Plot the violation beside the mass
+or the picture says the opposite of what happened. Sizing only starts at 7.89 t
+and ends at 0.146, a sixty-fold sweep — that axis wants to be logarithmic.
+
+**A frame is an evaluation, not an accepted step.** The line search evaluates
+points it then rejects, so consecutive frames can move backwards. Fine for a
+morph; for a monotone curve use `rounds`, or take a running minimum.

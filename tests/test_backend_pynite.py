@@ -1,59 +1,35 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 A foreign solver, given an adjoint it does not have.
 
-PyNite assembles, factorizes and solves; it carries no derivative of its own and
-no way to acquire one. The rule that differentiates it is this repository's, and
-it rests on two claims that have to be measured rather than argued.
-
-**The element here is the element it assembled.** A derivative taken of a
-lookalike would be a plausible number that answers about a different structure,
-so the replica is held against the solver's own matrices.
-
-**The rule is exact.** Not a perturbation with a step small enough to look
-convincing — the gradient it produces is checked against a solver that JAX
-differentiates end to end, which is an independent exact answer rather than a
-finer approximation.
+PyNite assembles, factorizes and solves; it carries no derivative of its own.
+The rule that differentiates it rests on two claims that have to be measured:
+the element here is the element it assembled, and the rule is exact.
 """
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jaxtyping import Array
-from jaxtyping import Float
 from Pynite import FEModel3D
 
-from normax.analysis import SmaxAnalyzer
+from normax.analysis import MemberForces
 from normax.analysis import pynite
 from normax.analysis.element import SectionRigidity
-from normax.analysis.element import member_frame
-from normax.analysis.element import stiffness_global
-from normax.analysis.element import stiffness_local
+from normax.analysis.element import assemble_stiffness_global
+from normax.analysis.element import assemble_stiffness_local
+from normax.analysis.element import compute_direction_cosines
+from normax.analysis.smax import SmaxAnalyzer
 from normax.materials import Steel355
-from normax.sizing import build_section_family
+from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.tesseract import TesseractAnalyzer
-from normax.tesseract import analysis_backend
-from normax.tesseract import local_chain
+from normax.tesseract import open_tesseract_analysis
 
 SECTION_CLASS = 3
 SEED_DIAMETER = 100.0
 
-# The replica and the solver do the same arithmetic in a different order, so
-# only the last bit or two of a double may differ.
+# The replica and the solver do the same arithmetic in a different order.
 TOLERANCE_ELEMENT = 1e-13
 
 # Two exact gradients of one structure, so likewise round-off and no more.
@@ -65,7 +41,7 @@ TOLERANCE_DIFFERENCE = 1e-7
 # Where a differenced coordinate is least contaminated, measured by sweeping it.
 STEP_COORDINATE = 1.0e-2
 
-# Scales that bring both reported quantities to unit order before they are summed.
+# Scales that bring both reported quantities to unit order before summing.
 SCALE_FORCE = 1.0e5
 SCALE_MOMENT = 1.0e8
 
@@ -106,15 +82,19 @@ def canopy_loads(canopy):
 
 @pytest.fixture(scope="module")
 def canopy_diameters(canopy):
-    spread = np.arange(canopy.num_edges) * 7.0
-
-    return 100.0 + spread
+    return 100.0 + np.arange(canopy.num_edges) * 7.0
 
 
-def solved_member(start, end, area, inertia, torsion, moduli):
+@pytest.fixture(scope="module")
+def problem(canopy, canopy_loads, family):
+    return pynite.FrameProblem(structure=canopy, catalogue=family, loads=canopy_loads)
+
+
+def solved_member(start, end, section, moduli):
     """
     One member the foreign solver has built and analyzed, ready to read.
     """
+    area, inertia, torsion = section
     elasticity, shear, poissons = moduli
     model = FEModel3D()
     model.add_material("steel", elasticity, shear, poissons, 7850.0)
@@ -130,7 +110,7 @@ def solved_member(start, end, area, inertia, torsion, moduli):
     return next(iter(model.members["m"].sub_members.values()))
 
 
-def relative(mine: Float[Array, "..."], reference: Float[Array, "..."]) -> float:
+def relative(mine, reference):
     """
     Worst absolute gap, against the largest entry of the reference.
     """
@@ -138,6 +118,28 @@ def relative(mine: Float[Array, "..."], reference: Float[Array, "..."]) -> float
     scale = max(float(np.max(np.abs(np.asarray(reference)))), 1e-300)
 
     return float(gap) / scale
+
+
+def scaled_loss(forces):
+    """
+    One scalar over every reported force, each brought to unit order.
+    """
+    axial = jnp.sum((forces.axial_force / SCALE_FORCE) ** 2)
+    major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
+    minor = jnp.sum((forces.moment_minor / SCALE_MOMENT) ** 2)
+
+    return axial + major + minor
+
+
+def loss_cotangent(forces):
+    """
+    The derivative of `scaled_loss` in every reported force.
+    """
+    return MemberForces(
+        2.0 * np.asarray(forces.axial_force) / SCALE_FORCE**2,
+        2.0 * np.asarray(forces.moment_major) / SCALE_MOMENT**2,
+        2.0 * np.asarray(forces.moment_minor) / SCALE_MOMENT**2,
+    )
 
 
 def test_the_element_is_the_one_the_solver_assembled():
@@ -154,25 +156,25 @@ def test_the_element_is_the_one_the_solver_assembled():
         end = start + generator.normal(size=3) * 4.0
         area = float(generator.uniform(5.0e-4, 5.0e-3))
         inertia = float(generator.uniform(1.0e-6, 5.0e-5))
-        torsion = 2.0 * inertia
-        theirs = solved_member(start, end, area, inertia, torsion, moduli)
+        theirs = solved_member(start, end, (area, inertia, 2.0 * inertia), moduli)
         rigidity = SectionRigidity(
             axial=jnp.asarray(elasticity * area),
             bending=jnp.asarray(elasticity * inertia),
-            torsional=jnp.asarray(shear * torsion),
+            torsional=jnp.asarray(shear * 2.0 * inertia),
         )
         length = jnp.asarray(float(np.linalg.norm(end - start)))
 
-        local = stiffness_local(length, rigidity)
+        local = assemble_stiffness_local(length, rigidity)
         assert relative(local, theirs.ke()) < TOLERANCE_ELEMENT
 
-        spanned = stiffness_global(jnp.asarray(start), jnp.asarray(end), rigidity)
+        spanned = assemble_stiffness_global(
+            jnp.asarray(start), jnp.asarray(end), rigidity
+        )
         assert relative(spanned, theirs.Ke()) < TOLERANCE_ELEMENT
 
 
 def test_rolling_the_frame_leaves_the_global_stiffness_alone():
-    # Why the stiffness frame may be chosen for conditioning and read by nobody:
-    # an axisymmetric section cannot tell one roll from another.
+    # Why the stiffness frame may be chosen for conditioning and read by nobody.
     rigidity = SectionRigidity(
         axial=jnp.asarray(2.5e8),
         bending=jnp.asarray(1.0e4),
@@ -180,12 +182,10 @@ def test_rolling_the_frame_leaves_the_global_stiffness_alone():
     )
     start = jnp.asarray([0.0, 0.0, 0.0])
     end = jnp.asarray([3.0, 1.0, 2.0])
-    spanned = stiffness_global(start, end, rigidity)
+    spanned = assemble_stiffness_global(start, end, rigidity)
 
-    axis = (np.asarray(end) - np.asarray(start)) / np.linalg.norm(
-        np.asarray(end) - np.asarray(start)
-    )
-    frame = np.asarray(member_frame(start, end))
+    axis = np.asarray(end - start) / np.linalg.norm(np.asarray(end - start))
+    frame = np.asarray(compute_direction_cosines(start, end))
     angle = 0.7
     turned = np.stack(
         [
@@ -195,14 +195,14 @@ def test_rolling_the_frame_leaves_the_global_stiffness_alone():
         ]
     )
     transform = np.kron(np.eye(4), turned)
-    local = np.asarray(stiffness_local(jnp.linalg.norm(end - start), rigidity))
+    local = np.asarray(assemble_stiffness_local(jnp.linalg.norm(end - start), rigidity))
     rolled = transform.T @ local @ transform
 
     assert relative(spanned, rolled) < TOLERANCE_ELEMENT
 
 
 def test_the_adjoint_agrees_with_a_traced_solver(
-    canopy, canopy_loads, canopy_diameters, family
+    canopy, canopy_loads, canopy_diameters, family, problem
 ):
     # The gate. One structure, one scalar, two exact gradients: a hand-written
     # adjoint of a solver that has none, and autodiff of one that is traced.
@@ -210,113 +210,80 @@ def test_the_adjoint_agrees_with_a_traced_solver(
     stacked = jnp.asarray(canopy_loads)[None, ...]
 
     def traced_loss(xyz, diameters):
-        forces = analyzer(xyz, diameters, stacked)
-        axial = jnp.sum((forces.axial_force / SCALE_FORCE) ** 2)
-        major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
-        minor = jnp.sum((forces.moment_minor / SCALE_MOMENT) ** 2)
+        return scaled_loss(analyzer(xyz, diameters, stacked))
 
-        return axial + major + minor
-
-    diameters = jnp.asarray(canopy_diameters)
-    traced = jax.grad(traced_loss, argnums=(0, 1))(canopy.nodes, diameters)
-
-    problem = pynite.FrameProblem(
-        structure=canopy, catalogue=family, loads=canopy_loads
-    )
-    forces = pynite.member_forces(
-        problem, np.asarray(canopy.nodes), canopy_diameters, canopy_loads
-    )
-    problem = pynite.FrameProblem(
-        structure=canopy, catalogue=family, loads=canopy_loads
-    )
-    jacobian = pynite.force_jacobian(
-        problem, np.asarray(canopy.nodes), canopy_diameters
-    )
-    axial = np.asarray(forces.axial_force) / SCALE_FORCE**2
-    major = np.asarray(forces.moment_major) / SCALE_MOMENT**2
-    minor = np.asarray(forces.moment_minor) / SCALE_MOMENT**2
-
-    by_node = 2.0 * (
-        np.einsum("m,mna->na", axial, jacobian.axial_force_xyz)
-        + np.einsum("me,mena->na", major, jacobian.moment_major_xyz)
-        + np.einsum("me,mena->na", minor, jacobian.moment_minor_xyz)
-    )
-    by_member = 2.0 * (
-        np.einsum("m,mk->k", axial, jacobian.axial_force_diameter)
-        + np.einsum("me,mek->k", major, jacobian.moment_major_diameter)
-        + np.einsum("me,mek->k", minor, jacobian.moment_minor_diameter)
+    traced = jax.grad(traced_loss, argnums=(0, 1))(
+        canopy.nodes, jnp.asarray(canopy_diameters)
     )
 
-    assert relative(by_node, traced[0]) < TOLERANCE_GRADIENT
-    assert relative(by_member, traced[1]) < TOLERANCE_GRADIENT
+    nodes = np.asarray(canopy.nodes)
+    forces = pynite.compute_member_forces(
+        problem, nodes, canopy_diameters, canopy_loads
+    )
+    pulled = pynite.pull_back_cotangents(
+        problem, nodes, canopy_diameters, loss_cotangent(forces)
+    )
+
+    assert relative(pulled.xyz, traced[0]) < TOLERANCE_GRADIENT
+    assert relative(pulled.diameter, traced[1]) < TOLERANCE_GRADIENT
 
 
 def test_the_adjoint_survives_a_central_difference(
-    canopy, canopy_loads, canopy_diameters, family
+    canopy, canopy_loads, canopy_diameters, problem
 ):
     # A second opinion that shares nothing with the first: no element replica,
-    # no adjoint, just the forward pass twice. Loose, because it is the
-    # approximate party here.
+    # no adjoint, just the forward pass twice.
     node = 4
     axis = 2
-    problem = pynite.FrameProblem(
-        structure=canopy, catalogue=family, loads=canopy_loads
+    generator = np.random.default_rng(4711)
+    members = canopy.num_edges
+    seed = MemberForces(
+        generator.normal(size=members),
+        generator.normal(size=(members, 2)),
+        generator.normal(size=(members, 2)),
     )
-    jacobian = pynite.force_jacobian(
-        problem, np.asarray(canopy.nodes), canopy_diameters
-    )
-    exact = np.concatenate(
-        [
-            jacobian.axial_force_xyz[:, node, axis],
-            jacobian.moment_major_xyz[:, :, node, axis].ravel(),
-            jacobian.moment_minor_xyz[:, :, node, axis].ravel(),
-        ]
+    exact = pynite.pull_back_cotangents(
+        problem, np.asarray(canopy.nodes), canopy_diameters, seed
     )
 
-    def reported(xyz):
-        forces = pynite.member_forces(problem, xyz, canopy_diameters, canopy_loads)
-
-        return np.concatenate(
-            [
-                np.asarray(forces.axial_force),
-                np.asarray(forces.moment_major).ravel(),
-                np.asarray(forces.moment_minor).ravel(),
-            ]
+    def seeded(xyz):
+        forces = pynite.compute_member_forces(
+            problem, xyz, canopy_diameters, canopy_loads
         )
+        products = jax.tree.map(
+            lambda cotangent, value: cotangent * value, seed, forces
+        )
+
+        return sum(float(np.sum(np.asarray(leaf))) for leaf in products)
 
     up = np.asarray(canopy.nodes).copy()
     down = np.asarray(canopy.nodes).copy()
     up[node, axis] += STEP_COORDINATE
     down[node, axis] -= STEP_COORDINATE
-    differenced = (reported(up) - reported(down)) / (2.0 * STEP_COORDINATE)
+    differenced = (seeded(up) - seeded(down)) / (2.0 * STEP_COORDINATE)
 
-    assert relative(exact, differenced) < TOLERANCE_DIFFERENCE
+    assert (
+        abs(exact.xyz[node, axis] - differenced) / abs(differenced)
+        < TOLERANCE_DIFFERENCE
+    )
 
 
 def test_the_gradient_survives_the_boundary(
     canopy, canopy_loads, canopy_diameters, family
 ):
-    # What the submission actually claims: a solver with no derivative of its
-    # own, reached across a schema, handing back a reverse-mode gradient that
-    # a traced solver agrees with.
+    # What the submission claims: a solver with no derivative of its own,
+    # reached across a schema, handing back a reverse-mode gradient.
     stacked = jnp.asarray(canopy_loads)[None, ...]
     diameters = jnp.asarray(canopy_diameters)
 
     def loss(analyzer, xyz, sizes):
-        forces = analyzer(xyz, sizes, stacked)
-        axial = jnp.sum((forces.axial_force / SCALE_FORCE) ** 2)
-        major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
-        minor = jnp.sum((forces.moment_minor / SCALE_MOMENT) ** 2)
+        return scaled_loss(analyzer(xyz, sizes, stacked))
 
-        return axial + major + minor
-
-    with analysis_backend("pynite"):
-        chain = local_chain()
-        crossed = TesseractAnalyzer(canopy, chain.analysis, family, None)
-        served = float(loss(crossed, canopy.nodes, diameters))
-        foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
-            canopy.nodes, diameters
-        )
+    crossed = TesseractAnalyzer(canopy, open_tesseract_analysis("pynite"), family, None)
+    served = float(loss(crossed, canopy.nodes, diameters))
+    foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
+        canopy.nodes, diameters
+    )
 
     traced = SmaxAnalyzer(canopy, family(SEED_DIAMETER))
     expected = float(loss(traced, canopy.nodes, diameters))
@@ -329,15 +296,10 @@ def test_the_gradient_survives_the_boundary(
     assert relative(foreign[1], reference[1]) < TOLERANCE_GRADIENT
 
 
-def test_a_section_of_no_area_is_refused(canopy, canopy_loads, family):
-    # The solver validates none of this and would answer about the singular
-    # model it assembled instead.
+def test_a_section_of_no_area_is_refused(canopy, canopy_loads, problem):
     with pytest.raises(ValueError, match="not positive"):
-        pynite.member_forces(
-            pynite.FrameProblem(structure=canopy, catalogue=family, loads=canopy_loads),
-            np.asarray(canopy.nodes),
-            np.zeros(canopy.num_edges),
-            canopy_loads,
+        pynite.compute_member_forces(
+            problem, np.asarray(canopy.nodes), np.zeros(canopy.num_edges), canopy_loads
         )
 
 
@@ -349,62 +311,18 @@ def test_a_vertical_member_is_refused(family):
     mast = Structure(nodes=nodes, edges=edges, supports=np.array([0]))
     loads = np.zeros_like(nodes)
     loads[2, 2] = -1.0e4
+    problem = pynite.FrameProblem(structure=mast, catalogue=family, loads=loads)
 
     with pytest.raises(ValueError, match="vertical"):
-        pynite.member_forces(
-            pynite.FrameProblem(structure=mast, catalogue=family, loads=loads),
-            nodes,
-            np.full(2, SEED_DIAMETER),
-            loads,
-        )
-
-
-def test_the_reverse_rule_agrees_with_the_dense_one(
-    canopy, canopy_loads, canopy_diameters, family
-):
-    # Two routes to one gradient: a back-substitution per parameter and then a
-    # slice, against one solve and a contraction. They answer the same question
-    # and the cheap one is the one a descent uses, so it is worth pinning to the
-    # expensive one rather than to a tolerance of its own.
-    problem = pynite.FrameProblem(
-        structure=canopy, catalogue=family, loads=canopy_loads
-    )
-    members = canopy.num_edges
-    generator = np.random.default_rng(4711)
-    seed = pynite.ReadingCotangent(
-        axial_force=generator.normal(size=members),
-        moment_major=generator.normal(size=(members, 2)),
-        moment_minor=generator.normal(size=(members, 2)),
-    )
-
-    nodes = np.asarray(canopy.nodes)
-    dense = pynite.force_jacobian(problem, nodes, canopy_diameters)
-    cheap = pynite.force_cotangents(problem, nodes, canopy_diameters, seed)
-
-    by_node = (
-        np.einsum("m,mna->na", seed.axial_force, dense.axial_force_xyz)
-        + np.einsum("me,mena->na", seed.moment_major, dense.moment_major_xyz)
-        + np.einsum("me,mena->na", seed.moment_minor, dense.moment_minor_xyz)
-    )
-    by_member = (
-        np.einsum("m,mk->k", seed.axial_force, dense.axial_force_diameter)
-        + np.einsum("me,mek->k", seed.moment_major, dense.moment_major_diameter)
-        + np.einsum("me,mek->k", seed.moment_minor, dense.moment_minor_diameter)
-    )
-
-    assert relative(cheap.xyz, by_node) < TOLERANCE_ELEMENT
-    assert relative(cheap.diameter, by_member) < TOLERANCE_ELEMENT
+        pynite.compute_member_forces(problem, nodes, np.full(2, SEED_DIAMETER), loads)
 
 
 def test_several_load_cases_cross_together(
     canopy, canopy_loads, canopy_diameters, family
 ):
-    # The backend remembers one assembled and factorized frame between endpoint
-    # calls. Every load case in one gradient shares it, and the adjoints run
-    # after all the forwards — so a cache keyed on anything the loads touch, or
-    # sized for one call rather than one frame, would answer the second case
-    # with the first case's solve. Two cases that differ, differentiated
-    # together, is what catches that.
+    # The backend remembers one factorized frame between endpoint calls, and the
+    # adjoints run after all the forwards, so a cache keyed on anything the
+    # loads touch would answer the second case with the first case's solve.
     sideways = np.zeros_like(canopy_loads)
     sideways[4] = (-4.0e4, 1.5e4, -1.0e4)
     stacked = jnp.asarray(np.stack([canopy_loads, sideways, 0.4 * canopy_loads]))
@@ -419,13 +337,11 @@ def test_several_load_cases_cross_together(
 
         return axial + major + minor
 
-    with analysis_backend("pynite"):
-        chain = local_chain()
-        crossed = TesseractAnalyzer(canopy, chain.analysis, family, None)
-        served = crossed(canopy.nodes, diameters, stacked)
-        foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
-            canopy.nodes, diameters
-        )
+    crossed = TesseractAnalyzer(canopy, open_tesseract_analysis("pynite"), family, None)
+    served = crossed(canopy.nodes, diameters, stacked)
+    foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
+        canopy.nodes, diameters
+    )
 
     traced = SmaxAnalyzer(canopy, family(SEED_DIAMETER))
     expected = traced(canopy.nodes, diameters, stacked)
@@ -444,10 +360,11 @@ def test_several_load_cases_cross_together(
     assert relative(foreign[1], reference[1]) < TOLERANCE_GRADIENT
 
 
-def test_a_second_frame_is_not_answered_by_the_first(canopy, canopy_loads, family):
-    # Two different geometries interleaved in one process. The fingerprint has
-    # to tell them apart, and the second must not be served the first's
-    # factorization.
+def test_a_second_frame_is_not_answered_by_the_first(
+    canopy, canopy_loads, family, problem
+):
+    # Two geometries interleaved in one process: the fingerprint has to tell
+    # them apart, and the second must not be served the first's factorization.
     moved = np.asarray(canopy.nodes).copy()
     moved[4, 2] += 900.0
     shifted = Structure(
@@ -456,26 +373,23 @@ def test_a_second_frame_is_not_answered_by_the_first(canopy, canopy_loads, famil
         supports=np.asarray(canopy.supports),
     )
     diameters = np.full(canopy.num_edges, SEED_DIAMETER)
-
-    first = pynite.FrameProblem(structure=canopy, catalogue=family, loads=canopy_loads)
     second = pynite.FrameProblem(
         structure=shifted, catalogue=family, loads=canopy_loads
     )
 
-    with analysis_backend("pynite"):
-        chain = local_chain()
-        here = TesseractAnalyzer(canopy, chain.analysis, family, None)
-        there = TesseractAnalyzer(shifted, chain.analysis, family, None)
-        sizes = jnp.asarray(diameters)
-        stacked = jnp.asarray(canopy_loads)[None, ...]
-        served_here = here(canopy.nodes, sizes, stacked)
-        served_there = there(shifted.nodes, sizes, stacked)
-        served_again = here(canopy.nodes, sizes, stacked)
+    client = open_tesseract_analysis("pynite")
+    here = TesseractAnalyzer(canopy, client, family, None)
+    there = TesseractAnalyzer(shifted, client, family, None)
+    sizes = jnp.asarray(diameters)
+    stacked = jnp.asarray(canopy_loads)[None, ...]
+    served_here = here(canopy.nodes, sizes, stacked)
+    served_there = there(shifted.nodes, sizes, stacked)
+    served_again = here(canopy.nodes, sizes, stacked)
 
-    direct_here = pynite.member_forces(
-        first, np.asarray(canopy.nodes), diameters, canopy_loads
+    direct_here = pynite.compute_member_forces(
+        problem, np.asarray(canopy.nodes), diameters, canopy_loads
     )
-    direct_there = pynite.member_forces(second, moved, diameters, canopy_loads)
+    direct_there = pynite.compute_member_forces(second, moved, diameters, canopy_loads)
 
     assert (
         relative(served_here.axial_force[0], direct_here.axial_force)

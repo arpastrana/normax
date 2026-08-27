@@ -22,12 +22,13 @@ Not published. Clone the repository and install with [uv](https://docs.astral.sh
 ```bash
 git clone https://github.com/arpastrana/normax
 cd normax
-uv sync --group dev --group pipeline
+uv sync
 ```
 
-The `pipeline` group carries the form finder and the frame solver, the `viz`
-group the interactive viewer, and the `spike` extra `openseespy` for the second
-analysis backend.
+Everything the pipeline needs — the form finder, both host frame solvers, the
+Blueprints check, the viewer — is a regular dependency. The `local-dev` group
+pins the path-installed oracle packages the parity tests compare against;
+without it those tests skip themselves and the rest of the suite runs.
 
 ## Usage
 
@@ -35,58 +36,73 @@ analysis backend.
 import jax
 import jax.numpy as jnp
 
-from normax.analysis import SmaxAnalyzer
+from normax.config import AnalysisConfig
+from normax.config import FormFindingConfig
+from normax.config import SizingConfig
 from normax.design import DesignParameters
-from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
-from normax.form_finding import FdmFormFinder
-from normax.loads import create_loads_uniform
+from normax.form_finding import UniformDensityInitializer
+from normax.loads import assemble_load_cases
+from normax.loads import load_uniform
 from normax.materials import Steel355
-from normax.sizing import Ec3Sizer
-from normax.sizing import build_section_family
+from normax.sections import build_section_family
 from normax.structures import build_arch_2d
-
+from normax.tesseract import build_pipeline
 
 num_edges = 20
 section_class = 3
 diameter_start = 100.0
 force_density_start = -50.0
 
-material = Steel355()
-section_family = build_section_family(material, section_class)
-diameters = jnp.full(num_edges, diameter_start)
-force_densities = jnp.full(num_edges, force_density_start)
-tubes = section_family(diameters)
-
 structure = build_arch_2d(num_edges, span=10_000.0, rise=3_000.0)
-loads_uniform = create_loads_uniform(structure, 15_000.0)
+case_uniform = load_uniform(structure, 15_000.0)
+loads = assemble_load_cases([case_uniform])
 
-pipeline = StructuralDesignPipeline(
-    FdmFormFinder(structure),
-    SmaxAnalyzer(structure, tubes),
-    Ec3Sizer(structure, section_family),
-)
+family = build_section_family(Steel355(), section_class)
+initializer = UniformDensityInitializer(force_density_start)
+form_finding = FormFindingConfig(None, None, initializer)
+analysis = AnalysisConfig(diameter_start, "opensees")
+sizing = SizingConfig(section_class, "blueprint", False, False)
+pipeline = build_pipeline(structure, family, form_finding, analysis, sizing)
+
+diameters = jnp.full(num_edges, diameter_start)
 
 def code_mass(force_densities):
     parameters = DesignParameters(force_densities, diameters)
-    design = pipeline(parameters, loads_uniform)
+    design = pipeline(parameters, loads)
     return compute_mass(design)
 
-print(code_mass(force_densities))  # tonnes of steel EN 1993-1-1 requires
+force_densities = jnp.full(num_edges, force_density_start)
+print(code_mass(force_densities))  # tonnes of steel at the given sections
 print(jax.grad(code_mass)(force_densities))  # its gradient in the force densities
 ```
 
 The pipeline is three swappable blocks, each built from a structure on the
 host and then called; what is left is a function of design parameters and load
-cases, and that is what an optimizer differentiates. `normax.tesseract` holds
-the same three blocks reached across a Tesseract boundary, and the pipeline
-cannot tell the difference. The check also runs the other way around: `Ec3Sizer.compute_utilization`
-has exactly a constraint function's signature, so a constrained optimizer can
-hold `utilization <= 1` with analytic Jacobians while shape and sections move together.
-See `experiments/101_api.py` for the whole API in one file,
-`experiments/103_simultaneous_api.py` for the constrained formulation, and
-`experiments/04_backend_agreement.py` for the two analysis backends against
-each other.
+cases, and that is what an optimizer differentiates. Form finding traces a
+linear solve in this process. The frame analysis and the code check each cross
+a Tesseract boundary to a host that does not differentiate itself — OpenSees
+for a planar frame, PyNite for a space frame, Blueprints for the check — and
+come back with a hand-written adjoint; swapping a block for one that runs in
+process is a different word in the config and nothing else. The design that
+comes back also carries `design.sizes.utilization`, how hard EN 1993-1-1 works
+every member under every load case, which is exactly a constraint function —
+the augmented Lagrangian in `normax.design.optimize_design` holds
+`utilization <= 1` with it while shape and sections move together.
+`examples/arch.py` is the whole project in one file; the other three examples
+share its shape and add a held-plan subspace, symmetry folding and sign
+guards:
+
+```bash
+uv run python examples/arch.py
+uv run python examples/warren.py
+uv run python examples/vierendeel.py
+uv run python examples/gridshell.py
+```
+
+Each reads the YAML beside it, prints what the descent bought, and writes its
+figures and a `data/*.npz` record; the file's `output` block turns the report,
+the export and the viewer on and off.
 
 ## What the gradient buys
 
@@ -97,34 +113,32 @@ gradient buys is a comparison rather than a demo. A form finder acts as a
 shape prior: descending one force density through it is start-proof where
 descending every free node height stalls in bending. On a truss, holding the
 plan leaves a null space of force densities to search, and
-`SubspaceFormFinder` makes its basis coordinates the design variables.
-`experiments/design_routes.py` then races three routes over the same members,
-loads and check — the whole pipeline end to end, free heights without the form
-finder, and sizing alone at the drawn geometry — and moving the geometry buys
-the larger share of the mass on both trusses. Numbers, tolerances and the full
-protocol are in the accompanying paper and in `CHANGELOG.md`; every experiment
-reads its settings from the YAML beside it and reproduces headless:
-
-```bash
-uv run --group pipeline --group viz python experiments/18_warren_optimize.py
-```
+`normax.form_finding.build_plan_basis` makes its basis coordinates the design
+variables. The rival routes — free heights without the form finder, and sizing
+alone at the drawn geometry — are form finders too, implemented against the
+same interface in `tests/test_extras_comparison.py`, which is where the swap is
+checked: racing them swaps one block and nothing else, and moving the geometry
+buys the larger share of the mass on both trusses.
+Numbers, tolerances and the full protocol are in the accompanying paper and in
+`CHANGELOG.md`.
 
 ## Limitations
 
-**The nested route's gradient omits `∂d/∂q`.** In the fully-stressed
-formulation the diameters the analysis runs at stay at their seed while the
-force densities move, so the feedback from a chosen size back into the forces
-that chose it is a path the reverse pass never enters. The cost is measured,
-and two closures exist: staggered re-sectioning, and the simultaneous
-formulation above, which makes the design self-consistent by construction.
+**The nested fully-stressed route, kept in `normax/optimization/nested.py`,
+omits `∂d/∂q`.**
+The shipped search is simultaneous — diameters are variables beside the force
+densities, so the design is self-consistent by construction and the gradient
+is complete. In the nested add-on the diameters the analysis runs at stay at
+their seed while the densities move, and that feedback path is one the reverse
+pass never enters; its cost is measured, and staggered re-sectioning closes it.
 
 **Shear and torsion are not designed for, and the exclusion is measured rather
 than assumed.** The check covers axial force with bending and leaves out
 EN 1993-1-1 §6.2.6–6.2.8, as clause 6.2.10 permits while the design shear
-stays under half the plastic shear resistance. `experiments/20_shear_audit.py`
-reads that fraction off every converged design and no structure here
-approaches the threshold; `docs/shear_design.md` records what designing for
-shear would take.
+stays under half the plastic shear resistance. That fraction was read off every
+converged design rather than bounded, and no structure here approaches the
+threshold; `docs/shear_design.md` records the measurement and what designing
+for shear would take.
 
 **No lateral-torsional buckling check, by construction.** Every member is a
 circular hollow section, which is doubly symmetric, so lateral-torsional
@@ -143,7 +157,7 @@ per §5.2. Frame-stability checks are future work.
 ## Development
 
 ```bash
-uv sync --group dev --group pipeline
+uv sync
 uv run pytest
 ```
 

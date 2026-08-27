@@ -1,47 +1,27 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
 T2 — Frame analysis of a form-found geometry.
 
 A geometry and a set of sections in, the internal forces the members carry out.
-Form finding is pin-jointed and can only report an axial force; the check
+Form finding is pin-jointed and reports an axial force alone; the check
 downstream consumes moments, and this is where they come from.
 
-**This schema is the swappable one, and it is frozen.** The whole submission
-turns on one interface serving two solvers that disagree about how they
-differentiate — a JAX frame solver that is traced end to end, and a C++ solver
-whose adjoints were hand-derived element by element over two decades and which
-nothing about JAX can see into. Adding a field here is a cost paid by every
-backend, so the inputs are the smallest set that describes a frame and the
-differentiable ones are exactly the two a direct differentiation backend can
-supply: the coordinates and the diameters.
-
-The critical load factor of the whole frame is deliberately **not** here. It is
-soft validation, it sizes nothing, and putting it in the schema would oblige
-every backend to produce one. `normax.stability` reads it beside a
-finished design instead.
-
-Set `NORMAX_ANALYSIS_BACKEND` to choose a backend: `smax` traces a JAX frame
-solver in three dimensions, `opensees` drives a C++ one in two. Nothing above
-this line differs between them, including the derivative endpoints — a backend
-supplies its own rules, because only one of the two can be traced at all.
+**This schema is the swappable one.** One interface serves two solvers that
+disagree about how they differentiate — a C++ solver with sensitivities compiled
+into it, and a Python solver with none, given an adjoint by hand — and the
+differentiable inputs are exactly the two both can supply: the coordinates and
+the diameters. `NORMAX_ANALYSIS_BACKEND` names the solver, `opensees` in two
+dimensions or `pynite` in three.
 """
 
 import os
 from typing import Any
 
 import jax
+import numpy as np
+from _backend_common import force_outputs
+from _backend_common import read_cotangent
+from _backend_common import read_frame
 from pydantic import BaseModel
 from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
@@ -52,7 +32,7 @@ jax.config.update("jax_enable_x64", True)
 
 # Environment variable naming the backend, and the one used when it is unset.
 BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
-BACKEND_DEFAULT = "smax"
+BACKEND_DEFAULT = "pynite"
 
 
 class InputSchema(BaseModel):
@@ -64,12 +44,7 @@ class InputSchema(BaseModel):
     """Position of every node, in millimeters. From form finding."""
 
     diameter: Differentiable[Array[(None,), Float64]]
-    """Outer diameter of every member, in millimeters.
-
-    The coupling with the check downstream is staggered: sizing needs forces and
-    forces need sizes, so this is the previous outer iterate. One pass is taken,
-    not a fixed point, and what that costs is measured rather than assumed.
-    """
+    """Outer diameter of every member, in millimeters."""
 
     edges: Array[(None, 2), Int64]
     """The two node indices spanned by every member."""
@@ -95,11 +70,8 @@ class InputSchema(BaseModel):
     normal: int | None = None
     """Index of the global axis a planar frame has no thickness along.
 
-    None for a frame that occupies all three dimensions. Static, and read by the
-    planar backend alone: the two axes it keeps become the solver's own, so it has
-    to be told which they are. The three-dimensional backend measures the plane
-    from the geometry, a planar frame on pinned supports alone being a mechanism
-    there since rotating it about the line joining its supports strains nothing.
+    None for a frame that occupies all three dimensions. Read by the planar
+    backend alone, whose two kept axes become the solver's own.
     """
 
 
@@ -109,11 +81,7 @@ class OutputSchema(BaseModel):
     """
 
     axial_force: Differentiable[Array[(None,), Float64]]
-    """Axial force of every member, in newtons. Tension positive.
-
-    One number per member: loads are applied at nodes alone, so nothing varies
-    along a span, and the analysis is linear.
-    """
+    """Axial force of every member, in newtons. Tension positive."""
 
     end_moments_major: Differentiable[Array[(None, 2), Float64]]
     """Major-axis moment at each end of every member, in newton-millimeters."""
@@ -121,48 +89,14 @@ class OutputSchema(BaseModel):
     end_moments_minor: Differentiable[Array[(None, 2), Float64]]
     """Minor-axis moment at each end of every member, in newton-millimeters.
 
-    Both ends rather than a peak, because nodal loads leave the moment varying
-    linearly in between. That is what makes the first row of EN 1993-1-1 Table
-    B.3 exact downstream instead of approximate, and it is why a peak would be a
-    lossy contract rather than a convenient one.
-    """
-
-    shear_major: Array[(None,), Float64]
-    """Major-axis shear of every member, in newtons.
-
-    **Non-differentiable.** A concrete cotangent on this raises `ValueError`, so
-    drop it before differentiating; only a symbolic zero is accepted. No size is
-    designed for shear here — EN 1993-1-1 6.2.10 permits the exclusion under
-    half the plastic shear resistance — so it crosses to be audited against that
-    permission rather than to be optimized against.
-
-    One number per member for the reason the axial force is: nodal loading
-    leaves it constant along the span.
-    """
-
-    shear_minor: Array[(None,), Float64]
-    """Minor-axis shear of every member, in newtons.
-
-    **Non-differentiable**, as `shear_major`. A planar solver returns exact
-    zeros, carrying no such component.
-    """
-
-    torsion_moment: Array[(None,), Float64]
-    """Torsional moment of every member, in newton-millimeters.
-
-    **Non-differentiable**, as `shear_major`. A planar solver returns exact
-    zeros.
+    Both ends rather than a peak, because nodal loads leave the moment linear
+    in between, which makes the first row of EN 1993-1-1 Table B.3 exact.
     """
 
 
 def _selected_backend() -> Any:
     """
     The module implementing the selected backend.
-
-    Returns
-    -------
-    backend :
-        A module exposing `solve`, `jvp` and `vjp`.
 
     Raises
     ------
@@ -171,25 +105,13 @@ def _selected_backend() -> Any:
 
     Notes
     -----
-    Imported on use rather than at the top of the file, because an image ships
-    the dependencies of one backend and a module-level import of the other would
-    fail before the schema could be read.
-
-    **The environment is read per call, not at import.** A container sets the
-    variable once and never changes it, so nothing is lost there; a process
-    comparing the two backends against each other needs to switch between calls,
-    and reading once at import would silently serve it whichever was selected
-    first.
-
-    **A backend owns its derivatives as well as its forward pass.** Only one of
-    the two can be traced, so differentiating the forward pass here would be a
-    claim about how a solver works rather than a request for what it computes.
+    Imported on use, so an image shipping one backend's dependencies still reads
+    the schema, and read per call, so one process can compare the two. A backend
+    owns its derivative as well as its forward pass.
     """
     selected = os.environ.get(BACKEND_VARIABLE, BACKEND_DEFAULT)
 
-    if selected == "smax":
-        import _backend_smax as backend  # noqa: PLC0415
-    elif selected == "opensees":
+    if selected == "opensees":
         import _backend_opensees as backend  # noqa: PLC0415
     elif selected == "pynite":
         import _backend_pynite as backend  # noqa: PLC0415
@@ -202,38 +124,16 @@ def _selected_backend() -> Any:
 def apply(inputs: InputSchema) -> OutputSchema:
     """
     Analyze the frame.
-
-    Parameters
-    ----------
-    inputs :
-        The geometry, the sections, the topology and the load case.
-
-    Returns
-    -------
-    outputs :
-        The internal forces of every member.
     """
-    return _selected_backend().solve_forces(inputs.model_dump())
+    frame = read_frame(inputs.model_dump())
+    forces = _selected_backend().solve_forces(frame)
+
+    return force_outputs(forces)
 
 
 def abstract_eval(abstract_inputs):
     """
     Output shapes and dtypes, without analyzing anything.
-
-    Parameters
-    ----------
-    abstract_inputs :
-        The input fields, arrays replaced by their shape and dtype.
-
-    Returns
-    -------
-    outputs :
-        A shape and a dtype for every output field.
-
-    Notes
-    -----
-    Required by Tesseract-JAX: JAX resolves shapes before it executes anything,
-    so every endpoint below is unreachable without this one.
     """
     members = abstract_inputs.edges.shape[0]
 
@@ -241,43 +141,7 @@ def abstract_eval(abstract_inputs):
         "axial_force": {"shape": (members,), "dtype": "float64"},
         "end_moments_major": {"shape": (members, 2), "dtype": "float64"},
         "end_moments_minor": {"shape": (members, 2), "dtype": "float64"},
-        "shear_major": {"shape": (members,), "dtype": "float64"},
-        "shear_minor": {"shape": (members,), "dtype": "float64"},
-        "torsion_moment": {"shape": (members,), "dtype": "float64"},
     }
-
-
-# What the frame reports but designs nothing for, and so differentiates nothing.
-DIAGNOSTICS = ("shear_major", "shear_minor", "torsion_moment")
-
-
-def refuse_diagnostics(outputs) -> None:
-    """
-    Refuse a derivative of an output the stage reports without designing for.
-
-    Parameters
-    ----------
-    outputs :
-        Names of the output fields a derivative is being asked of.
-
-    Raises
-    ------
-    ValueError
-        If any diagnostic is among them.
-
-    Notes
-    -----
-    Refused rather than answered with a zero, because a cotangent on one means
-    the caller left a non-differentiable output in the loss and would otherwise
-    get a wrong answer quietly. The sibling check refuses its governing limit
-    state the same way and for the same reason.
-    """
-    asked = sorted(set(outputs) & set(DIAGNOSTICS))
-    if asked:
-        named = ", ".join(f"`{name}`" for name in asked)
-        raise ValueError(
-            f"{named} is non-differentiable; drop it before differentiating"
-        )
 
 
 def vector_jacobian_product(
@@ -307,93 +171,11 @@ def vector_jacobian_product(
 
     Notes
     -----
-    What `jax.grad` calls. A traced backend answers in one reverse pass whatever
-    the number of coordinates; a direct differentiation backend is forward-mode
-    by nature and has to assemble the same answer column by column, at a cost
-    that grows with the parameter count. Both satisfy this endpoint, and how
-    differently they pay for it is a result rather than an implementation
-    detail.
+    What `jax.grad` calls. Both backends satisfy it, and how differently they
+    pay for it is a result rather than an implementation detail.
     """
-    refuse_diagnostics(vjp_outputs)
+    frame = read_frame(inputs.model_dump())
+    cotangent = read_cotangent(cotangent_vector, frame.structure.num_edges)
+    pulled = _selected_backend().forces_vjp(frame, cotangent)
 
-    return _selected_backend().forces_vjp(
-        inputs.model_dump(), vjp_inputs, vjp_outputs, cotangent_vector
-    )
-
-
-def jacobian_vector_product(
-    inputs: InputSchema,
-    jvp_inputs: list[str],
-    jvp_outputs: list[str],
-    tangent_vector: dict[str, Any],
-):
-    """
-    Push a tangent on the inputs forward to the outputs.
-
-    Parameters
-    ----------
-    inputs :
-        The geometry, the sections, the topology and the load case.
-    jvp_inputs :
-        Names of the input fields a derivative is taken with respect to.
-    jvp_outputs :
-        Names of the output fields a derivative is taken of.
-    tangent_vector :
-        Tangent on each of those inputs.
-
-    Returns
-    -------
-    tangents :
-        Tangent on each of the requested outputs.
-
-    Notes
-    -----
-    Never reached by `jax.grad`, and the natural mode for a direct
-    differentiation backend, which computes a tangent per parameter directly.
-    The two backends therefore meet here first, before the reverse rule.
-    """
-    refuse_diagnostics(jvp_outputs)
-
-    return _selected_backend().forces_jvp(
-        inputs.model_dump(), jvp_inputs, jvp_outputs, tangent_vector
-    )
-
-
-def jacobian(
-    inputs: InputSchema,
-    jac_inputs: set[str],
-    jac_outputs: set[str],
-):
-    """
-    Materialize every requested derivative block.
-
-    Parameters
-    ----------
-    inputs :
-        The geometry, the sections, the topology and the load case.
-    jac_inputs :
-        Names of the input fields a derivative is taken with respect to.
-    jac_outputs :
-        Names of the output fields a derivative is taken of.
-
-    Returns
-    -------
-    blocks :
-        One array per (output, input) pair, keyed output first, each shaped
-        as the output's shape followed by the input's.
-
-    Notes
-    -----
-    What a batched `jax.jacrev` or `jax.jacfwd` calls once per Jacobian
-    whenever this endpoint exists, in place of one product crossing per row.
-    The traced backend answers it with one reverse sweep over the same
-    restricted solve; the direct differentiation backend hands over the dense
-    blocks its sweep assembles anyway, which is the mode it was built for.
-
-    The name sets arrive unordered and are fixed sorted, once, here.
-    """
-    refuse_diagnostics(jac_outputs)
-
-    return _selected_backend().forces_jacobian(
-        inputs.model_dump(), sorted(jac_inputs), sorted(jac_outputs)
-    )
+    return {name: np.asarray(pulled[name]) for name in vjp_inputs}

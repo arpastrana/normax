@@ -2,6 +2,477 @@
 
 ## Unreleased
 
+### The form finder owns its basis, and the start is an initializer
+
+Ruled 2026-08-26: the held-plan basis is a property of form finding alone — it
+parametrizes force densities and nothing downstream sees a coordinate — so it
+lives on the form finder; the diameter folding is not, so it lives on the
+pipeline; and the three example-local `initialize_densities` were one
+procedure with three fits inside it, so the fits are objects and the procedure
+is shared.
+
+- **`form_finding:` replaces `subspace:` and `start:`** in every YAML:
+  `basis: pivoted | svd | null` (the orthonormal basis has always been the SVD
+  null space, so `svd` names it truthfully; `null` is plain FDM), `mirror: x |
+  y | null` (the axis the mirror plane stands normal to), and `force_density`
+  — a number for one density in every member, `drawn` to fit the drawn
+  geometry, or `{lens: {sag, rise, held_plan}}` to fit a lens sketch. Read into
+  `FormFindingConfig`, whose `initializer` field is the object the value names;
+  `SubspaceConfig` is deleted, `RunConfig` has one type parameter, and
+  `parse_config` takes the description type alone.
+- **`FdmFormFinder(structure, basis)`** carries `basis: PlanBasis | None`, and
+  `AbstractFormFinder` grows `count_coordinates`, `expand_coordinates` and
+  `read_coordinates`, which `design.py`'s helpers delegate to. The extras
+  finders carry `basis = None` and count their own width.
+- **`build_pipeline(structure, family, form_finding, analysis, sizing)`** reads
+  the mirror and the basis off the config and builds the finder with them; the
+  diameter folding comes off `sizing.fold_mirror` / `sizing.fold_polar` and
+  sits on **`StructuralDesignPipeline.spread`**. `DesignProblem` is
+  `(structure, pipeline, loads, constraints)`.
+- **The mirror is found, not indexed.** `find_mirror_nodes(structure, axis)`
+  and `find_rotated_nodes(structure, num_spokes)` match reflected or rotated
+  nodes geometrically; they reproduce the three hand-coded permutations
+  exactly, and those (`mirror_nodes` ×3, `rotate_nodes`, `permute_rings`) are
+  gone. `ShellDescription` loses `polar_diameters` and `guard_hoops`.
+- **Initializers** in `form_finding.py`: `AbstractDensityInitializer` with one
+  abstract `fit`; `UniformDensityInitializer(force_density)`,
+  `LensShapeInitializer(sag, rise, held_plan)`, `DrawnShapeInitializer()`. The
+  shared `__call__` signs the fit: shifted along the first self-stress where
+  there is one, checked where there is none, and the guard rescaled at the
+  shifted densities — the Vierendeel way, for all. Returns `DensityStart(q,
+  guard)`.
+- **The sign guard is configuration**: `constraints.sign_guard: {family:
+  tension | compression}`, resolved by `assign_signs(constraints, families)`
+  against `list_warren_families` / `list_vierendeel_families` /
+  `list_shell_families`, now in `structures.py`. `sign_chords` and
+  `select_guarded_members` are gone.
+
+A medium-effort review of the change caught five defects, fixed the same day:
+`assign_signs` closes open-ended family slices against the member count (the
+verticals and the shell's diagonals were being read as the first members);
+a margin of zero or less still signs the start along the self-stress and only
+withholds the rows; `held_plan: true` without a basis and a `mirror` without
+a `basis` are refused rather than silently ignored; the compilation-cache
+setup in `normax/__init__.py` tolerates a read-only tree. The README snippet
+builds a `FormFindingConfig` and runs again.
+
+Every example's start is the same seven lines. **Measured**: the arch
+reproduces its record bit for bit (0.135620 t, zero variable difference).
+Warren now carries the guard rows it used to build and discard — ruled 2026-08-26
+that it should — and lands at 0.055556 t against the recorded 0.055608 t, from
+an identical start. The other two ran at a smoke budget; their full records are
+to be refreshed. 357 tests.
+
+### The structure and start containers moved into the package
+
+The examples each defined the container their `structure:` and `start:`
+sections were read into — `TrussConfig` twice, identically, and `StartConfig`
+three times in two shapes — on the reasoning that a structure's vocabulary was
+the example's own. It was `structures.py`'s: every field mirrored a generator's
+signature. Moved 2026-08-26:
+
+- **`ArchDescription`, `TrussDescription`, `ShellDescription`** in `normax/structures.py`, each
+  beside the generator whose arguments it names. `Description`, not `Config`:
+  the `*Config` containers are the run description's own and live in
+  `config.py` alone. `ShellDescription` still carries `polar_diameters` and `guard_hoops`, which
+  describe the subspace rather than the shell; where they belong is open.
+- **`UniformDensityInitializer(force_density)` and `LensShapeInitializer(sag_lens, rise_lens)`** in
+  `normax/form_finding.py`, before `fit_densities`, the start generator that
+  consumes them: one force density in every member, or a lens the densities
+  are fitted to. The gridshell names neither; its drawn cap is the start.
+
+`parse_config` keeps taking the two types as arguments and `RunConfig` its two
+type parameters, so each example still reads a fully typed description. The
+experiments that reached an example's containers through `importlib` can now
+import them.
+
+### The run description names its sections for what they are
+
+Three renames of 2026-08-26 in the YAML the examples read and the containers
+behind it, no behavior touched:
+
+- **`augmented:` → `optimization:`**, and `RunConfig.augmented` →
+  `optimization`. The section is any descent's budget; the method is named by
+  the code that runs it. In that code, `ConstrainedMaps.augmented` →
+  `augmented_objective`, and the one figure trace labeled `"augmented"` is
+  `"auglag"`: in a plot or a printout the method is always `auglag`, since
+  "augmented" alone says nothing about a Lagrangian.
+- **`sketch:` → `start:`**, `SketchConfig` → `StartConfig`, `RunConfig.sketch`
+  → `start`, `parse_config(sketch_type=)` → `start_type=`. The section is where
+  the search starts: a lens the trusses fit their densities to, one uniform
+  density for the arch, nothing for the gridshell. "Sketch" described the
+  trusses' case alone. `sketch_lens` keeps its name — it does sketch a lens.
+- **A `*Description` is bound as `description`, never `config`**: the fourteen
+  example functions taking one (`build_truss`, `mirror_nodes`, `list_families`,
+  …) name the parameter for what it is; `config` is reserved for a `RunConfig`.
+  `RunConfig.structure` keeps its name — fields there name their YAML section,
+  as `optimization` holds an `OptimizationBudget` — and its docstring, with
+  `parse_config`'s, now says it holds a setup, never the built `Structure`.
+- **`margin_fraction` → `constraints.sign_margin_fraction`**, in the YAML and
+  on `ConstraintsConfig`. It sized the sign guard — a constraint, the rows
+  `(sign·q − margin)/scale ≥ 0` — yet sat on `SubspaceConfig`, which is about
+  the basis alone. The arch states `0.0`: no container carries a default.
+- **Bounds say `min`/`max`, not `floor`/`ceiling`**: `diameter_floor` →
+  `diameter_min`, `length_floor` → `length_min`, `sag_floor` → `sag_min`,
+  `rise_ceiling` → `rise_max`, in the YAML `constraints:` section,
+  `ConstraintsConfig` and `DesignConstraints` alike.
+- **Every augmented-Lagrangian identifier says so**: `descend_augmented` →
+  `descend_augmented_lagrangian`, `ConstrainedMaps.augmented_objective` →
+  `augmented_lagrangian`, `evaluate_augmented` → `evaluate_augmented_lagrangian`.
+  "Augmented" alone can mean anything.
+- **The `optimization:` block names what each number bounds**: `rounds` →
+  `rounds_max`, `opening` → `rounds_warmup`, `iterations` → `iterations_warmup`,
+  `settled` → `iterations_after_warmup`, `penalty` → `penalty_start`, `growth`
+  → `penalty_growth`, `tolerance` → `violation_tol`, `quiet` → `objective_rtol`;
+  three prefixes for the outer loop, the inner solver and the penalty schedule.
+  With them, three more building words retired from non-building meanings:
+  `recoil_point_to_anchor`'s `anchor` is `last_good`, the Blueprints family's
+  `floor` is `diameter_min` (`at_floor` → `at_minimum`), and the two docstrings
+  that said "ceiling" say "cap".
+- **`OptimizationBudget.ceiling` → `penalty_cap`**, in the YAML `optimization:`
+  section and `update_multipliers`' parameter with it. A ceiling is a part of
+  a building; this is the largest penalty and multiplier the loop may reach.
+- **`read_design` → `evaluate_design`**: it expands a variable vector and runs
+  the whole pipeline once; `read_*` in `design.py` is a linear-map lookup, which
+  this is not. The two start containers are `UniformDensityInitializer` and
+  `LensShapeInitializer`.
+- **`label_load_cases` moved from `config.py` to `loads.py`**, beside
+  `build_load_cases`; it reads `LoadCaseConfig`s, which is the loads module's
+  business, not the parser's.
+
+### The verb sweep: sixty package functions renamed for what they do
+
+The 2026-08-26 ruling that a function leads with its verb, applied to the
+whole package (the examples went first, above). Same role, same name across
+the three analysis backends. No behavior touched; 61 files, ~500 lines.
+
+- **compute**: `member_forces` → `compute_member_forces` (opensees, pynite,
+  smax), `force_jacobian`, `member_rigidity`, `member_actions`, `member_mass`,
+  `member_lengths`, `tributary_areas` → `compute_*`; `member_frame` →
+  `compute_direction_cosines`; `augmented_penalty` → `compute_penalty`.
+- **assemble**: `frame_model` → `assemble_frame_model` (pynite, smax);
+  `bending_block`, `stiffness_local`, `stiffness_global`, `member_stiffness`,
+  `balance_rows`, `mirror_rows` → `assemble_*`.
+- **build / solve / prepare**: `equilibrium_graph`, `orbit_matrix` →
+  `build_*`; `equilibrium_state` → `solve_equilibrium`, `case_displacements` →
+  `solve_displacements`, `solved_state` → `solve_state`, `prepared_frame` →
+  `prepare_frame`.
+- **read / select / count / mask**: `member_densities` →
+  `read_member_densities`, `polar_plan` → `read_polar_plan`,
+  `axisymmetric_bending` → `read_axisymmetric_moment`; `free_nodes` →
+  `select_free_nodes`; `coordinate_count` → `count_coordinates`,
+  `governed_counts` → `count_governed_members`; `free_mask`, `deck_mask`,
+  `half_mask` → `mask_free_nodes`, `mask_deck_nodes`, `mask_half_span`.
+- **draw**: `figure_utilization`, `figure_mass_descent`, `design_figures` →
+  `draw_utilization`, `draw_mass_descent`, `draw_design_figures`.
+- **coerce**, for every boundary converter: ec3's `design_steel`,
+  `design_actions`, `neutral_sections` → `coerce_material`,
+  `coerce_member_actions`, `coerce_member_sections`; blueprint's `host_family`,
+  `host_actions` → `coerce_section_family`, `coerce_member_actions`.
+- **open**, for the in-process clients, since `load` is what a structure
+  carries: `load_tesseract`, `analysis_tesseract`, `sizing_tesseract` →
+  `open_tesseract`, `open_tesseract_analysis`, `open_tesseract_sizing`.
+- **one-offs**: `normal_axis` → `find_normal_axis`, `support_fixities` →
+  `restrain_supports`, `frame_plane` → `check_frame_plane`, `stiffness_frame` →
+  `choose_stiffness_frame`, `member_transform` → `tile_member_transform`,
+  `vertical_upward` → `swap_vertical`, `force_cotangents` →
+  `pull_back_cotangents`, `variable_bounds` → `bound_variables`,
+  `constraint_rows` → `evaluate_constraints`, `nodal_loads` →
+  `distribute_loads`, `shifted_multipliers` → `update_multipliers`,
+  `strayed_point` → `recoil_point_to_anchor`, `worst_violation` →
+  `measure_violation`, `table_lines` → `format_table`, `checks_passed` →
+  `verify_checks`, `demand_moment` → `reduce_moments`, `permuted_members` →
+  `permute_members`.
+- **`pinned_dispatch` is gone**: its one caller was `pin_dispatch_thread`, so
+  the wrapper is a closure inside it.
+- **Left alone**: `envelope_diameters` (the verb), and the `load_*` pattern
+  functions in `loads.py`, which do load the structure.
+
+`demand_moment` and `worst_violation` were also local variable names in
+`sizing/blueprint.py`, a test and an experiment; those variables keep their
+names, the sweep having matched calls, definitions and imports alone.
+
+### builders.py dissolved: every builder sits beside what it builds
+
+`build_*` had two meanings — "lives in `builders.py`" for five functions, and
+"constructs the thing named" for `build_plan_basis`, `build_member_spread`,
+`build_load_cases`, the structure generators and the examples' own
+`build_truss`. Ruled 2026-08-26 that the prefix means the second, so the module
+that existed to collect the first is gone (−224 lines), each builder moved next
+to its product:
+
+- `build_section_family` and `CLASS_LIMITS` → `sections.py`, with `TubeFamily`.
+- `build_analyzer`, `build_sizer`, `build_pipeline` and the `*_CROSSED` tuples
+  → `tesseract.py`, with the clients they pick between. That module is now the
+  one place every shipping backend is named; `design.py` stays ignorant of the
+  transport.
+- `build_design_constraints` → `design.py`, with `DesignConstraints`; this is
+  the one new dependence, `design` on `config`.
+
+No cycles: `builders.py` was a leaf, `tesseract.py` is imported only by the
+viewer, and `config.py` imports only `optimization`. Eighteen import sites
+moved — the four examples and fourteen tests — plus the README snippet. The
+alternative, pulling every `build_*` into `builders.py`, could never be
+consistent: the structure generators are `structures.py`, and the examples'
+builders cannot live in the package at all.
+
+### Every function starts with the verb for what it does
+
+Ruled 2026-08-26: a function's name leads with an action verb, after the
+precedent of `build_pipeline`, `optimize_design` and `read_design`. Noun
+phrases such as `member_families` or `compressive_start` said what came back
+and not what was done to get it. Renamed, no behavior touched:
+
+- **In the package:** `held_plan_basis` → `build_plan_basis`, `member_spread`
+  → `build_member_spread`, `lens_geometry` → `sketch_lens` (the YAML section
+  it reads is `sketch`), `signed_shift` → `shift_densities`, `case_labels` →
+  `label_load_cases`, `initial_variables` → `initialize_optimization_variables`.
+- **In the examples:** `signed_start` and `compressive_start`, one role in
+  parallel scripts, are both `initialize_densities`; `mirrored_nodes` →
+  `mirror_nodes`, `rotated_nodes` → `rotate_nodes`, `ring_nodes` →
+  `permute_rings`, `member_families` → `list_families`, `guarded_members` →
+  `select_guarded_members`, `chord_signs` → `sign_chords`.
+- **`DesignOutcome` is `DesignRecord`**, and what holds one is `record` — in
+  the examples and as the parameter of `report_design`, `export_design` and
+  `view_design`. The `.npz` path inside `export_design` is `archive`, so it no
+  longer shadows the record it is written from.
+- **JAX is configured in `normax/__init__.py` alone:** `float64`, the
+  compilation cache at the repository's `.jax_cache`, and the zero
+  minimum-compile-time threshold. The four examples and `tests/conftest.py`
+  carried the cache lines each; they import the package, so they inherit them.
+
+The wider package still holds some sixty noun-named functions (`member_forces`,
+`frame_model`, `nodal_loads`, `orbit_matrix`, …); they are a separate sweep.
+
+### An example's main is the computation and the descent, and nothing else
+
+Each example's `main()` ended in forty lines of printing and writing that
+outweighed the twenty of computation they reported on. Folded 2026-08-26 into
+one call per concern, every one gated by a flag in the run's file:
+
+- **`output:` replaces `viewer:` in the YAMLs** — `verbose`, `export` and
+  `viewer`, read into `OutputConfig` on `RunConfig`. A run with every flag off
+  is the computation alone.
+- **`DesignRecord`** in `normax.design` carries what a run arrived at — the
+  problem, the descent's answer, the start and answer designs, and the member
+  families — so the three consumers read one container instead of five names.
+- **`report_design(outcome, config, title)`** in `normax.reporting` owns the
+  banner, the backends block, the descent table, both designs, the families
+  and the saving; it builds its own quiet `Report` when the run is not
+  verbose. The per-design block that held the name is `summarize_design`.
+  The backends block used to print before the descent; it now prints with
+  everything else, after it.
+- **`export_design(outcome, config, target)`** in the new `normax.exporting`
+  writes the `.npz` record and the two figures to an `ExportTarget` — the stem
+  and the two folders, one module constant per example in place of the
+  `FIGURES`/`DATA` pair. The record's keys are unchanged.
+- **`view_design(outcome, config)`** in `normax.viewer` opens the start and
+  the answer, and returns at once when the run asks for no viewer.
+
+The four `main()`s are now seventeen to twenty-four lines below the config
+line, and identical in shape from the descent down.
+
+### Four names said how instead of what
+
+Renamed 2026-08-26, no behavior touched:
+
+- **`AugmentedBudget` → `OptimizationBudget`, `AugmentedAnswer` →
+  `OptimizationAnswer`.** The containers describe what any descent spends and
+  arrives at; naming them after the one method that reads them today tied the
+  run description to that method. The `augmented` YAML section and the
+  `RunConfig` field reading it followed, as `optimization`.
+- **`parse_run` → `parse_config`** in `normax.config`, and its four callers in
+  `examples/`. The function returns a `RunConfig`; the experiments that reach
+  into an example already called it `parse_config`.
+- **`_section_slopes` → `_section_sensitivity`** in `analysis/opensees.py`,
+  matching `_force_sensitivity` beside it.
+- **No `weigh_*` functions.** `weigh_shape` → `compute_mass`,
+  `weigh_and_slope` → `compute_mass_and_gradient`, `weigh_design` →
+  `compute_mass_and_design`,
+  `weigh_density`/`weigh_heights` → `density_objective`/`heights_objective`,
+  in experiments 13, 15 and 103. The bare `weigh` closure in 13 and 103 stays:
+  it carries no prefix, and it lives in unadapted experiments. The one closure
+  in `tests/test_extras_replay.py` is still `shape_objective`: its body calls the
+  package `compute_mass`, which the name would shadow.
+
+### The in-process sizer dissolved into a swappable sizing Tesseract
+
+`BlueprintSizer` was the one block in the transport grid with no analysis-side
+counterpart: analysis never had an in-process wrapper of its crossed backends,
+while sizing carried one for the historical reason that the class came first
+and the Tesseract wrapped it later. Dissolved 2026-08-26, with the constraints
+fixed by the same ruling: `Ec3Sizer` is never a Tesseract backend — it
+parallels `SmaxAnalyzer` as the in-process oracle — and commercial-check
+backends (SkyCiv-class) are the motivation, not hackathon work.
+
+**The sizing Tesseract now mirrors the analysis one.** `tesseracts/blueprint_check`
+became `tesseracts/sizing`, split into the schema plus a `_selected_backend()`
+dispatch on `NORMAX_SIZING_BACKEND` (default `blueprint`), the whole far side
+moved verbatim into `_backend_blueprint.py`. `sizing_tesseract(backend)`
+replaces `blueprint_tesseract()`, the config value `blueprint_tesseract`
+became `blueprint`, and the schema itself is unchanged — no buckling length
+crosses until a backend that reads one exists, and the module docstring
+records that deferral. The wire is unpublished, so widening it later is cheap.
+
+**`sizing/blueprint.py` is now host NumPy with no JAX anywhere** — the class
+and its two `pure_callback` `custom_vjp` wrappers are deleted (−291 lines),
+and the only way a trace reaches Blueprints is the boundary, which is the
+writeup's sentence made literal. `builders.py` stopped importing the oracles
+the same day: nothing selected `"smax"` or `"ec3"` by name, so the branches
+and imports went, `test_plan_basis.py` left the oracle gate, and the one
+remaining leak is the viewer's `SmaxAnalyzer`, tied to the smax deletion.
+
+**The parity suite now shares one `TesseractSizer` in both triples**, so
+parity isolates the analysis crossing — `Ec3Sizer` is not a substitute oracle
+there because §6.3.1 makes it differ by design. The sizer's own transport
+fidelity moved to `test_tesseract_sizer.py`, where the crossed answers and
+gradients are compared against direct host-function calls bit for bit.
+
+**The held check no longer pays for the solve it discards.** Measured on 50
+members with fresh actions per call (the solved-state memo defeated): the
+bisection was 1.55 ms of a 2.77 ms `compute_utilization` crossing, 56%. A
+static `solve` flag on the schema lets that question decline it — `False`
+echoes the held size and its utilization, with the echo's adjoint being the
+held rule — and the crossing drops from 2.80 to 1.20 ms. The naive first
+measurement read 10% because repeating identical actions hit the memo.
+
+**Not adapted:** `experiments/validation/12, 13, 14` still name
+`BlueprintSizer`; they sit in the unadapted experiments and get the new API
+when experiments do.
+
+### The package condensed around one method and four examples
+
+The API was two APIs: `examples/arch.py` composed three blocks and descended a
+penalized mass by L-BFGS-B over the force densities alone, while the other three
+examples drove a fourteen-callback `StructureProfile` through `normax/searches/`
+— eleven modules that never called the pipeline they were built on, raced three
+searches, polished every landing with SLSQP and stored answers by digest. Both
+are gone. What remains is the formulation the measured results came from: the
+force densities and the diameters as one variable vector, the check and the
+constraints as rows of one slack vector, and an augmented Lagrangian spending
+one reverse pass per gradient across whatever boundary a block sits behind.
+
+**The pipeline checks rather than sizes.** `StructuralDesignPipeline(params,
+loads)` now analyzes at the given diameters and asks the sizer how hard they are
+worked, which is the question a simultaneous search asks; the sizing map
+`sizer(forces, lengths)` survives to seed a start. `DesignProblem` holds the two
+linear maps every example needs — a `PlanBasis` for the densities and an orbit
+matrix for the diameters — and `design.py` states the rows, the boxes, the
+compiled maps and `optimize_design`. `SubspaceFormFinder` folded into the
+problem: with the basis owned there, `DesignParameters.coordinates` is honest
+and `FdmFormFinder` is the only form finder on the shipping path.
+
+**One module per concern, arrays in and arrays out.** `symmetry.py` (orbits,
+permuted members, the sign guard and the self-stress shift), `form_finding.py`
+(the two packages merged, `held_plan_basis` in both conventions), `loads.py`
+(one registry of patterns that read a deck or a polar plan off the structure —
+the truss and shell builders reproduce the retired ones to 1e-13), `config.py`
+(the shared run containers, each example supplying only its own structure and
+sketch types), `blocks.py` (the one place every backend is named),
+`tesseract.py` (the two shipping crossings and the dispatch pin), `figures.py`
+and `viewer.py` (the three drawings the examples make). `Report` stays as the
+printing kernel, with three domain writers beside it.
+
+**Demoted, not deleted.** `normax/extras/` parks the nested route
+(`minimize_bounded`, the penalized floor, settling, staggered rounds,
+annealing, trajectories and their replay), an SLSQP descent for cross-checks,
+and two form finders — free heights and the drawn geometry — that express the
+old comparison searches as a swapped block.
+
+**Deleted outright.** The formfinding and ec3 Tesseracts and their clients,
+`TesseractFormFinder` and `TesseractSizer`; the `jacobian` and
+`jacobian_vector_product` endpoints everywhere (a scalar gradient takes the VJP
+alone); shear and torsion from `MemberForces` and the analysis schema (nothing
+in design read them); the smax backend behind the analysis schema; `frames.py`
+and twelve experiment-only figures; `build_diagrid_3d`, `Steel235`, the unused
+section moduli, `positions_vertical`, `equilibrium_gap`; the settings module
+and its import-time JAX config; digest-keyed stored answers, replaced by one
+`np.savez` per example under `data/`.
+
+**The Blueprints check has one implementation.** The Tesseract re-implemented
+the in-process sizer's bisection and partials in NumPy; now `sizing/blueprint.py`
+is the NumPy host implementation — the evaluator fast path, the solved-state
+memo and the clamp-aware adjoint included — the Tesseract imports it, and the
+in-process `BlueprintSizer` calls the same functions through `pure_callback`
+with a `custom_vjp`, so the two are bit-identical by construction.
+`build_section_family` moved to `sections.py` with the Table 5.2 limits, so the
+shipping path no longer imports ec3x for a ratio; `import normax.analysis` no
+longer imports smax.
+
+**Every example reads the same way.** Structure, load cases, blocks, subspace
+and folding, start, `optimize_design`, report, figures, viewer — the same
+`main` shape in all four, the structure-specific part being a generator, a
+mirror, a start recipe and, where the manifold has degenerate sheets, a sign
+guard. The arch runs the augmented Lagrangian too, its density box as bounds
+and its length floor as rows. `experiments/` was left untouched and no longer
+imports; it is to be adapted to this API, not the other way round.
+
+### Four featured examples, an installed search package, and the dependency line redrawn
+
+The repository had thirty-three scripts in one flat folder, a 4,651-line harness
+among them, and no way for a reader to tell a validation run from the result the
+writeup quotes. It now has four examples, a graveyard, and one installed package.
+
+**`route` became `search`, and two misnomers were fixed.** The word was doing
+double duty: one of three competing ways to design a structure, and one of two
+ways to compute the same number. Only the first sense was renamed — the second
+survives in `13_simultaneous_sizing.py`, `22_jacobian_crossing.py` and three test
+modules, where "two routes to one gradient" is the intended meaning.
+`RouteProblem` became `DesignProblem` (all three searches share one) and
+`RouteProfile` became `StructureProfile` (it holds a structure's generator and
+mirror, never a search's). The YAML viewer keys followed. Every stored answer
+still resolves: `descent_digest` hashes a `repr` that carries field and class
+names, so the four landings were checked before and after and are unchanged.
+
+**`design_routes.py` was split by binding, not by line.** An AST pass partitioned
+142 top-level bindings into ten modules along a measured DAG with no back edges,
+then the package was promoted to `normax/searches/`. Equivalence was checked four
+ways: no signature or `NamedTuple` field differs, every digest holds, lint is
+clean, and a read-back of the crossed shell reproduces 0.074724 / 0.136011 /
+0.145735 t byte-identically against the same run at the previous commit in a
+throwaway worktree.
+
+**Every `sys.path` insert is gone** — eight of them, five added by the move
+itself and three predating it. That was the point of promoting the harness rather
+than relocating it.
+
+**The four examples now state their backends.** Three of them set only
+`analysis.diameter` and inherited `smax` plus in-process `ec3` from a dataclass
+default, so the featured runs exercised neither Tesseract boundary while the
+reported masses came from PyNite and Blueprints across theirs. `examples/gridshell.yaml`
+is now that crossed run itself — the digest is content-only, so it still resolves
+the stored landing — and the two trusses take the vetted `opensees` plus
+`blueprint_tesseract` pairing, which also avoids the segfault the in-process
+`ec3` pairing hits. Crossed Warren had never been run; it passes at 3.99e-10.
+
+**`pipeline` and `spike` are dissolved.** jax-fdm, Blueprints, PyNite, OpenSees,
+matplotlib and polyscope ship; `ec3x`, `smax` and `vix` are quarantined in
+`local-dev`, pinned to filesystem paths, and slated for deletion because being
+JAX-native is what makes them oracles rather than backends. With them absent 167
+of 450 tests run, which is the size of that job.
+
+**Two stale pins surfaced, both hidden by an untracked lock.** `smax` deleted
+`CompiledStructure` on 2026-08-15; twelve test modules import it and passed only
+because `uv.lock` had frozen a pre-deletion commit while `rev = "main"` went
+eleven days unresolved. It is now pinned to `750c85d` explicitly, with the reason
+in `[tool.uv.sources]`. And `vix` was never in `[project] dependencies` at all,
+so promoting the viewer into the package had broken `import normax.searches` for
+every install without the viz group.
+
+**The viewer no longer sits in the library's import path.** `run_searches` returns
+a `ViewRequest` instead of opening a window, and the drawing modules are one
+package — `visualization.figures` for matplotlib, `visualization.frames` for
+polyscope screenshots, `visualization.viewer` for the interactive window. Only
+`figures` is re-exported: `frames` reaches the frame solver through the replay it
+draws, which is `normax/analysis/__init__.py`'s module-scope smax re-export
+showing up a third time.
+
+**Still open.** The prose sweep — the README quotes a command that now fails, and
+eighteen moved scripts print their pre-move invocation. `CLAUDE.md` §7's layout
+predates all of this, and §9 still forbids openseespy in CI, which the new
+dependencies contradict. `uv.lock` stays gitignored, which is what hid the smax
+pin.
+
 ### Three routes, twenty-four starts each, and the form finder buys half the steel
 
 The three parametrizations had never been compared on equal terms. Every figure

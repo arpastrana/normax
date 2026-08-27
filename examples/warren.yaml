@@ -1,0 +1,69 @@
+# The Warren truss, composed across two Tesseract boundaries: jax-fdm in
+# process, OpenSees across the analysis schema, Blueprints across the check.
+# Millimeters and newtons throughout.
+structure:
+  num_bays: 8
+  span: 10000.0
+  depth: 1000.0
+
+# The held plan: an orthonormal basis folded by the midspan mirror; a lens fit.
+form_finding:
+  basis: svd
+  mirror: x
+  force_density: {lens: {sag: 600.0, rise: 800.0, held_plan: false}}
+
+# Every case sits on the deck. The first shapes the truss; every case is
+# checked. The mirrored half-span case is a reindexing of the near one on a
+# symmetric design, so it is left out.
+load_cases:
+  - name: deck
+    magnitude: 180000.0
+  - name: deck_half
+    magnitude: 180000.0
+    options: {factor: 0.5}
+  - name: deck_point
+    magnitude: 90000.0
+
+analysis:
+  diameter: 100.0
+  # A planar host solver across the analysis schema, carrying DDM
+  # sensitivities of its own rather than a traced gradient.
+  backend: opensees
+
+sizing:
+  section_class: 3
+  # The check crosses its own boundary too, so neither solver on the far side
+  # differentiates itself. Blueprints implements no 6.3.1 buckling.
+  backend: blueprint
+  fold_mirror: true
+  fold_polar: false
+
+constraints:
+  diameter_min: 21.3
+  length_min: 500.0
+  rise_max: 2000.0
+  sag_min: -1000.0
+  # Signs the chords at the start and guards them through the descent.
+  sign_margin_fraction: 0.1
+  sign_guard: {bottom chord: tension, top chord: compression}
+  bounds: null
+
+# The opening penalty is the one setting that decides the answer rather than
+# the speed; this truss is flat across two decades of it, so the conservative
+# end is kept.
+optimization:
+  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_warmup: 3              # first rounds given the larger inner budget
+  iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
+  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  penalty_start: 0.1            # penalty parameter of the first round
+  penalty_growth: 10.0          # penalty multiplier when a round earns too little
+  penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
+  violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
+  objective_rtol: 1.0e-6        # relative objective change per round counting as none
+
+# What becomes of the answer; a viewer blocks, so it opens last.
+output:
+  verbose: true
+  export: true
+  viewer: false

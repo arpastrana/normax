@@ -1,0 +1,12 @@
+name: "normax-sizing"
+version: "0.1.0"
+description: "Member actions to the sizes a cross-section check requires"
+
+build_config:
+  # normax needs 3.12, which the base image does not carry.
+  python_version: "3.12"
+  target_platform: "native"
+
+  # Only tesseract_api.py is copied into the image by default.
+  package_data:
+    - [_backend_blueprint.py, /tesseract/_backend_blueprint.py]

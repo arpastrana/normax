@@ -1,0 +1,75 @@
+# The arch, and the settings a design of it is searched for under. Millimeters
+# and newtons throughout, so a mass comes out in tonnes and a force density in
+# newtons per millimeter.
+structure:
+  num_edges: 10
+  span: 10000.0
+  rise: 3000.0
+
+# Plain FDM: a chain has one density per member and no plan to hold.
+form_finding:
+  basis: null
+  mirror: null
+  force_density: -80.0
+
+# The first case shapes the arch; every case is checked.
+load_cases:
+  - name: uniform
+    magnitude: 180000.0
+  - name: half_span
+    magnitude: 90000.0
+  - name: half_span
+    magnitude: 90000.0
+    options: {mirrored: true}
+
+analysis:
+  diameter: 250.0
+  # opensees crosses a Tesseract boundary to a planar host solver carrying
+  # DDM sensitivities; pynite is the space-frame host with a hand adjoint.
+  backend: opensees
+
+sizing:
+  section_class: 3
+  # blueprint is Blueprints' cross-section check, across a Tesseract
+  # boundary. Blueprints implements no 6.3.1 buckling.
+  backend: blueprint
+  fold_mirror: false
+  fold_polar: false
+
+# No held-plan subspace: an arch is a chain, whose held plan has one degree
+# of freedom, so every force density moves on its own inside the bounds.
+subspace: null
+
+constraints:
+  diameter_min: 21.3
+  # Without a floor the search collapses members instead of improving the
+  # form, a member being both free and unbucklable as it vanishes.
+  length_min: 600.0
+  rise_max: null
+  sag_min: null
+  # No sign guard: a chain has one sign, and the bounds keep it.
+  sign_margin_fraction: 0.0
+  sign_guard: null
+  # Not a design constraint: the bounds keep the densities away from zero,
+  # where the force density system is singular.
+  bounds: {min: -100.0, max: -1.0e-3}
+
+# The opening penalty is the one setting that decides the answer rather than
+# the speed; every other entry is a budget. Signed exponents, or YAML reads
+# them as strings.
+optimization:
+  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_warmup: 3              # first rounds given the larger inner budget
+  iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
+  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  penalty_start: 0.1            # penalty parameter of the first round
+  penalty_growth: 10.0          # penalty multiplier when a round earns too little
+  penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
+  violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
+  objective_rtol: 1.0e-6        # relative objective change per round counting as none
+
+# What becomes of the answer; a viewer blocks, so it opens last.
+output:
+  verbose: true
+  export: true
+  viewer: false

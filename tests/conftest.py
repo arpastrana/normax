@@ -1,55 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
 import importlib.util
 from pathlib import Path
 
-import jax
+# TEMPORARY, until smax and ec3x are gone. Neither is on PyPI, both are pinned
+# to a local path in the "local-dev" group, and CI installs "dev" alone. They
+# are JAX-native, which is what makes them oracles rather than backends, and
+# the plan is to delete them rather than publish them.
+ORACLE_PACKAGES = ("smax", "ec3x")
 
-# Most of a run is XLA recompiling the same programs; see CHANGELOG for the cost.
-COMPILATION_CACHE = Path(__file__).resolve().parent.parent / ".jax_cache"
-COMPILATION_CACHE.mkdir(exist_ok=True)
-jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
-
-# TEMPORARY, until smax and ec3x are published. None of the three is on PyPI
-# yet, so all sit in the "pipeline" dependency group and CI installs "dev"
-# alone. Delete this block and move them into the project dependencies once
-# they are public.
-PIPELINE_PACKAGES = ("jax_fdm", "smax", "ec3x")
-
-# A test importing any of those packages, directly or through
-# normax.form_finding, normax.analysis, normax.sizing.ec3 or the backends,
-# belongs here. Omitting one turns CI red at collection rather than passing
-# quietly, so this list fails loudly when stale.
-PIPELINE_TESTS = (
+# Tests importing an oracle, directly or through normax.analysis.smax or
+# normax.sizing.ec3. Omitting one turns CI red at collection rather than
+# passing quietly. normax.visualization is not such a route: its viewer is
+# guarded, so an install without smax stands the viewer in for instead.
+ORACLE_TESTS = (
     "test_analysis_prepared.py",
-    "test_plan_basis.py",
+    "test_comparison.py",
+    "test_design.py",
     "test_equilibrium_consistency.py",
     "test_materials.py",
+    "test_nested.py",
     "test_pipeline.py",
-    "test_design.py",
     "test_replay.py",
     "test_second_sizer.py",
+    "test_sections.py",
     "test_tesseract_parity.py",
+    "test_tesseract_sizer.py",
 )
 
-# This one compares normax's neutral containers against ec3x's, so it needs
-# ec3x alone — an environment with ec3x but no frame solver still runs it.
-# test_materials used to sit here too, but it imports normax.sizing, whose
-# backend re-exports pull the frame solver and blue-prints along.
-EC3X_PACKAGES = ("ec3x",)
-
-EC3X_TESTS = ("test_sections.py",)
-
-# openseespy is the "spike" optional extra and CI never installs it, so the
-# second analysis backend is skipped wherever it is absent. It needs smax too,
-# being tested against it, and so is listed under both guards.
+# The two crossed analysis backends are tested against the traced oracle, so
+# their tests sit under both guards.
 OPENSEES_PACKAGES = ("openseespy",)
 
 OPENSEES_TESTS = ("test_backend_opensees.py",)
 
-# pynitefea is the "spike" optional extra too, and CI never installs it, so the
-# three-dimensional analysis backend is skipped wherever it is absent. It is
-# tested against smax, so it is listed under both guards, exactly as the planar
-# backend is. The import name is Pynite; the distribution is pynitefea.
+# The import name is Pynite; the distribution is pynitefea.
 PYNITE_PACKAGES = ("Pynite",)
 
 PYNITE_TESTS = (
@@ -57,30 +41,24 @@ PYNITE_TESTS = (
     "test_frame_convention.py",
 )
 
-# blue-prints (LGPL-2.1, experiment-only) is imported by normax.tesseract while
-# the blueprint sizer is prototyped, so every test importing that module — or
-# the sizer itself — is skipped without it, and no other pipeline test is.
+# blue-prints (LGPL-2.1) is imported unmodified as a pip package.
 BLUEPRINT_PACKAGES = ("blueprints",)
 
 BLUEPRINT_TESTS = (
     "test_backend_opensees.py",
-    "test_blueprint_sizer.py",
-    "test_materials.py",
     "test_tesseract_parity.py",
+    "test_tesseract_sizer.py",
 )
 
 collect_ignore = []
-if any(importlib.util.find_spec(name) is None for name in PIPELINE_PACKAGES):
-    collect_ignore.extend(PIPELINE_TESTS)
+if any(importlib.util.find_spec(name) is None for name in ORACLE_PACKAGES):
+    collect_ignore.extend(ORACLE_TESTS)
     collect_ignore.extend(OPENSEES_TESTS)
     collect_ignore.extend(PYNITE_TESTS)
-    collect_ignore.extend(BLUEPRINT_TESTS)
 if any(importlib.util.find_spec(name) is None for name in OPENSEES_PACKAGES):
     collect_ignore.extend(OPENSEES_TESTS)
 if any(importlib.util.find_spec(name) is None for name in PYNITE_PACKAGES):
     collect_ignore.extend(PYNITE_TESTS)
-if any(importlib.util.find_spec(name) is None for name in EC3X_PACKAGES):
-    collect_ignore.extend(EC3X_TESTS)
 if any(importlib.util.find_spec(name) is None for name in BLUEPRINT_PACKAGES):
     collect_ignore.extend(BLUEPRINT_TESTS)
 

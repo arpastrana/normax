@@ -1,32 +1,25 @@
-# Copyright 2026 Rafael Pastrana
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 """
-What the experiments print, in one place and one style.
+What a run prints, in one place and one style.
 
-The experiments measure and this module prints, as `normax.visualization` draws.
 A table states each column once — a heading and the format its cells take — and
-the widths follow from the text that is actually printed, so nothing is padded by
-hand and no heading can drift out of step with the row beneath it.
-
-Every writer carries its own verbosity. A quiet writer returns from each call
-without printing, so a caller silences a whole report by constructing one rather
-than by threading a flag through the functions that compute.
+the widths follow from the text actually printed. Every writer carries its own
+verbosity, so a caller silences a whole report by constructing a quiet one.
 """
 
 import textwrap
 from collections.abc import Sequence
+from typing import Any
 from typing import NamedTuple
+
+import jax.numpy as jnp
+import numpy as np
+
+from normax.config import RunConfig
+from normax.design import Design
+from normax.design import DesignRecord
+from normax.design import compute_mass
+from normax.optimization import OptimizationAnswer
 
 # Spaces of indentation given to anything printed under a heading.
 INDENT = "  "
@@ -95,7 +88,7 @@ def format_cell(value: CellValue, column: ReportColumn) -> str:
     return format(value, column.format_spec)
 
 
-def table_lines(
+def format_table(
     columns: Sequence[ReportColumn],
     rows: Sequence[Sequence[CellValue]],
 ) -> list[str]:
@@ -126,7 +119,7 @@ def table_lines(
     return lines
 
 
-def checks_passed(checks: Sequence[ToleranceCheck]) -> bool:
+def verify_checks(checks: Sequence[ToleranceCheck]) -> bool:
     """
     Whether every measurement stayed under its bound.
     """
@@ -224,7 +217,7 @@ class Report:
         if not self.verbose:
             return
 
-        for line in table_lines(columns, rows):
+        for line in format_table(columns, rows):
             self.write_line(line)
 
     def write_checks(self, checks: Sequence[ToleranceCheck]) -> None:
@@ -244,3 +237,133 @@ class Report:
         The one word the experiment is read for.
         """
         self.write_heading("PASS" if passed else "FAIL")
+
+
+def report_descent(report: Report, answer: OptimizationAnswer) -> None:
+    """
+    Every round of an augmented descent, its mass beside its violation.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    answer :
+        What the descent arrived at.
+    """
+    columns = (
+        ReportColumn("round"),
+        ReportColumn("mass [t]", ".6f"),
+        ReportColumn("violation", ".2e"),
+    )
+    walked = zip(answer.objectives, answer.violations, strict=True)
+    rows = [(index, mass, gap) for index, (mass, gap) in enumerate(walked)]
+    report.write_table(columns, rows)
+
+    ended = "converged" if answer.converged else "stopped on its round budget"
+    entries = [("evaluations", str(answer.evaluations)), ("ended", ended)]
+    report.write_entries(entries)
+
+
+def summarize_design(report: Report, design: Design, title: str) -> None:
+    """
+    What a design weighs, how hard it is worked, and how it sits.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    design :
+        The design to read.
+    title :
+        Heading the entries are printed under.
+    """
+    diameters = np.asarray(design.sizes.sections.diameter)
+    heights = np.asarray(design.shape.xyz)[:, 2]
+    entries = [
+        ("mass [t]", f"{float(compute_mass(design)):.6f}"),
+        ("utilization, worst", f"{float(jnp.max(design.sizes.utilization)):.6f}"),
+        ("diameters [mm]", f"{diameters.min():.1f} to {diameters.max():.1f}"),
+        ("shortest member [mm]", f"{float(jnp.min(design.shape.lengths)):.1f}"),
+        ("heights [mm]", f"{heights.min():.1f} to {heights.max():.1f}"),
+    ]
+    report.write_heading(title)
+    report.write_entries(entries)
+
+
+def report_families(
+    report: Report,
+    design: Design,
+    families: Sequence[tuple[str, slice]],
+) -> None:
+    """
+    Diameter and utilization ranges per member family.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    design :
+        The design to read.
+    families :
+        Name and member slice of every family.
+    """
+    diameters = np.asarray(design.sizes.sections.diameter)
+    worked = np.asarray(jnp.max(design.sizes.utilization, axis=0))
+    columns = (
+        ReportColumn("family", align="<"),
+        ReportColumn("d min [mm]", ".1f"),
+        ReportColumn("d max [mm]", ".1f"),
+        ReportColumn("U min", ".4f"),
+        ReportColumn("U max", ".4f"),
+    )
+    rows = []
+    for name, members in families:
+        sizes = diameters[members]
+        used = worked[members]
+        rows.append((name, sizes.min(), sizes.max(), used.min(), used.max()))
+    report.write_table(columns, rows)
+
+
+def report_design(
+    record: DesignRecord,
+    config: RunConfig[Any],
+    title: str,
+) -> None:
+    """
+    The whole report of a run, or nothing when the run is not verbose.
+
+    Parameters
+    ----------
+    record :
+        What the run arrived at.
+    config :
+        The run config, naming its backends and whether it prints.
+    title :
+        Banner the report opens with.
+    """
+    report = Report(verbose=config.output.verbose)
+    report.write_banner(title)
+
+    entries = [
+        ("analysis", config.analysis.backend),
+        ("sizing", config.sizing.backend),
+    ]
+    basis = record.problem.pipeline.formfinder.basis
+    if basis is not None:
+        entries.append(("coordinates", str(basis.width)))
+    entries.append(("variables", str(record.answer.variables.size)))
+    report.write_heading("Backends")
+    report.write_entries(entries)
+
+    report.write_heading("The descent")
+    report_descent(report, record.answer)
+    summarize_design(report, record.initial, "The start")
+    summarize_design(report, record.optimized, "The answer")
+    if record.families:
+        report_families(report, record.optimized, record.families)
+
+    mass_initial = float(compute_mass(record.initial))
+    mass_optimized = float(compute_mass(record.optimized))
+    saved = 1.0 - mass_optimized / mass_initial
+    saving = [("saved", f"{100.0 * saved:.2f} %")]
+    report.write_entries(saving)
