@@ -39,7 +39,7 @@ from normax.structures import Structure
 from normax.structures import build_gridshell_3d
 from normax.structures import list_shell_families
 from normax.tesseract import build_pipeline
-from normax.viewer import view_design
+from normax.visualization import view_design
 
 # The shell and the search, unless another file is named on the command line.
 CONFIG = Path(__file__).with_name("gridshell.yaml")

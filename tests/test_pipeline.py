@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,7 +13,6 @@ from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.design import compute_member_mass
-from normax.figures import draw_design_figures
 from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
@@ -25,6 +25,7 @@ from normax.sections import build_section_family
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import coerce_member_actions
 from normax.structures import build_arch_2d
+from normax.visualization import draw_design_figures
 
 matplotlib.use("Agg")
 

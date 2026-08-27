@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 import importlib.util
 from pathlib import Path
 
@@ -7,9 +8,10 @@ from pathlib import Path
 # the plan is to delete them rather than publish them.
 ORACLE_PACKAGES = ("smax", "ec3x")
 
-# Tests importing an oracle, directly or through normax.viewer,
-# normax.analysis.smax or normax.sizing.ec3. Omitting one turns CI red at
-# collection rather than passing quietly.
+# Tests importing an oracle, directly or through normax.analysis.smax or
+# normax.sizing.ec3. Omitting one turns CI red at collection rather than
+# passing quietly. normax.visualization is not such a route: its viewer is
+# guarded, so an install without smax stands the viewer in for instead.
 ORACLE_TESTS = (
     "test_analysis_prepared.py",
     "test_design.py",
