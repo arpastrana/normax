@@ -3,7 +3,8 @@ name = "normax"
 version = "0.1"
 description = "Backpropagating through structural engineering codes"
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+# jax-fdm caps at <3.13, tighter than the <3.15 tesseract-jax alone would allow.
+requires-python = ">=3.12,<3.13"
 authors = [{name = "Rafael Pastrana"}]
 license = "Apache-2.0"
 classifiers = []
