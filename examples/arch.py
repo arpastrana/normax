@@ -39,7 +39,6 @@ import sys
 from pathlib import Path
 
 import jax.numpy as jnp
-import numpy as np
 
 from normax.config import RunConfig
 from normax.config import parse_config
@@ -51,7 +50,6 @@ from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
-from normax.form_finding import UniformDensityInitializer
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
@@ -97,8 +95,8 @@ def main(config_path: Path) -> None:
         File naming the arch and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[ArchDescription, UniformDensityInitializer] = parse_config(
-        config_path.read_text(), ArchDescription, UniformDensityInitializer
+    config: RunConfig[ArchDescription] = parse_config(
+        config_path.read_text(), ArchDescription
     )
 
     # The structure, its load cases, and the three blocks built on it. The
@@ -106,17 +104,16 @@ def main(config_path: Path) -> None:
     structure = build_arch(config.structure)
     loads = build_load_cases(structure, config.load_cases)
     family = build_section_family(Steel355(), config.sizing.section_class)
-    pipeline = build_pipeline(structure, family, config.analysis, config.sizing)
+    pipeline = build_pipeline(
+        structure, family, config.form_finding, config.analysis, config.sizing
+    )
 
-    # An arch is a chain: every force density is its own coordinate, boxed.
+    # The start: one force density in every member, no guard, no folding.
+    started = config.form_finding.initializer(structure, loads.formfinding, None, None)
     constraints = build_design_constraints(config.constraints, None)
-    problem = DesignProblem(structure, pipeline, loads, None, None, constraints)
-
-    # The start: a uniform force density, and the diameters a frozen-seed
-    # analysis asks of it.
-    q_start = np.full(structure.num_edges, config.start.force_density)
+    problem = DesignProblem(structure, pipeline, loads, constraints)
     d_start = config.analysis.diameter
-    start = initialize_optimization_variables(problem, q_start, d_start)
+    start = initialize_optimization_variables(problem, started.q, d_start)
     initial = evaluate_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.

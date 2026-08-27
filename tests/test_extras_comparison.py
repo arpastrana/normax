@@ -11,7 +11,6 @@ from normax.design import bound_variables
 from normax.design import design_maps
 from normax.extras.comparison import DrawnFormFinder
 from normax.extras.comparison import HeightsFormFinder
-from normax.extras.comparison import identity_basis
 from normax.form_finding import select_free_nodes
 from normax.loads import assemble_load_cases
 from normax.loads import load_uniform
@@ -48,16 +47,14 @@ def family():
 
 def build_problem(structure, formfinder, family, loads):
     """
-    A design problem over a comparison finder, with an identity basis of its width.
+    A design problem over a comparison finder, whose coordinates are its own.
     """
     pipeline = StructuralDesignPipeline(
         formfinder, SmaxAnalyzer(structure, family(SEED)), Ec3Sizer(structure, family)
     )
     constraints = DesignConstraints(DIAMETER_FLOOR, 0.0, None, None, None, None)
 
-    return DesignProblem(
-        structure, pipeline, loads, identity_basis(formfinder.width), None, constraints
-    )
+    return DesignProblem(structure, pipeline, loads, constraints)
 
 
 def test_the_heights_finder_composes_and_the_mass_has_a_gradient(

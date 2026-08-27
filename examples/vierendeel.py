@@ -30,24 +30,18 @@ import sys
 from pathlib import Path
 
 import jax.numpy as jnp
-import numpy as np
-from jaxtyping import Int
 
 from normax.config import RunConfig
 from normax.config import parse_config
 from normax.design import DesignProblem
 from normax.design import DesignRecord
+from normax.design import assign_signs
 from normax.design import build_design_constraints
 from normax.design import evaluate_design
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
-from normax.form_finding import LensShapeInitializer
-from normax.form_finding import PlanBasis
-from normax.form_finding import build_plan_basis
-from normax.form_finding import fit_densities
-from normax.loads import LoadCases
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
@@ -55,11 +49,7 @@ from normax.sections import build_section_family
 from normax.structures import Structure
 from normax.structures import TrussDescription
 from normax.structures import build_vierendeel_2d
-from normax.symmetry import SignGuard
-from normax.symmetry import build_member_spread
-from normax.symmetry import guard_signs
-from normax.symmetry import shift_densities
-from normax.symmetry import sketch_lens
+from normax.structures import list_vierendeel_families
 from normax.tesseract import build_pipeline
 from normax.viewer import view_design
 
@@ -80,85 +70,6 @@ def build_truss(description: TrussDescription) -> Structure:
     )
 
 
-def mirror_nodes(description: TrussDescription) -> Int[np.ndarray, "nodes"]:
-    """
-    Mirror image of every node index about midspan, chord by chord.
-    """
-    bays = description.num_bays
-    bottom = bays - np.arange(bays + 1)
-    top = 2 * bays + 1 - np.arange(bays + 1)
-
-    return np.concatenate([bottom, top])
-
-
-def list_families(description: TrussDescription) -> tuple[tuple[str, slice], ...]:
-    """
-    Name and member slice of every family, in the generator's order.
-    """
-    bays = description.num_bays
-    families = (
-        ("bottom chord", slice(0, bays)),
-        ("top chord", slice(bays, 2 * bays)),
-        ("verticals", slice(2 * bays, None)),
-    )
-
-    return families
-
-
-def sign_chords(description: TrussDescription) -> tuple[np.ndarray, np.ndarray]:
-    """
-    The sign each chord member must carry, and which members the chords are.
-    """
-    bays = description.num_bays
-    signs = np.concatenate([np.ones(bays), -np.ones(bays)])
-    chords = np.arange(2 * bays)
-
-    return signs, chords
-
-
-def initialize_densities(
-    structure: Structure,
-    basis: PlanBasis,
-    loads: LoadCases,
-    config: RunConfig[TrussDescription, LensShapeInitializer],
-) -> tuple[np.ndarray, SignGuard]:
-    """
-    The lens fitted inside the basis, signed along the load-path split.
-
-    Parameters
-    ----------
-    structure :
-        The truss as drawn.
-    basis :
-        The held-plan subspace the fit is restricted to.
-    loads :
-        The load cases, the first of which the fit balances.
-    config :
-        The run config, read for the sketch and the sign margin.
-
-    Returns
-    -------
-    start :
-        The signed densities, and the guard that keeps them signed.
-
-    Notes
-    -----
-    Fitted inside the basis rather than freely: offered a sketch off the
-    funicular manifold, the free least squares abandons the top chord and
-    returns a singular vertical stiffness. The restricted fit keeps plan
-    balance exact, and its one self-stress is the split between hanging deck
-    and arching top chord.
-    """
-    lens = sketch_lens(structure, config.start.sag_lens, config.start.rise_lens)
-    fit = fit_densities(structure, lens, loads.formfinding, basis)
-
-    signs, chords = sign_chords(config.structure)
-    guard = guard_signs(fit.q, signs, chords, config.constraints.sign_margin_fraction)
-    q = shift_densities(fit.q, fit.self_stresses[:, 0], guard)
-
-    return q, guard_signs(q, signs, chords, config.constraints.sign_margin_fraction)
-
-
 def main(config_path: Path) -> None:
     """
     Design the truss a file describes, and report what the descent bought.
@@ -169,29 +80,28 @@ def main(config_path: Path) -> None:
         File naming the truss and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[TrussDescription, LensShapeInitializer] = parse_config(
-        config_path.read_text(), TrussDescription, LensShapeInitializer
+    config: RunConfig[TrussDescription] = parse_config(
+        config_path.read_text(), TrussDescription
     )
 
     # The structure, its load cases, and the three blocks built on it.
     structure = build_truss(config.structure)
     loads = build_load_cases(structure, config.load_cases)
     family = build_section_family(Steel355(), config.sizing.section_class)
-    pipeline = build_pipeline(structure, family, config.analysis, config.sizing)
+    pipeline = build_pipeline(
+        structure, family, config.form_finding, config.analysis, config.sizing
+    )
 
-    # The subspace holding the plan, in member coordinates, and the mirror
-    # folding densities and diameters alike.
-    mirror = mirror_nodes(config.structure) if config.subspace.symmetric else None
-    basis = build_plan_basis(structure, mirror, config.subspace.pivoted)
-    spread = build_member_spread(structure, (mirror,))
-
-    # The start, and the guard the descent runs under.
-    q_start, guard = initialize_densities(structure, basis, loads, config)
-    guarded = guard if config.constraints.sign_margin_fraction > 0.0 else None
-    constraints = build_design_constraints(config.constraints, guarded)
-    problem = DesignProblem(structure, pipeline, loads, basis, spread, constraints)
+    # The start: the initializer's densities, signed by the guard the file names.
+    families = list_vierendeel_families(config.structure)
+    guarded = assign_signs(config.constraints, families, structure.num_edges)
+    basis = pipeline.formfinder.basis
+    initializer = config.form_finding.initializer
+    started = initializer(structure, loads.formfinding, basis, guarded)
+    constraints = build_design_constraints(config.constraints, started.guard)
+    problem = DesignProblem(structure, pipeline, loads, constraints)
     d_start = config.analysis.diameter
-    start = initialize_optimization_variables(problem, q_start, d_start)
+    start = initialize_optimization_variables(problem, started.q, d_start)
     initial = evaluate_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
@@ -199,7 +109,6 @@ def main(config_path: Path) -> None:
     optimized = evaluate_design(problem, found.variables)
 
     # What the run arrived at; the report, the record and the viewer read it.
-    families = list_families(config.structure)
     record = DesignRecord(problem, found, initial, optimized, families)
     report_design(record, config, TITLE)
     export_design(record, config, EXPORT)

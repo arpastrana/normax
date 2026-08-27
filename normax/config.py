@@ -14,11 +14,10 @@
 """
 What a run is configured by, read from a file.
 
-Every section a design shares — the load cases, the two backends, the subspace,
-the constraints, the descent's budget — is a container here. What the structure
-is (`normax.structures`) and where its search starts (`normax.form_finding`)
-vary by structure, so an example hands those two container types to
-`parse_config`.
+Every section a design shares — the form finding, the load cases, the two
+backends, the constraints, the descent's budget — is a container here. What the
+structure is varies by structure, so an example hands `parse_config` the
+description type from `normax.structures` its `structure` section is read into.
 """
 
 from typing import Generic
@@ -27,10 +26,11 @@ from typing import TypeVar
 
 import yaml
 
+from normax.form_finding import AbstractDensityInitializer
+from normax.form_finding import build_density_initializer
 from normax.optimization import OptimizationBudget
 
 StructureT = TypeVar("StructureT")
-StartT = TypeVar("StartT")
 
 
 class LoadCaseConfig(NamedTuple):
@@ -82,27 +82,40 @@ class SizingConfig(NamedTuple):
     backend :
         Which check fills the sizing slot, every one across the Tesseract
         boundary: `blueprint` for Blueprints' cross-section check.
+    fold_mirror :
+        Whether the diameters are folded by the form finder's mirror, one
+        section per mirrored pair.
+    fold_polar :
+        Whether the diameters are folded by a one-spoke rotation as well, one
+        section per ring per family.
     """
 
     section_class: int
     backend: str
+    fold_mirror: bool
+    fold_polar: bool
 
 
-class SubspaceConfig(NamedTuple):
+class FormFindingConfig(NamedTuple):
     """
-    Which held-plan subspace the force densities move in.
+    How the form finder is parametrized, and where its densities start.
 
     Attributes
     ----------
-    symmetric :
-        Whether the densities and the diameters are folded by the mirror.
-    pivoted :
-        Whether the coordinates are the densities of members elected
-        independent, rather than projections on an orthonormal basis.
+    basis :
+        Convention of the held-plan basis the densities move in — `pivoted`
+        for the independent members' own densities, `svd` for projections on
+        an orthonormal basis — or None to move every density freely.
+    mirror :
+        Axis the mirror plane stands normal to, folding the densities by that
+        symmetry, or None for no symmetry.
+    initializer :
+        What generates the force densities the search starts from.
     """
 
-    symmetric: bool
-    pivoted: bool
+    basis: str | None
+    mirror: str | None
+    initializer: AbstractDensityInitializer
 
 
 class BoundsConfig(NamedTuple):
@@ -138,6 +151,9 @@ class ConstraintsConfig(NamedTuple):
     sign_margin_fraction :
         Sign margin the guarded force densities must clear, as a share of
         their median at the start. Zero or less turns the sign guard off.
+    sign_guard :
+        The sign each guarded member family must keep, `tension` or
+        `compression` by family name, or None for no guard.
     bounds :
         The box on the force densities, or None where the densities are not
         the coordinates.
@@ -148,6 +164,7 @@ class ConstraintsConfig(NamedTuple):
     rise_max: float | None
     sag_min: float | None
     sign_margin_fraction: float
+    sign_guard: dict[str, str] | None
     bounds: BoundsConfig | None
 
 
@@ -170,7 +187,7 @@ class OutputConfig(NamedTuple):
     viewer: bool
 
 
-class RunConfig(NamedTuple, Generic[StructureT, StartT]):
+class RunConfig(NamedTuple, Generic[StructureT]):
     """
     Everything a run is configured by.
 
@@ -180,18 +197,14 @@ class RunConfig(NamedTuple, Generic[StructureT, StartT]):
         Parameters the structure is generated from — an `ArchDescription`,
         `TrussDescription` or `ShellDescription` from `normax.structures`, never
         the built `Structure`; the example's builder turns one into the other.
-    start :
-        Parameters the starting force densities are generated from — a
-        `UniformDensityInitializer` or `LensShapeInitializer` from
-        `normax.form_finding` — or None where the drawn geometry is the start.
+    form_finding :
+        How the form finder is parametrized, and where its densities start.
     load_cases :
         The cases the structure carries, the first of which shapes it.
     analysis :
         What the frame is analyzed with.
     sizing :
         What the standard is read at.
-    subspace :
-        The held-plan subspace, or None to move every force density freely.
     constraints :
         What the design is held to beside the check.
     optimization :
@@ -201,11 +214,10 @@ class RunConfig(NamedTuple, Generic[StructureT, StartT]):
     """
 
     structure: StructureT
-    start: StartT | None
+    form_finding: FormFindingConfig
     load_cases: tuple[LoadCaseConfig, ...]
     analysis: AnalysisConfig
     sizing: SizingConfig
-    subspace: SubspaceConfig | None
     constraints: ConstraintsConfig
     optimization: OptimizationBudget
     output: OutputConfig
@@ -214,8 +226,7 @@ class RunConfig(NamedTuple, Generic[StructureT, StartT]):
 def parse_config(
     text: str,
     structure_type: type[StructureT],
-    start_type: type[StartT] | None = None,
-) -> RunConfig[StructureT, StartT]:
+) -> RunConfig[StructureT]:
     """
     The run config a file holds.
 
@@ -227,15 +238,11 @@ def parse_config(
         Description the `structure` section is read into: `ArchDescription`,
         `TrussDescription` or `ShellDescription`, the parameters of one generator
         in `normax.structures`.
-    start_type :
-        Initializer the `start` section is read into, from `normax.form_finding`,
-        or None for a run whose drawn geometry is the start.
 
     Returns
     -------
     config :
-        The run config: its structure description, its start initializer, and
-        every shared section.
+        The run config: its structure description and every shared section.
 
     Raises
     ------
@@ -250,13 +257,9 @@ def parse_config(
     """
     document = yaml.safe_load(text)
 
-    start = None
-    if start_type is not None:
-        start = start_type(**document["start"])
-
-    subspace = None
-    if document.get("subspace") is not None:
-        subspace = SubspaceConfig(**document["subspace"])
+    named = dict(document["form_finding"])
+    initializer = build_density_initializer(named.pop("force_density"))
+    form_finding = FormFindingConfig(initializer=initializer, **named)
 
     held = dict(document["constraints"])
     bounds = held.pop("bounds", None)
@@ -278,11 +281,10 @@ def parse_config(
 
     config = RunConfig(
         structure=structure_type(**document["structure"]),
-        start=start,
+        form_finding=form_finding,
         load_cases=load_cases,
         analysis=AnalysisConfig(**document["analysis"]),
         sizing=SizingConfig(**document["sizing"]),
-        subspace=subspace,
         constraints=constraints,
         optimization=OptimizationBudget(**budget),
         output=OutputConfig(**document["output"]),

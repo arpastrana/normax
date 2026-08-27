@@ -111,6 +111,95 @@ def build_orbit_matrix(
     return np.stack(columns, axis=1)
 
 
+# The axes a mirror plane may stand normal to, by the name a run config uses.
+MIRROR_AXES = {"x": 0, "y": 1}
+
+
+def _match_nodes(
+    structure: Structure,
+    moved: Float[np.ndarray, "nodes 3"],
+) -> Int[np.ndarray, "nodes"]:
+    """
+    The node each moved position lands on, refused unless every one lands.
+    """
+    nodes = np.asarray(structure.nodes)
+    size = float(np.ptp(nodes, axis=0).max())
+    distances = np.linalg.norm(moved[:, None, :] - nodes[None, :, :], axis=2)
+    image = np.argmin(distances, axis=1)
+    missed = distances[np.arange(nodes.shape[0]), image] > 1e-8 * size
+    if missed.any() or np.unique(image).size != nodes.shape[0]:
+        raise ValueError("the drawn geometry is not symmetric under that motion")
+
+    return image
+
+
+def find_mirror_nodes(structure: Structure, axis: str) -> Int[np.ndarray, "nodes"]:
+    """
+    Mirror image of every node about the plan's mid-plane normal to an axis.
+
+    Parameters
+    ----------
+    structure :
+        The structure as drawn, symmetric about that plane.
+    axis :
+        Name of the axis the mirror plane stands normal to, `x` or `y`.
+
+    Returns
+    -------
+    mirrored :
+        Index of every node's image.
+
+    Raises
+    ------
+    ValueError
+        If the axis is not one named, or the drawn nodes do not mirror onto
+        each other.
+    """
+    if axis not in MIRROR_AXES:
+        known = sorted(MIRROR_AXES)
+        raise ValueError(f"mirror axis must be one of {known}, got {axis!r}")
+    along = MIRROR_AXES[axis]
+    nodes = np.asarray(structure.nodes)
+    middle = 0.5 * (nodes[:, along].min() + nodes[:, along].max())
+    reflected = nodes.copy()
+    reflected[:, along] = 2.0 * middle - nodes[:, along]
+
+    return _match_nodes(structure, reflected)
+
+
+def find_rotated_nodes(
+    structure: Structure,
+    num_spokes: int,
+) -> Int[np.ndarray, "nodes"]:
+    """
+    Image of every node under a rotation of one spoke about the plan's center.
+
+    Parameters
+    ----------
+    structure :
+        The polar structure as drawn, its plan centered on the origin.
+    num_spokes :
+        Number of spokes, so the rotation is one full turn over them.
+
+    Returns
+    -------
+    rotated :
+        Index of every node's image.
+
+    Raises
+    ------
+    ValueError
+        If the drawn nodes do not rotate onto each other.
+    """
+    angle = 2.0 * np.pi / num_spokes
+    turn = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    nodes = np.asarray(structure.nodes)
+    rotated = nodes.copy()
+    rotated[:, :2] = nodes[:, :2] @ turn.T
+
+    return _match_nodes(structure, rotated)
+
+
 def permute_members(
     nodes_permuted: Int[np.ndarray, "nodes"],
     structure: Structure,

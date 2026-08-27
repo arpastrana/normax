@@ -212,6 +212,23 @@ def build_warren_2d(
     return build_structure(nodes, edges, supports)
 
 
+def list_warren_families(
+    description: TrussDescription,
+) -> tuple[tuple[str, slice], ...]:
+    """
+    Name and member slice of every family, in the generator's order.
+    """
+    bays = description.num_bays
+    families = (
+        ("bottom chord", slice(0, bays)),
+        ("top chord", slice(bays, 2 * bays - 1)),
+        ("rising diagonals", slice(2 * bays - 1, 3 * bays - 1)),
+        ("falling diagonals", slice(3 * bays - 1, 4 * bays - 1)),
+    )
+
+    return families
+
+
 def build_vierendeel_2d(
     num_bays: int = 8,
     span: float = 10.0,
@@ -278,6 +295,22 @@ def build_vierendeel_2d(
     return build_structure(nodes, edges, supports)
 
 
+def list_vierendeel_families(
+    description: TrussDescription,
+) -> tuple[tuple[str, slice], ...]:
+    """
+    Name and member slice of every family, in the generator's order.
+    """
+    bays = description.num_bays
+    families = (
+        ("bottom chord", slice(0, bays)),
+        ("top chord", slice(bays, 2 * bays)),
+        ("verticals", slice(2 * bays, None)),
+    )
+
+    return families
+
+
 class ShellDescription(NamedTuple):
     """
     The gridshell to build.
@@ -296,11 +329,6 @@ class ShellDescription(NamedTuple):
         Whether the crown is open.
     braced :
         Whether the quads are triangulated.
-    polar_diameters :
-        Whether the diameters are folded by the polar symmetry as well as the
-        mirror, one section per ring per family.
-    guard_hoops :
-        Whether the compression guard covers the hoops as well as the radials.
     """
 
     num_rings: int
@@ -309,8 +337,6 @@ class ShellDescription(NamedTuple):
     rise: float
     oculus: bool
     braced: bool
-    polar_diameters: bool
-    guard_hoops: bool
 
 
 def build_gridshell_3d(
@@ -436,6 +462,25 @@ def build_gridshell_3d(
     supports = indices[-1]
 
     return build_structure(nodes, edges, supports)
+
+
+def list_shell_families(description: ShellDescription) -> tuple[tuple[str, slice], ...]:
+    """
+    Name and member slice of every family, in the generator's order.
+    """
+    reaching = (
+        description.num_rings - 1 if description.oculus else description.num_rings
+    )
+    radials = reaching * description.num_spokes
+    panels = (description.num_rings - 1) * description.num_spokes
+    families = [
+        ("radial", slice(0, radials)),
+        ("hoop", slice(radials, radials + panels)),
+    ]
+    if description.braced:
+        families.append(("diagonal", slice(radials + panels, None)))
+
+    return tuple(families)
 
 
 def compute_member_lengths(

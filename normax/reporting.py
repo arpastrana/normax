@@ -338,7 +338,7 @@ def report_families(
 
 def report_design(
     record: DesignRecord,
-    config: RunConfig[Any, Any],
+    config: RunConfig[Any],
     title: str,
 ) -> None:
     """
@@ -360,8 +360,9 @@ def report_design(
         ("analysis", config.analysis.backend),
         ("sizing", config.sizing.backend),
     ]
-    if record.problem.basis is not None:
-        entries.append(("coordinates", str(record.problem.basis.width)))
+    basis = record.problem.pipeline.formfinder.basis
+    if basis is not None:
+        entries.append(("coordinates", str(basis.width)))
     entries.append(("variables", str(record.answer.variables.size)))
     report.write_heading("Backends")
     report.write_entries(entries)
@@ -376,4 +377,5 @@ def report_design(
     mass_initial = float(compute_mass(record.initial))
     mass_optimized = float(compute_mass(record.optimized))
     saved = 1.0 - mass_optimized / mass_initial
-    report.write_entries([("saved", f"{100.0 * saved:.2f} %")])
+    saving = [("saved", f"{100.0 * saved:.2f} %")]
+    report.write_entries(saving)

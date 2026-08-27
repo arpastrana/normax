@@ -6,10 +6,11 @@ structure:
   span: 10000.0
   depth: 1000.0
 
-# The lens the start is fitted to: bottom chord hung, top chord arched.
-start:
-  sag_lens: 600.0
-  rise_lens: 800.0
+# The held plan: an orthonormal basis folded by the midspan mirror; a lens fit.
+form_finding:
+  basis: svd
+  mirror: x
+  force_density: {lens: {sag: 600.0, rise: 800.0, held_plan: false}}
 
 # Every case sits on the deck. The first shapes the truss; every case is
 # checked. The mirrored half-span case is a reindexing of the near one on a
@@ -34,20 +35,17 @@ sizing:
   # The check crosses its own boundary too, so neither solver on the far side
   # differentiates itself. Blueprints implements no 6.3.1 buckling.
   backend: blueprint
-
-# The held-plan subspace the densities move in: an orthonormal basis, folded
-# by the midspan mirror.
-subspace:
-  symmetric: true
-  pivoted: false
+  fold_mirror: true
+  fold_polar: false
 
 constraints:
   diameter_min: 21.3
   length_min: 500.0
   rise_max: 2000.0
   sag_min: -1000.0
-  # The sign margin signs the chords at the start alone; no guard rows follow.
+  # Signs the chords at the start and guards them through the descent.
   sign_margin_fraction: 0.1
+  sign_guard: {bottom chord: tension, top chord: compression}
   bounds: null
 
 # The opening penalty is the one setting that decides the answer rather than

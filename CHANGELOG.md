@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+### The form finder owns its basis, and the start is an initializer
+
+Ruled 2026-08-26: the held-plan basis is a property of form finding alone — it
+parametrizes force densities and nothing downstream sees a coordinate — so it
+lives on the form finder; the diameter folding is not, so it lives on the
+pipeline; and the three example-local `initialize_densities` were one
+procedure with three fits inside it, so the fits are objects and the procedure
+is shared.
+
+- **`form_finding:` replaces `subspace:` and `start:`** in every YAML:
+  `basis: pivoted | svd | null` (the orthonormal basis has always been the SVD
+  null space, so `svd` names it truthfully; `null` is plain FDM), `mirror: x |
+  y | null` (the axis the mirror plane stands normal to), and `force_density`
+  — a number for one density in every member, `drawn` to fit the drawn
+  geometry, or `{lens: {sag, rise, held_plan}}` to fit a lens sketch. Read into
+  `FormFindingConfig`, whose `initializer` field is the object the value names;
+  `SubspaceConfig` is deleted, `RunConfig` has one type parameter, and
+  `parse_config` takes the description type alone.
+- **`FdmFormFinder(structure, basis)`** carries `basis: PlanBasis | None`, and
+  `AbstractFormFinder` grows `count_coordinates`, `expand_coordinates` and
+  `read_coordinates`, which `design.py`'s helpers delegate to. The extras
+  finders carry `basis = None` and count their own width.
+- **`build_pipeline(structure, family, form_finding, analysis, sizing)`** reads
+  the mirror and the basis off the config and builds the finder with them; the
+  diameter folding comes off `sizing.fold_mirror` / `sizing.fold_polar` and
+  sits on **`StructuralDesignPipeline.spread`**. `DesignProblem` is
+  `(structure, pipeline, loads, constraints)`.
+- **The mirror is found, not indexed.** `find_mirror_nodes(structure, axis)`
+  and `find_rotated_nodes(structure, num_spokes)` match reflected or rotated
+  nodes geometrically; they reproduce the three hand-coded permutations
+  exactly, and those (`mirror_nodes` ×3, `rotate_nodes`, `permute_rings`) are
+  gone. `ShellDescription` loses `polar_diameters` and `guard_hoops`.
+- **Initializers** in `form_finding.py`: `AbstractDensityInitializer` with one
+  abstract `fit`; `UniformDensityInitializer(force_density)`,
+  `LensShapeInitializer(sag, rise, held_plan)`, `DrawnShapeInitializer()`. The
+  shared `__call__` signs the fit: shifted along the first self-stress where
+  there is one, checked where there is none, and the guard rescaled at the
+  shifted densities — the Vierendeel way, for all. Returns `DensityStart(q,
+  guard)`.
+- **The sign guard is configuration**: `constraints.sign_guard: {family:
+  tension | compression}`, resolved by `assign_signs(constraints, families)`
+  against `list_warren_families` / `list_vierendeel_families` /
+  `list_shell_families`, now in `structures.py`. `sign_chords` and
+  `select_guarded_members` are gone.
+
+A medium-effort review of the change caught five defects, fixed the same day:
+`assign_signs` closes open-ended family slices against the member count (the
+verticals and the shell's diagonals were being read as the first members);
+a margin of zero or less still signs the start along the self-stress and only
+withholds the rows; `held_plan: true` without a basis and a `mirror` without
+a `basis` are refused rather than silently ignored; the compilation-cache
+setup in `normax/__init__.py` tolerates a read-only tree. The README snippet
+builds a `FormFindingConfig` and runs again.
+
+Every example's start is the same seven lines. **Measured**: the arch
+reproduces its record bit for bit (0.135620 t, zero variable difference).
+Warren now carries the guard rows it used to build and discard — ruled 2026-08-26
+that it should — and lands at 0.055556 t against the recorded 0.055608 t, from
+an identical start. The other two ran at a smoke budget; their full records are
+to be refreshed. 357 tests.
+
 ### The structure and start containers moved into the package
 
 The examples each defined the container their `structure:` and `start:`

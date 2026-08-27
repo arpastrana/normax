@@ -8,13 +8,12 @@ structure:
   rise: 2000.0
   oculus: false
   braced: false
-  # Fold the diameters by the polar symmetry as well as the mirror: one
-  # section per ring per family, a fabrication constraint the drift cases
-  # cannot argue with.
-  polar_diameters: true
-  # Guard the radials alone: meridian compression is what makes a cap carry
-  # as an arch, while hoop tension in the lower rings is the membrane response.
-  guard_hoops: false
+
+# The held plan, thirteen wide, folded by the mirror through spoke zero.
+form_finding:
+  basis: svd
+  mirror: y
+  force_density: drawn
 
 # No start: the drawn cap is already funicular under its own pressure.
 start: null
@@ -42,11 +41,9 @@ sizing:
   section_class: 3
   # The check across its own boundary as well, so the descent crosses twice.
   backend: blueprint
-
-# The held-plan subspace is thirteen wide.
-subspace:
-  symmetric: true
-  pivoted: false
+  fold_mirror: true
+  # One section per ring per family, a fabrication constraint no drift can argue with.
+  fold_polar: true
 
 constraints:
   diameter_min: 21.3
@@ -56,6 +53,8 @@ constraints:
   sag_min: 0.0
   # Holds every guarded density in compression through the descent.
   sign_margin_fraction: 0.01
+  # The radials alone: meridian compression carries a cap; hoop tension is membrane.
+  sign_guard: {radial: compression}
   bounds: null
 
 # A small opening penalty, so the mass leads and the search crosses the

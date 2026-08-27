@@ -37,9 +37,11 @@ import jax
 import jax.numpy as jnp
 
 from normax.config import AnalysisConfig
+from normax.config import FormFindingConfig
 from normax.config import SizingConfig
 from normax.design import DesignParameters
 from normax.design import compute_mass
+from normax.form_finding import UniformDensityInitializer
 from normax.loads import assemble_load_cases
 from normax.loads import load_uniform
 from normax.materials import Steel355
@@ -57,9 +59,11 @@ case_uniform = load_uniform(structure, 15_000.0)
 loads = assemble_load_cases([case_uniform])
 
 family = build_section_family(Steel355(), section_class)
+initializer = UniformDensityInitializer(force_density_start)
+form_finding = FormFindingConfig(None, None, initializer)
 analysis = AnalysisConfig(diameter_start, "opensees")
-sizing = SizingConfig(section_class, "blueprint")
-pipeline = build_pipeline(structure, family, analysis, sizing)
+sizing = SizingConfig(section_class, "blueprint", False, False)
+pipeline = build_pipeline(structure, family, form_finding, analysis, sizing)
 
 diameters = jnp.full(num_edges, diameter_start)
 

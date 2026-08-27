@@ -3,10 +3,12 @@ import numpy as np
 import pytest
 
 from normax.analysis.smax import SmaxAnalyzer
+from normax.config import ConstraintsConfig
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
 from normax.design import DesignProblem
 from normax.design import StructuralDesignPipeline
+from normax.design import assign_signs
 from normax.design import bound_variables
 from normax.design import compute_mass
 from normax.design import compute_member_mass
@@ -117,7 +119,7 @@ def params(force_densities):
 def problem(structure, pipeline, three_cases):
     constraints = DesignConstraints(FLOOR, 0.0, None, None, None, BOUNDS)
 
-    return DesignProblem(structure, pipeline, three_cases, None, None, constraints)
+    return DesignProblem(structure, pipeline, three_cases, constraints)
 
 
 # --------------------------------------------------------------------------- #
@@ -140,23 +142,24 @@ def warren():
 
 @pytest.fixture(scope="module")
 def warren_problem(warren, family):
+    basis = build_plan_basis(warren, warren_mirror(), "pivoted")
+    spread = build_member_spread(warren, (warren_mirror(),))
     blocks = StructuralDesignPipeline(
-        FdmFormFinder(warren),
+        FdmFormFinder(warren, basis),
         SmaxAnalyzer(warren, family(SEED)),
         Ec3Sizer(warren, family),
+        spread,
     )
     loads = assemble_load_cases([load_uniform(warren, TOTAL_LOAD)])
-    basis = build_plan_basis(warren, warren_mirror(), pivoted=True)
-    spread = build_member_spread(warren, (warren_mirror(),))
     constraints = DesignConstraints(FLOOR, 0.0, None, None, None, None)
 
-    return DesignProblem(warren, blocks, loads, basis, spread, constraints)
+    return DesignProblem(warren, blocks, loads, constraints)
 
 
 @pytest.fixture(scope="module")
 def warren_q(warren_problem):
     """A density vector inside the held-plan span, negative throughout."""
-    basis = warren_problem.basis
+    basis = warren_problem.pipeline.formfinder.basis
     xi = -1.0 - np.linspace(0.0, 1.0, basis.width)
 
     return np.asarray(basis.densities(jnp.asarray(xi)))
@@ -306,8 +309,8 @@ def test_the_bounds_box_the_densities_and_floor_the_diameters(problem):
 
 def test_subspace_coordinates_take_no_box(warren_problem):
     boxes = bound_variables(warren_problem)
-    width = warren_problem.basis.width
-    patterns = warren_problem.spread.shape[1]
+    width = warren_problem.pipeline.formfinder.basis.width
+    patterns = warren_problem.pipeline.spread.shape[1]
 
     assert len(boxes) == width + patterns
     assert boxes[:width] == [(None, None)] * width
@@ -315,7 +318,7 @@ def test_subspace_coordinates_take_no_box(warren_problem):
 
 
 def test_member_densities_expands_the_basis(warren_problem):
-    basis = warren_problem.basis
+    basis = warren_problem.pipeline.formfinder.basis
     xi = jnp.asarray(-1.0 - np.linspace(0.0, 1.0, basis.width))
 
     assert jnp.array_equal(
@@ -325,9 +328,9 @@ def test_member_densities_expands_the_basis(warren_problem):
 
 def test_the_expansion_holds_the_drawn_plan(warren_problem, warren_q):
     # Expanded parameters are member-wide and keep the plan by construction.
-    width = warren_problem.basis.width
-    patterns = warren_problem.spread.shape[1]
-    xi = np.asarray(warren_problem.basis.coordinates(warren_q))
+    width = warren_problem.pipeline.formfinder.basis.width
+    patterns = warren_problem.pipeline.spread.shape[1]
+    xi = np.asarray(warren_problem.pipeline.formfinder.basis.coordinates(warren_q))
     x = np.concatenate([xi, np.full(patterns, SEED)])
 
     expanded = expand_variables(warren_problem, jnp.asarray(x))
@@ -515,3 +518,20 @@ def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_den
         float(compute_mass(evaluate_design(problem, start))), rel=1e-12
     )
     assert float(answer.objectives[-1]) == pytest.approx(float(landed), rel=1e-12)
+
+
+def test_assign_signs_closes_an_open_ended_family_slice():
+    config = ConstraintsConfig(
+        21.3, 0.0, None, None, 0.1, {"tail": "compression"}, None
+    )
+    families = (("head", slice(0, 4)), ("tail", slice(4, None)))
+    guarded = assign_signs(config, families, 10)
+    assert guarded is not None
+    assert np.array_equal(guarded.members, np.arange(4, 10))
+    assert np.all(guarded.signs == -1.0)
+
+
+def test_assign_signs_refuses_an_unknown_family():
+    config = ConstraintsConfig(21.3, 0.0, None, None, 0.1, {"roof": "tension"}, None)
+    with pytest.raises(ValueError):
+        assign_signs(config, (("head", slice(0, 4)),), 4)

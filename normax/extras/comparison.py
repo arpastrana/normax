@@ -37,24 +37,6 @@ from normax.structures import Structure
 from normax.structures import compute_member_lengths
 
 
-def identity_basis(width: int) -> PlanBasis:
-    """
-    The basis a `DesignProblem` over one of these finders is built with.
-
-    Parameters
-    ----------
-    width :
-        How many coordinates the finder is called with.
-
-    Returns
-    -------
-    basis :
-        Identity columns, so the coordinates expand to themselves and the
-        problem reads its width off the basis.
-    """
-    return PlanBasis(np.eye(width), None)
-
-
 class HeightsFormFinder(AbstractFormFinder):
     """
     Free heights: the coordinates are the free nodes' z, in the drawn plan.
@@ -80,6 +62,7 @@ class HeightsFormFinder(AbstractFormFinder):
     edges: Int[np.ndarray, "members 2"]
     nodes_free: Int[np.ndarray, "nodes_free"]
     width: int = eqx.field(static=True)
+    basis: PlanBasis | None
 
     def __init__(self, structure: Structure) -> None:
         """
@@ -96,6 +79,13 @@ class HeightsFormFinder(AbstractFormFinder):
         self.edges = np.asarray(structure.edges)
         self.nodes_free = nodes_free
         self.width = int(nodes_free.size)
+        self.basis = None
+
+    def count_coordinates(self) -> int:
+        """
+        How many coordinates a call takes.
+        """
+        return self.width
 
     def __call__(
         self,
@@ -145,6 +135,7 @@ class DrawnFormFinder(AbstractFormFinder):
     xyz: Float[Array, "nodes 3"]
     edges: Int[np.ndarray, "members 2"]
     width: int = eqx.field(static=True)
+    basis: PlanBasis | None
 
     def __init__(self, structure: Structure) -> None:
         """
@@ -158,6 +149,13 @@ class DrawnFormFinder(AbstractFormFinder):
         self.xyz = jnp.asarray(structure.nodes)
         self.edges = np.asarray(structure.edges)
         self.width = 0
+        self.basis = None
+
+    def count_coordinates(self) -> int:
+        """
+        How many coordinates a call takes.
+        """
+        return self.width
 
     def __call__(
         self,

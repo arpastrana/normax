@@ -98,7 +98,7 @@ def view_designs(
     viewer.show()
 
 
-def view_design(record: DesignRecord, config: RunConfig[Any, Any]) -> None:
+def view_design(record: DesignRecord, config: RunConfig[Any]) -> None:
     """
     A run's start and answer in the viewer, or nothing when the run asks none.
 

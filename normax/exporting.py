@@ -55,7 +55,7 @@ class ExportTarget(NamedTuple):
 
 def export_design(
     record: DesignRecord,
-    config: RunConfig[Any, Any],
+    config: RunConfig[Any],
     target: ExportTarget,
 ) -> None:
     """
@@ -101,4 +101,5 @@ def export_design(
     report = Report(verbose=config.output.verbose)
     report.started = True
     report.write_heading("The record")
-    report.write_entries([("figures", str(target.figures)), ("data", str(archive))])
+    written = [("figures", str(target.figures)), ("data", str(archive))]
+    report.write_entries(written)

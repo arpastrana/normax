@@ -6,10 +6,11 @@ structure:
   span: 10000.0
   depth: 1000.0
 
-# The lens the start is fitted to: bottom chord hung, top chord arched.
-start:
-  sag_lens: 600.0
-  rise_lens: 800.0
+# The held plan in member coordinates, folded by the midspan mirror; a lens fit.
+form_finding:
+  basis: pivoted
+  mirror: x
+  force_density: {lens: {sag: 600.0, rise: 800.0, held_plan: true}}
 
 # Every case sits on the deck. The first shapes the truss; every case is
 # checked.
@@ -33,12 +34,8 @@ sizing:
   # The check crosses its own boundary too. Blueprints implements no 6.3.1
   # buckling, and rigid joints put end moments everywhere on this truss.
   backend: blueprint
-
-# The held-plan subspace in member coordinates, pivoted the TNA way: two
-# uniform chord families and the free verticals.
-subspace:
-  symmetric: true
-  pivoted: true
+  fold_mirror: true
+  fold_polar: false
 
 constraints:
   diameter_min: 21.3
@@ -48,6 +45,7 @@ constraints:
   sag_min: -1000.0
   # Signs the chords at the start and guards them through the descent.
   sign_margin_fraction: 0.1
+  sign_guard: {bottom chord: tension, top chord: compression}
   bounds: null
 
 # The opening penalty decides the answer on this truss: below a value between

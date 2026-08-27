@@ -42,10 +42,13 @@ from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.analysis import find_normal_axis
 from normax.config import AnalysisConfig
+from normax.config import FormFindingConfig
 from normax.config import SizingConfig
 from normax.design import StructuralDesignPipeline
 from normax.form_finding import FdmFormFinder
+from normax.form_finding import build_plan_basis
 from normax.loads import count_load_cases
+from normax.loads import read_polar_plan
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
 from normax.sections import TubeFamily
@@ -55,6 +58,9 @@ from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.sizing.blueprint import snapshot_family
 from normax.structures import Structure
+from normax.symmetry import build_member_spread
+from normax.symmetry import find_mirror_nodes
+from normax.symmetry import find_rotated_nodes
 
 # The crossed solvers, and which of them is planar and must be told its plane.
 ANALYSIS_CROSSED = ("opensees", "pynite")
@@ -564,7 +570,8 @@ def build_sizer(
 
 def build_pipeline(
     structure: Structure,
-    family: TubeFamily,
+    section_family: TubeFamily,
+    form_finding: FormFindingConfig,
     analysis: AnalysisConfig,
     sizing: SizingConfig,
 ) -> StructuralDesignPipeline:
@@ -575,23 +582,53 @@ def build_pipeline(
     ----------
     structure :
         The structure every block is built from.
-    family :
+    section_family :
         The section family both the analysis and the check draw tubes from, so
         whatever differs downstream is the check itself.
+    form_finding :
+        The basis convention and the mirror the form finder holds the plan
+        with, or neither.
     analysis :
         Which solver fills the analysis slot.
     sizing :
-        Which check fills the sizing slot.
+        Which check fills the sizing slot, and which symmetries fold the
+        diameters.
 
     Returns
     -------
     pipeline :
-        A form finder, a frame analysis and a code check, composed.
+        A form finder, a frame analysis and a code check, composed, with the
+        diameter folding beside them.
+
+    Raises
+    ------
+    ValueError
+        If a mirror is named without a basis to fold the densities through, or
+        the diameters are to be folded by a mirror the form finding names none
+        of.
     """
+    if form_finding.mirror is not None and form_finding.basis is None:
+        raise ValueError("a mirror folds the densities only through a basis: name one")
+    mirror = None
+    if form_finding.mirror is not None:
+        mirror = find_mirror_nodes(structure, form_finding.mirror)
+    basis = None
+    if form_finding.basis is not None:
+        basis = build_plan_basis(structure, mirror, form_finding.basis)
+
+    if sizing.fold_mirror and mirror is None:
+        raise ValueError("fold_mirror asks for a mirror the form finding does not name")
+    rotation = None
+    if sizing.fold_polar:
+        rotation = find_rotated_nodes(structure, read_polar_plan(structure).num_spokes)
+    folded_by = (mirror if sizing.fold_mirror else None, rotation)
+    spread = build_member_spread(structure, folded_by)
+
     pipeline = StructuralDesignPipeline(
-        FdmFormFinder(structure),
-        build_analyzer(structure, family, analysis),
-        build_sizer(structure, family, sizing),
+        FdmFormFinder(structure, basis),
+        build_analyzer(structure, section_family, analysis),
+        build_sizer(structure, section_family, sizing),
+        spread,
     )
 
     return pipeline

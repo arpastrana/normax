@@ -6,8 +6,10 @@ structure:
   span: 10000.0
   rise: 3000.0
 
-# Every force density starts here. Negative in compression.
-start:
+# Plain FDM: a chain has one density per member and no plan to hold.
+form_finding:
+  basis: null
+  mirror: null
   force_density: -80.0
 
 # The first case shapes the arch; every case is checked.
@@ -31,6 +33,8 @@ sizing:
   # blueprint is Blueprints' cross-section check, across a Tesseract
   # boundary. Blueprints implements no 6.3.1 buckling.
   backend: blueprint
+  fold_mirror: false
+  fold_polar: false
 
 # No held-plan subspace: an arch is a chain, whose held plan has one degree
 # of freedom, so every force density moves on its own inside the bounds.
@@ -45,6 +49,7 @@ constraints:
   sag_min: null
   # No sign guard: a chain has one sign, and the bounds keep it.
   sign_margin_fraction: 0.0
+  sign_guard: null
   # Not a design constraint: the bounds keep the densities away from zero,
   # where the force density system is singular.
   bounds: {min: -100.0, max: -1.0e-3}

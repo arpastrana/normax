@@ -37,7 +37,7 @@ from normax.analysis import MemberForces
 from normax.config import ConstraintsConfig
 from normax.form_finding import AbstractFormFinder
 from normax.form_finding import FormFoundShape
-from normax.form_finding import PlanBasis
+from normax.form_finding import SignGuardSpec
 from normax.form_finding import select_free_nodes
 from normax.loads import LoadCases
 from normax.optimization import ConstrainedMaps
@@ -107,6 +107,9 @@ class StructuralDesignPipeline(eqx.Module):
         The block that says what the members carry.
     sizer :
         The block that says how hard the sections are worked.
+    spread :
+        One column per orbit of the members the diameters are folded by, or
+        None to size every member on its own.
 
     Notes
     -----
@@ -120,6 +123,7 @@ class StructuralDesignPipeline(eqx.Module):
     formfinder: AbstractFormFinder
     analyzer: AbstractFrameAnalyzer
     sizer: AbstractMemberSizer
+    spread: Float[np.ndarray, "members patterns"] | None = None
 
     def __call__(
         self,
@@ -248,28 +252,21 @@ class DesignProblem(NamedTuple):
         The three blocks, composed.
     loads :
         The case the shape answers to, and the cases it is checked against.
-    basis :
-        The held-plan subspace the force densities move in, or None to move
-        every density freely.
-    spread :
-        One column per orbit of the members the diameters are folded by, or
-        None to size every member on its own.
     constraints :
         What the design is held to beside the check.
 
     Notes
     -----
     The variable vector is the form finder's coordinates followed by the folded
-    diameters. Both halves expand by one linear map, so a symmetric design
-    cannot break its symmetry however unsymmetric the loading, and every
-    geometry a held-plan search reaches keeps the drawn plan by construction.
+    diameters. Both halves expand by one linear map — the form finder's basis
+    and the pipeline's spread — so a symmetric design cannot break its symmetry
+    however unsymmetric the loading, and every geometry a held-plan search
+    reaches keeps the drawn plan by construction.
     """
 
     structure: Structure
     pipeline: StructuralDesignPipeline
     loads: LoadCases
-    basis: PlanBasis | None
-    spread: Float[np.ndarray, "members patterns"] | None
     constraints: DesignConstraints
 
 
@@ -306,17 +303,14 @@ def count_coordinates(problem: DesignProblem) -> int:
     Parameters
     ----------
     problem :
-        The problem, read for its basis.
+        The problem, read for its form finder.
 
     Returns
     -------
     width :
         Basis width, or the member count where every density moves freely.
     """
-    if problem.basis is None:
-        return problem.structure.num_edges
-
-    return problem.basis.width
+    return problem.pipeline.formfinder.count_coordinates()
 
 
 def expand_variables(
@@ -329,7 +323,7 @@ def expand_variables(
     Parameters
     ----------
     problem :
-        The problem supplying the two linear maps.
+        The problem supplying the two linear maps through its pipeline.
     x :
         The coordinates followed by the folded diameters.
 
@@ -342,7 +336,9 @@ def expand_variables(
     width = count_coordinates(problem)
     coordinates = read_member_densities(problem, x[:width])
     folded = x[width:]
-    diameters = folded if problem.spread is None else problem.spread @ folded
+    diameters = (
+        folded if problem.pipeline.spread is None else problem.pipeline.spread @ folded
+    )
 
     return DesignParameters(coordinates, diameters)
 
@@ -358,7 +354,7 @@ def fold_variables(
     Parameters
     ----------
     problem :
-        The problem supplying the two linear maps.
+        The problem supplying the two linear maps through its pipeline.
     q :
         Force density of every member.
     diameters :
@@ -371,7 +367,7 @@ def fold_variables(
         largest diameter among its members.
     """
     coordinates = read_coordinates(problem, q)
-    folded = fold_values(diameters, problem.spread)
+    folded = fold_values(diameters, problem.pipeline.spread)
 
     return np.concatenate([coordinates, folded])
 
@@ -386,7 +382,7 @@ def read_coordinates(
     Parameters
     ----------
     problem :
-        The problem supplying the basis.
+        The problem supplying the form finder.
     q :
         Force density of every member.
 
@@ -395,10 +391,7 @@ def read_coordinates(
     coordinates :
         The densities themselves, or their coordinates in the basis.
     """
-    if problem.basis is None:
-        return np.asarray(q)
-
-    return problem.basis.coordinates(q)
+    return problem.pipeline.formfinder.read_coordinates(q)
 
 
 def read_member_densities(
@@ -411,7 +404,7 @@ def read_member_densities(
     Parameters
     ----------
     problem :
-        The problem supplying the basis.
+        The problem supplying the form finder.
     coordinates :
         The basis coordinates, or the densities where there is no basis.
 
@@ -420,10 +413,7 @@ def read_member_densities(
     q :
         Force density of every member, as the form finder is called with.
     """
-    if problem.basis is None:
-        return coordinates
-
-    return problem.basis.densities(coordinates)
+    return problem.pipeline.formfinder.expand_coordinates(coordinates)
 
 
 def bound_variables(
@@ -448,10 +438,12 @@ def bound_variables(
     boxed = (None, None) if held.bounds is None else held.bounds
     width = count_coordinates(problem)
     patterns = problem.structure.num_edges
-    if problem.spread is not None:
-        patterns = int(problem.spread.shape[1])
+    if problem.pipeline.spread is not None:
+        patterns = int(problem.pipeline.spread.shape[1])
 
-    return [boxed] * width + [(held.diameter_min, None)] * patterns
+    boxes = [boxed] * width + [(held.diameter_min, None)] * patterns
+
+    return boxes
 
 
 def evaluate_constraints(
@@ -682,7 +674,9 @@ def unfold_diameters(
     diameters :
         Outer diameter of every member.
     """
-    return unfold_values(np.asarray(x)[count_coordinates(problem) :], problem.spread)
+    return unfold_values(
+        np.asarray(x)[count_coordinates(problem) :], problem.pipeline.spread
+    )
 
 
 def build_design_constraints(
@@ -715,3 +709,58 @@ def build_design_constraints(
     )
 
     return constraints
+
+
+# The sign a guarded family keeps, by the word a run config uses.
+SIGN_WORDS = {"tension": 1.0, "compression": -1.0}
+
+
+def assign_signs(
+    config: ConstraintsConfig,
+    families: tuple[tuple[str, slice], ...],
+    num_members: int,
+) -> SignGuardSpec | None:
+    """
+    Which members the start must sign, read off a run config by family name.
+
+    Parameters
+    ----------
+    config :
+        The constraints section, read for the sign guard and its margin.
+    families :
+        Name and member slice of every family the structure has.
+    num_members :
+        How many members the structure has, closing any open-ended slice.
+
+    Returns
+    -------
+    guarded :
+        Signs and indices of the guarded members with the margin, or None for
+        no guard.
+
+    Raises
+    ------
+    ValueError
+        If the guard names a family the structure lacks, or a sign that is not
+        `tension` or `compression`.
+    """
+    if config.sign_guard is None:
+        return None
+
+    named = dict(families)
+    signs = []
+    members = []
+    for family, word in config.sign_guard.items():
+        if family not in named:
+            raise ValueError(f"no family {family!r} to guard, known: {sorted(named)}")
+        if word not in SIGN_WORDS:
+            raise ValueError(f"sign must be one of {sorted(SIGN_WORDS)}, got {word!r}")
+        indices = np.arange(*named[family].indices(num_members))
+        signs.append(np.full(indices.size, SIGN_WORDS[word]))
+        members.append(indices)
+
+    guarded = SignGuardSpec(
+        np.concatenate(signs), np.concatenate(members), config.sign_margin_fraction
+    )
+
+    return guarded
