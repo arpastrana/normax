@@ -40,7 +40,7 @@ from normax.sections import build_section_catalog
 from normax.structures import Structure
 from normax.structures import TrussDescription
 from normax.structures import build_vierendeel_2d
-from normax.structures import list_vierendeel_families
+from normax.structures import create_groups_vierendeel
 from normax.symmetry import build_member_spread
 from normax.symmetry import find_mirror_nodes
 from normax.tesseract import TesseractAnalyzer
@@ -99,8 +99,8 @@ def main(config_path: Path) -> None:
     pipeline = StructuralDesignPipeline(form_finder, analyzer, sizer, spread)
 
     # The start: the initializer's densities, signed by the guard the file names.
-    families = list_vierendeel_families(config.structure)
-    guarded = assign_signs(config.constraints, families, structure.num_edges)
+    groups = create_groups_vierendeel(config.structure)
+    guarded = assign_signs(config.constraints, groups, structure.num_edges)
     initializer = config.form_finding.initializer
     started = initializer(structure, loads.formfinding, basis, guarded)
     constraints = build_design_constraints(config.constraints, started.guard)
@@ -120,7 +120,7 @@ def main(config_path: Path) -> None:
     print(f"design safe: {is_design_safe}")
 
     # What the run arrived at; the report, the record and the viewer read it.
-    record = DesignRecord(problem, found, initial, optimized, families)
+    record = DesignRecord(problem, found, initial, optimized, groups)
     report_design(record, config, TITLE)
     export_design(record, config, EXPORT)
     view_design(record, config)

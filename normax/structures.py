@@ -200,7 +200,7 @@ def build_warren_2d(
     return build_structure(nodes, edges, supports)
 
 
-def list_warren_families(
+def create_groups_warren(
     description: TrussDescription,
 ) -> tuple[tuple[str, slice], ...]:
     """
@@ -283,20 +283,20 @@ def build_vierendeel_2d(
     return build_structure(nodes, edges, supports)
 
 
-def list_vierendeel_families(
+def create_groups_vierendeel(
     description: TrussDescription,
 ) -> tuple[tuple[str, slice], ...]:
     """
-    Name and member slice of every family, in the generator's order.
+    Name and member slice of every group, in the generator's order.
     """
     bays = description.num_bays
-    families = (
+    groups = (
         ("bottom chord", slice(0, bays)),
         ("top chord", slice(bays, 2 * bays)),
         ("verticals", slice(2 * bays, None)),
     )
 
-    return families
+    return groups
 
 
 class ShellDescription(NamedTuple):
@@ -452,7 +452,7 @@ def build_gridshell_3d(
     return build_structure(nodes, edges, supports)
 
 
-def list_shell_families(description: ShellDescription) -> tuple[tuple[str, slice], ...]:
+def create_groups_shell(description: ShellDescription) -> tuple[tuple[str, slice], ...]:
     """
     Name and member slice of every family, in the generator's order.
     """
