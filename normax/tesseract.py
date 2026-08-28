@@ -246,6 +246,11 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         backend :
             Which solver answers the stage, `opensees` or `pynite`.
 
+        Raises
+        ------
+        ValueError
+            If the backend is not one this module knows.
+
         Notes
         -----
         Whether a structure is planar is a fact about the structure, so it is
@@ -253,7 +258,14 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         only restate what the geometry already says, and the far side raises
         when the two disagree. A solver working in three dimensions is handed
         None, having no axis to drop.
+
+        The name is checked here rather than in a builder, so a file's typo is
+        refused on the host however the block was constructed, instead of
+        crossing and coming back as a traceback from the far side.
         """
+        if backend not in ANALYSIS_CROSSED:
+            raise ValueError(f"unknown analysis backend {backend!r}")
+
         planar = backend in ANALYSIS_PLANAR
 
         self.backend = backend
@@ -370,8 +382,18 @@ class TesseractSizer(AbstractMemberSizer):
         Raises
         ------
         ValueError
-            If the catalog's ratio leaves no wall at all.
+            If the backend is not one this module knows, or the catalog's ratio
+            leaves no wall at all.
+
+        Notes
+        -----
+        The name is checked here rather than in a builder, so a file's typo is
+        refused on the host however the block was constructed, instead of
+        crossing and coming back as a traceback from the far side.
         """
+        if backend not in SIZING_CROSSED:
+            raise ValueError(f"unknown sizing backend {backend!r}")
+
         ratio, f_y = snapshot_catalog(catalog)
 
         self.backend = backend
@@ -513,11 +535,9 @@ def build_analyzer(
     Raises
     ------
     ValueError
-        If the backend is not one this module knows.
+        If the backend is not one this module knows, which the analyzer's own
+        constructor decides.
     """
-    if config.backend not in ANALYSIS_CROSSED:
-        raise ValueError(f"unknown analysis backend {config.backend!r}")
-
     return TesseractAnalyzer(structure, catalog, config.backend)
 
 
@@ -546,9 +566,7 @@ def build_sizer(
     Raises
     ------
     ValueError
-        If the backend is not one this module knows.
+        If the backend is not one this module knows, which the sizer's own
+        constructor decides.
     """
-    if config.backend not in SIZING_CROSSED:
-        raise ValueError(f"unknown sizing backend {config.backend!r}")
-
     return TesseractSizer(structure, catalog, config.backend)
