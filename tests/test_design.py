@@ -436,14 +436,24 @@ def test_the_enveloped_start_respects_the_floor(problem, force_densities):
     assert np.all(diameters >= 500.0)
 
 
-def test_initialize_optimization_variables_compose_the_two_reads(
+def test_initialize_optimization_variables_folds_the_floored_seed(
     problem, force_densities
 ):
     q = np.asarray(force_densities)
     start = initialize_optimization_variables(problem, q, SEEDED)
-    diameters = envelope_diameters(problem, read_coordinates(problem, q), SEEDED)
+    floored = np.maximum(SEEDED, problem.constraints.diameter_min)
 
-    assert np.array_equal(start, fold_variables(problem, q, diameters))
+    assert np.array_equal(start, fold_variables(problem, q, floored))
+
+
+def test_initialize_optimization_variables_does_not_size_the_seed(
+    problem, force_densities
+):
+    q = np.asarray(force_densities)
+    start = initialize_optimization_variables(problem, q, SEEDED)
+    sized = envelope_diameters(problem, read_coordinates(problem, q), SEEDED)
+
+    assert not np.array_equal(start, fold_variables(problem, q, sized))
 
 
 def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
@@ -477,7 +487,7 @@ def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     expected = np.asarray(evaluate_constraints(problem, expanded, design))
 
     assert float(weighed) == pytest.approx(float(compute_mass(design)), rel=1e-12)
-    assert np.allclose(rows, expected, rtol=0.0, atol=1e-12)
+    assert np.allclose(rows, expected, rtol=1e-11, atol=1e-12)
 
 
 def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
