@@ -40,7 +40,7 @@ DIAMETER_FLOOR = 20.0
 
 class HeightsFormFinder(AbstractFormFinder):
     """
-    Free heights: the coordinates are the free nodes' z, in the drawn plan.
+    Free heights: the parameters are the free nodes' z, in the drawn plan.
 
     Attributes
     ----------
@@ -56,7 +56,9 @@ class HeightsFormFinder(AbstractFormFinder):
     Notes
     -----
     Not funicular: the loads are accepted and ignored, so the frame analysis
-    downstream sees whatever bending the heights raise.
+    downstream sees whatever bending the heights raise. The field this route
+    fills is `DesignParameters.force_densities`, which is named for the shipped
+    finder: a heights route puts heights there instead.
     """
 
     xyz: Float[Array, "nodes 3"]
@@ -82,9 +84,9 @@ class HeightsFormFinder(AbstractFormFinder):
         self.width = int(nodes_free.size)
         self.basis = None
 
-    def count_coordinates(self) -> int:
+    def count_density_coefficients(self) -> int:
         """
-        How many coordinates a call takes.
+        How many heights a call takes.
         """
         return self.width
 
@@ -125,7 +127,7 @@ class DrawnFormFinder(AbstractFormFinder):
     edges :
         The two node indices spanned by every member.
     width :
-        Zero: a call takes no coordinates.
+        Zero: a call takes no parameters.
 
     Notes
     -----
@@ -152,15 +154,15 @@ class DrawnFormFinder(AbstractFormFinder):
         self.width = 0
         self.basis = None
 
-    def count_coordinates(self) -> int:
+    def count_density_coefficients(self) -> int:
         """
-        How many coordinates a call takes.
+        Zero: the drawn shape takes no parameters.
         """
         return self.width
 
     def __call__(
         self,
-        coordinates: Float[Array, "0"],
+        coefficients: Float[Array, "0"],
         loads: Float[Array, "nodes 3"],
     ) -> FormFoundShape:
         """
@@ -168,7 +170,7 @@ class DrawnFormFinder(AbstractFormFinder):
 
         Parameters
         ----------
-        coordinates :
+        coefficients :
             Accepted and ignored, an empty vector.
         loads :
             Accepted and ignored.
@@ -200,7 +202,7 @@ def catalog():
 
 def build_problem(structure, formfinder, catalog, loads):
     """
-    A design problem over a comparison finder, whose coordinates are its own.
+    A design problem over a comparison finder, whose parameters are its own.
     """
     pipeline = StructuralDesignPipeline(
         formfinder, SmaxAnalyzer(structure, catalog(SEED)), Ec3Sizer(structure, catalog)

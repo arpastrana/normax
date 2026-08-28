@@ -11,7 +11,6 @@ from normax.materials import SteelGrade
 from normax.sections import MemberSections
 from normax.sections import TubeCatalog
 from normax.sections import UniformDiameterInitializer
-from normax.sections import build_diameter_initializer
 from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 
@@ -108,15 +107,13 @@ def test_a_class_4_catalog_is_refused():
 
 def test_a_uniform_diameter_initializer_seeds_every_member():
     structure = build_arch_2d(num_edges=6)
-    initializer = build_diameter_initializer(120.0)
+    initializer = UniformDiameterInitializer({"diameter": 120.0})
     seeded = initializer(structure)
 
-    assert isinstance(initializer, UniformDiameterInitializer)
     assert seeded.shape == (structure.num_edges,)
     assert np.all(seeded == 120.0)
 
 
-def test_a_diameter_that_is_not_a_number_is_rejected_as_a_value():
-    for described in (True, "drawn", {"lens": {}}):
-        with pytest.raises(ValueError):
-            build_diameter_initializer(described)
+def test_a_diameter_start_that_names_the_wrong_field_is_refused():
+    with pytest.raises(ValueError, match="diameter"):
+        UniformDiameterInitializer({"diameter_min": 120.0})

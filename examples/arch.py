@@ -34,20 +34,23 @@ from normax.design import DesignProblem
 from normax.design import DesignRecord
 from normax.design import StructuralDesignPipeline
 from normax.design import build_design_constraints
-from normax.design import evaluate_design
+from normax.design import create_design
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
 from normax.form_finding import FdmFormFinder
+from normax.form_finding import UniformDensityInitializer
+from normax.form_finding import build_plan_basis
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
+from normax.sections import UniformDiameterInitializer
 from normax.sections import build_section_catalog
 from normax.structures import ArchDescription
 from normax.structures import Structure
 from normax.structures import build_arch_2d
-from normax.symmetry import build_member_spread
+from normax.symmetry import build_section_groups
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
 from normax.visualization import view_design
@@ -98,28 +101,30 @@ def main(config_path: Path) -> None:
     loads = build_load_cases(structure, config.load_cases)
     section_catalog = build_section_catalog(MATERIAL, config.sizing.section_class)
 
-    # The arch holds no plan, so its densities are free and nothing folds.
-    basis = None
-    spread = build_member_spread(structure, (None, None))
+    # The plan is held, and a chain leaves one independent density to move.
+    basis = build_plan_basis(structure, None, config.form_finding.basis)
+    section_groups = build_section_groups(structure, (None, None))
 
     # The three main computation blocks of the structural design pipeline
     form_finder = FdmFormFinder(structure, basis)
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
 
-    pipeline = StructuralDesignPipeline(form_finder, analyzer, sizer, spread)
+    pipeline = StructuralDesignPipeline(form_finder, analyzer, sizer)
 
-    # The start: one force density in every member, no guard, no folding.
-    started = config.form_finding.initializer(structure, loads.formfinding, basis, None)
+    # The start: one force density in every member, which is the basis itself.
+    density_initializer = UniformDensityInitializer(config.form_finding.density_start)
+    started = density_initializer(structure, loads.formfinding, basis, None)
     constraints = build_design_constraints(config.constraints, None)
-    problem = DesignProblem(structure, pipeline, loads, constraints)
-    diameter_start = config.analysis.initializer(structure)
+    problem = DesignProblem(structure, pipeline, loads, constraints, section_groups)
+    diameter_initializer = UniformDiameterInitializer(config.analysis.diameter_start)
+    diameter_start = diameter_initializer(structure)
     start = initialize_optimization_variables(problem, started.q, diameter_start)
-    initial = evaluate_design(problem, start)
+    initial = create_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
     found = optimize_design(problem, start, config.optimization)
-    optimized = evaluate_design(problem, found.variables)
+    optimized = create_design(problem, found.variables)
 
     # Is every member within what EN 1993-1-1 allows, to the search's own
     # tolerance? A fully-stressed design sits on the constraint, not below it.

@@ -48,7 +48,7 @@ class SignGuard(NamedTuple):
 
 def build_orbit_matrix(
     mappings: tuple[Int[np.ndarray, "items"], ...],
-) -> Float[np.ndarray, "items patterns"]:
+) -> Float[np.ndarray, "items groups"]:
     """
     One column per orbit of the group several permutations generate.
 
@@ -60,7 +60,7 @@ def build_orbit_matrix(
 
     Returns
     -------
-    spread :
+    orbits :
         Matrix expanding one value per orbit into a full vector every
         generator leaves unchanged.
 
@@ -230,8 +230,8 @@ def permute_members(
 
 def fold_values(
     values: Float[np.ndarray, "items"],
-    spread: Float[Array, "items patterns"] | None,
-) -> Float[np.ndarray, "patterns"]:
+    section_groups: Float[Array, "items groups"] | None,
+) -> Float[np.ndarray, "groups"]:
     """
     Fold a full vector into one value per orbit, the largest of each.
 
@@ -239,7 +239,7 @@ def fold_values(
     ----------
     values :
         One value per item.
-    spread :
+    section_groups :
         The orbit columns, or None to leave the vector as it is.
 
     Returns
@@ -247,18 +247,18 @@ def fold_values(
     folded :
         An envelope, so a folded diameter still covers every member it sizes.
     """
-    if spread is None:
+    if section_groups is None:
         return np.asarray(values)
 
-    columns = np.asarray(spread).T
+    columns = np.asarray(section_groups).T
     folded = [float(np.asarray(values)[column > 0.0].max()) for column in columns]
 
     return np.asarray(folded)
 
 
 def unfold_values(
-    values: Float[np.ndarray, "patterns"],
-    spread: Float[Array, "items patterns"] | None,
+    values: Float[np.ndarray, "groups"],
+    section_groups: Float[Array, "items groups"] | None,
 ) -> Float[np.ndarray, "items"]:
     """
     Expand one value per orbit back into one value per item.
@@ -267,7 +267,7 @@ def unfold_values(
     ----------
     values :
         One value per orbit.
-    spread :
+    section_groups :
         The orbit columns, or None when the values are already full.
 
     Returns
@@ -275,10 +275,10 @@ def unfold_values(
     unfolded :
         The full vector, orbit members carrying their shared value.
     """
-    if spread is None:
+    if section_groups is None:
         return np.asarray(values)
 
-    return np.asarray(spread) @ np.asarray(values)
+    return np.asarray(section_groups) @ np.asarray(values)
 
 
 def sketch_lens(
@@ -401,10 +401,10 @@ def shift_densities(
     return np.asarray(q) + shift * np.asarray(mode)
 
 
-def build_member_spread(
+def build_section_groups(
     structure: Structure,
     nodes_permuted: tuple[Int[np.ndarray, "nodes"] | None, ...],
-) -> Float[np.ndarray, "members patterns"] | None:
+) -> Float[np.ndarray, "members groups"] | None:
     """
     The orbit columns folding the diameters by several node permutations.
 
@@ -418,7 +418,7 @@ def build_member_spread(
 
     Returns
     -------
-    spread :
+    section_groups :
         One column per orbit of the members, or None when no permutation is
         given and every member is sized on its own.
     """

@@ -51,7 +51,6 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
-from normax.sections import UniformDiameterInitializer
 from normax.sections import build_section_catalog
 from normax.structures import Structure
 from normax.structures import build_gridshell_3d
@@ -429,7 +428,7 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
     by_node = pulled.xyz
     by_member = pulled.diameter
 
-    analysis = AnalysisConfig(UniformDiameterInitializer(SEED_DIAMETER), "pynite")
+    analysis = AnalysisConfig({"diameter": SEED_DIAMETER}, "pynite")
     crossed = build_analyzer(structure, catalog, analysis)
     served = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
         structure.nodes, diameters

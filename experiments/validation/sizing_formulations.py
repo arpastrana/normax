@@ -208,7 +208,7 @@ def design_objective(problem: ArchProblem) -> Callable:
         # check and echo the diameters back unsized.
         pipeline = problem.pipeline
         loads = problem.loads
-        shape = pipeline.formfinder(params.coordinates, loads.formfinding)
+        shape = pipeline.formfinder(params.force_densities, loads.formfinding)
         forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
         sizes = pipeline.sizer(forces, shape.lengths)
         sized = design_envelope(Design(shape, forces, sizes))
@@ -236,7 +236,7 @@ def nested_fixed(problem: ArchProblem) -> RouteAnswer:
 
     started = time.perf_counter()
     settled = settle_diameters(objective, problem.params)
-    resized = DesignParameters(problem.params.coordinates, settled)
+    resized = DesignParameters(problem.params.force_densities, settled)
     mass, _ = compiled(resized)
     elapsed = time.perf_counter() - started
 
@@ -249,7 +249,8 @@ def simultaneous_fixed(problem: ArchProblem) -> tuple[RouteAnswer, SolverState]:
     """
     pipeline = problem.pipeline
     sizer = pipeline.sizer
-    shape = pipeline.formfinder(problem.params.coordinates, problem.loads.formfinding)
+    q = problem.params.force_densities
+    shape = pipeline.formfinder(q, problem.loads.formfinding)
     density = sizer.catalog.material.density
 
     def weigh(diameters):
@@ -344,7 +345,7 @@ def joint_bounds(problem: ArchProblem) -> list[tuple[float, float | None]]:
     """
     Box bounds for the joint search: force densities boxed, diameters floored.
     """
-    funicular = float(problem.params.coordinates[0])
+    funicular = float(problem.params.force_densities[0])
     lower = SPREAD_UP * funicular
     upper = SPREAD_DOWN * funicular
     force_box: list[tuple[float, float | None]] = [(lower, upper)] * NUM_EDGES
@@ -370,13 +371,13 @@ def nested_joint(problem: ArchProblem) -> RouteAnswer:
         return objective(DesignParameters(force_densities, seeds))
 
     compiled = value_and_gradient(compute_mass, has_aux=True)
-    compiled(problem.params.coordinates)
-    funicular = float(problem.params.coordinates[0])
+    compiled(problem.params.force_densities)
+    funicular = float(problem.params.force_densities[0])
 
     started = time.perf_counter()
     found = minimize_bounded(
         compute_mass,
-        problem.params.coordinates,
+        problem.params.force_densities,
         bounds=(SPREAD_UP * funicular, SPREAD_DOWN * funicular),
         iterations=DESCENT_ITERATIONS,
         has_aux=True,
@@ -429,7 +430,7 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
     compute_mass_and_gradient = jax.jit(jax.value_and_grad(weigh))
     slack_compiled = jax.jit(slack)
     slack_jacobian = jax.jit(jax.jacrev(slack))
-    seeded = jnp.concatenate([problem.params.coordinates, problem.params.diameters])
+    seeded = jnp.concatenate([problem.params.force_densities, problem.params.diameters])
     start = np.asarray(seeded)
     compute_mass_and_gradient(seeded)
     slack_compiled(seeded)

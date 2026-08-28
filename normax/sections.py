@@ -32,6 +32,7 @@ import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.config import check_start_fields
 from normax.materials import SteelGrade
 from normax.structures import Structure
 
@@ -280,41 +281,20 @@ class UniformDiameterInitializer(AbstractDiameterInitializer):
 
     diameter: float
 
+    def __init__(self, described: dict[str, float]):
+        """
+        Read the one diameter a file described.
+
+        Parameters
+        ----------
+        described :
+            What the file gave the start, naming `diameter` alone.
+        """
+        check_start_fields(described, ("diameter",))
+        self.diameter = float(described["diameter"])
+
     def __call__(self, structure: Structure) -> Float[np.ndarray, "members"]:
         """
         Every member at the one diameter.
         """
         return np.full(structure.num_edges, self.diameter)
-
-
-def build_diameter_initializer(described: float) -> AbstractDiameterInitializer:
-    """
-    The initializer a run config's `diameter` value names.
-
-    Parameters
-    ----------
-    described :
-        A number for one diameter in every member.
-
-    Returns
-    -------
-    initializer :
-        The generator of the start diameters.
-
-    Raises
-    ------
-    ValueError
-        If the value is none of those forms.
-
-    Notes
-    -----
-    A number is the only form today, and the function exists so that a fitted
-    start — sizing the members once at a first analysis, say — arrives as a
-    new name here rather than as a change to every caller.
-    """
-    if isinstance(described, bool):
-        raise ValueError("diameter cannot be a boolean")
-    if isinstance(described, (int, float)):
-        return UniformDiameterInitializer(float(described))
-
-    raise ValueError(f"diameter must be a number, got {described!r}")

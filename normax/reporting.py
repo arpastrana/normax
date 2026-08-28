@@ -350,7 +350,7 @@ def report_design(
     ]
     basis = record.problem.pipeline.formfinder.basis
     if basis is not None:
-        entries.append(("coordinates", str(basis.width)))
+        entries.append(("coefficients", str(basis.width)))
     entries.append(("variables", str(record.answer.variables.size)))
     report.write_heading("Backends")
     report.write_entries(entries)

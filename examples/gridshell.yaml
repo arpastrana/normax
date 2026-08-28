@@ -13,10 +13,7 @@ structure:
 form_finding:
   basis: svd
   mirror: y
-  force_density: drawn
-
-# No start: the drawn cap is already funicular under its own pressure.
-start: null
+  # DrawnShapeInitializer: the drawn cap is its own fit, so it reads no start.
 
 # The load is a pressure on the plan, spread by tributary area, so the boundary
 # ring's share goes straight to ground. The two drifts are mirror images, each
@@ -32,7 +29,8 @@ load_cases:
     options: {center: 13, spokes: 3, factor: 0.5}
 
 analysis:
-  diameter: 100.0
+  # UniformDiameterInitializer: one outer diameter in every member.
+  diameter_start: {diameter: 100.0}
   # A space frame solver that carries no derivative of its own, reached across
   # the analysis schema. Its adjoint is this repository's.
   backend: pynite
