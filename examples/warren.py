@@ -32,7 +32,7 @@ from normax.exporting import export_design
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.structures import Structure
 from normax.structures import TrussDescription
 from normax.structures import build_warren_2d
@@ -72,9 +72,9 @@ def main(config_path: Path) -> None:
     # The structure, its load cases, and the three blocks built on it.
     structure = build_truss(config.structure)
     loads = build_load_cases(structure, config.load_cases)
-    family = build_section_family(Steel355(), config.sizing.section_class)
+    catalog = build_section_catalog(Steel355(), config.sizing.section_class)
     pipeline = build_pipeline(
-        structure, family, config.form_finding, config.analysis, config.sizing
+        structure, catalog, config.form_finding, config.analysis, config.sizing
     )
 
     # The start: the initializer's densities, signed by the guard the file names.

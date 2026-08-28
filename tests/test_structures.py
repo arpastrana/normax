@@ -5,13 +5,13 @@ import pytest
 
 from normax.loads import assemble_load_cases
 from normax.loads import compute_tributary_areas
-from normax.loads import load_deck
-from normax.loads import load_deck_half
-from normax.loads import load_deck_point
-from normax.loads import load_half_span
-from normax.loads import load_sector
-from normax.loads import load_tributary
-from normax.loads import load_uniform
+from normax.loads import create_load_deck
+from normax.loads import create_load_deck_half
+from normax.loads import create_load_deck_point
+from normax.loads import create_load_half_span
+from normax.loads import create_load_sector
+from normax.loads import create_load_tributary
+from normax.loads import create_load_uniform
 from normax.loads import mask_deck_nodes
 from normax.loads import mask_free_nodes
 from normax.structures import build_arch_2d
@@ -311,7 +311,7 @@ def shell():
 
 def test_loads_hang_from_free_nodes_only(structures):
     for structure in structures:
-        loads = np.asarray(load_uniform(structure, 1.0))
+        loads = np.asarray(create_load_uniform(structure, 1.0))
         supports = np.asarray(structure.supports)
         free = mask_free_nodes(structure)
 
@@ -322,7 +322,7 @@ def test_loads_hang_from_free_nodes_only(structures):
 
 def test_a_uniform_load_case_shares_the_total_over_the_free_nodes(loaded):
     # A pattern carries a total, not a per-node value, so the sum is the spec.
-    applied = np.asarray(load_uniform(loaded, TOTAL))
+    applied = np.asarray(create_load_uniform(loaded, TOTAL))
     free = mask_free_nodes(loaded)
 
     assert -applied[:, 2].sum() == pytest.approx(TOTAL)
@@ -331,7 +331,7 @@ def test_a_uniform_load_case_shares_the_total_over_the_free_nodes(loaded):
 
 
 def test_a_half_span_load_case_carries_the_same_total(loaded):
-    applied = np.asarray(load_half_span(loaded, TOTAL, factor=0.5))
+    applied = np.asarray(create_load_half_span(loaded, TOTAL, factor=0.5))
 
     assert -applied[:, 2].sum() == pytest.approx(TOTAL)
     assert np.all(applied[np.asarray(loaded.supports)] == 0.0)
@@ -340,7 +340,7 @@ def test_a_half_span_load_case_carries_the_same_total(loaded):
 
 
 def test_a_half_span_load_case_grades_the_two_halves_by_the_factor(loaded):
-    applied = np.asarray(load_half_span(loaded, TOTAL, factor=0.5)[:, 2])
+    applied = np.asarray(create_load_half_span(loaded, TOTAL, factor=0.5)[:, 2])
     along = np.asarray(loaded.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
 
@@ -353,7 +353,7 @@ def test_a_half_span_load_case_grades_the_two_halves_by_the_factor(loaded):
 
 
 def test_a_half_span_load_case_with_no_factor_leaves_one_half_bare(loaded):
-    applied = np.asarray(load_half_span(loaded, TOTAL, factor=0.0)[:, 2])
+    applied = np.asarray(create_load_half_span(loaded, TOTAL, factor=0.0)[:, 2])
     along = np.asarray(loaded.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
 
@@ -362,8 +362,10 @@ def test_a_half_span_load_case_with_no_factor_leaves_one_half_bare(loaded):
 
 
 def test_a_mirrored_half_span_load_case_is_the_reflection_of_the_unmirrored_one(loaded):
-    near = np.asarray(load_half_span(loaded, TOTAL, factor=0.5)[:, 2])
-    far = np.asarray(load_half_span(loaded, TOTAL, factor=0.5, mirrored=True)[:, 2])
+    near = np.asarray(create_load_half_span(loaded, TOTAL, factor=0.5)[:, 2])
+    far = np.asarray(
+        create_load_half_span(loaded, TOTAL, factor=0.5, mirrored=True)[:, 2]
+    )
 
     assert np.allclose(near, far[::-1])
     assert np.isclose(near.sum(), far.sum())
@@ -376,7 +378,7 @@ def test_the_deck_is_the_interior_bottom_chord(truss):
 
 
 def test_a_deck_load_case_shares_the_total_over_the_deck_alone(truss):
-    applied = np.asarray(load_deck(truss, TOTAL))
+    applied = np.asarray(create_load_deck(truss, TOTAL))
     deck = mask_deck_nodes(truss)
 
     assert -applied[:, 2].sum() == pytest.approx(TOTAL)
@@ -385,7 +387,7 @@ def test_a_deck_load_case_shares_the_total_over_the_deck_alone(truss):
 
 
 def test_a_half_deck_load_case_stays_on_the_deck_and_grades_it(truss):
-    applied = np.asarray(load_deck_half(truss, TOTAL, factor=0.25))
+    applied = np.asarray(create_load_deck_half(truss, TOTAL, factor=0.25))
     deck = mask_deck_nodes(truss)
     along = np.asarray(truss.nodes[:, 0])
     middle = 0.5 * (along.min() + along.max())
@@ -400,7 +402,7 @@ def test_a_half_deck_load_case_stays_on_the_deck_and_grades_it(truss):
 
 
 def test_a_deck_point_load_case_loads_the_deck_node_nearest_midspan(truss):
-    applied = np.asarray(load_deck_point(truss, TOTAL)[:, 2])
+    applied = np.asarray(create_load_deck_point(truss, TOTAL)[:, 2])
 
     assert np.count_nonzero(applied) == 1
     assert applied[4] == pytest.approx(-TOTAL)
@@ -415,7 +417,7 @@ def test_the_tributary_areas_tile_the_plan(shell):
 
 def test_a_tributary_load_case_drops_the_supports_share(shell):
     pressure = 3.0e-3
-    applied = np.asarray(load_tributary(shell, pressure))
+    applied = np.asarray(create_load_tributary(shell, pressure))
     free = mask_free_nodes(shell)
     carried = compute_tributary_areas(shell)[free].sum()
 
@@ -424,7 +426,7 @@ def test_a_tributary_load_case_drops_the_supports_share(shell):
 
 
 def test_a_tributary_load_case_weighs_each_node_by_its_own_area(shell):
-    applied = np.asarray(load_tributary(shell, 3.0e-3))
+    applied = np.asarray(create_load_tributary(shell, 3.0e-3))
     areas = compute_tributary_areas(shell)
     free = mask_free_nodes(shell)
 
@@ -436,8 +438,10 @@ def test_a_tributary_load_case_weighs_each_node_by_its_own_area(shell):
 def test_a_sector_load_case_carries_the_uniform_pressure_total(shell):
     # Rescaled to the tributary total, so no case wins by carrying less.
     pressure = 3.0e-3
-    drifted = np.asarray(load_sector(shell, pressure, center=0, spokes=3, factor=0.3))
-    even = np.asarray(load_tributary(shell, pressure))
+    drifted = np.asarray(
+        create_load_sector(shell, pressure, center=0, spokes=3, factor=0.3)
+    )
+    even = np.asarray(create_load_tributary(shell, pressure))
 
     assert drifted[:, 2].sum() == pytest.approx(even[:, 2].sum())
     assert not np.allclose(drifted, even)
@@ -445,7 +449,7 @@ def test_a_sector_load_case_carries_the_uniform_pressure_total(shell):
 
 
 def test_assembled_load_cases_are_shaped_by_their_first_case(loaded):
-    cases = [load_uniform(loaded, TOTAL), load_half_span(loaded, TOTAL)]
+    cases = [create_load_uniform(loaded, TOTAL), create_load_half_span(loaded, TOTAL)]
     assembled = assemble_load_cases(cases)
 
     assert jnp.array_equal(assembled.formfinding, cases[0])

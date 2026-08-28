@@ -16,7 +16,7 @@ from normax.analysis import pynite
 from normax.analysis.smax import SmaxAnalyzer
 from normax.loads import select_load_case
 from normax.materials import Steel355
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.sizing.ec3 import coerce_member_actions
 from normax.structures import Structure
 
@@ -28,8 +28,8 @@ TOLERANCE_INVARIANT = 1e-9
 
 
 @pytest.fixture(scope="module")
-def family():
-    return build_section_family(Steel355(), SECTION_CLASS)
+def catalog():
+    return build_section_catalog(Steel355(), SECTION_CLASS)
 
 
 @pytest.fixture(scope="module")
@@ -113,7 +113,7 @@ def test_collinear_ends_keep_the_curvature_they_had():
     assert factor[2] == pytest.approx(0.6)
 
 
-def test_two_solvers_demand_the_same_design_actions(canopy, family):
+def test_two_solvers_demand_the_same_design_actions(canopy, catalog):
     # The regression this file exists for. One traced, one not; one vertical on
     # the third axis, one on the second; and the actions must not know.
     diameters = jnp.full((canopy.num_edges,), SEED_DIAMETER)
@@ -121,11 +121,11 @@ def test_two_solvers_demand_the_same_design_actions(canopy, family):
     loads[4, 2] = -6.0e4
     loads[4, 0] = 2.0e4
 
-    stacked = SmaxAnalyzer(canopy, family(SEED_DIAMETER))(
+    stacked = SmaxAnalyzer(canopy, catalog(SEED_DIAMETER))(
         canopy.nodes, diameters, jnp.asarray(loads)[None, ...]
     )
     traced = select_load_case(stacked, 0)
-    problem = pynite.FrameProblem(structure=canopy, catalogue=family, loads=loads)
+    problem = pynite.FrameProblem(structure=canopy, catalog=catalog, loads=loads)
     foreign = pynite.compute_member_forces(
         problem, np.asarray(canopy.nodes), np.asarray(diameters), loads
     )

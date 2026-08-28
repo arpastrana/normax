@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-A circular hollow section as geometry, and the family that generates one.
+A circular hollow section as geometry, and the catalog that generates one.
 
 Nothing here names a standard. No clause defines the annulus formulas below —
 a standard is what reads them — and what a clause decides about a section, its
 class above all, is deliberately absent: a class selects clauses, so it lives
 with the sizer that owns those clauses and never travels on a design.
 
-**A family is a parametrized cross-section generator, and a section is what it
-generates.** Calling a family at a diameter returns the section walled by the
-family's fixed diameter-to-thickness ratio, carrying the grade it is rolled
+**A catalog is a parametrized cross-section generator, and a section is what it
+generates.** Calling a catalog at a diameter returns the section walled by the
+catalog's fixed diameter-to-thickness ratio, carrying the grade it is rolled
 from, so nothing downstream is handed a geometry and a material that could
 disagree.
 
@@ -23,13 +23,17 @@ the two libraries must agree about what a tube is bit for bit, and
 `tests/test_sections.py` is the drift alarm.
 """
 
+import abc
 from typing import NamedTuple
 
+import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
 from normax.materials import SteelGrade
+from normax.structures import Structure
 
 # EN 1993-1-1 Table 5.2 sheet 3: d/t limit per class, in multiples of epsilon squared.
 CLASS_LIMITS = {1: 50.0, 2: 70.0, 3: 90.0}
@@ -138,9 +142,9 @@ class MemberSections(NamedTuple):
         return (jnp.pi / 64.0) * (outer**4 - bore**4)
 
 
-class TubeFamily(NamedTuple):
+class TubeCatalog(NamedTuple):
     """
-    The family of circular hollow sections a member's size moves along.
+    The catalog of circular hollow sections a member's size moves along.
 
     Attributes
     ----------
@@ -148,20 +152,20 @@ class TubeFamily(NamedTuple):
         Diameter-to-thickness ratio, fixed so that a member carries a single
         size variable.
     material :
-        The steel the family is rolled from, free of any standard.
+        The steel the catalog is rolled from, free of any standard.
 
     Notes
     -----
     **Where the ratio comes from is not this container's business.** The one
     this project runs at is a class limit of EN 1993-1-1 Table 5.2, but that
     derivation is clause work and lives with the sizer that performs it; the
-    family itself is geometry, and a swept ratio or one read off a published
+    catalog itself is geometry, and a swept ratio or one read off a published
     section builds the same container.
 
     With the wall proportional to the diameter, every property of the
     generated section is a monomial in the diameter times a function of the
     ratio alone. That is what a sizer's monotonicity argument stands on, and
-    it belongs to the family rather than to any one section — a tube whose
+    it belongs to the catalog rather than to any one section — a tube whose
     wall is held fixed as its diameter grows does not satisfy it.
     """
 
@@ -183,7 +187,7 @@ class TubeFamily(NamedTuple):
         Returns
         -------
         sections :
-            Sections of that diameter, walled by this family's ratio and
+            Sections of that diameter, walled by this catalog's ratio and
             carrying its grade.
 
         Notes
@@ -196,9 +200,9 @@ class TubeFamily(NamedTuple):
         return MemberSections(diameter, thickness, self.material)
 
 
-def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
+def build_section_catalog(grade: SteelGrade, section_class: int) -> TubeCatalog:
     """
-    The section family as thin as a given class allows.
+    The section catalog as thin as a given class allows.
 
     Parameters
     ----------
@@ -209,8 +213,8 @@ def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
 
     Returns
     -------
-    family :
-        The family whose ratio sits exactly on that class's limit.
+    catalog :
+        The catalog whose ratio sits exactly on that class's limit.
 
     Raises
     ------
@@ -229,4 +233,88 @@ def build_section_family(grade: SteelGrade, section_class: int) -> TubeFamily:
 
     ratio = CLASS_LIMITS[section_class] * 235.0 / grade.f_y
 
-    return TubeFamily(ratio, grade)
+    return TubeCatalog(ratio, grade)
+
+
+class AbstractDiameterInitializer(eqx.Module):
+    """
+    What generates the diameters a search starts from.
+
+    Notes
+    -----
+    The counterpart of `normax.form_finding.AbstractDensityInitializer`, and
+    deliberately the thinner of the two. A density start is a fit — a drawn
+    geometry or a sketched lens has to be balanced before it is funicular —
+    whereas a diameter start is a guess the analysis runs at until the check
+    replaces it, so a concrete initializer states only what those diameters
+    are. Anything an initializer needs beyond the structure it takes when it
+    is built, as the form finders do.
+    """
+
+    @abc.abstractmethod
+    def __call__(self, structure: Structure) -> Float[np.ndarray, "members"]:
+        """
+        The diameter every member starts at.
+
+        Parameters
+        ----------
+        structure :
+            The structure whose members are to be seeded.
+
+        Returns
+        -------
+        diameters :
+            Outer diameter of every member at the start.
+        """
+
+
+class UniformDiameterInitializer(AbstractDiameterInitializer):
+    """
+    One diameter in every member.
+
+    Attributes
+    ----------
+    diameter :
+        Outer diameter every member starts at, in millimeters.
+    """
+
+    diameter: float
+
+    def __call__(self, structure: Structure) -> Float[np.ndarray, "members"]:
+        """
+        Every member at the one diameter.
+        """
+        return np.full(structure.num_edges, self.diameter)
+
+
+def build_diameter_initializer(described: float) -> AbstractDiameterInitializer:
+    """
+    The initializer a run config's `diameter` value names.
+
+    Parameters
+    ----------
+    described :
+        A number for one diameter in every member.
+
+    Returns
+    -------
+    initializer :
+        The generator of the start diameters.
+
+    Raises
+    ------
+    ValueError
+        If the value is none of those forms.
+
+    Notes
+    -----
+    A number is the only form today, and the function exists so that a fitted
+    start — sizing the members once at a first analysis, say — arrives as a
+    new name here rather than as a change to every caller.
+    """
+    if isinstance(described, bool):
+        raise ValueError("diameter cannot be a boolean")
+    if isinstance(described, (int, float)):
+        return UniformDiameterInitializer(float(described))
+
+    raise ValueError(f"diameter must be a number, got {described!r}")

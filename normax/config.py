@@ -17,6 +17,8 @@ import yaml
 from normax.form_finding import AbstractDensityInitializer
 from normax.form_finding import build_density_initializer
 from normax.optimization import OptimizationBudget
+from normax.sections import AbstractDiameterInitializer
+from normax.sections import build_diameter_initializer
 
 StructureT = TypeVar("StructureT")
 
@@ -47,15 +49,16 @@ class AnalysisConfig(NamedTuple):
 
     Attributes
     ----------
-    diameter :
-        Outer diameter every member is seeded with before the search sizes it.
+    initializer :
+        What generates the diameters the search starts from, before the check
+        sizes them.
     backend :
-        Which solver fills the analysis slot: `smax` traces the frame in this
-        process, `opensees` and `pynite` cross a Tesseract boundary to a host
-        solver — the first planar, the second a space frame.
+        Which solver fills the analysis slot, `opensees` or `pynite`. Both
+        cross a Tesseract boundary to a host solver — the first planar, the
+        second a space frame.
     """
 
-    diameter: float
+    initializer: AbstractDiameterInitializer
     backend: str
 
 
@@ -267,11 +270,15 @@ def parse_config(
     budget.update(scales)
     load_cases = tuple(LoadCaseConfig(**entry) for entry in document["load_cases"])
 
+    described = dict(document["analysis"])
+    seeded = build_diameter_initializer(described.pop("diameter"))
+    analysis = AnalysisConfig(seeded, **described)
+
     config = RunConfig(
         structure=structure_type(**document["structure"]),
         form_finding=form_finding,
         load_cases=load_cases,
-        analysis=AnalysisConfig(**document["analysis"]),
+        analysis=analysis,
         sizing=SizingConfig(**document["sizing"]),
         constraints=constraints,
         optimization=OptimizationBudget(**budget),

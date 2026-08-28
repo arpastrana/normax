@@ -147,14 +147,14 @@ def mask_half_span(structure: Structure, mirrored: bool) -> Bool[np.ndarray, "no
     return along >= middle if mirrored else along <= middle
 
 
-def load_uniform(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
+def create_load_uniform(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
     """
     A total shared equally over every free node.
     """
     return distribute_loads(structure, np.ones(structure.num_nodes), total)
 
 
-def load_half_span(
+def create_load_half_span(
     structure: Structure,
     total: float,
     factor: float = 0.0,
@@ -184,14 +184,14 @@ def load_half_span(
     return distribute_loads(structure, pattern, total)
 
 
-def load_deck(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
+def create_load_deck(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
     """
     A total shared equally over the deck nodes of a truss.
     """
     return distribute_loads(structure, mask_deck_nodes(structure).astype(float), total)
 
 
-def load_deck_half(
+def create_load_deck_half(
     structure: Structure,
     total: float,
     factor: float = 0.0,
@@ -222,7 +222,9 @@ def load_deck_half(
     return distribute_loads(structure, pattern, total)
 
 
-def load_deck_point(structure: Structure, total: float) -> Float[Array, "nodes 3"]:
+def create_load_deck_point(
+    structure: Structure, total: float
+) -> Float[Array, "nodes 3"]:
     """
     A total concentrated on the deck node nearest midspan.
     """
@@ -324,7 +326,9 @@ def compute_tributary_areas(structure: Structure) -> Float[np.ndarray, "nodes"]:
     return areas
 
 
-def load_tributary(structure: Structure, pressure: float) -> Float[Array, "nodes 3"]:
+def create_load_tributary(
+    structure: Structure, pressure: float
+) -> Float[Array, "nodes 3"]:
     """
     A plan pressure resolved onto the nodes by tributary area.
 
@@ -346,7 +350,7 @@ def load_tributary(structure: Structure, pressure: float) -> Float[Array, "nodes
     return distribute_loads(structure, areas, pressure * carried)
 
 
-def load_sector(
+def create_load_sector(
     structure: Structure,
     pressure: float,
     center: int,
@@ -395,13 +399,13 @@ def load_sector(
 
 
 LOAD_PATTERNS = {
-    "uniform": load_uniform,
-    "half_span": load_half_span,
-    "deck": load_deck,
-    "deck_half": load_deck_half,
-    "deck_point": load_deck_point,
-    "tributary": load_tributary,
-    "sector": load_sector,
+    "uniform": create_load_uniform,
+    "half_span": create_load_half_span,
+    "deck": create_load_deck,
+    "deck_half": create_load_deck_half,
+    "deck_point": create_load_deck_point,
+    "tributary": create_load_tributary,
+    "sector": create_load_sector,
 }
 
 

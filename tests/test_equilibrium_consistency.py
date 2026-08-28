@@ -17,9 +17,9 @@ from normax.analysis.smax import compute_member_forces
 from normax.analysis.smax import prepare_model
 from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import solve_equilibrium
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
 
@@ -52,7 +52,7 @@ def funicular(structure, load=LOAD):
     """
     The uniform load case the arch is form-found under.
     """
-    return load_uniform(structure, load * (NUM_EDGES - 1))
+    return create_load_uniform(structure, load * (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -61,13 +61,13 @@ def steel():
 
 
 @pytest.fixture(scope="module")
-def catalogue(steel):
-    return build_section_family(steel, 3)
+def catalog(steel):
+    return build_section_catalog(steel, 3)
 
 
 @pytest.fixture(scope="module")
-def section(catalogue):
-    return catalogue(DIAMETER)
+def section(catalog):
+    return catalog(DIAMETER)
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +96,7 @@ def member(model, state, section, structure):
     )
 
 
-def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY):
+def deviation(diameter, steel, catalog, load=LOAD, force_density=FORCE_DENSITY):
     """
     Largest relative gap between the analyzed and the funicular axial force.
     """
@@ -106,7 +106,7 @@ def deviation(diameter, steel, catalogue, load=LOAD, force_density=FORCE_DENSITY
     graph = build_equilibrium_graph(structure)
     state = solve_equilibrium(q, structure.nodes[graph.indices_fixed], graph, applied)
 
-    section = catalogue._replace(material=steel)(diameter)
+    section = catalog._replace(material=steel)(diameter)
     expected = q * state.lengths[:, 0]
     sizes = jnp.full(NUM_EDGES, diameter)
     member = compute_member_forces(
@@ -261,34 +261,34 @@ def test_the_arch_carries_no_moment_at_a_pinned_base(member):
 # Why the gap is what it is
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("diameter", [50.0, 100.0, 200.0])
-def test_the_gap_is_quadratic_in_the_diameter(diameter, steel, catalogue):
+def test_the_gap_is_quadratic_in_the_diameter(diameter, steel, catalog):
     # A beam chain through a funicular polygon cannot turn a kink on axial force
     # alone, and the bending it needs scales as the square of the radius of
     # gyration over the length.
-    reference = deviation(100.0, steel, catalogue)
+    reference = deviation(100.0, steel, catalog)
     scaled = reference * (diameter / 100.0) ** 2
 
-    assert deviation(diameter, steel, catalogue) == pytest.approx(scaled, rel=0.01)
+    assert deviation(diameter, steel, catalog) == pytest.approx(scaled, rel=0.01)
 
 
 @pytest.mark.parametrize("e_mod", [70_000.0, 400_000.0])
-def test_the_gap_does_not_depend_on_the_modulus(e_mod, steel, catalogue):
-    softer = deviation(DIAMETER, steel._replace(e_mod=e_mod), catalogue)
+def test_the_gap_does_not_depend_on_the_modulus(e_mod, steel, catalog):
+    softer = deviation(DIAMETER, steel._replace(e_mod=e_mod), catalog)
 
-    assert softer == pytest.approx(deviation(DIAMETER, steel, catalogue), rel=1e-9)
+    assert softer == pytest.approx(deviation(DIAMETER, steel, catalog), rel=1e-9)
 
 
 @pytest.mark.parametrize("scale", [0.1, 10.0])
-def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, catalogue):
+def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, catalog):
     scaled = deviation(
         DIAMETER,
         steel,
-        catalogue,
+        catalog,
         load=LOAD * scale,
         force_density=FORCE_DENSITY * scale,
     )
 
-    assert scaled == pytest.approx(deviation(DIAMETER, steel, catalogue), rel=1e-9)
+    assert scaled == pytest.approx(deviation(DIAMETER, steel, catalog), rel=1e-9)
 
 
 # --------------------------------------------------------------------------- #

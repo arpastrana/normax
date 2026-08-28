@@ -32,7 +32,7 @@ from jaxtyping import Float
 from normax.analysis import MemberForces
 from normax.analysis import find_normal_axis
 from normax.analysis import restrain_supports
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.structures import Structure
 from normax.units import MEGAPASCAL
 from normax.units import MILLIMETER
@@ -206,7 +206,7 @@ def check_frame_plane(
 
 def prepare_model(
     structure: Structure,
-    family: TubeFamily,
+    catalog: TubeCatalog,
     normal: int | None,
 ) -> Model:
     """
@@ -216,8 +216,8 @@ def prepare_model(
     ----------
     structure :
         The structure supplying the connectivity and the supports.
-    family :
-        The section family. Unused, the domain being rebuilt per call.
+    catalog :
+        The section catalog. Unused, the domain being rebuilt per call.
     normal :
         Index of the global axis the frame has no thickness along.
 
@@ -325,7 +325,7 @@ class FrameSolve(NamedTuple):
     parameters: bool
 
 
-def _build_model(model: Model, family: TubeFamily, given: FrameSolve) -> int:
+def _build_model(model: Model, catalog: TubeCatalog, given: FrameSolve) -> int:
     """
     Assemble and solve the frame, optionally registering every DDM parameter.
 
@@ -333,8 +333,8 @@ def _build_model(model: Model, family: TubeFamily, given: FrameSolve) -> int:
     ----------
     model :
         The structure and its plane, from `prepare_model`.
-    family :
-        The section family, whose ratio fixes the wall and whose grade supplies
+    catalog :
+        The section catalog, whose ratio fixes the wall and whose grade supplies
         the modulus.
     given :
         The geometry, the sizes, the load case, and whether to register.
@@ -373,10 +373,10 @@ def _build_model(model: Model, family: TubeFamily, given: FrameSolve) -> int:
     applied = np.asarray(given.loads)[:, list(spanned.axes)]
     flags = restrain_supports(structure)
 
-    sections = family(jnp.asarray(given.diameters) * MILLIMETER)
+    sections = catalog(jnp.asarray(given.diameters) * MILLIMETER)
     areas = np.asarray(sections.area)
     inertias = np.asarray(sections.second_moment)
-    e_mod = float(family.material.e_mod) * MEGAPASCAL
+    e_mod = float(catalog.material.e_mod) * MEGAPASCAL
 
     num_nodes = coordinates.shape[0]
     num_members = edges.shape[0]
@@ -463,7 +463,7 @@ def compute_member_forces(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    family: TubeFamily,
+    catalog: TubeCatalog,
     loads: Float[Array, "nodes 3"],
 ) -> MemberForces:
     """
@@ -477,8 +477,8 @@ def compute_member_forces(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    family :
-        The section family, whose ratio fixes the wall and whose grade supplies
+    catalog :
+        The section catalog, whose ratio fixes the wall and whose grade supplies
         the modulus.
     loads :
         Force applied at every node.
@@ -496,7 +496,7 @@ def compute_member_forces(
     allocating a JAX array.
     """
     given = FrameSolve(xyz, diameters, loads, parameters=False)
-    _build_model(model, family, given)
+    _build_model(model, catalog, given)
 
     read = _read_forces(model.structure.num_edges)
     bending = read.moments / NEWTON_MILLIMETER
@@ -510,7 +510,7 @@ def compute_member_forces(
 
 def _section_sensitivity(
     diameters: Float[Array, "members"],
-    family: TubeFamily,
+    catalog: TubeCatalog,
 ) -> tuple[Float[np.ndarray, "members"], Float[np.ndarray, "members"]]:
     """
     How a member's area and second moment move with its diameter.
@@ -522,8 +522,8 @@ def _section_sensitivity(
     """
     outer = jnp.asarray(diameters) * MILLIMETER
 
-    d_area = jax.vmap(jax.grad(lambda d: family(d).area))(outer)
-    d_inertia = jax.vmap(jax.grad(lambda d: family(d).second_moment))(outer)
+    d_area = jax.vmap(jax.grad(lambda d: catalog(d).area))(outer)
+    d_inertia = jax.vmap(jax.grad(lambda d: catalog(d).second_moment))(outer)
 
     return np.asarray(d_area) * MILLIMETER, np.asarray(d_inertia) * MILLIMETER
 
@@ -547,7 +547,7 @@ def compute_force_jacobian(
     model: Model,
     xyz: Float[Array, "nodes 3"],
     diameters: Float[Array, "members"],
-    family: TubeFamily,
+    catalog: TubeCatalog,
     loads: Float[Array, "nodes 3"],
 ) -> Jacobian:
     """
@@ -561,8 +561,8 @@ def compute_force_jacobian(
         Position of every node, from form finding.
     diameters :
         Outer diameter of every member.
-    family :
-        The section family, whose ratio fixes the wall and whose grade supplies
+    catalog :
+        The section catalog, whose ratio fixes the wall and whose grade supplies
         the modulus.
     loads :
         Force applied at every node.
@@ -579,7 +579,7 @@ def compute_force_jacobian(
     sweep. The cotangent rule is a contraction of it.
     """
     given = FrameSolve(xyz, diameters, loads, parameters=True)
-    count = _build_model(model, family, given)
+    count = _build_model(model, catalog, given)
 
     num_nodes = np.asarray(xyz).shape[0]
     num_members = model.structure.num_edges
@@ -599,13 +599,13 @@ def compute_force_jacobian(
 
     sweep = ParameterSweep(axial, moments, num_nodes)
 
-    return _assemble_blocks(sweep, diameters, family, model.spanned)
+    return _assemble_blocks(sweep, diameters, catalog, model.spanned)
 
 
 def _assemble_blocks(
     sweep: ParameterSweep,
     diameters: Float[Array, "members"],
-    family: TubeFamily,
+    catalog: TubeCatalog,
     spanned: Plane,
 ) -> Jacobian:
     """
@@ -624,7 +624,7 @@ def _assemble_blocks(
     num_members = axial.shape[0]
 
     coordinates = 2 * num_nodes
-    d_area, d_inertia = _section_sensitivity(diameters, family)
+    d_area, d_inertia = _section_sensitivity(diameters, catalog)
 
     axial_force_xyz = np.zeros((num_members, num_nodes, 3))
     moment_major_xyz = np.zeros((num_members, 2, num_nodes, 3))

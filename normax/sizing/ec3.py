@@ -16,7 +16,7 @@ from ec3x.actions import MemberActions
 from ec3x.classification import section_class_at_ratio
 from ec3x.material import Steel
 from ec3x.section import Tube
-from ec3x.section import TubeCatalogue
+from ec3x.section import TubeCatalogue as Ec3Catalogue
 from ec3x.sizing import diameter_required
 from ec3x.sizing import moment_factor_linear
 from ec3x.sizing import utilization_design
@@ -26,7 +26,7 @@ from jaxtyping import Float
 from normax.analysis import MemberForces
 from normax.materials import SteelGrade
 from normax.sections import MemberSections
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.structures import Structure
@@ -62,7 +62,7 @@ def coerce_member_sections(tubes: Tube) -> MemberSections:
     Parameters
     ----------
     tubes :
-        Tubes as this standard's catalogue generated them.
+        Tubes as this standard's catalog generated them.
 
     Returns
     -------
@@ -162,17 +162,17 @@ class Ec3Sizer(AbstractMemberSizer):
     ----------
     structure :
         The structure whose members are sized. Read for nothing.
-    catalogue :
-        The section family in the standard's terms.
+    ec3_catalog :
+        The section catalog in the standard's terms.
     resultant :
         Whether the two moments combine as a resultant in the cross-section
         check, or as a linear sum.
     section_class :
-        Cross-section class, derived from the family's ratio.
+        Cross-section class, derived from the catalog's ratio.
 
     Notes
     -----
-    Configured by a neutral family and converting internally: the partial
+    Configured by a neutral catalog and converting internally: the partial
     factors, the buckling curve and the class are derived here at their
     defaults. The class selects a clause, so it is classified once, on the
     host, where the Class 4 refusal can fire. Every load case is sized on its
@@ -180,25 +180,25 @@ class Ec3Sizer(AbstractMemberSizer):
     """
 
     structure: Structure
-    catalogue: TubeCatalogue
+    ec3_catalog: Ec3Catalogue
     resultant: bool = eqx.field(static=True)
     section_class: int = eqx.field(static=True)
 
     def __init__(
         self,
         structure: Structure,
-        family: TubeFamily,
+        catalog: TubeCatalog,
         resultant: bool = True,
     ) -> None:
         """
-        Build a sizer over a section family stated as bare geometry.
+        Build a sizer over a section catalog stated as bare geometry.
 
         Parameters
         ----------
         structure :
             The structure whose members are sized. Read for nothing.
-        family :
-            The section family every member is drawn from.
+        catalog :
+            The section catalog every member is drawn from.
         resultant :
             Whether the two moments combine as a resultant in the cross-section
             check, or as a linear sum.
@@ -206,23 +206,23 @@ class Ec3Sizer(AbstractMemberSizer):
         Raises
         ------
         ValueError
-            If the family's ratio classifies as Class 4.
+            If the catalog's ratio classifies as Class 4.
         """
-        steel = coerce_material(family.material)
-        section_class = section_class_at_ratio(family.ratio, steel.f_y)
-        catalogue = TubeCatalogue(family.ratio, section_class, steel)
+        steel = coerce_material(catalog.material)
+        section_class = section_class_at_ratio(catalog.ratio, steel.f_y)
+        ec3_catalog = Ec3Catalogue(catalog.ratio, section_class, steel)
 
         self.structure = structure
-        self.catalogue = catalogue
+        self.ec3_catalog = ec3_catalog
         self.resultant = resultant
         self.section_class = section_class
 
     @property
-    def family(self) -> TubeFamily:
+    def catalog(self) -> TubeCatalog:
         """
-        The section family this block sizes over, as bare geometry.
+        The section catalog this block sizes over, as bare geometry.
         """
-        steel = self.catalogue.material
+        steel = self.ec3_catalog.material
         grade = SteelGrade(
             f_y=steel.f_y,
             f_u=steel.f_u,
@@ -230,7 +230,7 @@ class Ec3Sizer(AbstractMemberSizer):
             density=steel.density,
         )
 
-        return TubeFamily(self.catalogue.ratio, grade)
+        return TubeCatalog(self.ec3_catalog.ratio, grade)
 
     def __call__(
         self,
@@ -263,11 +263,11 @@ class Ec3Sizer(AbstractMemberSizer):
             demanded = diameter_required(
                 acting,
                 buckling_length,
-                self.catalogue,
+                self.ec3_catalog,
                 resultant=self.resultant,
             )
             used = utilization_design(
-                self.catalogue(demanded),
+                self.ec3_catalog(demanded),
                 acting,
                 buckling_length,
                 resultant=self.resultant,
@@ -276,7 +276,7 @@ class Ec3Sizer(AbstractMemberSizer):
             return demanded, used
 
         demanded, used = jax.vmap(size_case)(forces)
-        sections = coerce_member_sections(self.catalogue(demanded))
+        sections = coerce_member_sections(self.ec3_catalog(demanded))
 
         return MemberSizes(sections, used)
 
@@ -304,7 +304,7 @@ class Ec3Sizer(AbstractMemberSizer):
             Demand over resistance of every member under every load case,
             member buckling included since the whole check traces.
         """
-        tubes = self.catalogue(diameters)
+        tubes = self.ec3_catalog(diameters)
 
         def utilization_case(carried: MemberForces):
             acting = coerce_member_actions(carried)

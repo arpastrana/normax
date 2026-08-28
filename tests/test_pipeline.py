@@ -16,12 +16,12 @@ from normax.design import compute_member_mass
 from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import load_half_span
-from normax.loads import load_uniform
+from normax.loads import create_load_half_span
+from normax.loads import create_load_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
 from normax.optimization import OptimizationAnswer
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.sizing.ec3 import Ec3Sizer
 from normax.sizing.ec3 import coerce_member_actions
 from normax.structures import build_arch_2d
@@ -65,15 +65,15 @@ def structure():
 
 @pytest.fixture(scope="module")
 def one_case(structure):
-    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
+    return assemble_load_cases([create_load_uniform(structure, TOTAL_LOAD)])
 
 
 @pytest.fixture(scope="module")
 def three_cases(structure):
     cases = [
-        load_uniform(structure, TOTAL_LOAD),
-        load_half_span(structure, TOTAL_LOAD, factor=0.25),
-        load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
+        create_load_uniform(structure, TOTAL_LOAD),
+        create_load_half_span(structure, TOTAL_LOAD, factor=0.25),
+        create_load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
     ]
 
     return assemble_load_cases(cases)
@@ -92,12 +92,12 @@ def pipeline_of(structure, steel, section_class):
     """
     The three blocks a design is solved by, compiled against the arch.
     """
-    family = build_section_family(steel, section_class)
+    catalog = build_section_catalog(steel, section_class)
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        Ec3Sizer(structure, family),
+        SmaxAnalyzer(structure, catalog(SEED)),
+        Ec3Sizer(structure, catalog),
     )
 
 
@@ -145,7 +145,7 @@ def test_every_member_is_utilized_exactly_once_over(
 
 
 @pytest.mark.parametrize("section_class", [2, 3])
-def test_no_member_is_pinned_to_the_catalogue_minimum(
+def test_no_member_is_pinned_to_the_catalog_minimum(
     structure, steel, force_densities, one_case, section_class
 ):
     pipeline = pipeline_of(structure, steel, section_class)
@@ -158,7 +158,7 @@ def test_no_member_is_pinned_to_the_catalogue_minimum(
 # What the composition produces
 # --------------------------------------------------------------------------- #
 def test_the_mass_is_the_sum_over_members(pipeline, checked, steel):
-    tubes = pipeline.sizer.family(checked.sizes.sections.diameter)
+    tubes = pipeline.sizer.catalog(checked.sizes.sections.diameter)
     by_hand = steel.density * jnp.sum(tubes.area * checked.shape.lengths)
 
     assert float(compute_mass(checked)) == pytest.approx(float(by_hand), rel=1e-14)
@@ -197,7 +197,7 @@ def test_the_thinner_walled_class_is_the_lighter_one(
         pipeline = pipeline_of(structure, steel, section_class)
         _, forces, shape = demanded_design(pipeline, force_densities, one_case)
         sizes = pipeline.sizer(forces, shape.lengths)
-        squeezed = pipeline.sizer.family(sizes.sections.diameter[0])
+        squeezed = pipeline.sizer.catalog(sizes.sections.diameter[0])
 
         return sizes, float(compute_member_mass(squeezed, shape.lengths))
 
@@ -287,7 +287,7 @@ def test_the_gradient_changes_sign_across_the_arch(pipeline, force_densities, on
         shape = pipeline.formfinder(q, one_case.formfinding)
         forces = pipeline.analyzer(shape.xyz, seeded, one_case.analysis)
         sizes = pipeline.sizer(forces, shape.lengths)
-        sections = pipeline.sizer.family(sizes.sections.diameter[0])
+        sections = pipeline.sizer.catalog(sizes.sections.diameter[0])
 
         return compute_member_mass(sections, shape.lengths)
 
@@ -377,7 +377,7 @@ def test_a_load_case_reaches_the_analysis(
     seeded = jnp.full(NUM_EDGES, SEED)
     shaped = pipeline(DesignParameters(force_densities, seeded), one_case)
 
-    asymmetric = load_half_span(structure, TOTAL_LOAD)
+    asymmetric = create_load_half_span(structure, TOTAL_LOAD)
     patched_loads = LoadCases(one_case.formfinding, jnp.stack([asymmetric]))
     patched = pipeline(DesignParameters(force_densities, seeded), patched_loads)
 

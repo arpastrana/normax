@@ -13,7 +13,7 @@ from normax.form_finding import build_density_initializer
 from normax.form_finding import build_plan_basis
 from normax.form_finding import fit_densities
 from normax.form_finding import select_free_nodes
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.loads import read_polar_plan
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
@@ -76,7 +76,7 @@ def lens(warren):
 
 @pytest.fixture(scope="module")
 def warren_loads(warren):
-    return load_uniform(warren, TOTAL)
+    return create_load_uniform(warren, TOTAL)
 
 
 @pytest.fixture(scope="module")

@@ -21,10 +21,9 @@ from normax.analysis.element import assemble_stiffness_local
 from normax.analysis.element import compute_direction_cosines
 from normax.analysis.smax import SmaxAnalyzer
 from normax.materials import Steel355
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.structures import Structure
 from normax.tesseract import TesseractAnalyzer
-from normax.tesseract import open_tesseract_analysis
 
 SECTION_CLASS = 3
 SEED_DIAMETER = 100.0
@@ -47,8 +46,8 @@ SCALE_MOMENT = 1.0e8
 
 
 @pytest.fixture(scope="module")
-def family():
-    return build_section_family(Steel355(), SECTION_CLASS)
+def catalog():
+    return build_section_catalog(Steel355(), SECTION_CLASS)
 
 
 @pytest.fixture(scope="module")
@@ -86,8 +85,8 @@ def canopy_diameters(canopy):
 
 
 @pytest.fixture(scope="module")
-def problem(canopy, canopy_loads, family):
-    return pynite.FrameProblem(structure=canopy, catalogue=family, loads=canopy_loads)
+def problem(canopy, canopy_loads, catalog):
+    return pynite.FrameProblem(structure=canopy, catalog=catalog, loads=canopy_loads)
 
 
 def solved_member(start, end, section, moduli):
@@ -202,11 +201,11 @@ def test_rolling_the_frame_leaves_the_global_stiffness_alone():
 
 
 def test_the_adjoint_agrees_with_a_traced_solver(
-    canopy, canopy_loads, canopy_diameters, family, problem
+    canopy, canopy_loads, canopy_diameters, catalog, problem
 ):
     # The gate. One structure, one scalar, two exact gradients: a hand-written
     # adjoint of a solver that has none, and autodiff of one that is traced.
-    analyzer = SmaxAnalyzer(canopy, family(SEED_DIAMETER))
+    analyzer = SmaxAnalyzer(canopy, catalog(SEED_DIAMETER))
     stacked = jnp.asarray(canopy_loads)[None, ...]
 
     def traced_loss(xyz, diameters):
@@ -269,7 +268,7 @@ def test_the_adjoint_survives_a_central_difference(
 
 
 def test_the_gradient_survives_the_boundary(
-    canopy, canopy_loads, canopy_diameters, family
+    canopy, canopy_loads, canopy_diameters, catalog
 ):
     # What the submission claims: a solver with no derivative of its own,
     # reached across a schema, handing back a reverse-mode gradient.
@@ -279,13 +278,13 @@ def test_the_gradient_survives_the_boundary(
     def loss(analyzer, xyz, sizes):
         return scaled_loss(analyzer(xyz, sizes, stacked))
 
-    crossed = TesseractAnalyzer(canopy, open_tesseract_analysis("pynite"), family, None)
+    crossed = TesseractAnalyzer(canopy, catalog, backend="pynite")
     served = float(loss(crossed, canopy.nodes, diameters))
     foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
         canopy.nodes, diameters
     )
 
-    traced = SmaxAnalyzer(canopy, family(SEED_DIAMETER))
+    traced = SmaxAnalyzer(canopy, catalog(SEED_DIAMETER))
     expected = float(loss(traced, canopy.nodes, diameters))
     reference = jax.grad(lambda x, d: loss(traced, x, d), argnums=(0, 1))(
         canopy.nodes, diameters
@@ -303,7 +302,7 @@ def test_a_section_of_no_area_is_refused(canopy, canopy_loads, problem):
         )
 
 
-def test_a_vertical_member_is_refused(family):
+def test_a_vertical_member_is_refused(catalog):
     # The reporting convention completes its transverse pair against the
     # vertical, so a vertical member has no pair to report a bending in.
     nodes = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 3000.0], [2000.0, 0.0, 3000.0]])
@@ -311,14 +310,14 @@ def test_a_vertical_member_is_refused(family):
     mast = Structure(nodes=nodes, edges=edges, supports=np.array([0]))
     loads = np.zeros_like(nodes)
     loads[2, 2] = -1.0e4
-    problem = pynite.FrameProblem(structure=mast, catalogue=family, loads=loads)
+    problem = pynite.FrameProblem(structure=mast, catalog=catalog, loads=loads)
 
     with pytest.raises(ValueError, match="vertical"):
         pynite.compute_member_forces(problem, nodes, np.full(2, SEED_DIAMETER), loads)
 
 
 def test_several_load_cases_cross_together(
-    canopy, canopy_loads, canopy_diameters, family
+    canopy, canopy_loads, canopy_diameters, catalog
 ):
     # The backend remembers one factorized frame between endpoint calls, and the
     # adjoints run after all the forwards, so a cache keyed on anything the
@@ -337,13 +336,13 @@ def test_several_load_cases_cross_together(
 
         return axial + major + minor
 
-    crossed = TesseractAnalyzer(canopy, open_tesseract_analysis("pynite"), family, None)
+    crossed = TesseractAnalyzer(canopy, catalog, backend="pynite")
     served = crossed(canopy.nodes, diameters, stacked)
     foreign = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
         canopy.nodes, diameters
     )
 
-    traced = SmaxAnalyzer(canopy, family(SEED_DIAMETER))
+    traced = SmaxAnalyzer(canopy, catalog(SEED_DIAMETER))
     expected = traced(canopy.nodes, diameters, stacked)
     reference = jax.grad(lambda x, d: loss(traced, x, d), argnums=(0, 1))(
         canopy.nodes, diameters
@@ -361,7 +360,7 @@ def test_several_load_cases_cross_together(
 
 
 def test_a_second_frame_is_not_answered_by_the_first(
-    canopy, canopy_loads, family, problem
+    canopy, canopy_loads, catalog, problem
 ):
     # Two geometries interleaved in one process: the fingerprint has to tell
     # them apart, and the second must not be served the first's factorization.
@@ -373,13 +372,10 @@ def test_a_second_frame_is_not_answered_by_the_first(
         supports=np.asarray(canopy.supports),
     )
     diameters = np.full(canopy.num_edges, SEED_DIAMETER)
-    second = pynite.FrameProblem(
-        structure=shifted, catalogue=family, loads=canopy_loads
-    )
+    second = pynite.FrameProblem(structure=shifted, catalog=catalog, loads=canopy_loads)
 
-    client = open_tesseract_analysis("pynite")
-    here = TesseractAnalyzer(canopy, client, family, None)
-    there = TesseractAnalyzer(shifted, client, family, None)
+    here = TesseractAnalyzer(canopy, catalog, backend="pynite")
+    there = TesseractAnalyzer(shifted, catalog, backend="pynite")
     sizes = jnp.asarray(diameters)
     stacked = jnp.asarray(canopy_loads)[None, ...]
     served_here = here(canopy.nodes, sizes, stacked)

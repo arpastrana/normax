@@ -147,7 +147,7 @@ class StructuralDesignPipeline(eqx.Module):
         utilization = self.sizer.compute_utilization(
             params.diameters, forces, shape.lengths
         )
-        sections = self.sizer.family(params.diameters)
+        sections = self.sizer.catalog(params.diameters)
         sizes = MemberSizes(sections, utilization)
 
         return Design(shape, forces, sizes)
@@ -493,7 +493,7 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
 
     Notes
     -----
-    The mass reads the form finder and the family alone; the slack runs the
+    The mass reads the form finder and the catalog alone; the slack runs the
     whole pipeline. The rows are aggregated inside the traced augmented program,
     so every constraint costs one reverse pass together — and one crossing of
     whatever boundary a block sits behind.
@@ -504,7 +504,7 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
     def weigh(x: Float[Array, "variables"]) -> Float[Array, ""]:
         params = expand_variables(problem, x)
         shape = pipeline.formfinder(params.coordinates, loads.formfinding)
-        sections = pipeline.sizer.family(params.diameters)
+        sections = pipeline.sizer.catalog(params.diameters)
 
         return compute_member_mass(sections, shape.lengths)
 
@@ -559,7 +559,7 @@ def optimize_design(
 def envelope_diameters(
     problem: DesignProblem,
     coordinates: Float[np.ndarray, "coordinates"],
-    seed: float,
+    seeded: Float[np.ndarray, "members"],
 ) -> Float[np.ndarray, "members"]:
     """
     The diameters a frozen-seed analysis asks of every member, enveloped.
@@ -570,8 +570,8 @@ def envelope_diameters(
         The problem supplying the blocks and the loads.
     coordinates :
         Where the shape is found.
-    seed :
-        Outer diameter the frame is analyzed at.
+    seeded :
+        Outer diameter every member is first analyzed at.
 
     Returns
     -------
@@ -581,7 +581,6 @@ def envelope_diameters(
         forces, which is where a search starts.
     """
     pipeline = problem.pipeline
-    seeded = jnp.full(problem.structure.num_edges, seed)
     q = read_member_densities(problem, jnp.asarray(coordinates))
     shape = pipeline.formfinder(q, problem.loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, seeded, problem.loads.analysis)
@@ -594,7 +593,7 @@ def envelope_diameters(
 def initialize_optimization_variables(
     problem: DesignProblem,
     q: Float[np.ndarray, "members"],
-    seed: float,
+    seeded: Float[np.ndarray, "members"],
 ) -> Float[np.ndarray, "variables"]:
     """
     The variable vector a search leaves from, at given force densities.
@@ -605,8 +604,9 @@ def initialize_optimization_variables(
         The problem supplying the maps and the blocks.
     q :
         Force density of every member at the start.
-    seed :
-        Outer diameter the frame is first analyzed at.
+    seeded :
+        Outer diameter every member is first analyzed at, from the config's
+        diameter initializer.
 
     Returns
     -------
@@ -614,7 +614,7 @@ def initialize_optimization_variables(
         The densities' coordinates, and the enveloped diameters folded.
     """
     coordinates = read_coordinates(problem, q)
-    diameters = envelope_diameters(problem, coordinates, seed)
+    diameters = envelope_diameters(problem, coordinates, seeded)
 
     return fold_variables(problem, q, diameters)
 

@@ -15,21 +15,21 @@ import numpy as np
 
 from normax.sizing.blueprint import ActionCotangents
 from normax.sizing.blueprint import HostActions
-from normax.sizing.blueprint import HostFamily
+from normax.sizing.blueprint import HostCatalog
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
 from normax.sizing.blueprint import coerce_member_actions
-from normax.sizing.blueprint import coerce_section_family
+from normax.sizing.blueprint import coerce_section_catalog
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 
 
-def _read_family(inputs: dict[str, Any]) -> HostFamily:
+def _read_catalog(inputs: dict[str, Any]) -> HostCatalog:
     """
-    The section family the flat schema scalars describe.
+    The section catalog the flat schema scalars describe.
     """
-    return coerce_section_family(
+    return coerce_section_catalog(
         float(inputs["ratio"]),
         float(inputs["f_y"]),
         float(inputs["gamma_m0"]),
@@ -61,12 +61,12 @@ def solve_sizes(raw: dict[str, Any]) -> dict[str, Any]:
         The required sizes, both utilizations and the clamp mask. Without the
         solve, the held size and its utilization echoed, and no clamp claimed.
     """
-    family = _read_family(raw)
+    catalog = _read_catalog(raw)
     actions = _read_actions(raw)
     held = np.asarray(raw["diameter_held"], dtype=np.float64)
-    utilization_held = check_members(held, actions, family)
+    utilization_held = check_members(held, actions, catalog)
     if raw["solve"]:
-        sized = size_members(actions, family)
+        sized = size_members(actions, catalog)
         diameter = sized.diameter
         utilization = sized.utilization
         clamped = sized.clamped.astype(np.float64)
@@ -105,12 +105,12 @@ def sizes_vjp(raw: dict[str, Any], seeds: dict[str, Any]) -> dict[str, Any]:
     Without the solve, `diameter` is the held size and `utilization` is the
     held check, so their seeds pull through the identity and the held rule.
     """
-    family = _read_family(raw)
+    catalog = _read_catalog(raw)
     actions = _read_actions(raw)
     held = np.asarray(raw["diameter_held"], dtype=np.float64)
     if raw["solve"]:
         sized_seed = SizeCotangents(seeds["diameter"], seeds["utilization"])
-        from_sizes = size_cotangents(actions, family, sized_seed)
+        from_sizes = size_cotangents(actions, catalog, sized_seed)
         held_seed = seeds["utilization_held"]
         echoed = np.zeros_like(held)
     else:
@@ -120,7 +120,7 @@ def sizes_vjp(raw: dict[str, Any], seeds: dict[str, Any]) -> dict[str, Any]:
         from_sizes = ActionCotangents(quiet_axial, quiet_major, quiet_minor)
         held_seed = seeds["utilization_held"] + seeds["utilization"]
         echoed = seeds["diameter"]
-    from_held = check_cotangents(held, actions, family, held_seed)
+    from_held = check_cotangents(held, actions, catalog, held_seed)
     gathered = {
         "axial_force": from_sizes.axial + from_held.actions.axial,
         "end_moments_major": from_sizes.end_major + from_held.actions.end_major,

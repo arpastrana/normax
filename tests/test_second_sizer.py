@@ -13,8 +13,8 @@ from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.materials import Steel355
-from normax.sections import TubeFamily
-from normax.sections import build_section_family
+from normax.sections import TubeCatalog
+from normax.sections import build_section_catalog
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.ec3 import Ec3Sizer
@@ -48,8 +48,8 @@ class AllowableStressSizer(AbstractMemberSizer):
     ----------
     structure :
         The structure whose members are sized. Read for nothing.
-    family :
-        The section family every member is drawn from, and its grade.
+    catalog :
+        The section catalog every member is drawn from, and its grade.
     safety_factor :
         Factor of safety on yield defining the allowable stress.
 
@@ -62,14 +62,14 @@ class AllowableStressSizer(AbstractMemberSizer):
     """
 
     structure: Structure
-    family: TubeFamily
+    catalog: TubeCatalog
     safety_factor: float = eqx.field(static=True, default=SAFETY_FACTOR)
 
     def allowable_stress(self) -> Float[Array, ""]:
         """
         The one number this philosophy checks against.
         """
-        return jnp.asarray(self.family.material.f_y) / self.safety_factor
+        return jnp.asarray(self.catalog.material.f_y) / self.safety_factor
 
     def __call__(
         self,
@@ -79,10 +79,10 @@ class AllowableStressSizer(AbstractMemberSizer):
         """
         Size every member for every load case; the length is ignored.
         """
-        ratio = jnp.asarray(self.family.ratio)
+        ratio = jnp.asarray(self.catalog.ratio)
         demanded_area = jnp.abs(forces.axial_force) / self.allowable_stress()
         diameter = jnp.sqrt(demanded_area * ratio**2 / (jnp.pi * (ratio - 1.0)))
-        sections = self.family(diameter)
+        sections = self.catalog(diameter)
         used = jnp.abs(forces.axial_force) / (sections.area * self.allowable_stress())
 
         return MemberSizes(sections, used)
@@ -96,7 +96,7 @@ class AllowableStressSizer(AbstractMemberSizer):
         """
         Check sizes the caller owns against the allowable stress.
         """
-        sections = self.family(diameters)
+        sections = self.catalog(diameters)
 
         return jnp.abs(forces.axial_force) / (sections.area * self.allowable_stress())
 
@@ -108,7 +108,7 @@ def structure():
 
 @pytest.fixture(scope="module")
 def sizer(structure):
-    return AllowableStressSizer(structure, TubeFamily(RATIO, Steel355()))
+    return AllowableStressSizer(structure, TubeCatalog(RATIO, Steel355()))
 
 
 @pytest.fixture(scope="module")
@@ -142,8 +142,8 @@ def test_the_contract_imports_no_standard():
     assert finished.returncode == 0, finished.stderr
 
 
-def test_a_sizer_without_a_family_cannot_be_built(structure):
-    class FamilylessSizer(AbstractMemberSizer):
+def test_a_sizer_without_a_catalog_cannot_be_built(structure):
+    class CataloglessSizer(AbstractMemberSizer):
         structure: Structure
 
         def compute_utilization(self, diameters, forces, buckling_length):
@@ -153,14 +153,14 @@ def test_a_sizer_without_a_family_cannot_be_built(structure):
             return MemberSizes(None, jnp.zeros_like(forces.axial_force))
 
     with pytest.raises(TypeError):
-        FamilylessSizer(structure)
+        CataloglessSizer(structure)
 
 
 def test_a_second_philosophy_fills_the_contract(sizer, forces):
     sizes = sizer(forces, LENGTHS)
 
     assert isinstance(sizes, MemberSizes)
-    assert isinstance(sizer.family, TubeFamily)
+    assert isinstance(sizer.catalog, TubeCatalog)
     assert np.all(np.asarray(sizes.sections.diameter) > 0.0)
 
 
@@ -192,7 +192,7 @@ def test_the_check_differentiates_in_the_diameters(sizer, forces):
 def test_the_two_philosophies_disagree_about_the_sizes(structure, sizer, forces):
     # A different standard, not a reimplementation: EC3 sees buckling and
     # bending and this sizer sees neither, so compressed members differ.
-    limit_state = Ec3Sizer(structure, build_section_family(Steel355(), 3))
+    limit_state = Ec3Sizer(structure, build_section_catalog(Steel355(), 3))
 
     naive = sizer(forces, LENGTHS).sections.diameter
     checked = limit_state(forces, LENGTHS).sections.diameter

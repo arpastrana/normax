@@ -32,7 +32,7 @@ from normax.analysis import MemberForces
 from normax.analysis import restrain_supports
 from normax.loads import stack_load_cases
 from normax.sections import MemberSections
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.structures import Structure
 from normax.units import MEGAPASCAL
 from normax.units import MILLIMETER
@@ -166,8 +166,8 @@ def _injected_assembly(
     section properties come from `normax.sections`, so the two stages cannot
     disagree about what a tube is.
     """
-    family = TubeFamily(section.ratio, section.material)
-    sections = family(diameters * MILLIMETER)
+    catalog = TubeCatalog(section.ratio, section.material)
+    sections = catalog(diameters * MILLIMETER)
     steel = sections.material
     gross = sections.area
     inertia = sections.second_moment

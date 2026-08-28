@@ -43,24 +43,24 @@ from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization.nested import design_envelope
 from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.sizing import MemberSizes
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.sizing.blueprint import HostActions
-from normax.sizing.blueprint import HostFamily
+from normax.sizing.blueprint import HostCatalog
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import _check_partials
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
-from normax.sizing.blueprint import coerce_section_family
+from normax.sizing.blueprint import coerce_section_catalog
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 from normax.sizing.contract import AbstractMemberSizer
@@ -68,7 +68,6 @@ from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
-from normax.tesseract import open_tesseract_sizing
 
 TITLE = "One non-differentiable code library, differentiated two ways."
 
@@ -237,9 +236,9 @@ def call_host_sizer(host, axial, end_major, end_minor):
     return np.asarray(sized.diameter), np.asarray(sized.utilization)
 
 
-def build_sized_call(host: HostFamily) -> Callable:
+def build_sized_call(host: HostCatalog) -> Callable:
     """
-    A traceable sizing map over one host family, differentiated by hand.
+    A traceable sizing map over one host catalog, differentiated by hand.
 
     Parameters
     ----------
@@ -300,9 +299,9 @@ def call_host_check(host, diameters, axial, end_major, end_minor):
     return np.asarray(check_members(held, actions, host))
 
 
-def build_held_call(host: HostFamily) -> Callable:
+def build_held_call(host: HostCatalog) -> Callable:
     """
-    A traceable held check over one host family, differentiated by hand.
+    A traceable held check over one host catalog, differentiated by hand.
 
     Parameters
     ----------
@@ -362,8 +361,8 @@ class CallbackSizer(AbstractMemberSizer):
     ----------
     structure :
         The structure the block is built on.
-    family :
-        The tube family the sizes are drawn from.
+    catalog :
+        The tube catalog the sizes are drawn from.
 
     Notes
     -----
@@ -372,18 +371,18 @@ class CallbackSizer(AbstractMemberSizer):
     """
 
     structure: Structure
-    family: TubeFamily
-    host: HostFamily = eqx.field(static=True)
+    catalog: TubeCatalog
+    host: HostCatalog = eqx.field(static=True)
     sized: Callable = eqx.field(static=True)
     held: Callable = eqx.field(static=True)
 
-    def __init__(self, structure: Structure, family: TubeFamily) -> None:
+    def __init__(self, structure: Structure, catalog: TubeCatalog) -> None:
         """
-        Build the in-process sizer on a structure and its tube family.
+        Build the in-process sizer on a structure and its tube catalog.
         """
         self.structure = structure
-        self.family = family
-        self.host = coerce_section_family(float(family.ratio), family.material.f_y)
+        self.catalog = catalog
+        self.host = coerce_section_catalog(float(catalog.ratio), catalog.material.f_y)
         self.sized = build_sized_call(self.host)
         self.held = build_held_call(self.host)
 
@@ -394,7 +393,7 @@ class CallbackSizer(AbstractMemberSizer):
         diameter, utilization = self.sized(
             forces.axial_force, forces.moment_major, forces.moment_minor
         )
-        sections = self.family(diameter)
+        sections = self.catalog(diameter)
 
         return MemberSizes(sections, utilization)
 
@@ -422,7 +421,7 @@ def call_host_partials(host, diameter, axial, moment):
     )
 
 
-def build_member_call(host: HostFamily) -> Callable:
+def build_member_call(host: HostCatalog) -> Callable:
     """
     One member's fully-stressed diameter, with a forward tangent rule.
 
@@ -473,10 +472,10 @@ def build_member_call(host: HostFamily) -> Callable:
 
 
 # The check the single-member claims are read through, on the host.
-HOST_FAMILY = coerce_section_family(RATIO, YIELD_STRENGTH)
+HOST_CATALOG = coerce_section_catalog(RATIO, YIELD_STRENGTH)
 
 # The same check, traceable: the single-member claims differentiate through it.
-SIZED_CALL = build_member_call(HOST_FAMILY)
+SIZED_CALL = build_member_call(HOST_CATALOG)
 
 
 def diameter_of(case: MemberCase) -> Float[Array, ""]:
@@ -505,15 +504,15 @@ def closed_derivatives(case: MemberCase) -> tuple[float, float]:
     `dd/db = 1 / (3 d^2 - a)` — a derivation that never states the check's
     utilization, and so shares no algebra with the implicit rule it judges.
     """
-    family = coerce_section_family(RATIO, YIELD_STRENGTH)
+    catalog = coerce_section_catalog(RATIO, YIELD_STRENGTH)
     demand_axial = (
-        abs(case.axial_force) * GAMMA_M0 / (family.area_coefficient * family.f_y)
+        abs(case.axial_force) * GAMMA_M0 / (catalog.area_coefficient * catalog.f_y)
     )
     solved = float(diameter_of(case))
     steepness = 3.0 * solved**2 - demand_axial
 
-    scale_axial = GAMMA_M0 / (family.area_coefficient * family.f_y)
-    scale_moment = GAMMA_M0 / (family.modulus_coefficient * family.f_y)
+    scale_axial = GAMMA_M0 / (catalog.area_coefficient * catalog.f_y)
+    scale_moment = GAMMA_M0 / (catalog.modulus_coefficient * catalog.f_y)
     by_force = np.sign(case.axial_force) * scale_axial * solved / steepness
     by_moment = scale_moment / steepness
 
@@ -572,17 +571,17 @@ def arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     grade = Steel355()
-    family = TubeFamily(RATIO, grade)
+    catalog = TubeCatalog(RATIO, grade)
     formfinder = FdmFormFinder(structure)
-    analyzer = SmaxAnalyzer(structure, family(SEED))
+    analyzer = SmaxAnalyzer(structure, catalog(SEED))
 
     local = StructuralDesignPipeline(
-        formfinder, analyzer, CallbackSizer(structure, family)
+        formfinder, analyzer, CallbackSizer(structure, catalog)
     )
     crossed = StructuralDesignPipeline(
         formfinder,
         analyzer,
-        TesseractSizer(structure, open_tesseract_sizing("blueprint"), family),
+        TesseractSizer(structure, catalog, backend="blueprint"),
     )
 
     return local, crossed
@@ -594,7 +593,7 @@ def arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
     """
     structure = pipeline.sizer.structure
     trial = jnp.full(NUM_EDGES, -1.0)
-    loads = load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    loads = create_load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
     shape = pipeline.formfinder(trial, loads)
     reached = jnp.max(shape.xyz[:, 2])
 
@@ -700,11 +699,11 @@ def report_philosophy(report: Report, local: Design, params, loads) -> None:
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     grade = Steel355()
-    family = TubeFamily(RATIO, grade)
+    catalog = TubeCatalog(RATIO, grade)
     checked_pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        Ec3Sizer(structure, family),
+        SmaxAnalyzer(structure, catalog(SEED)),
+        Ec3Sizer(structure, catalog),
     )
     checked = sized_design(checked_pipeline, params, loads)
 
@@ -717,7 +716,7 @@ def report_philosophy(report: Report, local: Design, params, loads) -> None:
     report.write_heading("The philosophy gap: no buckling against EN 1993-1-1")
     report.write_table(GAP_COLUMNS, rows)
     report.write_note(
-        "Same family, same forces: the ratio prices the member check. "
+        "Same catalog, same forces: the ratio prices the member check. "
         "Blueprints implements no 6.3.1 flexural buckling, and this gap is "
         "that absence."
     )
@@ -748,7 +747,9 @@ def main(verbose: bool = True) -> None:
     local_pipeline, crossed_pipeline = arch_problem()
     params = arch_parameters(local_pipeline)
     structure = local_pipeline.sizer.structure
-    loads = assemble_load_cases([load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))])
+    loads = assemble_load_cases(
+        [create_load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
+    )
 
     local_design = sized_design(local_pipeline, params, loads)
     crossed_design = sized_design(crossed_pipeline, params, loads)

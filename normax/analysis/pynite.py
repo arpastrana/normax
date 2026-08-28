@@ -42,7 +42,7 @@ from normax.analysis.element import SectionRigidity
 from normax.analysis.element import assemble_stiffness_global
 from normax.analysis.element import compute_direction_cosines
 from normax.sections import MemberSections
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.structures import Structure
 from normax.units import MEGAPASCAL
 from normax.units import MILLIMETER
@@ -79,14 +79,14 @@ class FrameProblem(NamedTuple):
     ----------
     structure :
         The connectivity and the supported nodes.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness.
+    catalog :
+        The section catalog, whose ratio fixes the wall thickness.
     loads :
         Force applied at every node, in newtons.
     """
 
     structure: Structure
-    catalogue: TubeFamily
+    catalog: TubeCatalog
     loads: Float[np.ndarray, "nodes 3"]
 
 
@@ -254,7 +254,7 @@ def assemble_frame_model(
 
 def compute_member_rigidity(
     diameter: Float[Array, ""],
-    catalogue: TubeFamily,
+    catalog: TubeCatalog,
 ) -> SectionRigidity:
     """
     The three rigidities one diameter implies, in SI.
@@ -263,15 +263,15 @@ def compute_member_rigidity(
     ----------
     diameter :
         Outer diameter of the member, in millimeters.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness.
+    catalog :
+        The section catalog, whose ratio fixes the wall thickness.
 
     Returns
     -------
     rigidity :
         Axial, bending and torsional rigidity.
     """
-    section = catalogue(diameter * MILLIMETER)
+    section = catalog(diameter * MILLIMETER)
     elasticity = section.material.e_mod * MEGAPASCAL
     shear = elasticity / (2.0 * (1.0 + POISSONS_RATIO))
 
@@ -286,7 +286,7 @@ def assemble_member_stiffness(
     start: Float[Array, "3"],
     end: Float[Array, "3"],
     diameter: Float[Array, ""],
-    catalogue: TubeFamily,
+    catalog: TubeCatalog,
 ) -> Float[Array, "dofs_member dofs_member"]:
     """
     One member's global elastic stiffness, in the solver's own axes.
@@ -299,8 +299,8 @@ def assemble_member_stiffness(
         Position of the member's second end, in this repository's axes.
     diameter :
         Outer diameter of the member.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness.
+    catalog :
+        The section catalog, whose ratio fixes the wall thickness.
 
     Returns
     -------
@@ -313,7 +313,7 @@ def assemble_member_stiffness(
     repository's, so the chain rule crosses the two conventions once, here.
     """
     turning = jnp.asarray(ROTATION)
-    rigidity = compute_member_rigidity(diameter, catalogue)
+    rigidity = compute_member_rigidity(diameter, catalog)
     first = turning @ start * MILLIMETER
     second = turning @ end * MILLIMETER
 
@@ -322,7 +322,7 @@ def assemble_member_stiffness(
 
 def compute_member_actions(
     state: MemberState,
-    catalogue: TubeFamily,
+    catalog: TubeCatalog,
 ) -> Float[Array, "readings"]:
     """
     Everything the stage reports about one member, from what it depends on.
@@ -331,8 +331,8 @@ def compute_member_actions(
     ----------
     state :
         The member's ends, its diameter and its solved end displacements.
-    catalogue :
-        The section family, whose ratio fixes the wall thickness.
+    catalog :
+        The section catalog, whose ratio fixes the wall thickness.
 
     Returns
     -------
@@ -348,7 +348,7 @@ def compute_member_actions(
     forces with one mapped pass.
     """
     stiffness = assemble_member_stiffness(
-        state.start, state.end, state.diameter, catalogue
+        state.start, state.end, state.diameter, catalog
     )
     acting = stiffness @ state.displacement
     inverse = jnp.asarray(ROTATION).T
@@ -369,14 +369,14 @@ def compute_member_actions(
 def _pull_one_reading(
     state: MemberState,
     cotangent: Float[Array, "readings"],
-    catalogue: TubeFamily,
+    catalog: TubeCatalog,
 ) -> MemberState:
     """
     One member's reading, pulled back onto everything it was read from.
     """
 
     def reading(acting: MemberState) -> Float[Array, "readings"]:
-        return compute_member_actions(acting, catalogue)
+        return compute_member_actions(acting, catalog)
 
     _, backward = jax.vjp(reading, state)
     (pulled,) = backward(cotangent)
@@ -472,7 +472,7 @@ def prepare_frame(
     Parameters
     ----------
     problem :
-        The frame and its section family. Its loads are not read here.
+        The frame and its section catalog. Its loads are not read here.
     xyz :
         Position of every node, in this repository's axes and millimeters.
     diameters :
@@ -498,7 +498,7 @@ def prepare_frame(
     edges = np.asarray(structure.edges)
     positions = np.asarray(xyz)
     sizes = jnp.asarray(np.asarray(diameters))
-    sections = problem.catalogue(sizes)
+    sections = problem.catalog(sizes)
 
     refuse_unusable(positions, sections)
     refuse_upright(positions, edges)
@@ -606,7 +606,7 @@ def compute_member_forces(
     Parameters
     ----------
     problem :
-        The frame and its section family.
+        The frame and its section catalog.
     xyz :
         Position of every node, in this repository's axes and millimeters.
     diameters :
@@ -638,7 +638,7 @@ def compute_member_forces(
         displacement=jnp.asarray(displaced[:, prepared.indexed])
     )
 
-    acting = np.asarray(_READ_CASES(moved, problem.catalogue))
+    acting = np.asarray(_READ_CASES(moved, problem.catalog))
     if not stacked:
         acting = acting[0]
 
@@ -662,7 +662,7 @@ def pull_back_cotangents(
     Parameters
     ----------
     problem :
-        The frame, its section family and its one load case.
+        The frame, its section catalog and its one load case.
     xyz :
         Position of every node, in this repository's axes and millimeters.
     diameters :
@@ -703,7 +703,7 @@ def pull_back_cotangents(
         ],
         axis=1,
     )
-    explicit = _PULL_READINGS(state, jnp.asarray(seed), problem.catalogue)
+    explicit = _PULL_READINGS(state, jnp.asarray(seed), problem.catalog)
 
     # One adjoint load, gathered from every member that reads a displacement.
     acting = np.zeros(num_dofs)
@@ -712,9 +712,7 @@ def pull_back_cotangents(
     adjoint = np.zeros(num_dofs)
     adjoint[prepared.free] = prepared.factorized.solve(acting[prepared.free])
 
-    slopes = _STIFFNESS_SLOPES(
-        state.start, state.end, state.diameter, problem.catalogue
-    )
+    slopes = _STIFFNESS_SLOPES(state.start, state.end, state.diameter, problem.catalog)
     slope_start, slope_end, slope_diameter = (np.asarray(block) for block in slopes)
     borne = adjoint[prepared.indexed]
     local = displaced[prepared.indexed]

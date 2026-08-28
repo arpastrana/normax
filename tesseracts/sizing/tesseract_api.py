@@ -10,13 +10,13 @@ pullback with a hand-written adjoint.
 **This schema is the swappable one.** It carries both questions the pipeline
 asks of a check: what size these actions demand (`diameter`, `utilization`),
 and how hard they work the sizes the caller already owns (`diameter_held` in,
-`utilization_held` out). `NORMAX_SIZING_BACKEND` names the check, `blueprint`
-being the one that ships. No buckling length crosses — the shipped check
-would ignore it, and a field a check ignores invites the belief that it
-participates; the wire widens when a backend that reads one exists.
+`utilization_held` out). The `backend` input names the check, `blueprint`
+being the one that ships, and is read statically as `solve` is. No buckling
+length crosses — the shipped check would ignore it, and a field a check
+ignores invites the belief that it participates; the wire widens when a
+backend that reads one exists.
 """
 
-import os
 from typing import Any
 
 import numpy as np
@@ -25,8 +25,7 @@ from tesseract_core.runtime import Array
 from tesseract_core.runtime import Differentiable
 from tesseract_core.runtime import Float64
 
-# Environment variable naming the backend, and the one used when it is unset.
-BACKEND_VARIABLE = "NORMAX_SIZING_BACKEND"
+# The check a call gets when it names none.
 BACKEND_DEFAULT = "blueprint"
 
 # The inputs the hand adjoint covers, and the outputs it can be seeded on.
@@ -41,7 +40,7 @@ DIFFERENTIABLE_OUTPUTS = ("diameter", "utilization", "utilization_held")
 
 class InputSchema(BaseModel):
     """
-    Member actions and the family, one load case per call.
+    Member actions and the catalog, one load case per call.
     """
 
     axial_force: Differentiable[Array[(None,), Float64]]
@@ -69,7 +68,15 @@ class InputSchema(BaseModel):
     """Diameter-to-thickness ratio, fixing the wall."""
 
     diameter_min: Float64
-    """Smallest diameter the section family offers, in millimeters."""
+    """Smallest diameter the section catalog offers, in millimeters."""
+
+    backend: str = BACKEND_DEFAULT
+    """Which check answers the stage, `blueprint`.
+
+    Read statically, as `solve` is. A schema ordinarily says what a stage
+    computes rather than who computes it; carrying the choice per call is what
+    lets one process hold two checks and compare them.
+    """
 
     solve: bool = True
     """Whether to run the sizing solve, or only the held check.
@@ -95,15 +102,25 @@ class OutputSchema(BaseModel):
     """Demand over resistance of every member, at the held size that crossed."""
 
     clamped: Array[(None,), Float64]
-    """Whether the catalogue minimum decided each member's size, as zero or one.
+    """Whether the catalog minimum decided each member's size, as zero or one.
 
     Non-differentiable: a cotangent on this raises rather than passing quietly.
     """
 
 
-def _selected_backend() -> Any:
+def _selected_backend(selected: str) -> Any:
     """
     The module implementing the selected backend.
+
+    Parameters
+    ----------
+    selected :
+        Which check answers the stage, as the call named it.
+
+    Returns
+    -------
+    backend :
+        The module owning that check's forward pass and its derivative.
 
     Raises
     ------
@@ -113,11 +130,9 @@ def _selected_backend() -> Any:
     Notes
     -----
     Imported on use, so an image shipping one backend's dependencies still
-    reads the schema, and read per call, so one process can compare two. A
-    backend owns its derivative as well as its forward pass.
+    reads the schema. The name arrives per call, so two callers in one process
+    each get the check they asked for.
     """
-    selected = os.environ.get(BACKEND_VARIABLE, BACKEND_DEFAULT)
-
     if selected == "blueprint":
         import _backend_blueprint as backend  # noqa: PLC0415
     else:
@@ -133,7 +148,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     Parameters
     ----------
     inputs :
-        The member actions and the family.
+        The member actions and the catalog.
 
     Returns
     -------
@@ -142,7 +157,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     """
     raw = inputs.model_dump()
 
-    return _selected_backend().solve_sizes(raw)
+    return _selected_backend(inputs.backend).solve_sizes(raw)
 
 
 def abstract_eval(abstract_inputs):
@@ -177,7 +192,7 @@ def vector_jacobian_product(
     Parameters
     ----------
     inputs :
-        The member actions and the family.
+        The member actions and the catalog.
     vjp_inputs :
         Names of the input fields a derivative is taken with respect to.
     vjp_outputs :
@@ -212,6 +227,6 @@ def vector_jacobian_product(
         name: np.asarray(cotangent_vector.get(name, quiet), dtype=np.float64)
         for name in DIFFERENTIABLE_OUTPUTS
     }
-    pulled = _selected_backend().sizes_vjp(raw, seeds)
+    pulled = _selected_backend(inputs.backend).sizes_vjp(raw, seeds)
 
     return {name: pulled[name] for name in vjp_inputs}

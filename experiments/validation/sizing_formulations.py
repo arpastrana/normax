@@ -45,7 +45,7 @@ from normax.design import compute_mass
 from normax.form_finding import FdmFormFinder
 from normax.loads import LoadCases
 from normax.loads import assemble_load_cases
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization.nested import design_envelope
 from normax.optimization.nested import minimize_bounded
@@ -55,7 +55,7 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.structures import build_arch_2d
 from normax.tesseract import build_sizer
@@ -179,14 +179,14 @@ def arch_problem() -> ArchProblem:
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     grade = Steel355()
-    family = TubeFamily(RATIO, grade)
+    catalog = TubeCatalog(RATIO, grade)
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        build_sizer(structure, family, SIZING),
+        SmaxAnalyzer(structure, catalog(SEED)),
+        build_sizer(structure, catalog, SIZING),
     )
 
-    load_case = load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
+    load_case = create_load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))
     loads = assemble_load_cases([load_case])
 
     trial = jnp.full(NUM_EDGES, -1.0)
@@ -250,10 +250,10 @@ def simultaneous_fixed(problem: ArchProblem) -> tuple[RouteAnswer, SolverState]:
     pipeline = problem.pipeline
     sizer = pipeline.sizer
     shape = pipeline.formfinder(problem.params.coordinates, problem.loads.formfinding)
-    density = sizer.family.material.density
+    density = sizer.catalog.material.density
 
     def weigh(diameters):
-        sections = sizer.family(diameters)
+        sections = sizer.catalog(diameters)
 
         return jnp.sum(sections.area * shape.lengths) * density
 
@@ -406,7 +406,7 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
     """
     pipeline = problem.pipeline
     sizer = pipeline.sizer
-    density = sizer.family.material.density
+    density = sizer.catalog.material.density
 
     def split(x):
         return x[:NUM_EDGES], x[NUM_EDGES:]
@@ -414,7 +414,7 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
     def weigh(x):
         force_densities, diameters = split(x)
         shape = pipeline.formfinder(force_densities, problem.loads.formfinding)
-        sections = sizer.family(diameters)
+        sections = sizer.catalog(diameters)
 
         return jnp.sum(sections.area * shape.lengths) * density
 

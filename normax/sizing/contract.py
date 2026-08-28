@@ -13,7 +13,7 @@ from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.sections import MemberSections
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 
 
 class MemberSizes(NamedTuple):
@@ -45,8 +45,8 @@ class AbstractMemberSizer(eqx.Module):
 
     Attributes
     ----------
-    family :
-        The section family every member is drawn from, as bare geometry.
+    catalog :
+        The section catalog every member is drawn from, as bare geometry.
 
     Notes
     -----
@@ -55,7 +55,7 @@ class AbstractMemberSizer(eqx.Module):
     and has nothing to settle from a connectivity.
     """
 
-    family: eqx.AbstractVar[TubeFamily]
+    catalog: eqx.AbstractVar[TubeCatalog]
 
     @abc.abstractmethod
     def compute_utilization(

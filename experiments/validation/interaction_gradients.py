@@ -21,7 +21,7 @@ import jax.numpy as jnp
 from ec3x.actions import MemberActions
 from ec3x.classification import is_plastic
 from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
+from ec3x.section import TubeCatalogue as Ec3Catalogue
 from ec3x.sizing import LIMIT_CROSS_SECTION
 from ec3x.sizing import LIMIT_MAJOR
 from ec3x.sizing import LIMIT_MINIMUM_SIZE
@@ -120,20 +120,20 @@ class ClassBranch(NamedTuple):
     ----------
     section_class :
         Class the resistances are evaluated on.
-    catalogue :
-        Tube family whose ratio holds the section at that class limit.
+    catalog :
+        Tube catalog whose ratio holds the section at that class limit.
     """
 
     section_class: int
-    catalogue: TubeCatalogue
+    catalog: Ec3Catalogue
 
     @classmethod
     def at_limit(cls, section_class: int) -> "ClassBranch":
         """
         The branch whose wall proportion sits exactly at a class limit.
         """
-        catalogue = TubeCatalogue.at_class_limit(STEEL, section_class)
-        branch = cls(section_class, catalogue)
+        catalog = Ec3Catalogue.at_class_limit(STEEL, section_class)
+        branch = cls(section_class, catalog)
 
         return branch
 
@@ -146,7 +146,7 @@ class ClassBranch(NamedTuple):
 
         return (
             f"Class {self.section_class} ({behavior}), "
-            f"d/t = {float(self.catalogue.ratio):.2f}"
+            f"d/t = {float(self.catalog.ratio):.2f}"
         )
 
 
@@ -201,7 +201,7 @@ def diameter_of(case: MemberCase, branch: ClassBranch) -> Float[Array, ""]:
     """
     Fully-stressed diameter under the full interaction.
     """
-    diameter = diameter_required(case.actions, case.buckling_length, branch.catalogue)
+    diameter = diameter_required(case.actions, case.buckling_length, branch.catalog)
 
     return diameter
 
@@ -289,7 +289,7 @@ def report_axial_limit(report: Report) -> None:
         branch = ClassBranch.at_limit(section_class)
         case = MemberCase(-5e5, 0.0, 0.0, 4000.0)
         actions = MemberActions(case.axial_force, 0.0, 0.0, 1.0, 1.0)
-        bare = diameter_required(actions, case.buckling_length, branch.catalogue)
+        bare = diameter_required(actions, case.buckling_length, branch.catalog)
         with_moment = float(diameter_of(case, branch))
         axial_only = float(bare)
         gap = abs(with_moment - axial_only)
@@ -314,10 +314,10 @@ def report_limit_states(report: Report, branch: ClassBranch) -> float:
     worst = 0.0
     for case in CASES:
         diameter = diameter_of(case, branch)
-        tube = branch.catalogue(diameter)
+        tube = branch.catalog(diameter)
         utilization = utilization_design(tube, case.actions, case.buckling_length)
         limit_state = governing_limit_state(
-            tube, case.actions, case.buckling_length, branch.catalogue
+            tube, case.actions, case.buckling_length, branch.catalog
         )
         demand = float(utilization)
         worst = max(worst, abs(demand - 1.0))
@@ -347,8 +347,8 @@ def report_objective(report: Report, branch: ClassBranch) -> None:
 
     def objective(axial_force):
         actions = MemberActions(axial_force, 4e7, 1.5e7, MOMENT_FACTOR, MOMENT_FACTOR)
-        sizes = diameter_required(actions, lengths, branch.catalogue)
-        tubes = branch.catalogue(sizes)
+        sizes = diameter_required(actions, lengths, branch.catalog)
+        tubes = branch.catalog(sizes)
 
         return mass_of_tubes(tubes, lengths)
 
