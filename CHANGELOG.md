@@ -12,17 +12,22 @@ server here offers one and none will, the augmented Lagrangian aggregating its
 rows into one scalar so that a gradient is a single cotangent.
 
 **`pin_dispatch_thread` was claiming more than it can show.** Its docstring said
-that under `jit` the runtime *runs* several dispatches at once; measured, it does
-not. With `NORMAX_PIN_DISPATCH=0` the whole arch descent returns an identical
-0.150150 t, two independent crossings under one `jit` leave descriptors 1 and 2
-untouched, and the 53 crossing tests pass serially in the file order that once
-produced a 311-error cascade. On the CPU backend XLA does not overlap these
-callbacks, and the two stages are chained by a data dependency that forbids
-reordering regardless. The docstring now says the runtime is *permitted* to --
-`emit_python_callback` carries no `ordered=True` -- and states plainly that the
-pin is insurance, kept against a GPU backend or a newer XLA taking that
-permission. What actually holds where this has bitten is the separate rule that
-`tests/test_tesseract_parity.py` leaves the composed side eager.
+that under `jit` the runtime *runs* several dispatches at once. It is permitted
+to -- `emit_python_callback` carries no `ordered=True` -- but whether it does is
+now two measurements that disagree, and the docstring says so rather than
+picking one. On 2026-08-24 a crossed-OpenSees descent was measured overlapping
+genuinely, four XLA workers and ten of twenty-four dispatches concurrent. On
+2026-08-28, same JAX 0.11.0, none of it reproduced: with
+`NORMAX_PIN_DISPATCH=0` the arch descent returns an identical 0.150150 t, six
+independent crossings on both backends and a `jacrev` over a crossed vector all
+run on `MainThread` with zero temporal overlap, and the 53 crossing tests pass
+serially in the file order that once produced a 311-error cascade. The
+difference has not been found. Plausibly the augmented Lagrangian sends one
+cotangent where the retired SLSQP route sent many, and the two stages are
+chained by a data dependency besides -- plausibly, not demonstrably. **Keep the
+pin**; the precondition has been seen once. What holds where this has actually
+bitten is the separate rule that `tests/test_tesseract_parity.py` leaves the
+composed side eager.
 
 ### The stdio race in tesseract-core is reproduced and written up
 

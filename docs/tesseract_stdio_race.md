@@ -1,15 +1,15 @@
 # A concurrency defect in tesseract-core's stdio redirection
 
 **Established 2026-08-28: the defect is real, it is in the current release, and
-it does not break this project.** All three halves of that matter. The bug
-reproduces in twelve lines against `tesseract-core` 1.12.0 and against `main`;
-upgrading does not fix it; and normax's pipeline runs correctly with our own
-mitigation switched off, because the conditions that trigger it never arise
-here.
+no route this package ships currently reaches it.** The bug reproduces in twelve
+lines against `tesseract-core` 1.12.0 and against `main`, and upgrading does not
+fix it. Whether *we* can provoke it is a separate and less settled question —
+one measurement says yes, a later one says no, and the two are recorded below
+rather than reconciled.
 
 **This file is the record and the two texts to file with it.** It exists so the
-report is filed from measurement rather than from the belief we started with,
-which was wrong in one important respect — see "What we got wrong".
+report is filed from a standalone reproduction that stands on its own, rather
+than from a claim about our own exposure that we cannot presently support.
 
 ## The defect
 
@@ -49,33 +49,47 @@ after which every later test errors.
 | Present in the latest PyPI release | **yes** — PyPI latest is 1.12.0, and `main` at `206d3d7` *is* the v1.12.0 release commit. `redirect_fd` is byte-identical to 1.11.0. |
 | Already reported upstream | **no** — no matching issues. |
 | More clients widen it | **no.** The state is process-global fd 1/2 and the redirect lives inside one call. A single shared client hit by two threads is exactly as exposed as two clients. Concurrent *calls* are the only term. |
-| It breaks normax today | **no** — see below. |
+| It breaks normax today | **not currently reachable** — but the measurements disagree, see below. |
 
-## What we got wrong
+## Our own exposure — two measurements that disagree
 
-We believed `pin_dispatch_thread` in `normax/tesseract.py` was what kept the
-pipeline working. **It is not.** Measured with `NORMAX_PIN_DISPATCH=0`:
+We first concluded that `pin_dispatch_thread` was load-bearing, then that it was
+not. **Both were too confident.** The record is two measurements, taken four
+days apart on the same JAX 0.11.0, that do not agree:
+
+**2026-08-24**, crossed OpenSees descent, per
+[[normax-tesseract-upstream-prs]]: genuine overlap — *"four distinct workers
+plus main"*, *"10 of 24 dispatches genuinely overlap, precondition met"*.
+
+**2026-08-28**, the shipped configuration, `NORMAX_PIN_DISPATCH=0`: nothing
+overlapped at all.
 
 - the full arch descent returns an identical 0.150150 t, exit 0, byte-identical
   output;
-- two *independent* crossings under one `jit` leave fd 1's inode unchanged;
-- the 53 crossing tests pass serially, in the same file order that once produced
-  the 311-error cascade.
+- six independent crossings under one `jit`, on both backends, run on
+  `MainThread` with zero temporally overlapping pairs;
+- a `jacrev` over a crossed vector-valued function — the multi-cotangent shape —
+  likewise: five dispatches, one thread, no overlap;
+- the 53 crossing tests pass serially, in the file order that once produced the
+  311-error cascade.
 
-Two reasons the overlap never happens here. The two Tesseracts are chained by a
-**true data dependency** — sizing consumes the analysis's forces — so XLA cannot
-reorder them even in principle. And on the CPU backend it does not run
-independent host callbacks concurrently either, which the third measurement
-shows.
+**The difference has not been found.** What is known: the augmented Lagrangian
+aggregates its rows into one scalar, so it sends a single cotangent where the
+retired SLSQP route sent many independent ones, and the two stages are chained
+by a data dependency that forbids reordering regardless. Both changes remove
+opportunities for concurrency that the August configuration had. That is a
+plausible account, not a demonstrated one.
 
-**The mitigation that earned its keep is the other one.** Per
-`normax-jit-tesseract-fd`, `tests/test_tesseract_parity.py` leaves the composed
-side eager rather than compiling it; that file still contains no `jit`, and that
-is what holds. The pin is insurance against a defect a GPU backend or a newer
-XLA could surface, not a load-bearing fix. Its docstring should not claim that
-"under `jit` the runtime runs several dispatches at once" — the honest statement
-is that XLA is *permitted* to, since `emit_python_callback` is emitted without
-`ordered=True`, not that it does.
+**So: keep the pin.** The precondition is real and has been seen once; it is
+simply not reachable by any route this package currently ships. What holds where
+this has actually bitten is the separate rule that
+`tests/test_tesseract_parity.py` leaves the composed side eager rather than
+compiling it — that file still contains no `jit`.
+
+The pin's docstring should not claim that "under `jit` the runtime runs several
+dispatches at once", since half the measurements say otherwise. The honest
+statement is that XLA is *permitted* to, `emit_python_callback` being emitted
+without `ordered=True`.
 
 ## The fix, and the test that proves it
 
@@ -142,9 +156,10 @@ is fast under both regimes.
 > (`tesseract_jax/primitive.py:429`) is emitted without `ordered=True`, so XLA is
 > free to run independent host callbacks concurrently, and each one reaches
 > `run_tesseract`. A JAX program containing two Tesseracts — the pattern the
-> pipelines how-to documents — is enough to permit it. In our own CPU-backend
-> pipeline the callbacks happen to be serialized and we do not hit it, so this is
-> reported from a standalone reproduction rather than from a production failure.
+> pipelines how-to documents — is enough to permit it. We have measured genuine
+> overlap once, in a JAX program driving a stateful legacy solver across the
+> boundary, and measured none at all in a later one; the report below therefore
+> rests on a standalone reproduction that does not depend on provoking XLA.
 >
 > **Scope.** The same `start_run` path is used by `runtime/serve.py:74`, so a
 > served Tesseract running endpoints on more than one thread has the same defect.

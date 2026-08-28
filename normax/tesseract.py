@@ -94,15 +94,21 @@ def pin_dispatch_thread() -> None:
     Pinning rather than locking, because a library with thread-affine state
     needs one owner.
 
-    **Insurance rather than a load-bearing fix, measured 2026-08-28.** With
-    `NORMAX_PIN_DISPATCH=0` the whole arch descent returns an identical answer,
-    two independent crossings under one `jit` leave the descriptors alone, and
-    the crossing tests pass serially: on the CPU backend XLA does not in fact
-    overlap these callbacks, and the two stages here are chained by a data
-    dependency that forbids reordering anyway. What holds where this has bitten
-    is a separate rule — `tests/test_tesseract_parity.py` leaves the composed
-    side eager. Kept because a GPU backend or a newer XLA may take the
-    permission the callback grants. The redirect defect belongs upstream;
+    **Do not remove it, and do not trust either measurement alone.** On
+    2026-08-24 a crossed-OpenSees descent was measured overlapping genuinely —
+    four XLA worker threads, ten of twenty-four dispatches concurrent. On
+    2026-08-28, in the shipped configuration, none of that reproduced: with
+    `NORMAX_PIN_DISPATCH=0` the arch descent returns an identical answer, six
+    independent crossings and a `jacrev` over a crossed vector all run on
+    `MainThread` with zero temporal overlap, and the crossing tests pass
+    serially. Same JAX 0.11.0 both times. The difference has not been found, so
+    the honest position is that the precondition is real, intermittent, and not
+    currently reachable by any route this package ships — the augmented
+    Lagrangian sends one cotangent where the retired SLSQP route sent many, and
+    the two stages are chained by a data dependency besides. Cheap insurance
+    against a condition that has been seen once. The separate rule that
+    `tests/test_tesseract_parity.py` leaves the composed side eager is what
+    holds where this has actually bitten. The redirect defect belongs upstream;
     `docs/tesseract_stdio_race.md` is the report and the reproduction.
     """
     if os.environ.get("NORMAX_PIN_DISPATCH") == "0":
