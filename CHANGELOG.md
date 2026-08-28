@@ -21,18 +21,86 @@ on all four committed configs before the call sites moved.
 - **A named grade replaces a construction inside a call**, and `d_start` is
   `diameter_start`.
 
-**Three of the four answers fail their own check, and the reports have always
-said so.** Every example now reads `is_design_safe` off the utilization against
-the search's own `violation_tol`, which is the right comparison: a
-fully-stressed design sits on the constraint rather than under it, and the
-arch's worst member exceeds one by 1.6e-09. At the committed configs the arch
-converges with nothing over; warren misses by 1.2e-06 on budget alone and
-reaches the same 39.83% given more rounds; vierendeel and gridshell exhaust
-`rounds_max` at worst utilizations of 1.235 and 1.402. Given 40 rounds both
-reach feasibility and both grow heavier than their starts, by 317% and 368%.
-The starts are themselves overstressed -- the vierendeel's worst is 1.149 -- so
-each reported saving is measured between two infeasible designs. The per-family
-utilization columns carried this all along; nothing drew a verdict from them.
+**Every example reads its own verdict.** `is_design_safe` compares the
+utilization against the search's own `violation_tol`, which is the right bar: a
+fully-stressed design sits on the constraint rather than under it, so an exact
+`<= 1.0` would fail every converged answer. Three of the four failed that
+verdict when it was first added, at worst utilizations of 1.0000012, 1.235 and
+1.402, and the per-family utilization columns had carried those numbers all
+along without anything drawing a conclusion from them. The cause was the start,
+not the search: see the next entry.
+
+### The search starts where it is told to
+
+Changed 2026-08-27. `initialize_optimization_variables` folds the diameter
+initializer's seed, floored by the constraints, and no longer envelopes a
+frozen-seed analysis to get there. Opening a search on a fully-stressed design
+was a second sizing rule beside the one the constraints already state, and it
+was the reason three of four examples could not converge.
+
+**A degenerate start, not a bad method.** The enveloped start put the
+Vierendeel on the constraint boundary at worst utilization 1.149 with one
+vertical already collapsed to 125.4 mm against its 1000 mm length floor -- the
+degeneracy the floor exists to forbid, since a vanishing member is free mass
+and unbucklable. From inside it L-BFGS-B returned `ABNORMAL` with `nit = 0` on
+round after round: the first line search failed, no step was taken, and the run
+froze at violation 0.7494 for nine rounds, identical to fifteen digits. The
+plain seed is merely undersized rather than degenerate, and the same search
+descends from it. What each example converges to now:
+
+| example | rounds | worst utilization | mass, tonnes |
+|---|---|---|---|
+| arch | 7 of 10 | 1.000000402 | 0.135622 |
+| Warren | 11 of 12 | 1.000000320 | 0.055613 |
+| Vierendeel | 16 of 20 | 1.000000038 | 0.121547 |
+| gridshell | 11 of 12 | 0.999999842 | 0.105268 |
+
+The Vierendeel's 0.121547 t sits within 0.6% of the 0.122263 t experiment 19
+recorded, so the historical answer is recovered rather than approached.
+
+**The reported saving is now measured against a uniform-diameter start**, which
+is a weaker baseline than the enveloped one it replaced, so the percentages are
+larger and comparable neither to each other nor to anything on record. They
+measure distance from a seed, not engineering merit.
+
+### The budgets are calibrated per structure, and the tolerances by role
+
+Measured 2026-08-27, one structure at a time rather than tuned in common.
+
+- **`violation_tol` is a correctness bar and was never traded.** It stays at
+  1e-6 everywhere. Because the stopping test is a conjunction, feasibility is
+  enforced independently of when a run stops, which is what makes the other
+  tolerance safe to tune at all.
+- **`objective_rtol` is the stopping bar, and 1e-6 was unreachable on two of
+  them.** The Vierendeel's objective never moves less than 6.4e-6 in a round,
+  so the test could never fire and the run always spent every round it had.
+  Reading the stopping round straight off one trace predicted the answer
+  exactly -- round 16, 0.121547 t -- and 1e-4 buys 30% of the runtime for
+  0.028% of the mass, 21% for 0.001% on the arch. It buys nothing on the Warren
+  or the gridshell, whose runs are bit-identical under either value: both are
+  waiting on feasibility, not on the objective, so a looser objective bar
+  cannot release them. Which half binds is a property of the structure and is
+  legible in one trace.
+- **`iterations_after_warmup` selects a basin rather than a precision.** At 50
+  the arch is bit-identical and the Warren differs by 0.06%, but the Vierendeel
+  converges into a basin 4.6% heavier and no number of extra rounds recovers
+  it; the gridshell at 50 needs its rounds raised to 12, after which it is both
+  18% faster and strictly feasible where 10 rounds at 100 iterations left it at
+  1.000001, over the line. So the Vierendeel keeps 100 and the rest take 50.
+
+The four sweep in about 8.3 minutes together, from 11.5, and every one reports
+`converged = True` rather than exhausting its budget.
+
+**Two fixes were tried against the frozen rounds and both made it worse**, so
+neither landed. Growing the penalty on a round that took no step drove it a
+thousandfold inside one round and the line search never recovered: the
+Vierendeel stopped converging at all. Moving the multipliers instead did the
+same. The schedule works because it moves both together and gently, which is to
+say that the remedy for a frozen round is to spend the next one. Raising the
+inner evaluation cap from three to ten times the iteration count is a third
+non-fix: the iteration cap binds underneath it, so the rounds do identical work
+for a few hundred more evaluations. The frozen rounds cost 37 evaluations of
+about 1550, against 492 for the first round alone.
 
 ### The section family is a catalog
 
@@ -44,8 +112,8 @@ had drifted in beside them.
 
 - **Three other senses of the word stayed put, and separating them was the
   work.** `normax/structures.py` names *edge* families -- bottom chord, top
-  chord, rising and falling diagonals -- and `list_warren_families`,
-  `list_vierendeel_families` and `list_shell_families` return them; the sign
+  chord, rising and falling diagonals -- and `create_groups_warren`,
+  `list_vierendeel_families` and `create_groups_shell` return them; the sign
   guard, the report's per-family row and the gridshell's polar fold are keyed by
   those names, so `normax/config.py`, `normax/reporting.py`,
   `normax/structures.py` and `tests/test_structures.py` were excluded whole.
@@ -281,8 +349,8 @@ is shared.
   guard)`.
 - **The sign guard is configuration**: `constraints.sign_guard: {family:
   tension | compression}`, resolved by `assign_signs(constraints, families)`
-  against `list_warren_families` / `list_vierendeel_families` /
-  `list_shell_families`, now in `structures.py`. `sign_chords` and
+  against `create_groups_warren` / `list_vierendeel_families` /
+  `create_groups_shell`, now in `structures.py`. `sign_chords` and
   `select_guarded_members` are gone.
 
 A medium-effort review of the change caught five defects, fixed the same day:

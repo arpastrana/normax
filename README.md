@@ -74,7 +74,7 @@ force_densities = jnp.full(num_edges, force_density_start)
 diameters = jnp.full(num_edges, diameter_start)
 
 
-# "How much does your building weight, Mr. Foster?" (Fuller, 1978)
+# "How much does your building weigh, Mr. Foster?" (Fuller, 1978)
 def compute_lawful_mass(force_densities):
     parameters = DesignParameters(force_densities, diameters)
     design = pipeline(parameters, loads)
