@@ -32,12 +32,14 @@ from normax.config import RunConfig
 from normax.config import parse_config
 from normax.design import DesignProblem
 from normax.design import DesignRecord
+from normax.design import StructuralDesignPipeline
 from normax.design import build_design_constraints
 from normax.design import evaluate_design
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
+from normax.form_finding import FdmFormFinder
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
@@ -45,7 +47,9 @@ from normax.sections import build_section_catalog
 from normax.structures import ArchDescription
 from normax.structures import Structure
 from normax.structures import build_arch_2d
-from normax.tesseract import build_pipeline
+from normax.symmetry import build_member_spread
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 from normax.visualization import view_design
 
 # The arch and the search, unless another file is named on the command line.
@@ -53,6 +57,8 @@ CONFIG = Path(__file__).with_name("arch.yaml")
 
 REPO = Path(__file__).resolve().parent.parent
 TITLE = "Arch — one search to a design"
+MATERIAL = Steel355()
+PRECISION = 12
 EXPORT = ExportTarget("arch", REPO / "data", REPO / "figures")
 
 
@@ -87,26 +93,39 @@ def main(config_path: Path) -> None:
         config_path.read_text(), ArchDescription
     )
 
-    # The structure, its load cases, and the three blocks built on it. The
-    # grade is named once, and both backends draw tubes from the same catalog.
+    # The structure, its load cases, and the catalog both backends draw from.
     structure = build_arch(config.structure)
     loads = build_load_cases(structure, config.load_cases)
-    catalog = build_section_catalog(Steel355(), config.sizing.section_class)
-    pipeline = build_pipeline(
-        structure, catalog, config.form_finding, config.analysis, config.sizing
-    )
+    section_catalog = build_section_catalog(MATERIAL, config.sizing.section_class)
+
+    # The arch holds no plan, so its densities are free and nothing folds.
+    basis = None
+    spread = build_member_spread(structure, (None, None))
+
+    # The three main computation blocks of the structural design pipeline
+    form_finder = FdmFormFinder(structure, basis)
+    analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
+    sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
+
+    pipeline = StructuralDesignPipeline(form_finder, analyzer, sizer, spread)
 
     # The start: one force density in every member, no guard, no folding.
-    started = config.form_finding.initializer(structure, loads.formfinding, None, None)
+    started = config.form_finding.initializer(structure, loads.formfinding, basis, None)
     constraints = build_design_constraints(config.constraints, None)
     problem = DesignProblem(structure, pipeline, loads, constraints)
-    d_start = config.analysis.diameter
-    start = initialize_optimization_variables(problem, started.q, d_start)
+    diameter_start = config.analysis.initializer(structure)
+    start = initialize_optimization_variables(problem, started.q, diameter_start)
     initial = evaluate_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
     found = optimize_design(problem, start, config.optimization)
     optimized = evaluate_design(problem, found.variables)
+
+    # Is every member within what EN 1993-1-1 allows, to the search's own
+    # tolerance? A fully-stressed design sits on the constraint, not below it.
+    slack = 1.0 + config.optimization.violation_tol
+    is_design_safe = bool(jnp.all(optimized.sizes.utilization <= slack))
+    print(f"design safe: {is_design_safe}")
 
     # What the run arrived at; the report, the record and the viewer read it.
     record = DesignRecord(problem, found, initial, optimized, ())
@@ -116,5 +135,5 @@ def main(config_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    jnp.set_printoptions(precision=12)
+    jnp.set_printoptions(precision=PRECISION)
     main(Path(sys.argv[1]) if len(sys.argv) > 1 else CONFIG)
