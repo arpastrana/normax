@@ -623,7 +623,7 @@ def sized_design(pipeline: StructuralDesignPipeline, params, loads) -> Design:
     this experiment is about the sizing map, so it asks the sizer itself and
     reconciles the load cases afterwards.
     """
-    shape = pipeline.formfinder(params.coordinates, loads.formfinding)
+    shape = pipeline.formfinder(params.force_densities, loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
 
@@ -757,8 +757,8 @@ def main(verbose: bool = True) -> None:
 
     local_mass = mass_objective(local_pipeline, params, loads)
     crossed_mass = mass_objective(crossed_pipeline, params, loads)
-    oracle = jax.grad(local_mass)(params.coordinates)
-    carried = jax.grad(crossed_mass)(params.coordinates)
+    oracle = jax.grad(local_mass)(params.force_densities)
+    carried = jax.grad(crossed_mass)(params.force_densities)
     worst_gradient = report_gradients(report, oracle, carried)
 
     # Utilization keeps its load case axis; one section per member is checked

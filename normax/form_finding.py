@@ -24,6 +24,7 @@ from jaxtyping import Float
 from jaxtyping import Int
 from scipy.linalg import qr
 
+from normax.config import check_start_fields
 from normax.structures import Structure
 from normax.symmetry import SignGuard
 from normax.symmetry import guard_signs
@@ -61,42 +62,42 @@ class PlanBasis(NamedTuple):
     Attributes
     ----------
     columns :
-        One column per coordinate, spanning the null space of the horizontal
+        One column per coefficient, spanning the null space of the horizontal
         balance.
     independents :
-        Member indices whose densities are the coordinates, or None when the
-        columns are orthonormal and a coordinate is a projection.
+        Member indices whose densities are the coefficients, or None when the
+        columns are orthonormal and a coefficient is a projection.
 
     Notes
     -----
     Any density vector in the span keeps the drawn plan in horizontal
-    equilibrium under vertical loads, so no bound on a coordinate is a bound on
-    funicularity. The two read-back conventions live here: an orthonormal basis
+    equilibrium under vertical loads, so no bound on a coefficient is a bound
+    on funicularity. The two read-back conventions live here: an orthonormal basis
     reads a density vector as `Bᵀ q`, a pivoted one reads off the independent
     densities, never `Bᵀ q`.
     """
 
-    columns: Float[np.ndarray, "members coordinates"]
-    independents: Int[np.ndarray, "coordinates"] | None
+    columns: Float[np.ndarray, "members coefficients"]
+    independents: Int[np.ndarray, "coefficients"] | None
 
     @property
     def width(self) -> int:
         """
-        Number of coordinates.
+        Number of coefficients.
         """
         return int(self.columns.shape[1])
 
     def densities(
         self,
-        xi: Float[Array, "coordinates"],
+        xi: Float[Array, "coefficients"],
     ) -> Float[Array, "members"]:
         """
-        Expand a coordinate into the density of every member.
+        Expand density coefficients into the density of every member.
 
         Parameters
         ----------
         xi :
-            Coordinate along the basis columns.
+            Coefficients along the basis columns.
 
         Returns
         -------
@@ -105,12 +106,12 @@ class PlanBasis(NamedTuple):
         """
         return jnp.asarray(self.columns) @ xi
 
-    def coordinates(
+    def coefficients(
         self,
         q: Float[np.ndarray, "members"],
-    ) -> Float[np.ndarray, "coordinates"]:
+    ) -> Float[np.ndarray, "coefficients"]:
         """
-        Read a density vector back as a coordinate of the subspace.
+        Read a density vector back as coefficients of the subspace.
 
         Parameters
         ----------
@@ -120,7 +121,7 @@ class PlanBasis(NamedTuple):
         Returns
         -------
         xi :
-            The coordinate whose expansion reproduces the densities exactly
+            The coefficients whose expansion reproduces the densities exactly
             inside the span, and the nearest expressible ones outside it.
         """
         if self.independents is None:
@@ -137,14 +138,14 @@ class AbstractFormFinder(eqx.Module):
     ----------
     basis :
         The held-plan subspace the force densities move in, or None when every
-        density is a coordinate of its own.
+        density is a coefficient of its own.
 
     Notes
     -----
     Built from the structure it is to shape, and from nothing else that varies.
     Concrete form finders differ in which quantities they treat as independent,
     not in the mechanics they encode. The basis is the finder's own: a search
-    moves its coordinates, and the finder alone knows how they expand.
+    moves its coefficients, and the finder alone knows how they expand.
     """
 
     basis: eqx.AbstractVar[PlanBasis | None]
@@ -172,22 +173,22 @@ class AbstractFormFinder(eqx.Module):
         """
 
     @abc.abstractmethod
-    def count_coordinates(self) -> int:
+    def count_density_coefficients(self) -> int:
         """
-        How many coordinates a call expands from.
+        How many coefficients a call expands from.
         """
 
-    def expand_coordinates(
+    def expand_density_coefficients(
         self,
-        coordinates: Float[Array, "coordinates"],
+        coefficients: Float[Array, "coefficients"],
     ) -> Float[Array, "members"]:
         """
-        The force density of every member at given coordinates.
+        The force density of every member at given coefficients.
 
         Parameters
         ----------
-        coordinates :
-            The basis coordinates, or the densities where there is no basis.
+        coefficients :
+            The basis coefficients, or the densities where there is no basis.
 
         Returns
         -------
@@ -195,16 +196,16 @@ class AbstractFormFinder(eqx.Module):
             Force density of every member, as a call takes it.
         """
         if self.basis is None:
-            return coordinates
+            return coefficients
 
-        return self.basis.densities(coordinates)
+        return self.basis.densities(coefficients)
 
-    def read_coordinates(
+    def read_density_coefficients(
         self,
         q: Float[np.ndarray, "members"],
-    ) -> Float[np.ndarray, "coordinates"]:
+    ) -> Float[np.ndarray, "coefficients"]:
         """
-        The coordinates a set of force densities reads back as, on the host.
+        The coefficients a set of force densities reads back as, on the host.
 
         Parameters
         ----------
@@ -213,13 +214,13 @@ class AbstractFormFinder(eqx.Module):
 
         Returns
         -------
-        coordinates :
-            The densities themselves, or their coordinates in the basis.
+        coefficients :
+            The densities themselves, or their coefficients in the basis.
         """
         if self.basis is None:
             return np.asarray(q)
 
-        return self.basis.coordinates(q)
+        return self.basis.coefficients(q)
 
 
 def build_equilibrium_graph(structure: Structure) -> EquilibriumStructure:
@@ -330,7 +331,7 @@ class FdmFormFinder(AbstractFormFinder):
         self.basis = basis
         self.num_members = int(structure.num_edges)
 
-    def count_coordinates(self) -> int:
+    def count_density_coefficients(self) -> int:
         """
         The basis width, or the member count where every density moves freely.
         """
@@ -466,7 +467,7 @@ def build_plan_basis(
         Mirror image of every node index, or None to ask for no symmetry.
         When given the span shrinks to the densities equal on mirrored members.
     convention :
-        `pivoted` for coordinates that are the densities of members QR pivoting
+        `pivoted` for coefficients that are the densities of members QR pivoting
         elects independent, `svd` for projections on an orthonormal basis.
 
     Returns
@@ -482,8 +483,8 @@ def build_plan_basis(
     Notes
     -----
     Both conventions span the identical subspace, so switching prices the
-    coordinates and never the reachable designs. The pivoted one is thrust
-    network analysis's independent-edges construction: each coordinate is the
+    coefficients and never the reachable designs. The pivoted one is thrust
+    network analysis's independent-edges construction: each coefficient is the
     density of one member, and every dependent density a fixed linear function
     of them, at the price of columns that are not orthonormal.
     """
@@ -583,9 +584,9 @@ def fit_densities(
     span = np.eye(structure.num_edges) if basis is None else basis.columns
     restricted = balance @ span
 
-    coordinates, _, rank, _ = np.linalg.lstsq(restricted, applied, rcond=None)
+    coefficients, _, rank, _ = np.linalg.lstsq(restricted, applied, rcond=None)
     _, _, rows = np.linalg.svd(restricted)
-    q = span @ coordinates
+    q = span @ coefficients
     self_stresses = span @ rows[rank:].T
     gap = float(np.abs(balance @ q - applied).max())
 
@@ -736,6 +737,18 @@ class UniformDensityInitializer(AbstractDensityInitializer):
 
     force_density: float
 
+    def __init__(self, described: dict[str, float | bool]):
+        """
+        Read the one density a file described.
+
+        Parameters
+        ----------
+        described :
+            What the file gave the start, naming `force_density` alone.
+        """
+        check_start_fields(described, ("force_density",))
+        self.force_density = float(described["force_density"])
+
     def fit_start(
         self,
         structure: Structure,
@@ -778,6 +791,20 @@ class LensShapeInitializer(AbstractDensityInitializer):
     rise: float
     held_plan: bool
 
+    def __init__(self, described: dict[str, float | bool]):
+        """
+        Read the lens a file sketched.
+
+        Parameters
+        ----------
+        described :
+            What the file gave the start, naming `sag`, `rise` and `held_plan`.
+        """
+        check_start_fields(described, ("sag", "rise", "held_plan"))
+        self.sag = float(described["sag"])
+        self.rise = float(described["rise"])
+        self.held_plan = bool(described["held_plan"])
+
     def fit_start(
         self,
         structure: Structure,
@@ -812,6 +839,17 @@ class DrawnShapeInitializer(AbstractDensityInitializer):
     is the start and no sign needs shifting.
     """
 
+    def __init__(self, described: dict[str, float | bool]):
+        """
+        Take the start a file wrote, which for a drawn fit is nothing.
+
+        Parameters
+        ----------
+        described :
+            What the file gave the start, which must name no field at all.
+        """
+        check_start_fields(described, ())
+
     def fit_start(
         self,
         structure: Structure,
@@ -832,49 +870,3 @@ class DrawnShapeInitializer(AbstractDensityInitializer):
         xyz = np.asarray(structure.nodes)
 
         return fit_densities(structure, xyz, loads, basis)
-
-
-def build_density_initializer(
-    described: float | str | dict[str, dict[str, float | bool]],
-) -> AbstractDensityInitializer:
-    """
-    The initializer a run config's `force_density` value names.
-
-    Parameters
-    ----------
-    described :
-        A number for one density in every member, `drawn` to fit the drawn
-        geometry, or `{lens: {sag, rise, held_plan}}` to fit a lens sketch.
-
-    Returns
-    -------
-    initializer :
-        The generator of the start densities.
-
-    Raises
-    ------
-    ValueError
-        If the value is none of those forms.
-    """
-    if isinstance(described, bool):
-        raise ValueError("force_density cannot be a boolean")
-    if isinstance(described, (int, float)):
-        return UniformDensityInitializer(float(described))
-    if described == "drawn":
-        return DrawnShapeInitializer()
-    if isinstance(described, dict) and set(described) == {"lens"}:
-        lens = described["lens"]
-        wanted = {"sag", "rise", "held_plan"}
-        if set(lens) != wanted:
-            raise ValueError(
-                f"lens must name {', '.join(sorted(wanted))}, got {sorted(lens)}"
-            )
-        sag = float(lens["sag"])
-        rise = float(lens["rise"])
-        held_plan = bool(lens["held_plan"])
-
-        return LensShapeInitializer(sag, rise, held_plan)
-
-    raise ValueError(
-        f"force_density must be a number, 'drawn' or {{lens: ...}}, got {described!r}"
-    )

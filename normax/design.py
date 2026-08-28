@@ -48,14 +48,14 @@ class DesignParameters(NamedTuple):
 
     Attributes
     ----------
-    coordinates :
+    force_densities :
         What the form finder is called with — the force density of every
         member, with any held-plan subspace already expanded.
     diameters :
         Outer diameter every member is analyzed and checked at.
     """
 
-    coordinates: Float[Array, "coordinates"]
+    force_densities: Float[Array, "members"]
     diameters: Float[Array, "members"]
 
 
@@ -95,9 +95,6 @@ class StructuralDesignPipeline(eqx.Module):
         The block that says what the members carry.
     sizer :
         The block that says how hard the sections are worked.
-    spread :
-        One column per orbit of the members the diameters are folded by, or
-        None to size every member on its own.
 
     Notes
     -----
@@ -111,7 +108,6 @@ class StructuralDesignPipeline(eqx.Module):
     formfinder: AbstractFormFinder
     analyzer: AbstractFrameAnalyzer
     sizer: AbstractMemberSizer
-    spread: Float[np.ndarray, "members patterns"] | None = None
 
     def __call__(
         self,
@@ -124,8 +120,8 @@ class StructuralDesignPipeline(eqx.Module):
         Parameters
         ----------
         params :
-            The form finder's coordinates, and the diameters every member is
-            analyzed and checked at.
+            The force density of every member, and the diameters every member
+            is analyzed and checked at.
         loads :
             The load case the shape answers to, and the ones it is checked
             against.
@@ -142,7 +138,7 @@ class StructuralDesignPipeline(eqx.Module):
         assumption that presumes every node held in position, stated once here
         and nowhere else.
         """
-        shape = self.formfinder(params.coordinates, loads.formfinding)
+        shape = self.formfinder(params.force_densities, loads.formfinding)
         forces = self.analyzer(shape.xyz, params.diameters, loads.analysis)
         utilization = self.sizer.compute_utilization(
             params.diameters, forces, shape.lengths
@@ -211,7 +207,7 @@ class DesignConstraints(NamedTuple):
     sign_guard :
         The sign guarded densities must keep, or None.
     bounds :
-        Box on the force densities where they are the coordinates, or None.
+        Box on the force densities where they are the coefficients, or None.
 
     Notes
     -----
@@ -242,20 +238,27 @@ class DesignProblem(NamedTuple):
         The case the shape answers to, and the cases it is checked against.
     constraints :
         What the design is held to beside the check.
+    section_groups :
+        One column per orbit of the members the diameters are folded by, or
+        None to size every member on its own.
 
     Notes
     -----
-    The variable vector is the form finder's coordinates followed by the folded
+    The variable vector is the form finder's coefficients followed by the folded
     diameters. Both halves expand by one linear map — the form finder's basis
-    and the pipeline's spread — so a symmetric design cannot break its symmetry
+    and the section groups — so a symmetric design cannot break its symmetry
     however unsymmetric the loading, and every geometry a held-plan search
-    reaches keeps the drawn plan by construction.
+    reaches keeps the drawn plan by construction. The section groups sit here
+    rather than on a block because no block reads them: they say how many
+    variables the search carries, not how a frame is solved or a section
+    checked.
     """
 
     structure: Structure
     pipeline: StructuralDesignPipeline
     loads: LoadCases
     constraints: DesignConstraints
+    section_groups: Float[np.ndarray, "members groups"] | None = None
 
 
 class DesignRecord(NamedTuple):
@@ -284,9 +287,9 @@ class DesignRecord(NamedTuple):
     families: tuple[tuple[str, slice], ...]
 
 
-def count_coordinates(problem: DesignProblem) -> int:
+def count_density_coefficients(problem: DesignProblem) -> int:
     """
-    How many coordinates the form finder is called with.
+    How many density coefficients the form finder is called with.
 
     Parameters
     ----------
@@ -298,7 +301,7 @@ def count_coordinates(problem: DesignProblem) -> int:
     width :
         Basis width, or the member count where every density moves freely.
     """
-    return problem.pipeline.formfinder.count_coordinates()
+    return problem.pipeline.formfinder.count_density_coefficients()
 
 
 def expand_variables(
@@ -313,22 +316,21 @@ def expand_variables(
     problem :
         The problem supplying the two linear maps through its pipeline.
     x :
-        The coordinates followed by the folded diameters.
+        The density coefficients followed by the folded diameters.
 
     Returns
     -------
     params :
-        The coordinates as the form finder takes them, and one diameter per
-        member.
+        The force density of every member, as the form finder takes them, and
+        one diameter per member.
     """
-    width = count_coordinates(problem)
-    coordinates = read_member_densities(problem, x[:width])
+    width = count_density_coefficients(problem)
+    force_densities = read_member_densities(problem, x[:width])
     folded = x[width:]
-    diameters = (
-        folded if problem.pipeline.spread is None else problem.pipeline.spread @ folded
-    )
+    section_groups = problem.section_groups
+    diameters = folded if section_groups is None else section_groups @ folded
 
-    return DesignParameters(coordinates, diameters)
+    return DesignParameters(force_densities, diameters)
 
 
 def fold_variables(
@@ -351,21 +353,21 @@ def fold_variables(
     Returns
     -------
     x :
-        The coordinates followed by the folded diameters, each orbit taking the
-        largest diameter among its members.
+        The density coefficients followed by the folded diameters, each orbit
+        taking the largest diameter among its members.
     """
-    coordinates = read_coordinates(problem, q)
-    folded = fold_values(diameters, problem.pipeline.spread)
+    coefficients = read_density_coefficients(problem, q)
+    folded = fold_values(diameters, problem.section_groups)
 
-    return np.concatenate([coordinates, folded])
+    return np.concatenate([coefficients, folded])
 
 
-def read_coordinates(
+def read_density_coefficients(
     problem: DesignProblem,
     q: Float[np.ndarray, "members"],
-) -> Float[np.ndarray, "coordinates"]:
+) -> Float[np.ndarray, "coefficients"]:
     """
-    The coordinates a set of force densities reads back as, on the host.
+    The coefficients a set of force densities reads back as, on the host.
 
     Parameters
     ----------
@@ -376,32 +378,32 @@ def read_coordinates(
 
     Returns
     -------
-    coordinates :
-        The densities themselves, or their coordinates in the basis.
+    coefficients :
+        The densities themselves, or their coefficients in the basis.
     """
-    return problem.pipeline.formfinder.read_coordinates(q)
+    return problem.pipeline.formfinder.read_density_coefficients(q)
 
 
 def read_member_densities(
     problem: DesignProblem,
-    coordinates: Float[Array, "coordinates"],
+    coefficients: Float[Array, "coefficients"],
 ) -> Float[Array, "members"]:
     """
-    The force density of every member at given coordinates.
+    The force density of every member at given coefficients.
 
     Parameters
     ----------
     problem :
         The problem supplying the form finder.
-    coordinates :
-        The basis coordinates, or the densities where there is no basis.
+    coefficients :
+        The basis coefficients, or the densities where there is no basis.
 
     Returns
     -------
     q :
         Force density of every member, as the form finder is called with.
     """
-    return problem.pipeline.formfinder.expand_coordinates(coordinates)
+    return problem.pipeline.formfinder.expand_density_coefficients(coefficients)
 
 
 def bound_variables(
@@ -418,18 +420,18 @@ def bound_variables(
     Returns
     -------
     boxes :
-        The density box on the coordinates where the densities are the
-        coordinates, nothing on subspace coordinates, and the diameter floor
+        The density box on the coefficients where the densities are the
+        coefficients, nothing on subspace coefficients, and the diameter floor
         on every folded diameter.
     """
     held = problem.constraints
     boxed = (None, None) if held.bounds is None else held.bounds
-    width = count_coordinates(problem)
-    patterns = problem.structure.num_edges
-    if problem.pipeline.spread is not None:
-        patterns = int(problem.pipeline.spread.shape[1])
+    width = count_density_coefficients(problem)
+    groups = problem.structure.num_edges
+    if problem.section_groups is not None:
+        groups = int(problem.section_groups.shape[1])
 
-    boxes = [boxed] * width + [(held.diameter_min, None)] * patterns
+    boxes = [boxed] * width + [(held.diameter_min, None)] * groups
 
     return boxes
 
@@ -471,7 +473,7 @@ def evaluate_constraints(
         rows.append((design.shape.lengths - held.length_min) / held.length_min)
     if held.sign_guard is not None:
         guard = held.sign_guard
-        signed = guard.signs * params.coordinates[guard.members]
+        signed = guard.signs * params.force_densities[guard.members]
         rows.append((signed - guard.margin) / guard.scale)
 
     return jnp.concatenate(rows)
@@ -503,7 +505,7 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
 
     def mass_objective(x: Float[Array, "variables"]) -> Float[Array, ""]:
         params = expand_variables(problem, x)
-        shape = pipeline.formfinder(params.coordinates, loads.formfinding)
+        shape = pipeline.formfinder(params.force_densities, loads.formfinding)
         sections = pipeline.sizer.catalog(params.diameters)
 
         return compute_member_mass(sections, shape.lengths)
@@ -558,7 +560,7 @@ def optimize_design(
 
 def envelope_diameters(
     problem: DesignProblem,
-    coordinates: Float[np.ndarray, "coordinates"],
+    coefficients: Float[np.ndarray, "coefficients"],
     seeded: Float[np.ndarray, "members"],
 ) -> Float[np.ndarray, "members"]:
     """
@@ -568,7 +570,7 @@ def envelope_diameters(
     ----------
     problem :
         The problem supplying the blocks and the loads.
-    coordinates :
+    coefficients :
         Where the shape is found.
     seeded :
         Outer diameter every member is first analyzed at.
@@ -581,7 +583,7 @@ def envelope_diameters(
         forces, which is where a search starts.
     """
     pipeline = problem.pipeline
-    q = read_member_densities(problem, jnp.asarray(coordinates))
+    q = read_member_densities(problem, jnp.asarray(coefficients))
     shape = pipeline.formfinder(q, problem.loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, seeded, problem.loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
@@ -611,7 +613,7 @@ def initialize_optimization_variables(
     Returns
     -------
     x :
-        The densities' coordinates, and the diameters folded.
+        The densities' coefficients, and the diameters folded.
 
     Notes
     -----
@@ -624,19 +626,19 @@ def initialize_optimization_variables(
     return fold_variables(problem, q, diameters)
 
 
-def evaluate_design(
+def create_design(
     problem: DesignProblem,
     x: Float[np.ndarray, "variables"],
 ) -> Design:
     """
-    The design a variable vector stands for, evaluated once.
+    The design a variable vector stands for, made once through the three blocks.
 
     Parameters
     ----------
     problem :
         The problem the vector belongs to.
     x :
-        The coordinates followed by the folded diameters.
+        The density coefficients followed by the folded diameters.
 
     Returns
     -------
@@ -660,16 +662,16 @@ def unfold_diameters(
     problem :
         The problem supplying the folding.
     x :
-        The coordinates followed by the folded diameters.
+        The density coefficients followed by the folded diameters.
 
     Returns
     -------
     diameters :
         Outer diameter of every member.
     """
-    return unfold_values(
-        np.asarray(x)[count_coordinates(problem) :], problem.pipeline.spread
-    )
+    folded = np.asarray(x)[count_density_coefficients(problem) :]
+
+    return unfold_values(folded, problem.section_groups)
 
 
 def build_design_constraints(

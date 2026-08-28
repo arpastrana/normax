@@ -6,6 +6,9 @@ Every section a design shares — the form finding, the load cases, the two
 backends, the constraints, the descent's budget — is a container here. What the
 structure is varies by structure, so an example hands `parse_config` the
 description type from `normax.structures` its `structure` section is read into.
+
+Nothing here is built, only read. A start arrives as the fields of the
+initializer it belongs to, and the example names that class and constructs it.
 """
 
 from typing import Generic
@@ -14,11 +17,7 @@ from typing import TypeVar
 
 import yaml
 
-from normax.form_finding import AbstractDensityInitializer
-from normax.form_finding import build_density_initializer
 from normax.optimization import OptimizationBudget
-from normax.sections import AbstractDiameterInitializer
-from normax.sections import build_diameter_initializer
 
 StructureT = TypeVar("StructureT")
 
@@ -49,8 +48,9 @@ class AnalysisConfig(NamedTuple):
 
     Attributes
     ----------
-    initializer :
-        What generates the diameters the search starts from, before the check
+    diameter_start :
+        Fields of the diameter initializer the example builds, by keyword:
+        `diameter` for one outer diameter in every member, before the check
         sizes them.
     backend :
         Which solver fills the analysis slot, `opensees` or `pynite`. Both
@@ -58,7 +58,7 @@ class AnalysisConfig(NamedTuple):
         second a space frame.
     """
 
-    initializer: AbstractDiameterInitializer
+    diameter_start: dict[str, float]
     backend: str
 
 
@@ -100,18 +100,21 @@ class FormFindingConfig(NamedTuple):
     mirror :
         Axis the mirror plane stands normal to, folding the densities by that
         symmetry, or None for no symmetry.
-    initializer :
-        What generates the force densities the search starts from.
+    density_start :
+        Fields of the density initializer the example builds, by keyword:
+        `force_density` for a uniform start, `sag`, `rise` and `held_plan` for
+        a lens sketch. A drawn fit reads nothing, so a file that asks for one
+        writes no start at all and this is empty.
     """
 
     basis: str | None
     mirror: str | None
-    initializer: AbstractDensityInitializer
+    density_start: dict[str, float | bool] = {}
 
 
 class BoundsConfig(NamedTuple):
     """
-    The box the force densities may move in, where they are the coordinates.
+    The box the force densities may move in, where they are the coefficients.
 
     Attributes
     ----------
@@ -147,7 +150,7 @@ class ConstraintsConfig(NamedTuple):
         `compression` by family name, or None for no guard.
     bounds :
         The box on the force densities, or None where the densities are not
-        the coordinates.
+        the coefficients.
     """
 
     diameter_min: float
@@ -214,6 +217,37 @@ class RunConfig(NamedTuple, Generic[StructureT]):
     output: OutputConfig
 
 
+def check_start_fields(
+    described: dict[str, float | bool],
+    wanted: tuple[str, ...],
+) -> None:
+    """
+    Refuse a start whose fields are not the ones its initializer reads.
+
+    Parameters
+    ----------
+    described :
+        What a file gave the start, which is the initializer's own fields.
+    wanted :
+        Names the initializer reads, which the file must name exactly.
+
+    Raises
+    ------
+    ValueError
+        If the file names anything else, or omits one of them.
+
+    Notes
+    -----
+    An initializer is its own schema, so a start is checked where it is read
+    into one rather than at the parse, and the message names both sides.
+    """
+    if set(described) == set(wanted):
+        return
+
+    named = ", ".join(sorted(wanted)) or "nothing"
+    raise ValueError(f"a start must name {named}, got {sorted(described)}")
+
+
 def parse_config(
     text: str,
     structure_type: type[StructureT],
@@ -244,13 +278,11 @@ def parse_config(
     -----
     No container carries a default, so a file missing a field is refused rather
     than quietly completed. Every budget is cast on the way in: YAML reads an
-    exponent without a signed power as a string.
+    exponent without a signed power as a string. A start's fields are carried
+    across as they were written, and are checked by the initializer the example
+    builds from them, not here.
     """
     document = yaml.safe_load(text)
-
-    named = dict(document["form_finding"])
-    initializer = build_density_initializer(named.pop("force_density"))
-    form_finding = FormFindingConfig(initializer=initializer, **named)
 
     held = dict(document["constraints"])
     bounds = held.pop("bounds", None)
@@ -270,15 +302,11 @@ def parse_config(
     budget.update(scales)
     load_cases = tuple(LoadCaseConfig(**entry) for entry in document["load_cases"])
 
-    described = dict(document["analysis"])
-    seeded = build_diameter_initializer(described.pop("diameter"))
-    analysis = AnalysisConfig(seeded, **described)
-
     config = RunConfig(
         structure=structure_type(**document["structure"]),
-        form_finding=form_finding,
+        form_finding=FormFindingConfig(**document["form_finding"]),
         load_cases=load_cases,
-        analysis=analysis,
+        analysis=AnalysisConfig(**document["analysis"]),
         sizing=SizingConfig(**document["sizing"]),
         constraints=constraints,
         optimization=OptimizationBudget(**budget),

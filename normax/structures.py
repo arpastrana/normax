@@ -378,7 +378,7 @@ def build_gridshell_3d(
     **The boundary ring carries no hoop members.** Both ends of such a member
     are pinned, so it appears in no equilibrium equation: its column of the
     horizontal balance is identically zero and its force density moves no
-    node. Emitting it would widen a held-plan basis by one silent coordinate
+    node. Emitting it would widen a held-plan basis by one silent coefficient
     per spoke, and hand a search directions along which nothing happens.
 
     **Bracing is what widens a held-plan basis.** The null space of the

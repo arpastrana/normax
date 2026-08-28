@@ -3,21 +3,27 @@
 [![Tests](https://github.com/arpastrana/normax/actions/workflows/test.yml/badge.svg)](https://github.com/arpastrana/normax/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/arpastrana/normax/blob/main/LICENSE)
 
-Backpropagating through structural engineering codes
+> Backpropagating through structural engineering norms.
 
-Force densities to a funicular shape, a frame analysis to member forces, and
-EN 1993-1-1 to the sections it requires — composed into one function with exact
-gradients throughout. The building code is a normative text rather than a solver:
-it has no derivatives of its own, and giving it one is what lets it sit in an
-optimization loop beside an autodiff form-finder. The three blocks differentiate
-three different ways — implicit-function-theorem rules on the form-finding
-solve, sensitivities compiled into a C++ solver years before this pipeline
-existed, and hand-derived adjoints on the frame analysis and the code check —
-and one composed function is what the optimizer sees.
+This project composes three traditionally separate stages of structural design into a single differentiable program for meter-scale structures composed of beam members.
+In the first stage, a form-finding solver maps force densities to a funicular geometry.
+Next, a structural analysis solver then transforms that geometry into member forces, and the Eurocode 3 (EN 1993-1-1) finally converts forces into law-compliant member sections that are safe for construction.
+The result of this composition is one function that can be optimized end-to-end with exact gradients.
+
+The interesting part is that none of these components was designed to be differentiated in the same way.
+The form-finding solve is differentiated natively and implicitly through JAX.
+Meanwhile, the structural analysis solver for planar systems uses sensitivities compiled into its C++ implementation years before this pipeline existed, and the its 3D version in addition to the code checks both use hand-derived adjoints.
+Eurocode 3 is especially instructive: a building code is a normative specification, not a numerical solver, so it has no natural notion of a derivative.
+Giving the code check a differentiable computational representation is what allows it to participate in the same optimization loop as an autodiff-native form-finder.
+
+To a gradient-based optimizer, however, these distinctions disappear as Tesseract provides convenient interfaces to glue together these seemingly disparate pieces of software across eras, programming languages, and differentiation schemes.
+This glue is a two-way street.
+Not only it allows to feed information across structural design stages through forward computation, but it critically empowers them to backpropagate gradients (very useful serach directions in high dimensional search spaces, if you ask me) through the entire pipeline end-to-end.
+That is where the magic happens, as derivatives promise to unify currently disjoint engineering stages into a streamlined process that aims to accelerate design optimization cycles toward building safe yet material-efficient bridges, roofs, and buildings.
 
 ## Installation
 
-Not published. Clone the repository and install with [uv](https://docs.astral.sh/uv/):
+Clone the repository and install with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 git clone https://github.com/arpastrana/normax
@@ -25,13 +31,9 @@ cd normax
 uv sync
 ```
 
-Everything the pipeline needs — the form finder, both host frame solvers and
-the Blueprints check — is a regular dependency. The `local-dev` group pins the
-packages that do not ship: the two oracles the parity tests compare against,
-and the viewer. Without it those tests skip themselves, the viewer stands
-itself in, and the rest of the suite runs.
+The form-finding solver, the structural analysis backends, and the structural engineering norm verifier are all installed as a regular dependency.
 
-## Usage
+## An example
 
 ```python
 import jax

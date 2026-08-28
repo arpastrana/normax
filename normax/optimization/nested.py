@@ -98,7 +98,7 @@ def size_design(
     pipeline :
         The three blocks.
     params :
-        The form finder's coordinates, and the seed diameters the frame is
+        The force density of every member, and the seed diameters the frame is
         analyzed at.
     loads :
         The case the shape answers to, and the cases it is sized for.
@@ -115,7 +115,7 @@ def size_design(
     the sections come back from the standard, one per load case, so the
     coupling between the two is staggered and closed by `settle_diameters`.
     """
-    shape = pipeline.formfinder(params.coordinates, loads.formfinding)
+    shape = pipeline.formfinder(params.force_densities, loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
 
@@ -547,7 +547,7 @@ def settle_diameters(
     settling_tolerance: float = 1e-6,
 ) -> Float[Array, "members"]:
     """
-    The diameters an analysis at these coordinates asks of itself.
+    The diameters an analysis at these force densities asks of itself.
 
     Parameters
     ----------
@@ -582,7 +582,7 @@ def settle_diameters(
     moved = float("inf")
 
     for _ in range(settling_passes):
-        _, design = weighed(DesignParameters(params.coordinates, assumed))
+        _, design = weighed(DesignParameters(params.force_densities, assumed))
         demanded = design.sizes.sections.diameter
         moved = float(jnp.max(jnp.abs(demanded / assumed - 1.0)))
         assumed = demanded
@@ -607,7 +607,7 @@ def optimize_staggered(
     settling_tolerance: float = 1e-6,
 ) -> SearchResult:
     """
-    Minimize in the coordinates, refreshing the analysis diameters per round.
+    Minimize in the force densities, refreshing the analysis diameters per round.
 
     Parameters
     ----------
@@ -615,10 +615,10 @@ def optimize_staggered(
         The mass of a set of design parameters, returning the enveloped
         design it weighed alongside.
     params :
-        Coordinates to start from, and the diameters the first round is
+        Force densities to start from, and the diameters the first round is
         analyzed with.
     bounds :
-        Smallest and largest value any coordinate may take.
+        Smallest and largest value any force density may take.
     iterations :
         Most iterations to spend in each round.
     rounds :
@@ -653,13 +653,13 @@ def optimize_staggered(
     residual = float("inf")
 
     seed_diameters = jnp.asarray(params.diameters, dtype=params.diameters.dtype)
-    current = DesignParameters(params.coordinates, seed_diameters)
+    current = DesignParameters(params.force_densities, seed_diameters)
 
     def seeded_objective(
-        coordinates: Float[Array, "coordinates"],
+        force_densities: Float[Array, "members"],
         diameters: Float[Array, "members"],
     ) -> ObjectiveValue:
-        seeded = DesignParameters(coordinates, diameters)
+        seeded = DesignParameters(force_densities, diameters)
 
         return objective(seeded)
 
@@ -669,7 +669,7 @@ def optimize_staggered(
         held = current.diameters
         found = minimize_bounded(
             lambda x, seed=held: seeded_objective(x, seed),
-            current.coordinates,
+            current.force_densities,
             bounds=bounds,
             iterations=iterations,
             has_aux=True,

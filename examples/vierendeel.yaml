@@ -10,7 +10,8 @@ structure:
 form_finding:
   basis: pivoted
   mirror: x
-  force_density: {lens: {sag: 600.0, rise: 800.0, held_plan: true}}
+  # LensShapeInitializer: the densities that make a sketched lens funicular.
+  density_start: {sag: 600.0, rise: 800.0, held_plan: true}
 
 # Every case sits on the deck. The first shapes the truss; every case is
 # checked.
@@ -24,7 +25,8 @@ load_cases:
     magnitude: 90000.0
 
 analysis:
-  diameter: 100.0
+  # UniformDiameterInitializer: one outer diameter in every member.
+  diameter_start: {diameter: 100.0}
   # A planar host solver across the analysis schema, carrying DDM
   # sensitivities of its own rather than a traced gradient.
   backend: opensees

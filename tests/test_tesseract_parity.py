@@ -218,7 +218,7 @@ def test_the_utilization_gradient_survives_the_boundary(
     def by_densities(route):
         return lambda q: route(DesignParameters(q, params.diameters))
 
-    q = params.coordinates
+    q = params.force_densities
     difference = relative(
         jax.grad(by_densities(oracle))(q), jax.grad(by_densities(crossed))(q)
     )
@@ -235,7 +235,7 @@ def test_the_diameter_gradient_survives_the_boundary(
     crossed = worked_utilization(crossed_pipeline, one_case)
 
     def by_diameters(route):
-        return lambda d: route(DesignParameters(params.coordinates, d))
+        return lambda d: route(DesignParameters(params.force_densities, d))
 
     held = params.diameters
     difference = relative(
@@ -255,7 +255,7 @@ def test_the_crossed_gradient_matches_central_differences(
     def objective(q):
         return crossed(DesignParameters(q, params.diameters))
 
-    q = params.coordinates
+    q = params.force_densities
     gradient = jax.grad(objective)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
 
@@ -289,7 +289,7 @@ def test_the_boundary_does_not_downcast_to_single_precision(
 
     worked = worked_utilization(crossed_pipeline, one_case)
     gradient = jax.grad(lambda q: worked(DesignParameters(q, params.diameters)))(
-        params.coordinates
+        params.force_densities
     )
 
     assert gradient.dtype == jnp.float64
@@ -388,7 +388,7 @@ def test_the_space_frame_gradient_survives_the_boundary(
 
         return worked
 
-    q = shell_params.coordinates
+    q = shell_params.force_densities
     slope_oracle = jax.grad(carried_squared(shell_oracle))(q)
     slope_crossed = jax.grad(carried_squared(shell_crossed))(q)
 

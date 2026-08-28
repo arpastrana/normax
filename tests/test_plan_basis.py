@@ -9,7 +9,6 @@ from normax.form_finding import FdmFormFinder
 from normax.form_finding import LensShapeInitializer
 from normax.form_finding import SignGuardSpec
 from normax.form_finding import assemble_balance_rows
-from normax.form_finding import build_density_initializer
 from normax.form_finding import build_plan_basis
 from normax.form_finding import fit_densities
 from normax.form_finding import select_free_nodes
@@ -116,11 +115,11 @@ def test_the_warren_has_sixteen(warren):
 
 
 def test_the_gridshell_has_thirteen():
-    # 84 edges minus rank 71; no silent boundary-hoop coordinates remain.
+    # 84 edges minus rank 71; no silent boundary-hoop coefficients remain.
     assert build_plan_basis(build_gridshell_3d(), None, "svd").width == 13
 
 
-def test_every_gridshell_coordinate_moves_the_shell():
+def test_every_gridshell_coefficient_moves_the_shell():
     structure = build_gridshell_3d()
     basis = build_plan_basis(structure, None, "svd")
     balance = plan_balance(structure)
@@ -212,19 +211,19 @@ def test_the_pivoted_basis_spans_the_full_subspace(warren):
     assert np.allclose(basis.columns[basis.independents], np.eye(16))
 
 
-def test_the_pivoted_coordinates_read_back(warren, lens_fit):
+def test_the_pivoted_coefficients_read_back(warren, lens_fit):
     basis = build_plan_basis(warren, None, "pivoted")
-    xi = basis.coordinates(lens_fit.q)
+    xi = basis.coefficients(lens_fit.q)
     rebuilt = np.asarray(basis.densities(jnp.asarray(xi)))
 
     assert np.array_equal(xi, lens_fit.q[basis.independents])
     assert np.abs(rebuilt - lens_fit.q).max() < 1e-9
 
 
-def test_the_orthonormal_coordinates_read_back(warren, lens_fit):
+def test_the_orthonormal_coefficients_read_back(warren, lens_fit):
     # The lens moves heights alone, so the free fit already holds the plan.
     basis = build_plan_basis(warren, None, "svd")
-    xi = basis.coordinates(lens_fit.q)
+    xi = basis.coefficients(lens_fit.q)
     rebuilt = np.asarray(basis.densities(jnp.asarray(xi)))
 
     assert np.allclose(xi, basis.columns.T @ lens_fit.q)
@@ -340,10 +339,10 @@ def test_the_expansion_stays_in_the_span(warren):
 def test_the_gradient_chains_through_the_basis(warren, lens_fit, warren_loads):
     finder = FdmFormFinder(warren)
     basis = build_plan_basis(warren, None, "svd")
-    xi = jnp.asarray(basis.coordinates(lens_fit.q))
+    xi = jnp.asarray(basis.coefficients(lens_fit.q))
 
-    def spanned_length(coordinate):
-        return jnp.sum(finder(basis.densities(coordinate), warren_loads).lengths)
+    def spanned_length(coefficient):
+        return jnp.sum(finder(basis.densities(coefficient), warren_loads).lengths)
 
     def member_length(q):
         return jnp.sum(finder(q, warren_loads).lengths)
@@ -379,7 +378,8 @@ def test_an_unsymmetric_structure_has_no_mirror(warren):
 def test_a_zero_margin_still_signs_the_start_but_hands_over_no_guard(
     warren, warren_loads
 ):
-    initializer = LensShapeInitializer(0.06 * SPAN, 0.08 * SPAN, False)
+    lens = {"sag": 0.06 * SPAN, "rise": 0.08 * SPAN, "held_plan": False}
+    initializer = LensShapeInitializer(lens)
     bays = NUM_BAYS
     signs = np.concatenate([np.ones(bays), -np.ones(bays - 1)])
     guarded = SignGuardSpec(signs, np.arange(2 * bays - 1), 0.0)
@@ -389,7 +389,8 @@ def test_a_zero_margin_still_signs_the_start_but_hands_over_no_guard(
 
 
 def test_a_held_lens_fit_needs_a_basis(warren, warren_loads):
-    initializer = LensShapeInitializer(0.06 * SPAN, 0.08 * SPAN, True)
+    lens = {"sag": 0.06 * SPAN, "rise": 0.08 * SPAN, "held_plan": True}
+    initializer = LensShapeInitializer(lens)
     with pytest.raises(ValueError):
         initializer(warren, np.asarray(warren_loads), None, None)
 
@@ -400,7 +401,7 @@ def test_a_drawn_fit_is_held_to_the_basis(warren, warren_loads):
     basis = build_plan_basis(warren, None, "svd")
     loads = np.asarray(warren_loads)
     xyz = np.asarray(warren.nodes)
-    fit = DrawnShapeInitializer().fit_start(warren, loads, basis)
+    fit = DrawnShapeInitializer({}).fit_start(warren, loads, basis)
     held = fit_densities(warren, xyz, loads, basis)
     free = fit_densities(warren, xyz, loads)
 
@@ -408,7 +409,14 @@ def test_a_drawn_fit_is_held_to_the_basis(warren, warren_loads):
     assert not np.array_equal(fit.q, free.q)
 
 
-def test_a_lens_missing_a_key_is_rejected_as_a_value():
-    described = {"lens": {"sag": 0.6, "rise": 0.8}}
-    with pytest.raises(ValueError):
-        build_density_initializer(described)
+def test_a_lens_missing_a_key_is_refused():
+    # The file's mapping is the initializer's own fields, so a key it omits is
+    # refused where the example builds it.
+    described = {"sag": 0.6, "rise": 0.8}
+    with pytest.raises(ValueError, match="held_plan"):
+        LensShapeInitializer(described)
+
+
+def test_a_drawn_start_that_names_a_field_is_refused():
+    with pytest.raises(ValueError, match="nothing"):
+        DrawnShapeInitializer({"sag": 0.6})
