@@ -11,6 +11,7 @@ composes them, and states the constrained search over the composition —
 nothing here asks how any block computes.
 """
 
+from collections.abc import Callable
 from typing import NamedTuple
 
 import equinox as eqx
@@ -24,7 +25,7 @@ from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.config import ConstraintsConfig
 from normax.form_finding import AbstractFormFinder
-from normax.form_finding import FormFoundShape
+from normax.form_finding import CoefficientBounds
 from normax.form_finding import SignGuardSpec
 from normax.form_finding import select_free_nodes
 from normax.loads import LoadCases
@@ -34,11 +35,14 @@ from normax.optimization import OptimizationBudget
 from normax.optimization import compute_penalty
 from normax.optimization import descend_augmented_lagrangian
 from normax.sections import MemberSections
+from normax.sections import TubeCatalog
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
+from normax.structures import DesignShape
 from normax.structures import Structure
 from normax.symmetry import SignGuard
 from normax.symmetry import fold_values
+from normax.symmetry import guard_signs
 from normax.symmetry import unfold_values
 
 
@@ -48,14 +52,23 @@ class DesignParameters(NamedTuple):
 
     Attributes
     ----------
-    force_densities :
-        What the form finder is called with — the force density of every
-        member, with any held-plan subspace already expanded.
+    shape_parameters :
+        What the form finder is called with, expanded out of whatever subspace
+        the search moves in — one force density per member where the shape is
+        found by equilibrium, one height per free node where it is written
+        down, and nothing at all where it never moves.
     diameters :
         Outer diameter every member is analyzed and checked at.
+
+    Notes
+    -----
+    The first field is named for the slot rather than for one block's quantity,
+    since three parametrizations fill it with three different things. What they
+    share is that the form finder is called with exactly this and the search
+    reaches it through exactly one linear map.
     """
 
-    force_densities: Float[Array, "members"]
+    shape_parameters: Float[Array, "shape_parameters"]
     diameters: Float[Array, "members"]
 
 
@@ -68,19 +81,23 @@ class Design(NamedTuple):
     shape :
         The geometry form finding settled on, and its member lengths.
     forces :
-        What every member carries under every load case.
+        What every member carries under every load case, or None where the
+        pipeline carried no analysis.
     sizes :
-        The sections the members were given, and how hard each is worked.
+        The sections the members were given and how hard each is worked, or
+        None where the pipeline carried no check.
 
     Notes
     -----
     One field per block, in the order they ran, and nothing no block produced:
-    a mass is arithmetic over two of these fields, which `compute_mass` does.
+    a mass is arithmetic over a shape and a set of sections, which
+    `compute_mass` does. A field is None exactly when its block was absent, so
+    a reader can tell a missing answer from a zero one.
     """
 
-    shape: FormFoundShape
-    forces: MemberForces
-    sizes: MemberSizes
+    shape: DesignShape
+    forces: MemberForces | None
+    sizes: MemberSizes | None
 
 
 class StructuralDesignPipeline(eqx.Module):
@@ -92,9 +109,10 @@ class StructuralDesignPipeline(eqx.Module):
     formfinder :
         The block that chooses the shape.
     analyzer :
-        The block that says what the members carry.
+        The block that says what the members carry, or None to stop at a shape.
     sizer :
-        The block that says how hard the sections are worked.
+        The block that says how hard the sections are worked, or None to stop
+        at the internal forces.
 
     Notes
     -----
@@ -103,11 +121,37 @@ class StructuralDesignPipeline(eqx.Module):
     and the composition hides that: a design comes back with a gradient in
     every parameter. Replacing a block with one that crosses a Tesseract
     boundary is a different argument here and nothing else.
+
+    **The tail may be cut, and only from the end.** A shape alone answers what
+    a geometry weighs at given sections; a shape and an analysis answer what it
+    carries, which is what a compliance objective reads. A check without an
+    analysis is refused rather than fed zeros: a sizer needs member forces, and
+    a stand-in returning none would report every member unworked, which is
+    indistinguishable from a real answer and wrong.
+
+    **Three blocks and nothing else.** A section catalog is not one of them,
+    so the pipeline never holds one: the check it composes carries the catalog
+    its clauses are written against, and that is where a section comes from.
     """
 
     formfinder: AbstractFormFinder
-    analyzer: AbstractFrameAnalyzer
-    sizer: AbstractMemberSizer
+    analyzer: AbstractFrameAnalyzer | None
+    sizer: AbstractMemberSizer | None
+
+    def __check_init__(self) -> None:
+        """
+        Refuse a check with no analysis behind it.
+
+        Raises
+        ------
+        ValueError
+            If there is a sizer and no analyzer to feed it member forces.
+        """
+        if self.sizer is not None and self.analyzer is None:
+            raise ValueError(
+                "a sizer reads member forces, so it needs an analyzer; "
+                "drop the sizer too, or give the pipeline one"
+            )
 
     def __call__(
         self,
@@ -115,12 +159,12 @@ class StructuralDesignPipeline(eqx.Module):
         loads: LoadCases,
     ) -> Design:
         """
-        Form-find once, analyze every load case, and check every member.
+        Form-find once, then analyze and check as far as the blocks reach.
 
         Parameters
         ----------
         params :
-            The force density of every member, and the diameters every member
+            What the form finder is called with, and the diameters every member
             is analyzed and checked at.
         loads :
             The load case the shape answers to, and the ones it is checked
@@ -129,8 +173,8 @@ class StructuralDesignPipeline(eqx.Module):
         Returns
         -------
         design :
-            The shape, what the members carry, and how hard the given sections
-            are worked under every load case.
+            The shape, what the members carry where there is an analysis, and
+            how hard the given sections are worked where there is a check.
 
         Notes
         -----
@@ -138,8 +182,14 @@ class StructuralDesignPipeline(eqx.Module):
         assumption that presumes every node held in position, stated once here
         and nowhere else.
         """
-        shape = self.formfinder(params.force_densities, loads.formfinding)
+        shape = self.formfinder(params.shape_parameters, loads.formfinding)
+        if self.analyzer is None:
+            return Design(shape, None, None)
+
         forces = self.analyzer(shape.xyz, params.diameters, loads.analysis)
+        if self.sizer is None:
+            return Design(shape, forces, None)
+
         utilization = self.sizer.compute_utilization(
             params.diameters, forces, shape.lengths
         )
@@ -186,8 +236,95 @@ def compute_mass(design: Design) -> Float[Array, ""]:
     -------
     mass :
         Total mass of the members.
+
+    Raises
+    ------
+    ValueError
+        If the design carries no sections, its pipeline having had no check.
     """
+    if design.sizes is None:
+        raise ValueError("a design with no sections has no mass to read")
+
     return compute_member_mass(design.sizes.sections, design.shape.lengths)
+
+
+def compute_member_compliance(
+    sections: MemberSections,
+    forces: MemberForces,
+    lengths: Float[Array, "members"],
+) -> Float[Array, ""]:
+    """
+    Strain energy stored in a set of members, summed over every load case.
+
+    Parameters
+    ----------
+    sections :
+        The section of every member, and the steel it is cut from.
+    forces :
+        Axial force and both end moments, per load case and member.
+    lengths :
+        Length of every member.
+
+    Returns
+    -------
+    compliance :
+        Total strain energy.
+
+    Notes
+    -----
+    Loads are applied at nodes alone, so the axial force is constant along a
+    member and the moment varies linearly between its ends. Both integrals are
+    then exact in closed form and need nothing the analysis does not already
+    report — no displacement crosses the boundary, and none has to:
+
+        `N^2 L / 2EA` axially, `L (Mi^2 + Mi Mj + Mj^2) / 6EI` in bending.
+
+    A circular hollow section has the same second moment about either axis, so
+    the two bending terms share one `EI`.
+    """
+    e_mod = sections.material.e_mod
+    stiffness_axial = e_mod * sections.area
+    stiffness_bending = e_mod * sections.second_moment
+
+    axial = forces.axial_force**2 * lengths / (2.0 * stiffness_axial)
+
+    bending = 0.0
+    for moments in (forces.moment_major, forces.moment_minor):
+        near = moments[..., 0]
+        far = moments[..., 1]
+        squared = near**2 + near * far + far**2
+        bending = bending + squared * lengths / (6.0 * stiffness_bending)
+
+    return jnp.sum(axial + bending)
+
+
+def compute_compliance(design: Design) -> Float[Array, ""]:
+    """
+    Strain energy of a design, summed over every load case it was analyzed for.
+
+    Parameters
+    ----------
+    design :
+        A design carrying member forces.
+
+    Returns
+    -------
+    compliance :
+        Total strain energy.
+
+    Raises
+    ------
+    ValueError
+        If the design carries no forces, its pipeline having had no analysis.
+    """
+    if design.forces is None:
+        raise ValueError("a design with no member forces has no compliance to read")
+
+    sections = design.sizes.sections if design.sizes is not None else None
+    if sections is None:
+        raise ValueError("compliance needs the sections the forces were found at")
+
+    return compute_member_compliance(sections, design.forces, design.shape.lengths)
 
 
 class DesignConstraints(NamedTuple):
@@ -224,6 +361,105 @@ class DesignConstraints(NamedTuple):
     bounds: tuple[float, float] | None
 
 
+def weigh_design(
+    problem: "DesignProblem",
+    params: DesignParameters,
+) -> Float[Array, ""]:
+    """
+    Total mass at given parameters — the objective the package ships.
+
+    Parameters
+    ----------
+    problem :
+        The problem supplying the form finder, the catalog and the loads.
+    params :
+        What the form finder is called with, and the diameters.
+
+    Returns
+    -------
+    mass :
+        Total mass of the members.
+
+    Notes
+    -----
+    Reads the form finder and the catalog alone rather than running the whole
+    pipeline: a mass is arithmetic over sections and lengths, so an analysis
+    and a check would be paid for on every objective gradient and thrown away.
+    """
+    pipeline = problem.pipeline
+    if pipeline.sizer is None:
+        raise ValueError("a mass needs sections, and this pipeline has no check")
+
+    shape = pipeline.formfinder(params.shape_parameters, problem.loads.formfinding)
+    sections = pipeline.sizer.catalog(params.diameters)
+
+    return compute_member_mass(sections, shape.lengths)
+
+
+def build_compliance_objective(
+    catalog: TubeCatalog,
+) -> Callable[["DesignProblem", DesignParameters], Float[Array, ""]]:
+    """
+    An objective that minimizes strain energy rather than mass.
+
+    Parameters
+    ----------
+    catalog :
+        The section catalog the members are drawn from, which the objective
+        needs for `EA` and `EI` and cannot read off the blocks: a pipeline cut
+        after its analysis carries no check, and a check is what holds a
+        catalog.
+
+    Returns
+    -------
+    objective :
+        What `DesignProblem.objective` is set to for a compliance search.
+
+    Notes
+    -----
+    The stiffest structure at a given set of sections rather than the lightest
+    that satisfies a standard. Nothing holds the diameters here, so a
+    compliance search either freezes them or bounds the mass itself.
+    """
+
+    def strain_design(
+        problem: "DesignProblem",
+        params: DesignParameters,
+    ) -> Float[Array, ""]:
+        """
+        Strain energy at given parameters, over every analyzed load case.
+
+        Parameters
+        ----------
+        problem :
+            The problem supplying the form finder, the analysis and the loads.
+        params :
+            What the form finder is called with, and the diameters.
+
+        Returns
+        -------
+        compliance :
+            Total strain energy.
+
+        Raises
+        ------
+        ValueError
+            If the pipeline carries no analysis to find the forces with.
+        """
+        pipeline = problem.pipeline
+        if pipeline.analyzer is None:
+            raise ValueError("compliance needs an analysis, and this has none")
+
+        loads = problem.loads
+        shape = pipeline.formfinder(params.shape_parameters, loads.formfinding)
+        forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
+        sections = catalog(params.diameters)
+
+        return compute_member_compliance(sections, forces, shape.lengths)
+
+    return strain_design
+
+
 class DesignProblem(NamedTuple):
     """
     A structure, its blocks, its loads, and the variables a search moves.
@@ -241,6 +477,11 @@ class DesignProblem(NamedTuple):
     section_groups :
         One column per orbit of the members the diameters are folded by, or
         None to size every member on its own.
+    objective :
+        What the descent minimizes, called with this problem and a set of
+        parameters. `weigh_design` is the mass the package ships and the
+        default; `build_compliance_objective` returns the compliance a pipeline
+        cut after its analysis answers instead.
 
     Notes
     -----
@@ -259,6 +500,9 @@ class DesignProblem(NamedTuple):
     loads: LoadCases
     constraints: DesignConstraints
     section_groups: Float[np.ndarray, "members groups"] | None = None
+    objective: Callable[["DesignProblem", DesignParameters], Float[Array, ""]] = (
+        weigh_design
+    )
 
 
 class DesignRecord(NamedTuple):
@@ -287,9 +531,9 @@ class DesignRecord(NamedTuple):
     families: tuple[tuple[str, slice], ...]
 
 
-def count_density_coefficients(problem: DesignProblem) -> int:
+def count_shape_coefficients(problem: DesignProblem) -> int:
     """
-    How many density coefficients the form finder is called with.
+    How many coefficients the form finder expands its parameters from.
 
     Parameters
     ----------
@@ -301,7 +545,7 @@ def count_density_coefficients(problem: DesignProblem) -> int:
     width :
         Basis width, or the member count where every density moves freely.
     """
-    return problem.pipeline.formfinder.count_density_coefficients()
+    return problem.pipeline.formfinder.count_shape_coefficients()
 
 
 def expand_variables(
@@ -324,86 +568,87 @@ def expand_variables(
         The force density of every member, as the form finder takes them, and
         one diameter per member.
     """
-    width = count_density_coefficients(problem)
-    force_densities = read_member_densities(problem, x[:width])
+    width = count_shape_coefficients(problem)
+    shape_parameters = expand_shape_coefficients(problem, x[:width])
     folded = x[width:]
     section_groups = problem.section_groups
     diameters = folded if section_groups is None else section_groups @ folded
 
-    return DesignParameters(force_densities, diameters)
+    return DesignParameters(shape_parameters, diameters)
 
 
 def fold_variables(
     problem: DesignProblem,
-    q: Float[np.ndarray, "members"],
+    parameters: Float[np.ndarray, "shape_parameters"],
     diameters: Float[np.ndarray, "members"],
 ) -> Float[np.ndarray, "variables"]:
     """
-    The variable vector a set of densities and diameters folds into.
+    The variable vector a set of shape parameters and diameters folds into.
 
     Parameters
     ----------
     problem :
         The problem supplying the two linear maps through its pipeline.
-    q :
-        Force density of every member.
+    parameters :
+        What the form finder is called with, in its own space.
     diameters :
         Outer diameter of every member.
 
     Returns
     -------
     x :
-        The density coefficients followed by the folded diameters, each orbit
+        The shape coefficients followed by the folded diameters, each orbit
         taking the largest diameter among its members.
     """
-    coefficients = read_density_coefficients(problem, q)
+    coefficients = read_shape_coefficients(problem, parameters)
     folded = fold_values(diameters, problem.section_groups)
 
     return np.concatenate([coefficients, folded])
 
 
-def read_density_coefficients(
+def read_shape_coefficients(
     problem: DesignProblem,
-    q: Float[np.ndarray, "members"],
+    parameters: Float[np.ndarray, "shape_parameters"],
 ) -> Float[np.ndarray, "coefficients"]:
     """
-    The coefficients a set of force densities reads back as, on the host.
+    The coefficients a set of shape parameters reads back as, on the host.
 
     Parameters
     ----------
     problem :
         The problem supplying the form finder.
-    q :
-        Force density of every member.
+    parameters :
+        What the form finder is called with, in its own space.
 
     Returns
     -------
     coefficients :
-        The densities themselves, or their coefficients in the basis.
+        The parameters themselves, or their coefficients in the basis, or
+        nothing where the shape never moves.
     """
-    return problem.pipeline.formfinder.read_density_coefficients(q)
+    return problem.pipeline.formfinder.read_shape_coefficients(parameters)
 
 
-def read_member_densities(
+def expand_shape_coefficients(
     problem: DesignProblem,
     coefficients: Float[Array, "coefficients"],
-) -> Float[Array, "members"]:
+) -> Float[Array, "shape_parameters"]:
     """
-    The force density of every member at given coefficients.
+    What the form finder is called with, at given coefficients.
 
     Parameters
     ----------
     problem :
         The problem supplying the form finder.
     coefficients :
-        The basis coefficients, or the densities where there is no basis.
+        The basis coefficients, or the parameters where there is no basis.
 
     Returns
     -------
-    q :
-        Force density of every member, as the form finder is called with.
+    parameters :
+        What the form finder is called with, in its own space.
     """
-    return problem.pipeline.formfinder.expand_density_coefficients(coefficients)
+    return problem.pipeline.formfinder.expand_shape_coefficients(coefficients)
 
 
 def bound_variables(
@@ -420,18 +665,25 @@ def bound_variables(
     Returns
     -------
     boxes :
-        The density box on the coefficients where the densities are the
-        coefficients, nothing on subspace coefficients, and the diameter floor
-        on every folded diameter.
+        Whatever box the form finder puts on its own coefficients, then the
+        diameter floor on every folded diameter.
+
+    Notes
+    -----
+    The coefficient half is the finder's to state, since only it knows what its
+    coefficients mean: the density box belongs on densities, the height limits
+    box a parametrization whose coefficients are heights, and one that moves no
+    geometry contributes no pairs at all. Every limit is handed over and the
+    finder takes the ones it is in.
     """
     held = problem.constraints
-    boxed = (None, None) if held.bounds is None else held.bounds
-    width = count_density_coefficients(problem)
+    limits = CoefficientBounds(held.bounds, held.rise_max, held.sag_min)
+    coefficients = problem.pipeline.formfinder.bound_coefficients(limits)
     groups = problem.structure.num_edges
     if problem.section_groups is not None:
         groups = int(problem.section_groups.shape[1])
 
-    boxes = [boxed] * width + [(held.diameter_min, None)] * groups
+    boxes = coefficients + [(held.diameter_min, None)] * groups
 
     return boxes
 
@@ -456,12 +708,21 @@ def evaluate_constraints(
     Returns
     -------
     rows :
-        The utilization rows `1 - U`, case-major, then the rise, sag, length
-        and sign rows the constraints ask for, each normalized to the
-        utilization rows' scale.
+        The utilization rows `1 - U`, case-major, where the pipeline carried a
+        check, then the rise, sag, length and sign rows the constraints ask
+        for, each normalized to the utilization rows' scale.
+
+    Raises
+    ------
+    ValueError
+        If nothing at all would be held: an empty row set is a search with no
+        constraints rather than one whose constraints are all satisfied, and
+        `jnp.concatenate` on it would fail further from the cause.
     """
     held = problem.constraints
-    rows = [1.0 - design.sizes.utilization.ravel()]
+    rows = []
+    if design.sizes is not None:
+        rows.append(1.0 - design.sizes.utilization.ravel())
 
     heights = design.shape.xyz[select_free_nodes(problem.structure), 2]
     if held.rise_max is not None:
@@ -471,10 +732,16 @@ def evaluate_constraints(
         rows.append((heights - held.sag_min) / scale)
     if held.length_min > 0.0:
         rows.append((design.shape.lengths - held.length_min) / held.length_min)
-    if held.sign_guard is not None:
-        guard = held.sign_guard
-        signed = guard.signs * params.force_densities[guard.members]
+    guard = problem.pipeline.formfinder.read_sign_guard(held.sign_guard)
+    if guard is not None:
+        signed = guard.signs * params.shape_parameters[guard.members]
         rows.append((signed - guard.margin) / guard.scale)
+
+    if not rows:
+        raise ValueError(
+            "this problem states no constraints: it carries no check, and its "
+            "config names no rise, sag, length or sign limit either"
+        )
 
     return jnp.concatenate(rows)
 
@@ -495,20 +762,19 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
 
     Notes
     -----
-    The mass reads the form finder and the catalog alone; the slack runs the
-    whole pipeline. The rows are aggregated inside the traced augmented program,
-    so every constraint costs one reverse pass together — and one crossing of
+    The objective reads only the blocks it needs — the shipped mass takes the
+    form finder and the catalog alone — while the slack runs the whole
+    pipeline. The rows are aggregated inside the traced augmented program, so
+    every constraint costs one reverse pass together — and one crossing of
     whatever boundary a block sits behind.
     """
     pipeline = problem.pipeline
     loads = problem.loads
 
-    def mass_objective(x: Float[Array, "variables"]) -> Float[Array, ""]:
+    def design_objective(x: Float[Array, "variables"]) -> Float[Array, ""]:
         params = expand_variables(problem, x)
-        shape = pipeline.formfinder(params.force_densities, loads.formfinding)
-        sections = pipeline.sizer.catalog(params.diameters)
 
-        return compute_member_mass(sections, shape.lengths)
+        return problem.objective(problem, params)
 
     def slack_constraints(x: Float[Array, "variables"]) -> Float[Array, "constraints"]:
         params = expand_variables(problem, x)
@@ -519,11 +785,11 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
     def augmented_lagrangian(x, multipliers, penalty, reference):
         penalized = compute_penalty(slack_constraints(x), multipliers, penalty)
 
-        return mass_objective(x) / reference + penalized
+        return design_objective(x) / reference + penalized
 
     maps = ConstrainedMaps(
         jax.jit(jax.value_and_grad(augmented_lagrangian)),
-        jax.jit(jax.value_and_grad(mass_objective)),
+        jax.jit(jax.value_and_grad(design_objective)),
         jax.jit(slack_constraints),
     )
 
@@ -581,9 +847,18 @@ def envelope_diameters(
         The largest diameter any load case demands of each member, floored —
         the classical design-office move, analyze at a guess and size to the
         forces, which is where a search starts.
+
+    Raises
+    ------
+    ValueError
+        If the pipeline carries no analysis or no check, an envelope being a
+        reading off all three blocks.
     """
     pipeline = problem.pipeline
-    q = read_member_densities(problem, jnp.asarray(coefficients))
+    if pipeline.analyzer is None or pipeline.sizer is None:
+        raise ValueError("an envelope needs all three blocks, and this has not")
+
+    q = expand_shape_coefficients(problem, jnp.asarray(coefficients))
     shape = pipeline.formfinder(q, problem.loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, seeded, problem.loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
@@ -669,30 +944,51 @@ def unfold_diameters(
     diameters :
         Outer diameter of every member.
     """
-    folded = np.asarray(x)[count_density_coefficients(problem) :]
+    folded = np.asarray(x)[count_shape_coefficients(problem) :]
 
     return unfold_values(folded, problem.section_groups)
 
 
 def build_design_constraints(
     config: ConstraintsConfig,
-    guard: SignGuard | None,
+    guarded: SignGuardSpec | None,
+    density_start: Float[np.ndarray, "members"],
 ) -> DesignConstraints:
     """
-    What the design is held to, read off a run config.
+    What the design is held to, read off a run config and the start.
 
     Parameters
     ----------
     config :
         The floors, the height limits and the density box the file names.
-    guard :
-        The sign guard the start scaled, or None for none.
+    guarded :
+        Which members must keep a sign and by how much, or None for no guard.
+    density_start :
+        Force density of every member at the start, which the guard is scaled
+        against.
 
     Returns
     -------
     constraints :
         Everything the descent is held to beside the check.
+
+    Notes
+    -----
+    The guard is scaled here, once, off the densities the descent leaves from,
+    and then held fixed. Reading it off each iterate instead would shrink the
+    margin as the densities shrink, so the row would chase the design rather
+    than constrain it. A margin of zero or less asks for no rows at all — the
+    start is still signed, by the initializer, but nothing holds it there.
     """
+    guard = None
+    if guarded is not None and guarded.margin_fraction > 0.0:
+        guard = guard_signs(
+            density_start,
+            guarded.signs,
+            guarded.members,
+            guarded.margin_fraction,
+        )
+
     bounds = None if config.bounds is None else (config.bounds.min, config.bounds.max)
     constraints = DesignConstraints(
         config.diameter_min,

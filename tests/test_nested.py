@@ -667,7 +667,7 @@ def test_settling_returns_diameters_the_check_agrees_with(
 ):
     weighed = mass_objective(pipeline, three_cases)
     settled = settle_diameters(weighed, params)
-    _, design = weighed(DesignParameters(params.force_densities, settled))
+    _, design = weighed(DesignParameters(params.shape_parameters, settled))
     demanded = design.sizes.sections.diameter
 
     assert float(jnp.max(jnp.abs(demanded / settled - 1.0))) < TOLERANCE_SETTLING

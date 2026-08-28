@@ -22,8 +22,7 @@ equality to machine precision, and a penalty holds it only in a limit.
 
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
 
-Run with `uv run --group pipeline python
-experiments/13_simultaneous_sizing.py`.
+Run with `uv run --group pipeline python validation/sizing_formulations.py`.
 """
 
 import time
@@ -208,7 +207,7 @@ def design_objective(problem: ArchProblem) -> Callable:
         # check and echo the diameters back unsized.
         pipeline = problem.pipeline
         loads = problem.loads
-        shape = pipeline.formfinder(params.force_densities, loads.formfinding)
+        shape = pipeline.formfinder(params.shape_parameters, loads.formfinding)
         forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
         sizes = pipeline.sizer(forces, shape.lengths)
         sized = design_envelope(Design(shape, forces, sizes))
@@ -236,7 +235,7 @@ def nested_fixed(problem: ArchProblem) -> RouteAnswer:
 
     started = time.perf_counter()
     settled = settle_diameters(objective, problem.params)
-    resized = DesignParameters(problem.params.force_densities, settled)
+    resized = DesignParameters(problem.params.shape_parameters, settled)
     mass, _ = compiled(resized)
     elapsed = time.perf_counter() - started
 
@@ -249,7 +248,7 @@ def simultaneous_fixed(problem: ArchProblem) -> tuple[RouteAnswer, SolverState]:
     """
     pipeline = problem.pipeline
     sizer = pipeline.sizer
-    q = problem.params.force_densities
+    q = problem.params.shape_parameters
     shape = pipeline.formfinder(q, problem.loads.formfinding)
     density = sizer.catalog.material.density
 
@@ -345,7 +344,7 @@ def joint_bounds(problem: ArchProblem) -> list[tuple[float, float | None]]:
     """
     Box bounds for the joint search: force densities boxed, diameters floored.
     """
-    funicular = float(problem.params.force_densities[0])
+    funicular = float(problem.params.shape_parameters[0])
     lower = SPREAD_UP * funicular
     upper = SPREAD_DOWN * funicular
     force_box: list[tuple[float, float | None]] = [(lower, upper)] * NUM_EDGES
@@ -371,13 +370,13 @@ def nested_joint(problem: ArchProblem) -> RouteAnswer:
         return objective(DesignParameters(force_densities, seeds))
 
     compiled = value_and_gradient(compute_mass, has_aux=True)
-    compiled(problem.params.force_densities)
-    funicular = float(problem.params.force_densities[0])
+    compiled(problem.params.shape_parameters)
+    funicular = float(problem.params.shape_parameters[0])
 
     started = time.perf_counter()
     found = minimize_bounded(
         compute_mass,
-        problem.params.force_densities,
+        problem.params.shape_parameters,
         bounds=(SPREAD_UP * funicular, SPREAD_DOWN * funicular),
         iterations=DESCENT_ITERATIONS,
         has_aux=True,
@@ -430,7 +429,9 @@ def simultaneous_joint(problem: ArchProblem) -> RouteAnswer:
     compute_mass_and_gradient = jax.jit(jax.value_and_grad(weigh))
     slack_compiled = jax.jit(slack)
     slack_jacobian = jax.jit(jax.jacrev(slack))
-    seeded = jnp.concatenate([problem.params.force_densities, problem.params.diameters])
+    seeded = jnp.concatenate(
+        [problem.params.shape_parameters, problem.params.diameters]
+    )
     start = np.asarray(seeded)
     compute_mass_and_gradient(seeded)
     slack_compiled(seeded)

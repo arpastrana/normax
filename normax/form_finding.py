@@ -24,35 +24,21 @@ from jaxtyping import Float
 from jaxtyping import Int
 from scipy.linalg import qr
 
+from normax.config import FormFindingConfig
 from normax.config import check_start_fields
+from normax.structures import DesignShape
 from normax.structures import Structure
+from normax.structures import compute_member_lengths
+from normax.structures import read_drawn_shape
 from normax.symmetry import SignGuard
 from normax.symmetry import guard_signs
 from normax.symmetry import permute_members
 from normax.symmetry import shift_densities
 from normax.symmetry import sketch_lens
 
-
-class FormFoundShape(NamedTuple):
-    """
-    The geometry a form finder settles on, and what its members measure there.
-
-    Attributes
-    ----------
-    xyz :
-        Position of every node at equilibrium.
-    lengths :
-        Length of every member.
-
-    Notes
-    -----
-    The handoff downstream is a geometry — no prestress and no member forces.
-    A frame analysis finds its own axial forces, and that they agree with the
-    form finder's is a prediction that gets tested rather than an input.
-    """
-
-    xyz: Float[Array, "nodes 3"]
-    lengths: Float[Array, "members"]
+# The shape parametrizations a run config may name, in the order they are
+# reported: found by equilibrium, written as heights, or not moved at all.
+SHAPE_PARAMETRIZATIONS = ("fdm", "heights", "fixed")
 
 
 class PlanBasis(NamedTuple):
@@ -130,6 +116,32 @@ class PlanBasis(NamedTuple):
         return np.asarray(q)[self.independents]
 
 
+class CoefficientBounds(NamedTuple):
+    """
+    The limits a run config states, for a finder to box its own coefficients by.
+
+    Attributes
+    ----------
+    density_box :
+        Box on the force densities, or None where the config names none.
+    height_max :
+        Height no free node may rise above, or None.
+    height_min :
+        Height no free node may hang below, or None.
+
+    Notes
+    -----
+    One container rather than three arguments because a finder is handed every
+    limit and picks the ones its coefficients are in: the same `rise_max` a
+    density parametrization can only hold as a constraint row is a plain box
+    bound where the coefficients are the heights themselves.
+    """
+
+    density_box: tuple[float, float] | None
+    height_max: float | None
+    height_min: float | None
+
+
 class AbstractFormFinder(eqx.Module):
     """
     A parametrization of the shapes a structure may take in equilibrium.
@@ -155,7 +167,7 @@ class AbstractFormFinder(eqx.Module):
         self,
         q: Float[Array, "members"],
         loads: Float[Array, "nodes 3"],
-    ) -> FormFoundShape:
+    ) -> DesignShape:
         """
         Find the shape that carries a load case at given force densities.
 
@@ -173,54 +185,108 @@ class AbstractFormFinder(eqx.Module):
         """
 
     @abc.abstractmethod
-    def count_density_coefficients(self) -> int:
+    def count_shape_coefficients(self) -> int:
         """
-        How many coefficients a call expands from.
+        How many coefficients a call's parameters are expanded from.
         """
 
-    def expand_density_coefficients(
+    def expand_shape_coefficients(
         self,
         coefficients: Float[Array, "coefficients"],
-    ) -> Float[Array, "members"]:
+    ) -> Float[Array, "shape_parameters"]:
         """
-        The force density of every member at given coefficients.
+        What a call takes, at given coefficients.
 
         Parameters
         ----------
         coefficients :
-            The basis coefficients, or the densities where there is no basis.
+            The basis coefficients, or the parameters where there is no basis.
 
         Returns
         -------
-        q :
-            Force density of every member, as a call takes it.
+        parameters :
+            What `__call__` is handed, in this finder's own space.
         """
         if self.basis is None:
             return coefficients
 
         return self.basis.densities(coefficients)
 
-    def read_density_coefficients(
+    def read_shape_coefficients(
         self,
-        q: Float[np.ndarray, "members"],
+        parameters: Float[np.ndarray, "shape_parameters"],
     ) -> Float[np.ndarray, "coefficients"]:
         """
-        The coefficients a set of force densities reads back as, on the host.
+        The coefficients a set of parameters reads back as, on the host.
 
         Parameters
         ----------
-        q :
-            Force density of every member.
+        parameters :
+            What `__call__` is handed, in this finder's own space.
 
         Returns
         -------
         coefficients :
-            The densities themselves, or their coefficients in the basis.
+            The parameters themselves, or their coefficients in the basis.
         """
         if self.basis is None:
-            return np.asarray(q)
+            return np.asarray(parameters)
 
-        return self.basis.coefficients(q)
+        return self.basis.coefficients(parameters)
+
+    def bound_coefficients(
+        self,
+        limits: CoefficientBounds,
+    ) -> list[tuple[float | None, float | None]]:
+        """
+        One bound pair per coefficient a call expands from.
+
+        Parameters
+        ----------
+        limits :
+            Every limit the run config states, of which this finder takes the
+            ones its coefficients are in.
+
+        Returns
+        -------
+        boxes :
+            The density box on every coefficient, or nothing where the config
+            names none.
+
+        Notes
+        -----
+        The finder is asked rather than told, because only it knows what its
+        coefficients mean. A density box belongs on densities alone, and the
+        height limits cannot be a box here — a density does not say what
+        height it reaches without a solve, so they reach a form-found shape as
+        constraint rows instead.
+        """
+        boxed = limits.density_box or (None, None)
+
+        return [boxed] * self.count_shape_coefficients()
+
+    def read_sign_guard(self, guard: SignGuard | None) -> SignGuard | None:
+        """
+        The sign guard that applies to this finder's coefficients.
+
+        Parameters
+        ----------
+        guard :
+            The guard a run config asked for, or None for none.
+
+        Returns
+        -------
+        guard :
+            The guard itself, whose rows are linear in the force densities.
+
+        Notes
+        -----
+        A guard keeps a density off zero, where the force density system turns
+        singular. A finder that is not called with densities has no such sheet
+        to stay on and answers None, so the rows are never built against a
+        quantity they were not written for.
+        """
+        return guard
 
 
 def build_equilibrium_graph(structure: Structure) -> EquilibriumStructure:
@@ -331,7 +397,7 @@ class FdmFormFinder(AbstractFormFinder):
         self.basis = basis
         self.num_members = int(structure.num_edges)
 
-    def count_density_coefficients(self) -> int:
+    def count_shape_coefficients(self) -> int:
         """
         The basis width, or the member count where every density moves freely.
         """
@@ -344,7 +410,7 @@ class FdmFormFinder(AbstractFormFinder):
         self,
         q: Float[Array, "members"],
         loads: Float[Array, "nodes 3"],
-    ) -> FormFoundShape:
+    ) -> DesignShape:
         """
         Find the shape that carries a load case at given force densities.
 
@@ -362,7 +428,316 @@ class FdmFormFinder(AbstractFormFinder):
         """
         state = solve_equilibrium(q, self.xyz_fixed, self.graph, loads)
 
-        return FormFoundShape(state.xyz, state.lengths[:, 0])
+        return DesignShape(state.xyz, state.lengths[:, 0])
+
+
+class HeightsFormFinder(AbstractFormFinder):
+    """
+    Free heights: the coefficients are the free nodes' height, in the drawn plan.
+
+    Attributes
+    ----------
+    xyz :
+        The drawn geometry, whose plan and supports every shape keeps.
+    edges :
+        The two node indices spanned by every member.
+    nodes_free :
+        Indices of the nodes whose height a call writes.
+    width :
+        How many heights a call takes.
+    basis :
+        None: a height is its own coefficient, and no subspace holds them.
+
+    Notes
+    -----
+    Not funicular: the loads are accepted and ignored, so the frame analysis
+    downstream sees whatever bending the heights raise. Holding the plan by
+    never moving it bounds every member length below by its plan projection,
+    except where two nodes share a plan position -- a Vierendeel vertical --
+    which a height crossing can still collapse. The length floor walls that
+    off.
+
+    The rival the shipped finder is measured against: the same members, loads,
+    analysis and check, differing only in whether the geometry answers to
+    equilibrium or is written down.
+    """
+
+    xyz: Float[Array, "nodes 3"]
+    edges: Int[np.ndarray, "members 2"]
+    nodes_free: Int[np.ndarray, "nodes_free"]
+    width: int = eqx.field(static=True)
+    basis: PlanBasis | None
+
+    def __init__(self, structure: Structure) -> None:
+        """
+        Build a heights finder on a drawn structure.
+
+        Parameters
+        ----------
+        structure :
+            The structure supplying the plan, the members and the supports.
+        """
+        nodes_free = select_free_nodes(structure)
+
+        self.xyz = jnp.asarray(structure.nodes)
+        self.edges = np.asarray(structure.edges)
+        self.nodes_free = nodes_free
+        self.width = int(nodes_free.size)
+        self.basis = None
+
+    def count_shape_coefficients(self) -> int:
+        """
+        How many heights a call takes, one per free node.
+        """
+        return self.width
+
+    def read_shape_coefficients(
+        self,
+        parameters: Float[np.ndarray, "shape_parameters"],
+    ) -> Float[np.ndarray, "nodes_free"]:
+        """
+        The heights this finder starts from, which are the drawn ones.
+
+        Parameters
+        ----------
+        parameters :
+            Accepted and ignored: a fitted density says nothing about where a
+            written geometry leaves from.
+
+        Returns
+        -------
+        heights :
+            Height of every free node as drawn.
+        """
+        return np.asarray(self.xyz)[self.nodes_free, 2]
+
+    def bound_coefficients(
+        self,
+        limits: CoefficientBounds,
+    ) -> list[tuple[float | None, float | None]]:
+        """
+        The sag floor and the rise ceiling, as a box on every height.
+
+        Parameters
+        ----------
+        limits :
+            Every limit the run config states. The density box among them is
+            ignored, being a box on a quantity this finder never sees.
+
+        Returns
+        -------
+        boxes :
+            One `(sag_min, rise_max)` pair per free node, either end open where
+            the config names no limit.
+
+        Notes
+        -----
+        Here the coefficients *are* the heights, so the same limits a
+        form-found shape can only be held to by constraint rows are held
+        natively by the inner solver — no penalty, no multiplier, and no
+        iterate outside them. The rows are emitted as well and are then
+        redundant rather than wrong: a limit is stated once in the file and
+        every parametrization answers to it, which is the point.
+
+        Applying the *density* box here would be a disaster rather than a
+        nuisance: a compression box is negative on both ends, so every node
+        would be driven under the ground plane.
+        """
+        boxed = (limits.height_min, limits.height_max)
+
+        return [boxed] * self.width
+
+    def read_sign_guard(self, guard: SignGuard | None) -> SignGuard | None:
+        """
+        None: there are no densities here to keep off zero.
+        """
+        return None
+
+    def __call__(
+        self,
+        heights: Float[Array, "nodes_free"],
+        loads: Float[Array, "nodes 3"],
+    ) -> DesignShape:
+        """
+        The drawn geometry with the free nodes lifted to the given heights.
+
+        Parameters
+        ----------
+        heights :
+            Height of every free node.
+        loads :
+            Accepted and ignored.
+
+        Returns
+        -------
+        shape :
+            The geometry, and its member lengths.
+        """
+        xyz = self.xyz.at[self.nodes_free, 2].set(heights)
+        lengths = compute_member_lengths(xyz, self.edges)
+
+        return DesignShape(xyz, lengths)
+
+
+class FixedFormFinder(AbstractFormFinder):
+    """
+    Sizing only: the shape is the drawn geometry, whatever it is called with.
+
+    Attributes
+    ----------
+    shape :
+        The drawn geometry and its member lengths, measured once.
+    basis :
+        None: there are no coefficients for a subspace to hold.
+
+    Notes
+    -----
+    A search over this finder moves the diameters alone, and every "off"
+    behavior follows from its coefficient count being zero rather than from a
+    branch anywhere downstream: the variable vector is all diameters, the
+    coefficient half of the box is empty, and the geometry is a captured
+    constant, so the mass differentiates through the sections and never
+    through the lengths.
+
+    The shape it hands on is a real geometry that never moves, not a stand-in
+    for one -- which is what makes neutralizing this slot safe where a null
+    analysis returning zero forces would not be.
+    """
+
+    shape: DesignShape
+    basis: PlanBasis | None
+
+    def __init__(self, structure: Structure) -> None:
+        """
+        Build a fixed finder on a structure.
+
+        Parameters
+        ----------
+        structure :
+            The structure supplying the geometry and the members.
+        """
+        self.shape = read_drawn_shape(structure)
+        self.basis = None
+
+    def count_shape_coefficients(self) -> int:
+        """
+        Zero: the drawn shape takes no coefficients.
+        """
+        return 0
+
+    def read_shape_coefficients(
+        self,
+        parameters: Float[np.ndarray, "shape_parameters"],
+    ) -> Float[np.ndarray, "0"]:
+        """
+        Nothing: a shape that never moves leaves from no coefficients.
+
+        Parameters
+        ----------
+        parameters :
+            Accepted and ignored.
+
+        Returns
+        -------
+        coefficients :
+            An empty vector, so a start is its diameters alone.
+        """
+        return np.zeros(0)
+
+    def bound_coefficients(
+        self,
+        limits: CoefficientBounds,
+    ) -> list[tuple[float | None, float | None]]:
+        """
+        No pairs, there being no coefficients to bound.
+
+        Parameters
+        ----------
+        limits :
+            Accepted and ignored. A shape that never moves answers to a height
+            limit through its rows, which it either satisfies as drawn or
+            cannot satisfy at all.
+
+        Returns
+        -------
+        boxes :
+            An empty list.
+        """
+        return []
+
+    def read_sign_guard(self, guard: SignGuard | None) -> SignGuard | None:
+        """
+        None: there are no densities here to keep off zero.
+        """
+        return None
+
+    def __call__(
+        self,
+        coefficients: Float[Array, "0"],
+        loads: Float[Array, "nodes 3"],
+    ) -> DesignShape:
+        """
+        The drawn geometry as it stands.
+
+        Parameters
+        ----------
+        coefficients :
+            Accepted and ignored, an empty vector.
+        loads :
+            Accepted and ignored.
+
+        Returns
+        -------
+        shape :
+            The drawn geometry, and its member lengths.
+        """
+        return self.shape
+
+
+def build_form_finder(
+    structure: Structure,
+    basis: PlanBasis | None,
+    config: FormFindingConfig,
+) -> AbstractFormFinder:
+    """
+    The shape parametrization a run config asks for.
+
+    Parameters
+    ----------
+    structure :
+        The structure the block is built on.
+    basis :
+        The held-plan subspace the densities move in, or None. Read by the
+        form-found parametrization alone.
+    config :
+        The parametrization, and where its densities start.
+
+    Returns
+    -------
+    formfinder :
+        The block filling the pipeline's first slot.
+
+    Raises
+    ------
+    ValueError
+        If the parametrization is not one this module knows.
+
+    Notes
+    -----
+    The one place every shipping parametrization is named, as `build_analyzer`
+    and `build_sizer` are for the two crossed blocks, and the one place a
+    misspelled word is refused.
+    """
+    named = config.shape_parametrization
+    if named == "fdm":
+        return FdmFormFinder(structure, basis)
+    if named == "heights":
+        return HeightsFormFinder(structure)
+    if named == "fixed":
+        return FixedFormFinder(structure)
+
+    known = ", ".join(SHAPE_PARAMETRIZATIONS)
+    raise ValueError(f"shape parametrization must be one of {known}, got {named!r}")
 
 
 def select_free_nodes(structure: Structure) -> Int[np.ndarray, "nodes_free"]:
@@ -613,22 +988,6 @@ class SignGuardSpec(NamedTuple):
     margin_fraction: float
 
 
-class DensityStart(NamedTuple):
-    """
-    Where a search starts: the densities, and the guard that keeps their signs.
-
-    Attributes
-    ----------
-    q :
-        Force density of every member at the start.
-    guard :
-        The sign guard scaled at those densities, or None where none was asked.
-    """
-
-    q: Float[np.ndarray, "members"]
-    guard: SignGuard | None
-
-
 class AbstractDensityInitializer(eqx.Module):
     """
     What generates the force densities a search starts from.
@@ -637,10 +996,17 @@ class AbstractDensityInitializer(eqx.Module):
     -----
     A concrete initializer states only how the densities are fitted; signing
     them is shared. Where the fit leaves a self-stress, the densities are
-    shifted along it until every guarded member clears the margin, and the
-    guard is rescaled at the shifted densities. Where it leaves none, the fit
-    must already clear the margin, since no shift could repair it. A margin of
-    zero or less still signs the start but hands the descent no guard rows.
+    shifted along it until every guarded member clears the margin. Where it
+    leaves none, the fit must already clear the margin, since no shift could
+    repair it.
+
+    **The densities are all that comes back.** Scaling the guard the descent
+    holds is a read off these densities and the spec the caller already has, so
+    it belongs with the rest of what a design is held to and
+    `normax.design.build_design_constraints` does it. What cannot leave is the
+    provisional guard below: `shift_densities` needs a margin to size its
+    slide, so signing the fit and scaling a guard against the fit are the same
+    step.
     """
 
     @abc.abstractmethod
@@ -674,7 +1040,7 @@ class AbstractDensityInitializer(eqx.Module):
         loads: Float[np.ndarray, "nodes 3"],
         basis: PlanBasis | None,
         guarded: SignGuardSpec | None,
-    ) -> DensityStart:
+    ) -> Float[np.ndarray, "members"]:
         """
         The start densities, signed where a guard asks them to be.
 
@@ -691,9 +1057,8 @@ class AbstractDensityInitializer(eqx.Module):
 
         Returns
         -------
-        started :
-            The densities, and the guard scaled at them, or None where the
-            margin asks for no rows.
+        density_start :
+            Force density of every member at the start.
 
         Raises
         ------
@@ -702,27 +1067,22 @@ class AbstractDensityInitializer(eqx.Module):
         """
         fit = self.fit_start(structure, loads, basis)
         if guarded is None:
-            return DensityStart(fit.q, None)
+            return fit.q
 
         fraction = max(guarded.margin_fraction, 0.0)
         guard = guard_signs(fit.q, guarded.signs, guarded.members, fraction)
-        q = fit.q
+        density_start = fit.q
         if fit.self_stresses.shape[1] > 0:
-            q = shift_densities(fit.q, fit.self_stresses[:, 0], guard)
+            density_start = shift_densities(fit.q, fit.self_stresses[:, 0], guard)
         elif guarded.margin_fraction > 0.0:
-            signed = guard.signs * q[guard.members]
+            signed = guard.signs * density_start[guard.members]
             if signed.min() < guard.margin:
                 raise ValueError(
                     f"a guarded member misses its sign by {guard.margin:.4f}: "
                     f"worst signed density {signed.min():.4f}"
                 )
-        if guarded.margin_fraction <= 0.0:
-            return DensityStart(q, None)
 
-        rescaled = guard_signs(q, guarded.signs, guarded.members, fraction)
-        started = DensityStart(q, rescaled)
-
-        return started
+        return density_start
 
 
 class UniformDensityInitializer(AbstractDensityInitializer):

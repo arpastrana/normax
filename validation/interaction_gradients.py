@@ -10,7 +10,7 @@ optimizer will actually descend.
 Also confirms that removing the moments reproduces the axial answer exactly, and
 reports which limit state decides each member.
 
-Run with `uv run python experiments/02_pipeline_gradcheck.py`.
+Run with `uv run python validation/interaction_gradients.py`.
 """
 
 from collections.abc import Callable

@@ -20,6 +20,7 @@ ORACLE_TESTS = (
     "test_materials.py",
     "test_nested.py",
     "test_pipeline.py",
+    "test_pipeline_tail.py",
     "test_replay.py",
     "test_second_sizer.py",
     "test_sections.py",

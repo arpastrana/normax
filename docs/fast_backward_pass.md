@@ -2,7 +2,7 @@
 
 *An appendix. Every number here was measured on the 16×16 gridshell — 257 nodes,
 496 members, 1267 differentiable parameters, three load cases — unless it says
-otherwise. Reproduce them with `experiments/validation/pynite_adjoint.py`.*
+otherwise. Reproduce them with `validation/pynite_adjoint.py`.*
 
 PyNite is a space-frame analysis in plain Python. It has no tape, no tangent and
 no sensitivity command, and no configuration produces one. Giving it a gradient

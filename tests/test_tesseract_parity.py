@@ -128,9 +128,7 @@ def shared_sizer(structure, catalog):
 @pytest.fixture(scope="module")
 def oracle_pipeline(structure, catalog, shared_sizer):
     return StructuralDesignPipeline(
-        FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        shared_sizer,
+        FdmFormFinder(structure), SmaxAnalyzer(structure, catalog(SEED)), shared_sizer
     )
 
 
@@ -218,7 +216,7 @@ def test_the_utilization_gradient_survives_the_boundary(
     def by_densities(route):
         return lambda q: route(DesignParameters(q, params.diameters))
 
-    q = params.force_densities
+    q = params.shape_parameters
     difference = relative(
         jax.grad(by_densities(oracle))(q), jax.grad(by_densities(crossed))(q)
     )
@@ -235,7 +233,7 @@ def test_the_diameter_gradient_survives_the_boundary(
     crossed = worked_utilization(crossed_pipeline, one_case)
 
     def by_diameters(route):
-        return lambda d: route(DesignParameters(params.force_densities, d))
+        return lambda d: route(DesignParameters(params.shape_parameters, d))
 
     held = params.diameters
     difference = relative(
@@ -255,7 +253,7 @@ def test_the_crossed_gradient_matches_central_differences(
     def objective(q):
         return crossed(DesignParameters(q, params.diameters))
 
-    q = params.force_densities
+    q = params.shape_parameters
     gradient = jax.grad(objective)(q)
     scale = float(jnp.max(jnp.abs(gradient)))
 
@@ -289,7 +287,7 @@ def test_the_boundary_does_not_downcast_to_single_precision(
 
     worked = worked_utilization(crossed_pipeline, one_case)
     gradient = jax.grad(lambda q: worked(DesignParameters(q, params.diameters)))(
-        params.force_densities
+        params.shape_parameters
     )
 
     assert gradient.dtype == jnp.float64
@@ -333,9 +331,7 @@ def shell_sizer(shell, catalog):
 @pytest.fixture(scope="module")
 def shell_oracle(shell, catalog, shell_sizer):
     return StructuralDesignPipeline(
-        FdmFormFinder(shell),
-        SmaxAnalyzer(shell, catalog(SEED)),
-        shell_sizer,
+        FdmFormFinder(shell), SmaxAnalyzer(shell, catalog(SEED)), shell_sizer
     )
 
 
@@ -388,7 +384,7 @@ def test_the_space_frame_gradient_survives_the_boundary(
 
         return worked
 
-    q = shell_params.force_densities
+    q = shell_params.shape_parameters
     slope_oracle = jax.grad(carried_squared(shell_oracle))(q)
     slope_crossed = jax.grad(carried_squared(shell_crossed))(q)
 

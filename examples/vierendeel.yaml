@@ -8,6 +8,9 @@ structure:
 
 # The held plan in member coordinates, folded by the midspan mirror; a lens fit.
 form_finding:
+  # fdm finds the shape by equilibrium in the force densities; heights
+  # writes the free nodes' height; fixed never moves the drawn geometry.
+  shape_parametrization: fdm
   basis: pivoted
   mirror: x
   # LensShapeInitializer: the densities that make a sketched lens funicular.

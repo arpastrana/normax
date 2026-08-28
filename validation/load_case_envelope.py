@@ -15,7 +15,7 @@ number the annealing schedule of P4 has to be chosen against.
 Also exercises the case the discontinuity at zero axial force makes awkward: a
 member whose axial force changes sign between load cases.
 
-Run with `uv run python experiments/06_load_case_aggregation.py`.
+Run with `uv run python validation/load_case_envelope.py`.
 """
 
 from typing import NamedTuple

@@ -52,8 +52,16 @@ SIZING_CROSSED = ("blueprint",)
 # Where the Tesseract API modules live, relative to the package.
 TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
 
-# Endpoints whose work must not move between threads.
-PINNED_ENDPOINTS = ("apply", "jacobian_vector_product", "vector_jacobian_product")
+# Endpoints whose work must not move between threads. Every one `Jaxeract`
+# dispatches except `jacobian`, which no server here offers and none will: the
+# augmented Lagrangian aggregates its rows into one scalar, so a gradient is a
+# single cotangent and materializing a Jacobian would only cost.
+PINNED_ENDPOINTS = (
+    "abstract_eval",
+    "apply",
+    "jacobian_vector_product",
+    "vector_jacobian_product",
+)
 
 # One worker owning every dispatch across the process, and a re-entrancy flag.
 _DISPATCH_OWNER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tesseract")
@@ -78,12 +86,30 @@ def pin_dispatch_thread() -> None:
     Notes
     -----
     Tesseract-JAX lowers a call to an XLA host callback with no ordering and no
-    thread affinity, so under `jit` the runtime runs several dispatches at once.
+    thread affinity — `emit_python_callback` is emitted without `ordered=True` —
+    so under `jit` the runtime is *permitted* to run several dispatches at once.
     A local Tesseract runs the API in this process, where a solver owning one
-    mutable domain is corrupted by that, and the local client redirects file
-    descriptors around every call, which races process-wide. Pinning rather
-    than locking, because a library with thread-affine state needs one owner.
-    This belongs upstream; `NORMAX_PIN_DISPATCH=0` leaves the endpoints alone.
+    mutable domain would be corrupted by that, and the local client redirects
+    process-global file descriptors around every call with no lock of its own.
+    Pinning rather than locking, because a library with thread-affine state
+    needs one owner.
+
+    **Do not remove it, and do not trust either measurement alone.** On
+    2026-08-24 a crossed-OpenSees descent was measured overlapping genuinely —
+    four XLA worker threads, ten of twenty-four dispatches concurrent. On
+    2026-08-28, in the shipped configuration, none of that reproduced: with
+    `NORMAX_PIN_DISPATCH=0` the arch descent returns an identical answer, six
+    independent crossings and a `jacrev` over a crossed vector all run on
+    `MainThread` with zero temporal overlap, and the crossing tests pass
+    serially. Same JAX 0.11.0 both times. The difference has not been found, so
+    the honest position is that the precondition is real, intermittent, and not
+    currently reachable by any route this package ships — the augmented
+    Lagrangian sends one cotangent where the retired SLSQP route sent many, and
+    the two stages are chained by a data dependency besides. Cheap insurance
+    against a condition that has been seen once. The separate rule that
+    `tests/test_tesseract_parity.py` leaves the composed side eager is what
+    holds where this has actually bitten. The redirect defect belongs upstream;
+    `docs/tesseract_stdio_race.md` is the report and the reproduction.
     """
     if os.environ.get("NORMAX_PIN_DISPATCH") == "0":
         return

@@ -20,7 +20,9 @@ check each cross a Tesseract boundary to a host that does not differentiate
 itself, and come back with a hand-written adjoint. Swapping a block for one that
 runs in process is a different word in the file and nothing else.
 
-Run with `uv run python examples/arch.py [arch.yaml]`.
+Run with `uv run python examples/arch.py [arch.yaml]`. Add
+`--shape-parametrization heights` or `fixed` to race the same structure,
+loads, analysis and check against a geometry written down rather than found.
 """
 
 import sys
@@ -28,8 +30,10 @@ from pathlib import Path
 
 import jax.numpy as jnp
 
+from normax.config import RunArguments
 from normax.config import RunConfig
-from normax.config import parse_config
+from normax.config import read_run_arguments
+from normax.config import read_run_config
 from normax.design import DesignProblem
 from normax.design import DesignRecord
 from normax.design import StructuralDesignPipeline
@@ -39,8 +43,8 @@ from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
-from normax.form_finding import FdmFormFinder
 from normax.form_finding import UniformDensityInitializer
+from normax.form_finding import build_form_finder
 from normax.form_finding import build_plan_basis
 from normax.loads import build_load_cases
 from normax.materials import Steel355
@@ -82,19 +86,17 @@ def build_arch(description: ArchDescription) -> Structure:
     return build_arch_2d(description.num_edges, description.span, description.rise)
 
 
-def main(config_path: Path) -> None:
+def main(arguments: RunArguments) -> None:
     """
     Design the arch a file describes, and report what the descent bought.
 
     Parameters
     ----------
-    config_path :
+    arguments :
         File naming the arch and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[ArchDescription] = parse_config(
-        config_path.read_text(), ArchDescription
-    )
+    config: RunConfig[ArchDescription] = read_run_config(arguments, ArchDescription)
 
     # The structure, its load cases, and the catalog both backends draw from.
     structure = build_arch(config.structure)
@@ -106,7 +108,7 @@ def main(config_path: Path) -> None:
     section_groups = build_section_groups(structure, (None, None))
 
     # The three main computation blocks of the structural design pipeline
-    form_finder = FdmFormFinder(structure, basis)
+    form_finder = build_form_finder(structure, basis, config.form_finding)
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
 
@@ -114,12 +116,12 @@ def main(config_path: Path) -> None:
 
     # The start: one force density in every member, which is the basis itself.
     density_initializer = UniformDensityInitializer(config.form_finding.density_start)
-    started = density_initializer(structure, loads.formfinding, basis, None)
-    constraints = build_design_constraints(config.constraints, None)
+    density_start = density_initializer(structure, loads.formfinding, basis, None)
+    constraints = build_design_constraints(config.constraints, None, density_start)
     problem = DesignProblem(structure, pipeline, loads, constraints, section_groups)
     diameter_initializer = UniformDiameterInitializer(config.analysis.diameter_start)
     diameter_start = diameter_initializer(structure)
-    start = initialize_optimization_variables(problem, started.q, diameter_start)
+    start = initialize_optimization_variables(problem, density_start, diameter_start)
     initial = create_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
@@ -141,4 +143,4 @@ def main(config_path: Path) -> None:
 
 if __name__ == "__main__":
     jnp.set_printoptions(precision=PRECISION)
-    main(Path(sys.argv[1]) if len(sys.argv) > 1 else CONFIG)
+    main(read_run_arguments(sys.argv[1:], CONFIG))

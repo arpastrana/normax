@@ -4,13 +4,21 @@ What a run is configured by, read from a file.
 
 Every section a design shares — the form finding, the load cases, the two
 backends, the constraints, the descent's budget — is a container here. What the
-structure is varies by structure, so an example hands `parse_config` the
+structure is varies by structure, so an example hands `read_run_config` the
 description type from `normax.structures` its `structure` section is read into.
 
 Nothing here is built, only read. A start arrives as the fields of the
 initializer it belongs to, and the example names that class and constructs it.
+
+A file describes a whole run, so an example takes one on its command line and
+little else. The exception is the shape parametrization: racing the three
+against each other is the point of the comparison, and asking for the next one
+should not mean keeping three near-identical files, so a flag overrides the
+word the file names.
 """
 
+import argparse
+from pathlib import Path
 from typing import Generic
 from typing import NamedTuple
 from typing import TypeVar
@@ -93,6 +101,13 @@ class FormFindingConfig(NamedTuple):
 
     Attributes
     ----------
+    shape_parametrization :
+        Which block fills the pipeline's first slot, and so what the design
+        variables mean — `fdm` for force densities through an equilibrium
+        solve, `heights` for the free nodes' height written down, `fixed` for
+        the drawn geometry, which moves the diameters alone. The two written
+        parametrizations read none of the fields below, and a run reports which
+        of them it left unread.
     basis :
         Convention of the held-plan basis the densities move in — `pivoted`
         for the independent members' own densities, `svd` for projections on
@@ -103,13 +118,17 @@ class FormFindingConfig(NamedTuple):
     density_start :
         Fields of the density initializer the example builds, by keyword:
         `force_density` for a uniform start, `sag`, `rise` and `held_plan` for
-        a lens sketch. A drawn fit reads nothing, so a file that asks for one
-        writes no start at all and this is empty.
+        a lens sketch, or None where the fit reads none — a drawn one, or a
+        parametrization that never fits a density at all. The one field here
+        carrying a default, and it defaults to None rather than to an empty
+        mapping: a NamedTuple evaluates its defaults once, so a mutable one
+        would be a single dict shared by every config in the process.
     """
 
+    shape_parametrization: str
     basis: str | None
     mirror: str | None
-    density_start: dict[str, float | bool] = {}
+    density_start: dict[str, float | bool] | None = None
 
 
 class BoundsConfig(NamedTuple):
@@ -218,7 +237,7 @@ class RunConfig(NamedTuple, Generic[StructureT]):
 
 
 def check_start_fields(
-    described: dict[str, float | bool],
+    described: dict[str, float | bool] | None,
     wanted: tuple[str, ...],
 ) -> None:
     """
@@ -227,7 +246,8 @@ def check_start_fields(
     Parameters
     ----------
     described :
-        What a file gave the start, which is the initializer's own fields.
+        What a file gave the start, which is the initializer's own fields, or
+        None where it named no start.
     wanted :
         Names the initializer reads, which the file must name exactly.
 
@@ -240,12 +260,19 @@ def check_start_fields(
     -----
     An initializer is its own schema, so a start is checked where it is read
     into one rather than at the parse, and the message names both sides.
+
+    A file naming no start reads the same as one naming an empty start, which
+    is what an initializer reading no fields wants. Normalizing here rather
+    than at each call site is what keeps a `null` in a file from surfacing as
+    `set(None)` inside some initializer's constructor, a long way from the line
+    that caused it.
     """
-    if set(described) == set(wanted):
+    named_fields = described or {}
+    if set(named_fields) == set(wanted):
         return
 
     named = ", ".join(sorted(wanted)) or "nothing"
-    raise ValueError(f"a start must name {named}, got {sorted(described)}")
+    raise ValueError(f"a start must name {named}, got {sorted(named_fields)}")
 
 
 def parse_config(
@@ -276,11 +303,12 @@ def parse_config(
 
     Notes
     -----
-    No container carries a default, so a file missing a field is refused rather
-    than quietly completed. Every budget is cast on the way in: YAML reads an
-    exponent without a signed power as a string. A start's fields are carried
-    across as they were written, and are checked by the initializer the example
-    builds from them, not here.
+    No container carries a default but one — `form_finding.density_start`, which
+    a fit reading no fields may leave out — so a file missing any other field is
+    refused rather than quietly completed. Every budget is cast on the way in:
+    YAML reads an exponent without a signed power as a string. A start's fields
+    are carried across as they were written, and are checked by the initializer
+    the example builds from them, not here.
     """
     document = yaml.safe_load(text)
 
@@ -314,3 +342,97 @@ def parse_config(
     )
 
     return config
+
+
+# What an example prints for `--help`. The module docstring would be this
+# module's, not the example's, and argparse has no way to reach the caller.
+RUN_USAGE = "Design a structure a file describes, and report what it bought."
+
+
+class RunArguments(NamedTuple):
+    """
+    What an example was asked for on its command line.
+
+    Attributes
+    ----------
+    config_path :
+        File describing the run.
+    shape_parametrization :
+        Parametrization overriding the one the file names, or None to keep it.
+    """
+
+    config_path: Path
+    shape_parametrization: str | None
+
+
+def read_run_arguments(
+    argv: list[str],
+    default_path: Path,
+) -> RunArguments:
+    """
+    The command line an example was invoked with.
+
+    Parameters
+    ----------
+    argv :
+        Arguments after the script name, which is `sys.argv[1:]`.
+    default_path :
+        File to read where the command line names none.
+
+    Returns
+    -------
+    arguments :
+        The file to read, and any parametrization overriding it.
+
+    Notes
+    -----
+    The parametrization is carried rather than checked: `build_form_finder` is
+    the one place a word is refused, so a typo is reported once and in the same
+    terms wherever it came from.
+    """
+    parser = argparse.ArgumentParser(description=RUN_USAGE)
+    parser.add_argument(
+        "config_path",
+        nargs="?",
+        type=Path,
+        default=default_path,
+        help="file describing the run; defaults to the one beside the example",
+    )
+    parser.add_argument(
+        "--shape-parametrization",
+        default=None,
+        help="fdm, heights or fixed, overriding the word the file names",
+    )
+    parsed = parser.parse_args(argv)
+
+    return RunArguments(parsed.config_path, parsed.shape_parametrization)
+
+
+def read_run_config(
+    arguments: RunArguments,
+    structure_type: type[StructureT],
+) -> RunConfig[StructureT]:
+    """
+    The run config a command line asks for, overrides applied.
+
+    Parameters
+    ----------
+    arguments :
+        The file to read, and any parametrization overriding it.
+    structure_type :
+        Description the `structure` section is read into.
+
+    Returns
+    -------
+    config :
+        The run config, with the command line's parametrization where it named
+        one.
+    """
+    config = parse_config(arguments.config_path.read_text(), structure_type)
+    named = arguments.shape_parametrization
+    if named is None:
+        return config
+
+    form_finding = config.form_finding._replace(shape_parametrization=named)
+
+    return config._replace(form_finding=form_finding)

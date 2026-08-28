@@ -51,7 +51,8 @@ def view_designs(
     so the diagrams are the analysis rather than a retelling. An analyzer that
     cannot report a whole response is stood in for by a traced one built at
     the same structure; the design itself is only redrawn. Every registration
-    is named apart, since the viewer's `add` replaces a same-named one.
+    is named apart, since the viewer's `add` replaces a same-named one. A design
+    whose pipeline carried no check has no sections to draw and is left out.
     Blocks until the window closes.
     """
     if isinstance(analyzer, TesseractAnalyzer):
@@ -60,6 +61,8 @@ def view_designs(
     viewer = vix.Viewer(show_reactions=False)
 
     for name, design in designs.items():
+        if design.sizes is None:
+            continue
         xyz = design.shape.xyz
         sections = design.sizes.sections
         frame = assemble_frame_model(structure, xyz, sections)
