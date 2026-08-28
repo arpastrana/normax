@@ -2,6 +2,170 @@
 
 ## Unreleased
 
+### A backend's name is checked on the host
+
+Changed 2026-08-28. `TesseractAnalyzer` and `TesseractSizer` refuse a name they
+do not know in their own constructors, before a client is opened. The check
+lived in `build_analyzer` / `build_sizer` alone, and the examples stopped
+calling those when they began composing the pipeline themselves, so a typo in a
+file was caught only by the far side: `backend: openseas` built the whole run
+and came back as a `ValueError` from `tesseracts/analysis/tesseract_api.py` at
+the first crossing. Now it stops at the constructor, whichever route built the
+block. Both builders keep their `Raises` sections and shed the duplicate test.
+
+### The two meanings of `coordinates` are split apart
+
+Changed 2026-08-28. One word named two different quantities -- the per-member
+force densities the pipeline carries, and the coefficients of the held-plan
+basis a search moves in -- while `normax/analysis` means a node's xyz by it
+throughout. `DesignParameters.coordinates` is `force_densities` and the basis
+side is `density_coefficients`.
+
+- **The field holds one force density per member**, expanded out of any
+  held-plan subspace before it is stored: `expand_variables` fills it from
+  `read_member_densities`, and `evaluate_constraints` indexes it by member to
+  sign the guard. Its shape annotation carried the same confusion and is now
+  `"members"`, not `"coordinates"`.
+- **The name is the shipped finder's.** `FdmFormFinder` is the only finder in
+  the package and takes force densities, as `AbstractFormFinder.__call__` has
+  always said by naming its parameter `q`. The comparison harness's
+  `HeightsFormFinder` fills the same field with heights and its
+  `DrawnFormFinder` with an empty array; that is stated in their docstrings
+  rather than papered over by a vaguer field name.
+- **The basis coordinates are a different quantity and are now
+  `density_coefficients`.** They could not take the density name: under the
+  `svd` convention a coefficient is a projection on an orthonormal column, not
+  any member's density, so a uniform -50 field on the Warren reads back as nine
+  numbers from +69 to -223 -- several positive while every member is in
+  compression -- and the 496-member gridshell is parametrized by 23 of them.
+  Calling those force densities would be false in count and in sign. They could
+  not stay "coordinates" either, which is what `normax/analysis` calls a node's
+  xyz. `count_coordinates` is `count_density_coefficients`, `read_coordinates`
+  and `expand_coordinates` follow, `PlanBasis.coordinates` is
+  `PlanBasis.coefficients`, the shape dim is `"coefficients"`, and the report's
+  backend table prints `coefficients`.
+- **`optimization/nested.py` took the density name, not the coefficient one.**
+  The nested route never builds a basis -- its vectors are per-member densities
+  from end to end -- so its prose and its inner objective say force densities.
+
+### `evaluate_design` is `create_design`
+
+Changed 2026-08-28. The function takes a variable vector, expands it through
+the two linear maps and runs all three blocks once, and what comes back is a
+`Design` that did not exist before -- so it makes one rather than evaluating
+one. It never took a design in the first place, which is what the old name
+read as, and `evaluate_constraints` beside it does take one, so a single prefix
+meant two different things in one module. `optimize_design` keeps its name.
+
+### The arch holds its plan on one coordinate
+
+Changed 2026-08-28. `examples/arch.yaml` asks for the pivoted basis and the
+example builds it, so the arch's horizontal projection is held by construction
+rather than left to the search. A chain's horizontal balance leaves exactly one
+independent density, so the shape half of the variable vector is one number.
+
+- **That one column is all ones.** The held-plan subspace of an equally spaced
+  chain is the uniform-density line itself, so the coordinate is the uniform
+  force density and moving it scales the arch's height with every node's `x`
+  pinned. The uniform start therefore lies exactly in the span -- read back and
+  expanded again it returns to `-80.0` within 2.7e-13 -- so the start the report
+  prints is the start the descent leaves from.
+- **The variable vector is 11 wide, not 20**: one coordinate and ten diameters.
+  The independent member QR pivoting elects is the last one.
+- **The length floor goes to zero.** A held plan bounds every member length
+  below by its plan projection, 1000 mm here against a floor of 600, so the rows
+  were inert. `length_min: 0.0`, as on the gridshell.
+- **The density box still boxes a density.** Under the pivoted convention the
+  coordinate is a member's own force density, so `bounds` keeps the arch in
+  compression and away from the singular zero exactly as it did when every
+  density moved freely.
+
+**The answer, measured.** 0.157469 t at worst utilization 1.000000, 49.17%
+below the 0.309772 t start, converged in 7 of 10 rounds on 98 evaluations. That
+is 16.1% heavier than the 0.135622 t ten free densities reach, at a third of
+the evaluations -- 98 against 283 -- which is the trade the parametrization
+makes. The two answers differ in kind, not only in mass: the free search lifted
+the crown to 5086 mm and pulled the springing members down onto the 600 mm
+length floor, while the held plan pins every node's `x` and settles at a 2500 mm
+crown, shallower than the 3000 mm drawn. Every member lands fully stressed.
+`figures/arch_designs.png`, `figures/arch_descent.png` and `data/arch.npz` are
+rewritten from this run.
+
+### The section groups leave the pipeline
+
+Changed 2026-08-28. `StructuralDesignPipeline` never read its own `spread`. The
+field sat on the composed function and was read only by the four helpers that
+pack and unpack the variable vector around it, each reaching through
+`problem.pipeline.spread` for something the middle object never touched. It
+moves to `DesignProblem` as `section_groups`, beside the other statements of
+what a search is over, and the pipeline is three blocks and nothing else.
+
+- **`spread` was a confusing name for it.** The matrix is unchanged -- one 0/1
+  column per orbit of the members under the mirror and, on the shell, the
+  one-spoke rotation, expanding one diameter per group into one per member --
+  but it is `section_groups` now, `build_member_spread` is
+  `build_section_groups`, and the shape dim `patterns` is `groups`, since
+  `LOAD_PATTERNS` already meant something else.
+- **Two things are called groups now**: the edge families a report breaks its
+  columns down by, and these. They are not the same folding -- a Warren's two
+  chords are two families and its mirror leaves far more than two groups -- so
+  a call site that means the families says `create_groups_*` and one that means
+  the folding says `section_groups`.
+- **The density side stays where it is.** `PlanBasis` lives on `FdmFormFinder`
+  because the form finder calls it; the section groups are called by no block,
+  which is the whole argument for moving them out of one.
+- **`expand_variables` keeps its matrix product** rather than calling
+  `unfold_values` beside its sibling: it runs under `jit`, and that host
+  helper's `np.asarray` refuses a tracer.
+
+Verified: 367 tests pass, and all four examples run a round end to end, the
+gridshell's polar fold included.
+
+### The examples build their own initializers
+
+Changed 2026-08-28. `parse_config` no longer builds anything. The density
+initializer and the diameter initializer were constructed inside the parser and
+handed to the examples as objects; each example now names the class it uses and
+hands it what the file said. `build_density_initializer` and
+`build_diameter_initializer` are deleted, and with them the dispatch that
+translated three YAML spellings into three classes.
+
+- **An initializer is its own schema.** All four take the mapping the file
+  wrote and read their fields out of it in a custom `__init__` -- no keyword
+  unpacking at the call site, so the example reads
+  `LensShapeInitializer(config.form_finding.density_start)` and the file reads
+  `density_start: {sag: 600.0, rise: 800.0, held_plan: false}`. Nothing stands
+  between the two.
+- **`force_density` is now `density_start`**, since the field holds a start's
+  fields rather than a density, and `-80.0`, `drawn` and `{lens: {...}}`
+  collapse into the one mapping shape. `analysis.diameter` is
+  `diameter_start: {diameter: 100.0}` for the same reason. Every file names the
+  class above the mapping in a comment, so a reader who has only the YAML still
+  knows which start it asks for.
+- **A drawn start writes nothing at all.** `DrawnShapeInitializer` reads no
+  field, so the gridshell carries no `density_start` line and the config field
+  defaults to the empty mapping the class is handed.
+- **`check_start_fields` refuses a mapping that is not the initializer's
+  fields**, naming both sides: a lens missing `held_plan` and a drawn start
+  given a `sag` are each a `ValueError` where the example builds the class,
+  rather than a bare `KeyError` or a silent extra key. It arrives after the
+  structure, the loads and the three blocks are built rather than on the file's
+  first read -- the price of the parser knowing nothing. Casting in the
+  constructor keeps the old guard on a word where a number belongs, so
+  `diameter: drawn` is still refused; a YAML boolean still reads as 0 or 1.
+- **`normax/config.py` imports nothing it parses into.** It reached into
+  `form_finding.py` and `sections.py` for two builders and two abstract types;
+  it now imports `normax.optimization` alone, and those two import
+  `check_start_fields` back out of it. No cycle: nothing config imports reaches
+  into the package.
+- **Two dead keys go with it**: `subspace: null` in the arch and `start: null`
+  in the gridshell, neither read by anything since the sections they belonged
+  to were folded into `form_finding`.
+
+Verified across the four files: 367 tests pass, the arch converges to the
+0.135622 t of the entry below, and all four run a one-round smoke end to end
+through the new construction.
+
 ### The examples name their blocks
 
 Changed 2026-08-27. The four examples compose the pipeline themselves -- form
