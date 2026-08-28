@@ -2,6 +2,115 @@
 
 ## Unreleased
 
+### The examples name their blocks
+
+Changed 2026-08-27. The four examples compose the pipeline themselves -- form
+finder, analyzer, sizer -- and `build_pipeline` is deleted, its last caller
+gone. What one call settled is now named locals: the mirror, the held-plan
+basis, the fold and the spread. Equivalence was proved against `build_pipeline`
+on all four committed configs before the call sites moved.
+
+- **The basis no longer round-trips.** `basis = pipeline.formfinder.basis`
+  fished the basis back out of the object the line above had just built it
+  into. It is a local now, built before the form finder that takes it.
+- **`normax/tesseract.py` stops importing `normax/design.py`.** Deleting
+  `build_pipeline` orphaned eight imports, `StructuralDesignPipeline` among
+  them, so the module naming every backend no longer reaches for the container
+  they compose into. `build_analyzer` and `build_sizer` stay: two experiments
+  call them.
+- **A named grade replaces a construction inside a call**, and `d_start` is
+  `diameter_start`.
+
+**Three of the four answers fail their own check, and the reports have always
+said so.** Every example now reads `is_design_safe` off the utilization against
+the search's own `violation_tol`, which is the right comparison: a
+fully-stressed design sits on the constraint rather than under it, and the
+arch's worst member exceeds one by 1.6e-09. At the committed configs the arch
+converges with nothing over; warren misses by 1.2e-06 on budget alone and
+reaches the same 39.83% given more rounds; vierendeel and gridshell exhaust
+`rounds_max` at worst utilizations of 1.235 and 1.402. Given 40 rounds both
+reach feasibility and both grow heavier than their starts, by 317% and 368%.
+The starts are themselves overstressed -- the vierendeel's worst is 1.149 -- so
+each reported saving is measured between two infeasible designs. The per-family
+utilization columns carried this all along; nothing drew a verdict from them.
+
+### The section family is a catalog
+
+Renamed 2026-08-27. `TubeFamily` is `TubeCatalog`, `build_section_family` is
+`build_section_catalog`, `HostFamily` is `HostCatalog`, `coerce_section_family`
+is `coerce_section_catalog`, and every parameter, field and fixture naming one
+follows: 487 lines across 40 files, plus the British `catalogue` spellings that
+had drifted in beside them.
+
+- **Three other senses of the word stayed put, and separating them was the
+  work.** `normax/structures.py` names *edge* families -- bottom chord, top
+  chord, rising and falling diagonals -- and `list_warren_families`,
+  `list_vierendeel_families` and `list_shell_families` return them; the sign
+  guard, the report's per-family row and the gridshell's polar fold are keyed by
+  those names, so `normax/config.py`, `normax/reporting.py`,
+  `normax/structures.py` and `tests/test_structures.py` were excluded whole.
+  `normax/design.py` and `tests/test_design.py` carry both senses and were
+  resolved line by line. `docs/gridshell_findings.md` holds a third: the
+  corrugated and dome *shape* families.
+- **ec3x's `TubeCatalogue` keeps its own name and gains an alias.** It is
+  imported as `Ec3Catalogue` wherever it is reached for, so a `-ue` ending
+  always means the oracle's class and never one of ours. `ec3_catalog` is
+  reserved for `Ec3Sizer`'s field, the one place an ec3x catalog sits beside a
+  neutral one.
+
+**The sweep went wrong twice, in the two ways a mechanical sweep does.** A regex
+matched an attribute but not the value beside it, so `Ec3Sizer.__init__`
+assigned `self.ec3_catalog = catalog` -- the neutral geometry rather than the
+standard's catalog built one line above. Separately, `class_ratio_sweep` had one
+comprehension variable split into two names, binding `catalog` and reading
+`ec3_catalog`. The suite catches the first, 18 failures across three files when
+it is reintroduced deliberately; nothing covers `experiments/`, so the second
+was found only by running all eight. Both were caught by reading the diff before
+either check ran.
+
+### The README's example runs
+
+Added 2026-08-27. `examples/readme.py` is the README's usage block, byte for
+byte below its own docstring, so the code a reader pastes is code that runs and
+a rename that breaks one breaks the other. Aligning them made the published
+block `ruff`-clean, which it had not been. The block itself gained a
+`value_and_grad` with `has_aux=True`, returning the design beside the mass:
+three pipeline evaluations became one, measured at 14.16 ms to 7.34 ms, and the
+aux route is what lets a non-differentiable payload ride out of a
+differentiated function without a cotangent being seeded into it. Five stale
+claims in the surrounding prose were corrected against the code.
+
+### The backend is a schema input
+
+Changed 2026-08-27. A block names its backend where it is built --
+`TesseractSizer(structure, section_catalog, backend="blueprint")` -- and the
+name travels to the server as an input field beside `solve`.
+
+- **`NORMAX_ANALYSIS_BACKEND` and `NORMAX_SIZING_BACKEND` are gone.** Being
+  process-global, they aliased: two analyzers in one process shared whichever
+  backend opened last, and the second silently ran the first one's solver.
+  Poisoning both variables to a nonsense string and watching both backends
+  still run, and still agree to 5.457e-12, is what retired them.
+- **The normal axis is computed, not passed.** An analyzer took
+  `find_normal_axis(structure)` and validated it against
+  `find_normal_axis(structure)`, so the argument carried no information. It is
+  settled internally, from whether the backend is planar.
+
+### The diameters start from an initializer
+
+Added 2026-08-27. `UniformDiameterInitializer` mirrors the density
+initializers, and `AnalysisConfig` holds one where it held a bare float, so
+both halves of the simultaneous formulation start the same way. The YAMLs are
+unchanged -- `diameter: 100.0` builds the uniform initializer -- and a
+per-member start is a new class rather than a new field.
+
+### Load cases are created, not named
+
+Renamed 2026-08-27. `load_uniform` is `create_load_uniform`, and the six beside
+it follow. The names had drifted from `create_loads_uniform` to a noun phrase
+that reads as a verb only because "load" is a homonym; every other function in
+`normax/loads.py` already led with its verb.
+
 ### The experiments are eight, and every one of them runs
 
 Ruled 2026-08-27: an experiment whose subject the package deliberately removed
