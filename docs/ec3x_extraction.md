@@ -122,7 +122,7 @@ moves.
 It sits at `normax/ec3/sizing.py:680`, and it is a soft maximum over the load-case
 axis. No clause, no standard, nothing that EN 1993-1-1 has an opinion about. Its
 only production caller is `normax/design.py:378`, beside `design_envelope`, which
-is where it goes; `experiments/validation/load_case_envelope.py:144` is the other call
+is where it goes; `validation/load_case_envelope.py:144` is the other call
 site.
 
 The repo's own docstrings already argue the case. `normax/sizing.py:88`:
@@ -210,7 +210,7 @@ confusable with a failure of the move.
 
 Into `normax/design.py`, beside `design_envelope`. Its assertions split out of
 `tests/test_sizing.py` and stay in normax, before that file moves in phase 5.
-`experiments/validation/load_case_envelope.py` changes its import.
+`validation/load_case_envelope.py` changes its import.
 
 ### 4. Create `~/code/libraries/ec3x`
 

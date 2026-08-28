@@ -160,9 +160,9 @@ the form finder's one — and buys 4% for them, landing at much the same rise
 (1467 mm against 1397 mm) by a search costing an order of magnitude more
 iterations. A shape prior is not free, but on this structure it is nearly free.
 Numbers, tolerances and the full protocol are in the accompanying paper and in
-`CHANGELOG.md`; `experiments/validation/` keeps the checks that still run
-against the shipped API, and `docs/retired_experiments.md` says where the rest
-went and how to get them back.
+`CHANGELOG.md`; `validation/` keeps the checks that still run against the
+shipped API, and `docs/retired_experiments.md` says where the rest went and how
+to get them back.
 
 ## Limitations
 

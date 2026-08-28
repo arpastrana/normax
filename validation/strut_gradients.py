@@ -12,7 +12,7 @@ code:
     closed      ec3x.adjoint, derived on paper and written out in full
     numeric     a central difference of the forward solve
 
-Run with `uv run python experiments/01_single_strut_gradcheck.py`.
+Run with `uv run python validation/strut_gradients.py`.
 """
 
 from collections.abc import Callable

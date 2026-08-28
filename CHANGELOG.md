@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### `experiments/` is gone and `validation/` sits at the root
+
+Moved 2026-08-28. The directory had one child left -- `archive/` went with the
+2026-08-27 retirement -- so a level of nesting was naming nothing. The eight
+checks move up to `validation/` and the empty parent, its `.gitkeep` included,
+is deleted. Every one of the eight resolves its imports against the shipped
+package.
+
+Their own run lines are corrected while they move: each still named the numbered
+filename it was retired from, so `experiments/05_class_ratio_sweep.py` becomes
+`validation/class_ratio_sweep.py` and so on for all eight. Live pointers in
+`README.md`, `docs/ROADMAP.md`, `docs/fast_backward_pass.md` and
+`docs/ec3x_extraction.md` follow the move. Two paths deliberately do not:
+`CHANGELOG.md`'s history, and the `git show 3d10e5a:experiments/validation/...`
+line in `docs/retired_experiments.md`, which addresses a commit where the old
+path is the only one that exists.
+
 ### Every endpoint a server offers is pinned, and the pin stops overclaiming
 
 Changed 2026-08-28. `PINNED_ENDPOINTS` gains `abstract_eval`, which both

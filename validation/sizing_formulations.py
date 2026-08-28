@@ -22,8 +22,7 @@ equality to machine precision, and a penalty holds it only in a limit.
 
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
 
-Run with `uv run --group pipeline python
-experiments/13_simultaneous_sizing.py`.
+Run with `uv run --group pipeline python validation/sizing_formulations.py`.
 """
 
 import time

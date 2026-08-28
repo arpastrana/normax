@@ -24,7 +24,7 @@ order, each one a precondition for the next:
 Then the cost, which is the reason any of it matters: the same gradient by
 central differences of the forward solve, priced.
 
-Run it as `python experiments/27_pynite_agreement.py`.
+Run it as `python validation/pynite_adjoint.py`.
 """
 
 import sys

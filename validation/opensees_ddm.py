@@ -24,7 +24,7 @@ must not take the others with it.
 
 Requires the `spike` extra:
     uv sync --extra spike
-    uv run python experiments/07_opensees_ddm_spike.py [pass]
+    uv run python validation/opensees_ddm.py [pass]
 
 with `pass` one of matrix, coord3d, forces, printb, timing, or omitted for all.
 """

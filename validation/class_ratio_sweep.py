@@ -14,7 +14,7 @@ while the design shear stays under half the plastic shear resistance. A bound is
 all a sweep over demand mixes can give, and `normax.analysis.MemberForces` now
 carries the analyzed shear so that a converged design can be read instead.
 
-Run with `uv run python experiments/05_class_ratio_sweep.py`.
+Run with `uv run python validation/class_ratio_sweep.py`.
 """
 
 from collections.abc import Sequence

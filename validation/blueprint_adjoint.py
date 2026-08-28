@@ -20,8 +20,7 @@ EN 1993-1-1's member check does. That gap is the point, not an error.
 
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
 
-Run with `uv run --group pipeline python
-experiments/12_blueprint_sizer.py`.
+Run with `uv run --group pipeline python validation/blueprint_adjoint.py`.
 """
 
 from collections.abc import Callable
