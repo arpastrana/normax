@@ -4,6 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.config import ConstraintsConfig
+from normax.design import build_design_constraints
 from normax.form_finding import DrawnShapeInitializer
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import LensShapeInitializer
@@ -28,6 +30,20 @@ NUM_BAYS = 8
 SPAN = 10.0
 DEPTH = 1.0
 TOTAL = 15.0
+
+# Margin a guarded start must clear, as a share of the guarded median.
+MARGIN_FRACTION = 0.05
+
+# Constraints naming nothing but the guard, which is what these tests read.
+WARREN_CONSTRAINTS = ConstraintsConfig(
+    diameter_min=0.0,
+    length_min=0.0,
+    rise_max=None,
+    sag_min=None,
+    sign_margin_fraction=MARGIN_FRACTION,
+    sign_guard=None,
+    bounds=None,
+)
 
 
 def balance_gap(structure, xyz, q, loads):
@@ -375,17 +391,52 @@ def test_an_unsymmetric_structure_has_no_mirror(warren):
         find_mirror_nodes(tilted, "x")
 
 
+def guarded_warren(margin_fraction):
+    """
+    A spec signing the Warren's chords, at a given margin.
+    """
+    bays = NUM_BAYS
+    signs = np.concatenate([np.ones(bays), -np.ones(bays - 1)])
+
+    return SignGuardSpec(signs, np.arange(2 * bays - 1), margin_fraction)
+
+
 def test_a_zero_margin_still_signs_the_start_but_hands_over_no_guard(
     warren, warren_loads
 ):
     lens = {"sag": 0.06 * SPAN, "rise": 0.08 * SPAN, "held_plan": False}
     initializer = LensShapeInitializer(lens)
-    bays = NUM_BAYS
-    signs = np.concatenate([np.ones(bays), -np.ones(bays - 1)])
-    guarded = SignGuardSpec(signs, np.arange(2 * bays - 1), 0.0)
-    started = initializer(warren, np.asarray(warren_loads), None, guarded)
-    assert started.guard is None
-    assert np.all(signs * started.q[: 2 * bays - 1] >= 0.0)
+    guarded = guarded_warren(0.0)
+    density_start = initializer(warren, np.asarray(warren_loads), None, guarded)
+    held = build_design_constraints(WARREN_CONSTRAINTS, guarded, density_start)
+
+    assert held.sign_guard is None
+    assert np.all(guarded.signs * density_start[: guarded.members.size] >= 0.0)
+
+
+def test_the_guard_is_scaled_at_the_shifted_densities_not_the_raw_fit(
+    warren, warren_loads
+):
+    lens = {"sag": 0.06 * SPAN, "rise": 0.08 * SPAN, "held_plan": False}
+    initializer = LensShapeInitializer(lens)
+    guarded = guarded_warren(MARGIN_FRACTION)
+    density_start = initializer(warren, np.asarray(warren_loads), None, guarded)
+    held = build_design_constraints(WARREN_CONSTRAINTS, guarded, density_start)
+
+    fit = initializer.fit_start(warren, np.asarray(warren_loads), None)
+    assert fit.self_stresses.shape[1] > 0
+    assert not np.allclose(fit.q, density_start)
+
+    # The margin is a share of the median guarded density, so scaling it at the
+    # raw fit rather than at the shifted start would leave a different number.
+    shifted = float(np.median(np.abs(density_start[guarded.members])))
+    assert held.sign_guard is not None
+    assert held.sign_guard.scale == pytest.approx(shifted)
+    assert held.sign_guard.margin == pytest.approx(MARGIN_FRACTION * shifted)
+
+    # And the start clears the margin it was scaled against.
+    signed = guarded.signs * density_start[guarded.members]
+    assert signed.min() >= held.sign_guard.margin
 
 
 def test_a_held_lens_fit_needs_a_basis(warren, warren_loads):

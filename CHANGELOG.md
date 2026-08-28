@@ -2,6 +2,247 @@
 
 ## Unreleased
 
+### A start that reads no fields is None, not a shared empty dict
+
+Changed 2026-08-28. `FormFindingConfig.density_start` defaults to `None`
+instead of `{}`. A `NamedTuple` evaluates its defaults once at class creation,
+so the old empty mapping was **one object held by every config in the process
+that omitted the field** — latent, nothing mutates it, but a single
+`config.form_finding.density_start[...] = ...` anywhere would have leaked into
+every other config. `None` cannot be mutated, so the hazard goes rather than
+being guarded against.
+
+`None` is also what the rest of the section already says: `mirror`, `bounds`,
+`rise_max`, `sag_min` and `sign_guard` are each `X | None` written `null`, and
+an empty mapping would have been the odd one out.
+
+`check_start_fields` reads a missing start as an empty one, which is what a fit
+reading no fields wants and is the load-bearing half of the change: normalizing
+there rather than at each call site is what keeps a `null` in a file from
+surfacing as `set(None)` inside some initializer's constructor, a long way from
+the line that caused it. The check itself is unweakened — a drawn fit handed
+`{sag: 600.0}` is still refused by name, and a uniform initializer handed
+nothing still asks for its `force_density`.
+
+`parse_config`'s Notes claimed no container carries a default, which this field
+had already been breaking; the claim now names the exception.
+
+### The three arch routes open on one parabola, and the density box stops binding
+
+Changed 2026-08-28. `arch.yaml` is drawn at **2500 mm** and started at
+`force_density: -100`, which form-finds to the same 2500 mm, so `fdm`,
+`heights` and `fixed` all leave from one geometry at **0.291664 t**. What
+separates their answers is the search rather than the start, which is what the
+comparison was for. `rise_max: 3000` and `sag_min: 0` are now named, and the
+heights route takes them as a **box** on its coefficients rather than as rows
+alone -- the same limit, held natively by the inner solver where the
+coefficients are the heights themselves.
+
+**Matching the starts exposed a degeneracy, and fixing it moved the headline.**
+The old `bounds: {min: -100.0}` was exactly the density the arch's optimum sits
+at: a funicular chain here reaches `250000/|q|` mm, so `|q| = 100` is both the
+box floor and the 2500 mm answer. Opening every route at 2500 mm therefore
+opened `fdm` *on its own optimum*, and it landed where it started -- the same
+0.157469 t at 2500 mm as `fixed`, its shape never moving. Two routes reporting
+one number is not a comparison.
+
+The floor is now `-200`, deep enough not to bind: the optimum sits at
+`|q| = 179` and a `-300` floor lands on the identical answer, so the shape the
+search settles on is the funicular optimum rather than the edge of its own box.
+
+| route | shape freedom | answer | rise | saved |
+|---|---|---|---|---|
+| `fixed` | none | 0.157469 t | 2500 mm | 46.01 % |
+| `fdm` | one force density | **0.150150 t** | 1397 mm | 48.52 % |
+| `heights` | nine node heights | 0.144128 t | 1467 mm | 50.58 % |
+
+Monotone in the freedom each is given, from one start, at worst utilization
+1.000000 throughout. **The arch's headline is now 0.150150 t, not 0.157469 t**,
+and the old figure survives as what the *sizing-only* route reaches -- the two
+coincided only because the box was pinning the form-found shape at the drawn
+rise. Every measurement of the arch recorded above this entry predates the
+change and was made at `rise: 3000`, `force_density: -80` and a `-100` floor.
+
+The interesting number is the gap: nine degrees of freedom buy 4% over one, and
+land at much the same rise, for an order of magnitude more iterations. That is
+the price of the shape prior on a structure whose funicular subspace is
+one-dimensional, and it is small.
+
+### The pipeline's tail may be cut, and the objective is a slot
+
+Added 2026-08-28. `StructuralDesignPipeline` takes `None` for its analysis and
+its check, so one composition answers three questions: a shape alone, a shape
+and what it carries, or a shape checked against a standard.
+`DesignProblem.objective` says what a search minimizes -- `weigh_design` by
+default, or `build_compliance_objective(catalog)` for the stiffest structure
+rather than the lightest lawful one.
+
+- **A check with no analysis behind it is refused in `__check_init__`.** The
+  tail cuts from the end and only from the end. A sizer reads member forces, so
+  a stand-in analysis returning zeros would report every member unworked --
+  indistinguishable from a real answer, and wrong. That is the same argument
+  that makes a fixed shape *safe*: a written geometry is a real geometry that
+  never moves, where a zero force is a fabrication.
+- **`Design.forces` and `Design.sizes` are None exactly when their block was
+  absent**, so a reader tells a missing answer from a zero one. The report
+  prints what a design holds, the utilization figure and the viewer skip a
+  design with no sections, and `optimization/nested.py` and `exporting/replay.py`
+  refuse a cut pipeline by name rather than failing on an attribute of `None`.
+- **An empty constraint set is refused.** With no check and no rise, sag,
+  length or sign limit, a search is unconstrained rather than satisfied, and
+  `jnp.concatenate([])` would have failed further from the cause.
+- **Compliance needs nothing new across the Tesseract boundary.** Loads are
+  nodal, so the axial force is constant along a member and the moment linear
+  between its ends; both integrals are exact in closed form from what the
+  analysis already reports, and no displacement has to cross:
+
+      `N^2 L / 2EA` axially, `L (Mi^2 + Mi Mj + Mj^2) / 6EI` in bending.
+
+  A CHS has the same second moment about either axis, so the two bending terms
+  share one `EI`. Checked against the same arithmetic written out by hand to
+  1e-12, falling as a member is fattened, and its reverse-mode gradient against
+  central differences.
+- **The pipeline holds three blocks and no catalog.** A section catalog is not
+  a block. `weigh_design` reads the catalog off the check it is constrained by
+  and refuses a pipeline that has none; `build_compliance_objective` closes over
+  the catalog it is given, since a pipeline cut after its analysis carries no
+  check and a check is what holds a catalog.
+
+### The coefficient vocabulary stops naming one finder's quantity
+
+Changed 2026-08-28. Three parametrizations now fill the pipeline's first slot,
+so the names in front of it say *shape* rather than *density*:
+
+| before | after |
+|---|---|
+| `count_density_coefficients` | `count_shape_coefficients` |
+| `expand_density_coefficients` | `expand_shape_coefficients` |
+| `read_density_coefficients` | `read_shape_coefficients` |
+| `read_member_densities` (in `design`) | `expand_shape_coefficients` |
+| `DesignParameters.force_densities` | `DesignParameters.shape_parameters` |
+
+This is the sweep the entry below deferred, and it stops there. `form_finding`,
+`AbstractFormFinder`, `FdmFormFinder` and `pipeline.formfinder` keep their
+names: the stage really is form finding, whichever block fills it, and a
+finder that writes a geometry down is a parametrization of the same slot rather
+than a different stage. `DensityFit`, the density initializers and
+`form_finding.density_start` keep theirs too, being about force densities and
+nothing else -- the `fdm` route is the only one that fits any.
+
+The field is named for the slot because three parametrizations put three things
+in it: one force density per member where the shape is found by equilibrium,
+one height per free node where it is written down, and nothing at all where it
+never moves. Its shape annotation is `"shape_parameters"` for the same reason.
+`optimization/nested.py` keeps its local `force_densities`, never building a
+basis and never running any route but the form-found one.
+
+### One example runs three shape parametrizations
+
+Added 2026-08-28. `form_finding.shape_parametrization` names which block fills
+the pipeline's first slot -- `fdm` for a shape found by equilibrium in the
+force densities, `heights` for the free nodes' height written down, `fixed` for
+the drawn geometry, which moves the diameters alone -- and
+`--shape-parametrization` overrides the word a file names, so the free-heights
+and sizing-only baselines come out of the same four example files:
+
+```
+uv run python examples/arch.py                                  # 0.150150 t, 11 vars
+uv run python examples/arch.py --shape-parametrization heights  # 0.144128 t, 19 vars
+uv run python examples/arch.py --shape-parametrization fixed    # 0.157469 t, 10 vars
+```
+
+Every route opens on the same 2500 mm parabola at 0.291664 t and lands at worst
+utilization 1.000000. These are the baselines the
+retired `experiments/design_routes.py` produced from three hand-written map
+factories -- `formfound_maps`, `heights_maps`, `drawn_maps` -- each rebuilding
+its own mass, slack rows, box bounds and start. The block API already carried
+them; what was missing was two finders out of `tests/test_comparison.py` and
+five places where the package still assumed the shipped one.
+
+- **No block is removed, and nothing returns a fabricated quantity.** The
+  pipeline stays three-deep and the first slot is filled by a finder that
+  consumes fewer variables. Sizing only is a finder whose coefficient count is
+  **zero**, and every consequence follows from that one fact with no branch
+  downstream: `expand_variables` takes `x[:0]` and `x[0:]`, so every variable is
+  a diameter; the coefficient half of the box is empty; the geometry is a
+  captured constant, so the mass differentiates through the sections and never
+  through the lengths, which is the sizing-only derivative exactly. The shape it
+  hands on is a real geometry that never moves -- which is what makes
+  neutralizing this slot safe where a null analysis returning zero forces would
+  not be.
+- **`fixed`, not `drawn`.** `DrawnShapeInitializer` already fits force densities
+  to the drawn geometry and is used on the `fdm` route, so two different routes
+  would have carried the same adjective. The class is `FixedFormFinder`.
+- **A finder that is not called with densities says so, twice.**
+  `bound_coefficients` and `read_sign_guard` are new on `AbstractFormFinder`,
+  carrying the shipped behavior so `FdmFormFinder` inherits both untouched. The
+  first is not a nicety: without it the arch's `bounds: {min: -100.0, max:
+  -1.0e-3}` would box node heights and drive every node under the ground plane.
+  The second stops a guard whose rows are linear in the densities from being
+  evaluated against heights.
+- **The examples' start block is unchanged across the three routes.** Each
+  finder converts the fitted start into its own coefficients through
+  `read_density_coefficients`, which is reached from `fold_variables` and from
+  tests alone. The heights finder answers with its drawn free-node heights and
+  the fixed one with an empty array; `q` is accepted and ignored, as `loads`
+  already is in both their `__call__`s. The fixed finder needed that override to
+  work at all -- the base returns `np.asarray(q)` where there is no basis, which
+  handed `fold_variables` a member-length vector for a zero-width finder, and
+  nothing exercised the path.
+- **An inapplicable setting is reported, not refused.** Refusing would make the
+  override useless on every file that ships, and silence would let a density box
+  or a sign guard look honored when it was not, so the report names what the
+  route left unread. The one refusal is an unknown word, in `build_form_finder`,
+  which is where every shipping parametrization is named as `build_analyzer` and
+  `build_sizer` are for the two crossed blocks.
+- **Rise and sag are constraint rows on every parametrization**, read off
+  `design.shape.xyz`, so a height limit is stated once and means the same thing
+  whichever block chose the shape. The heights route is therefore given no
+  height box, which would have made one limit act twice. Measured on the arch: a
+  1200 mm cap lands `heights` exactly on it, at 0.144128 -> 0.145327 t; the same
+  cap at 2000 mm is *unreachable* for `fdm`, whose rise is `2500 (100/|q|)` and
+  so is floored at 2500 mm by its own density box, and it is unfixable for
+  `fixed`, whose drawn parabola stands at 3000 mm. Both report the standing
+  violation and stop on their round budget rather than claiming convergence.
+- **`FormFoundShape` is `DesignShape` and lives in `normax/structures.py`**,
+  beside `compute_member_lengths` and the new `read_drawn_shape`. It is geometry
+  rather than any one block's product -- a form finder settles one by solving,
+  a written parametrization states one outright -- and the move is what lets
+  `read_drawn_shape` sit where it belongs: `structures.py` cannot import
+  `form_finding.py`, which already imports it.
+- **Each route keeps its own record.** `export_design` suffixes the stem where
+  the shape was not form-found, so a baseline no longer overwrites
+  `data/arch.npz` and the figures beside it. The form-found run keeps the plain
+  name, being the one the reported numbers belong to.
+
+### `DensityStart` dissolves into the constraint builder
+
+Changed 2026-08-28. `AbstractDensityInitializer.__call__` returns the start
+densities and nothing else, so `density_start` mirrors `diameter_start` in
+every example and the last line of the start block takes a matched pair.
+
+Three things happened to the sign guard inside that call, and only one could
+leave. The provisional guard scaled at the raw fit **stays**: `shift_densities`
+reads its margin to size the slide along the self-stress, so signing the fit and
+scaling a guard against the fit are one step. The raise when there is no
+self-stress and a guarded member misses its sign **stays**, being about whether
+the fit can be signed at all. What leaves is the guard the descent actually
+holds, which was a pure function of the densities being returned and the spec
+the caller already had. `build_design_constraints` takes the `SignGuardSpec` and
+the start densities and scales it there, where the `margin_fraction <= 0` rule
+also now lives -- both are statements about what a design is held to.
+
+**It could not travel further than that.** `SignGuard.margin` and `.scale` are
+read off the start densities once and held fixed; scaling them inside
+`evaluate_constraints` at each iterate would shrink the margin as the densities
+shrink, so the row would chase the design instead of constraining it.
+
+Gradient-neutral, and measured rather than assumed: warren lands at 0.055613 t
+and vierendeel at 0.121547 t before and after, identical to every printed digit.
+A guard scaled off the raw fit instead of the shifted start would still
+converge, just somewhere else, so a test now pins the margin and scale to the
+shifted densities.
+
 ### A backend's name is checked on the host
 
 Changed 2026-08-28. `TesseractAnalyzer` and `TesseractSizer` refuse a name they
@@ -26,12 +267,16 @@ side is `density_coefficients`.
   `read_member_densities`, and `evaluate_constraints` indexes it by member to
   sign the guard. Its shape annotation carried the same confusion and is now
   `"members"`, not `"coordinates"`.
-- **The name is the shipped finder's.** `FdmFormFinder` is the only finder in
-  the package and takes force densities, as `AbstractFormFinder.__call__` has
-  always said by naming its parameter `q`. The comparison harness's
-  `HeightsFormFinder` fills the same field with heights and its
-  `DrawnFormFinder` with an empty array; that is stated in their docstrings
-  rather than papered over by a vaguer field name.
+- **The name is the shipped finder's.** `FdmFormFinder` takes force densities,
+  as `AbstractFormFinder.__call__` has always said by naming its parameter `q`.
+  `HeightsFormFinder` fills the same field with heights and `FixedFormFinder`
+  with an empty array; that is stated in their docstrings rather than papered
+  over by a vaguer field name. **Superseded the same day.** This rested on
+  `FdmFormFinder` being the only finder in the package, which the entries above
+  make false: the other two are promoted out of `tests/test_comparison.py`, and
+  the field is `DesignParameters.shape_parameters`. The split itself stands --
+  the two quantities are still two -- and so does the reasoning below about why
+  a basis coefficient is neither a density nor a coordinate.
 - **The basis coordinates are a different quantity and are now
   `density_coefficients`.** They could not take the density name: under the
   `svd` convention a coefficient is a projection on an orthonormal column, not

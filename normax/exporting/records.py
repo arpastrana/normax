@@ -41,6 +41,37 @@ class ExportTarget(NamedTuple):
     figures: Path
 
 
+def read_export_stem(target: ExportTarget, config: RunConfig[Any]) -> str:
+    """
+    The stem this run's files are named with.
+
+    Parameters
+    ----------
+    target :
+        Where the files go, and what they are named after.
+    config :
+        The run config, read for its shape parametrization.
+
+    Returns
+    -------
+    stem :
+        The target's name, suffixed by the parametrization wherever the shape
+        was not form-found.
+
+    Notes
+    -----
+    One example runs three parametrizations now, so a bare structure name would
+    have each overwrite the last and leave a record that does not say which
+    search made it. The form-found run keeps the plain name, being the one the
+    reported numbers belong to.
+    """
+    word = config.form_finding.shape_parametrization
+    if word == "fdm":
+        return target.name
+
+    return f"{target.name}_{word}"
+
+
 def export_design(
     record: DesignRecord,
     config: RunConfig[Any],
@@ -68,8 +99,9 @@ def export_design(
         return
 
     answer = record.answer
+    stem = read_export_stem(target, config)
     target.data.mkdir(exist_ok=True)
-    archive = target.data / f"{target.name}.npz"
+    archive = target.data / f"{stem}.npz"
     np.savez(
         archive,
         variables=answer.variables,
@@ -82,8 +114,9 @@ def export_design(
     labels = label_load_cases(config.load_cases)
     structure = record.problem.structure
     drawn, descended = draw_design_figures(structure, designs, labels, answer)
-    drawn.savefig(target.figures / f"{target.name}_designs.png", dpi=FIGURE_DPI)
-    descended.savefig(target.figures / f"{target.name}_descent.png", dpi=FIGURE_DPI)
+    if drawn is not None:
+        drawn.savefig(target.figures / f"{stem}_designs.png", dpi=FIGURE_DPI)
+    descended.savefig(target.figures / f"{stem}_descent.png", dpi=FIGURE_DPI)
 
     # Continues the run's report, so the heading separates itself from it.
     report = Report(verbose=config.output.verbose)

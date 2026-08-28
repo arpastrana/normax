@@ -579,9 +579,7 @@ def arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
         formfinder, analyzer, CallbackSizer(structure, catalog)
     )
     crossed = StructuralDesignPipeline(
-        formfinder,
-        analyzer,
-        TesseractSizer(structure, catalog, backend="blueprint"),
+        formfinder, analyzer, TesseractSizer(structure, catalog, backend="blueprint")
     )
 
     return local, crossed
@@ -623,7 +621,7 @@ def sized_design(pipeline: StructuralDesignPipeline, params, loads) -> Design:
     this experiment is about the sizing map, so it asks the sizer itself and
     reconciles the load cases afterwards.
     """
-    shape = pipeline.formfinder(params.force_densities, loads.formfinding)
+    shape = pipeline.formfinder(params.shape_parameters, loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
 
@@ -757,8 +755,8 @@ def main(verbose: bool = True) -> None:
 
     local_mass = mass_objective(local_pipeline, params, loads)
     crossed_mass = mass_objective(crossed_pipeline, params, loads)
-    oracle = jax.grad(local_mass)(params.force_densities)
-    carried = jax.grad(crossed_mass)(params.force_densities)
+    oracle = jax.grad(local_mass)(params.shape_parameters)
+    carried = jax.grad(crossed_mass)(params.shape_parameters)
     worst_gradient = report_gradients(report, oracle, carried)
 
     # Utilization keeps its load case axis; one section per member is checked

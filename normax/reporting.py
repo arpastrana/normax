@@ -17,8 +17,11 @@ import numpy as np
 
 from normax.config import RunConfig
 from normax.design import Design
+from normax.design import DesignProblem
 from normax.design import DesignRecord
+from normax.design import compute_compliance
 from normax.design import compute_mass
+from normax.design import weigh_design
 from normax.optimization import OptimizationAnswer
 
 # Spaces of indentation given to anything printed under a heading.
@@ -239,9 +242,42 @@ class Report:
         self.write_heading("PASS" if passed else "FAIL")
 
 
-def report_descent(report: Report, answer: OptimizationAnswer) -> None:
+def name_objective(problem: DesignProblem) -> str:
     """
-    Every round of an augmented descent, its mass beside its violation.
+    The column heading this problem's objective is printed under.
+
+    Parameters
+    ----------
+    problem :
+        The problem, read for what its search minimizes.
+
+    Returns
+    -------
+    heading :
+        Name and unit of the objective, or a bare `objective` for one this
+        module does not know.
+
+    Notes
+    -----
+    The objective is a slot, so the heading cannot be a constant: a compliance
+    search printed under `mass [t]` reports a real number against the wrong
+    name, which is worse than printing no name at all.
+    """
+    if problem.objective is weigh_design:
+        return "mass [t]"
+    if getattr(problem.objective, "__name__", "") == "strain_design":
+        return "compliance [N mm]"
+
+    return "objective"
+
+
+def report_descent(
+    report: Report,
+    answer: OptimizationAnswer,
+    heading: str = "mass [t]",
+) -> None:
+    """
+    Every round of a descent, its objective beside its violation.
 
     Parameters
     ----------
@@ -249,14 +285,16 @@ def report_descent(report: Report, answer: OptimizationAnswer) -> None:
         Where to print.
     answer :
         What the descent arrived at.
+    heading :
+        What the objective column is called, from `name_objective`.
     """
     columns = (
         ReportColumn("round"),
-        ReportColumn("mass [t]", ".6f"),
+        ReportColumn(heading, ".6f"),
         ReportColumn("violation", ".2e"),
     )
     walked = zip(answer.objectives, answer.violations, strict=True)
-    rows = [(index, mass, gap) for index, (mass, gap) in enumerate(walked)]
+    rows = [(index, value, gap) for index, (value, gap) in enumerate(walked)]
     report.write_table(columns, rows)
 
     ended = "converged" if answer.converged else "stopped on its round budget"
@@ -276,16 +314,30 @@ def summarize_design(report: Report, design: Design, title: str) -> None:
         The design to read.
     title :
         Heading the entries are printed under.
+
+    Notes
+    -----
+    A design whose pipeline was cut short is reported for what it holds: the
+    mass and the utilization go with the check, the compliance with the
+    analysis, and the geometry is always there.
     """
-    diameters = np.asarray(design.sizes.sections.diameter)
     heights = np.asarray(design.shape.xyz)[:, 2]
-    entries = [
-        ("mass [t]", f"{float(compute_mass(design)):.6f}"),
-        ("utilization, worst", f"{float(jnp.max(design.sizes.utilization)):.6f}"),
-        ("diameters [mm]", f"{diameters.min():.1f} to {diameters.max():.1f}"),
-        ("shortest member [mm]", f"{float(jnp.min(design.shape.lengths)):.1f}"),
-        ("heights [mm]", f"{heights.min():.1f} to {heights.max():.1f}"),
-    ]
+    entries = []
+    if design.sizes is not None:
+        diameters = np.asarray(design.sizes.sections.diameter)
+        worst = float(jnp.max(design.sizes.utilization))
+        entries.append(("mass [t]", f"{float(compute_mass(design)):.6f}"))
+        entries.append(("utilization, worst", f"{worst:.6f}"))
+        entries.append(
+            ("diameters [mm]", f"{diameters.min():.1f} to {diameters.max():.1f}")
+        )
+    if design.forces is not None and design.sizes is not None:
+        strained = float(compute_compliance(design))
+        entries.append(("compliance [N mm]", f"{strained:.6e}"))
+    entries.append(
+        ("shortest member [mm]", f"{float(jnp.min(design.shape.lengths)):.1f}")
+    )
+    entries.append(("heights [mm]", f"{heights.min():.1f} to {heights.max():.1f}"))
     report.write_heading(title)
     report.write_entries(entries)
 
@@ -307,6 +359,9 @@ def report_families(
     families :
         Name and member slice of every family.
     """
+    if design.sizes is None:
+        return
+
     diameters = np.asarray(design.sizes.sections.diameter)
     worked = np.asarray(jnp.max(design.sizes.utilization, axis=0))
     columns = (
@@ -322,6 +377,43 @@ def report_families(
         used = worked[members]
         rows.append((name, sizes.min(), sizes.max(), used.min(), used.max()))
     report.write_table(columns, rows)
+
+
+def list_unused_settings(config: RunConfig[Any]) -> tuple[str, ...]:
+    """
+    The form-finding settings this run's parametrization never read.
+
+    Parameters
+    ----------
+    config :
+        The run config, read for its parametrization and what the file set.
+
+    Returns
+    -------
+    unused :
+        Names of the settings the file gave and the parametrization ignored,
+        in the order a file writes them, or nothing where all were read.
+
+    Notes
+    -----
+    A parametrization may be named on the command line, over a file written for
+    another one, so a setting can go unread without anything being wrong. It is
+    reported rather than refused: refusing would make the override useless on
+    every file that ships, and staying silent would let a density box or a sign
+    guard look honored when it was not.
+    """
+    found = config.form_finding
+    if found.shape_parametrization == "fdm":
+        return ()
+
+    named = {
+        "basis": found.basis is not None,
+        "density_start": bool(found.density_start),
+        "bounds": config.constraints.bounds is not None,
+        "sign_guard": config.constraints.sign_guard is not None,
+    }
+
+    return tuple(setting for setting, given in named.items() if given)
 
 
 def report_design(
@@ -345,6 +437,7 @@ def report_design(
     report.write_banner(title)
 
     entries = [
+        ("shape", config.form_finding.shape_parametrization),
         ("analysis", config.analysis.backend),
         ("sizing", config.sizing.backend),
     ]
@@ -355,12 +448,24 @@ def report_design(
     report.write_heading("Backends")
     report.write_entries(entries)
 
+    unused = list_unused_settings(config)
+    if unused:
+        named = ", ".join(unused)
+        report.write_note(
+            f"This parametrization read none of: {named}. The file describes "
+            "a form-found run and the shape was taken another way, so those "
+            "settings are carried and unused rather than honored."
+        )
+
     report.write_heading("The descent")
-    report_descent(report, record.answer)
+    report_descent(report, record.answer, name_objective(record.problem))
     summarize_design(report, record.initial, "The start")
     summarize_design(report, record.optimized, "The answer")
     if record.families:
         report_families(report, record.optimized, record.families)
+
+    if record.optimized.sizes is None:
+        return
 
     mass_initial = float(compute_mass(record.initial))
     mass_optimized = float(compute_mass(record.optimized))

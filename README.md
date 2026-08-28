@@ -124,7 +124,9 @@ uv run python examples/gridshell.py
 
 Each reads the YAML beside it, prints what the descent bought, and writes its
 figures and a `data/*.npz` record; the file's `output` block turns the report,
-the export and the viewer on and off.
+the export and the viewer on and off. Adding `--shape-parametrization heights`
+or `fixed` races the same structure, loads, analysis and check against a
+geometry that is written down rather than found.
 
 ## What the gradient buys
 
@@ -138,9 +140,25 @@ plan leaves a null space of force densities to search, and
 `normax.form_finding.build_plan_basis` makes its basis coordinates the design
 variables. The rival routes — free heights without the form finder, and sizing
 alone at the drawn geometry — are form finders too, implemented against the
-same interface in `tests/test_comparison.py`, which is where the swap is
-checked: racing them swaps one block and nothing else, and moving the geometry
-buys the larger share of the mass on both trusses.
+same interface in `normax/form_finding.py` and reached from the same example by
+a word on the command line, so racing them swaps one block and nothing else:
+
+```bash
+uv run python examples/arch.py                                  # 0.150150 t
+uv run python examples/arch.py --shape-parametrization heights  # 0.144128 t
+uv run python examples/arch.py --shape-parametrization fixed    # 0.157469 t
+```
+
+All three open on the same 2500 mm parabola at 0.291664 t, so what separates
+them is the search and not the start, and the mass falls monotonically with the
+shape freedom each is given: none, one force density, nine node heights.
+
+Moving the geometry buys the larger share of the mass on both trusses, and the
+arch says what that freedom is worth at the margin. Its held plan leaves **one**
+independent density, so free heights searches nine degrees of freedom against
+the form finder's one — and buys 4% for them, landing at much the same rise
+(1467 mm against 1397 mm) by a search costing an order of magnitude more
+iterations. A shape prior is not free, but on this structure it is nearly free.
 Numbers, tolerances and the full protocol are in the accompanying paper and in
 `CHANGELOG.md`; `experiments/validation/` keeps the checks that still run
 against the shipped API, and `docs/retired_experiments.md` says where the rest

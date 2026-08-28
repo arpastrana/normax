@@ -471,6 +471,33 @@ def create_groups_shell(description: ShellDescription) -> tuple[tuple[str, slice
     return tuple(families)
 
 
+class DesignShape(NamedTuple):
+    """
+    A geometry a design is carried at, and what its members measure there.
+
+    Attributes
+    ----------
+    xyz :
+        Position of every node.
+    lengths :
+        Length of every member.
+
+    Notes
+    -----
+    What a shape block hands downstream is a geometry -- no prestress and no
+    member forces. A frame analysis finds its own axial forces, and that they
+    agree with a form finder's is a prediction that gets tested rather than an
+    input.
+
+    Geometry rather than any one block's product, which is why it lives beside
+    the structure: a form finder settles one by solving for equilibrium, and a
+    written parametrization states one outright.
+    """
+
+    xyz: Float[Array, "nodes 3"]
+    lengths: Float[Array, "members"]
+
+
 def compute_member_lengths(
     xyz: Float[Array, "nodes 3"],
     edges: Int[Array, "edges 2"],
@@ -507,6 +534,25 @@ def compute_member_lengths(
     spans = xyz[edges[:, 1]] - xyz[edges[:, 0]]
 
     return jnp.linalg.norm(spans, axis=1)
+
+
+def read_drawn_shape(structure: Structure) -> DesignShape:
+    """
+    The shape a structure is drawn at, before any block has moved it.
+
+    Parameters
+    ----------
+    structure :
+        The structure supplying the geometry and the connectivity.
+
+    Returns
+    -------
+    shape :
+        The drawn coordinates, and the member lengths they imply.
+    """
+    lengths = compute_member_lengths(structure.nodes, structure.edges)
+
+    return DesignShape(structure.nodes, lengths)
 
 
 def build_structure(

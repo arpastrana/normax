@@ -368,7 +368,7 @@ def draw_design_figures(
     designs: dict[str, Design],
     case_names: tuple[str, ...],
     answer: OptimizationAnswer,
-) -> tuple[Figure, Figure]:
+) -> tuple[Figure | None, Figure]:
     """
     The two figures a run draws: its designs, and the descent between them.
 
@@ -386,10 +386,21 @@ def draw_design_figures(
     Returns
     -------
     figures :
-        The designs colored by utilization, and the mass against the round.
+        The designs colored by utilization, or None where no design carries a
+        utilization to color by, and the objective against the round.
+
+    Notes
+    -----
+    A design whose pipeline carried no check is left out, and where that leaves
+    nothing to draw the first figure is None rather than empty — `draw_utilization`
+    reads a widest diameter and a least-worked member across the designs, and
+    neither exists over no designs. The descent figure is drawn either way, its
+    column being whatever the search minimized.
     """
     forms = []
     for title, design in designs.items():
+        if design.sizes is None:
+            continue
         form = UtilizationForm(
             title,
             design.shape.xyz,
@@ -397,7 +408,7 @@ def draw_design_figures(
             design.sizes.utilization,
         )
         forms.append(form)
-    drawn = draw_utilization(structure.edges, forms, case_names)
+    drawn = draw_utilization(structure.edges, forms, case_names) if forms else None
 
     traces = (DescentTrace("auglag", answer.objectives),)
     descended = draw_mass_descent(traces)

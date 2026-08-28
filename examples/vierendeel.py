@@ -11,7 +11,9 @@ is searched in the members' own densities, and the chord signs are guarded
 descent: a chord density crossing zero hands the form finder a singular
 stiffness, so the guard keeps every trial point on the signed sheet.
 
-Run with `uv run python examples/vierendeel.py [vierendeel.yaml]`.
+Run with `uv run python examples/vierendeel.py [vierendeel.yaml]`. Add
+`--shape-parametrization heights` or `fixed` to race the same structure,
+loads, analysis and check against a geometry written down rather than found.
 """
 
 import sys
@@ -19,8 +21,10 @@ from pathlib import Path
 
 import jax.numpy as jnp
 
+from normax.config import RunArguments
 from normax.config import RunConfig
-from normax.config import parse_config
+from normax.config import read_run_arguments
+from normax.config import read_run_config
 from normax.design import DesignProblem
 from normax.design import DesignRecord
 from normax.design import StructuralDesignPipeline
@@ -31,8 +35,8 @@ from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
-from normax.form_finding import FdmFormFinder
 from normax.form_finding import LensShapeInitializer
+from normax.form_finding import build_form_finder
 from normax.form_finding import build_plan_basis
 from normax.loads import build_load_cases
 from normax.materials import Steel355
@@ -68,19 +72,17 @@ def build_truss(description: TrussDescription) -> Structure:
     )
 
 
-def main(config_path: Path) -> None:
+def main(arguments: RunArguments) -> None:
     """
     Design the truss a file describes, and report what the descent bought.
 
     Parameters
     ----------
-    config_path :
+    arguments :
         File naming the truss and the settings a design of it is searched for
         under.
     """
-    config: RunConfig[TrussDescription] = parse_config(
-        config_path.read_text(), TrussDescription
-    )
+    config: RunConfig[TrussDescription] = read_run_config(arguments, TrussDescription)
 
     # The structure, its load cases, and the catalog both backends draw from.
     structure = build_truss(config.structure)
@@ -94,7 +96,7 @@ def main(config_path: Path) -> None:
     section_groups = build_section_groups(structure, (folded, None))
 
     # The three main computation blocks of the structural design pipeline
-    form_finder = FdmFormFinder(structure, basis)
+    form_finder = build_form_finder(structure, basis, config.form_finding)
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
 
@@ -104,12 +106,12 @@ def main(config_path: Path) -> None:
     groups = create_groups_vierendeel(config.structure)
     guarded = assign_signs(config.constraints, groups, structure.num_edges)
     density_initializer = LensShapeInitializer(config.form_finding.density_start)
-    started = density_initializer(structure, loads.formfinding, basis, guarded)
-    constraints = build_design_constraints(config.constraints, started.guard)
+    density_start = density_initializer(structure, loads.formfinding, basis, guarded)
+    constraints = build_design_constraints(config.constraints, guarded, density_start)
     problem = DesignProblem(structure, pipeline, loads, constraints, section_groups)
     diameter_initializer = UniformDiameterInitializer(config.analysis.diameter_start)
     diameter_start = diameter_initializer(structure)
-    start = initialize_optimization_variables(problem, started.q, diameter_start)
+    start = initialize_optimization_variables(problem, density_start, diameter_start)
     initial = create_design(problem, start)
 
     # The descent: one reverse pass per gradient, whatever the constraint set.
@@ -131,4 +133,4 @@ def main(config_path: Path) -> None:
 
 if __name__ == "__main__":
     jnp.set_printoptions(precision=PRECISION)
-    main(Path(sys.argv[1]) if len(sys.argv) > 1 else CONFIG)
+    main(read_run_arguments(sys.argv[1:], CONFIG))

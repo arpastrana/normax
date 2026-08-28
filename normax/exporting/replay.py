@@ -180,6 +180,8 @@ def replay_step(
     Notes
     -----
     Which case governs is read before the envelope, the utilization after it.
+    A pipeline missing a block is refused by `size_design`, which is where one
+    would first be reached for.
     """
     design = size_design(pipeline, params, loads)
     governing = governing_load_case(design.sizes.sections.diameter)

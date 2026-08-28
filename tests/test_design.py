@@ -13,17 +13,17 @@ from normax.design import assign_signs
 from normax.design import bound_variables
 from normax.design import compute_mass
 from normax.design import compute_member_mass
-from normax.design import count_density_coefficients
+from normax.design import count_shape_coefficients
 from normax.design import create_design
 from normax.design import design_maps
 from normax.design import envelope_diameters
 from normax.design import evaluate_constraints
+from normax.design import expand_shape_coefficients
 from normax.design import expand_variables
 from normax.design import fold_variables
 from normax.design import initialize_optimization_variables
 from normax.design import optimize_design
-from normax.design import read_density_coefficients
-from normax.design import read_member_densities
+from normax.design import read_shape_coefficients
 from normax.design import unfold_diameters
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import build_equilibrium_graph
@@ -204,7 +204,7 @@ def test_the_form_finder_matches_the_free_function(
 
 
 def test_the_analyzer_stacks_one_load_case_per_row(pipeline, params, three_cases):
-    shape = pipeline.formfinder(params.force_densities, three_cases.formfinding)
+    shape = pipeline.formfinder(params.shape_parameters, three_cases.formfinding)
     forces = pipeline.analyzer(shape.xyz, params.diameters, three_cases.analysis)
 
     assert forces.axial_force.shape == (3, NUM_EDGES)
@@ -262,7 +262,7 @@ def test_the_pipeline_checks_the_diameters_it_was_given(pipeline, params, three_
 
 def test_the_utilization_falls_as_the_diameters_grow(pipeline, params, three_cases):
     lean = pipeline(params, three_cases)
-    fattened = DesignParameters(params.force_densities, params.diameters * 1.2)
+    fattened = DesignParameters(params.shape_parameters, params.diameters * 1.2)
     stout = pipeline(fattened, three_cases)
 
     assert jnp.all(stout.sizes.utilization < lean.sizes.utilization)
@@ -287,9 +287,9 @@ def test_the_variable_vector_is_coefficients_then_diameters(problem, force_densi
     x = np.concatenate([np.asarray(force_densities), diameters])
     expanded = expand_variables(problem, jnp.asarray(x))
 
-    assert count_density_coefficients(problem) == NUM_EDGES
+    assert count_shape_coefficients(problem) == NUM_EDGES
     assert np.allclose(
-        np.asarray(expanded.force_densities), np.asarray(force_densities)
+        np.asarray(expanded.shape_parameters), np.asarray(force_densities)
     )
     assert np.allclose(np.asarray(expanded.diameters), diameters)
 
@@ -300,8 +300,10 @@ def test_folding_is_the_identity_without_a_subspace(problem, force_densities):
     x = fold_variables(problem, q, diameters)
 
     assert np.array_equal(x, np.concatenate([q, diameters]))
-    assert np.array_equal(read_density_coefficients(problem, q), q)
-    assert np.array_equal(np.asarray(read_member_densities(problem, jnp.asarray(q))), q)
+    assert np.array_equal(read_shape_coefficients(problem, q), q)
+    assert np.array_equal(
+        np.asarray(expand_shape_coefficients(problem, jnp.asarray(q))), q
+    )
 
 
 def test_the_bounds_box_the_densities_and_floor_the_diameters(problem):
@@ -327,7 +329,7 @@ def test_member_densities_expands_the_basis(warren_problem):
     xi = jnp.asarray(-1.0 - np.linspace(0.0, 1.0, basis.width))
 
     assert jnp.array_equal(
-        read_member_densities(warren_problem, xi), basis.densities(xi)
+        expand_shape_coefficients(warren_problem, xi), basis.densities(xi)
     )
 
 
@@ -340,9 +342,9 @@ def test_the_expansion_holds_the_drawn_plan(warren_problem, warren_q):
 
     expanded = expand_variables(warren_problem, jnp.asarray(x))
 
-    assert expanded.force_densities.shape == (warren_problem.structure.num_edges,)
-    assert count_density_coefficients(warren_problem) == width
-    assert np.allclose(np.asarray(expanded.force_densities), warren_q)
+    assert expanded.shape_parameters.shape == (warren_problem.structure.num_edges,)
+    assert count_shape_coefficients(warren_problem) == width
+    assert np.allclose(np.asarray(expanded.shape_parameters), warren_q)
 
 
 def test_the_folded_diameters_keep_the_mirror(warren_problem, warren_q):
@@ -360,8 +362,8 @@ def test_the_folded_diameters_keep_the_mirror(warren_problem, warren_q):
 
 
 def test_reading_back_an_in_span_vector_is_exact(warren_problem, warren_q):
-    xi = read_density_coefficients(warren_problem, warren_q)
-    rebuilt = read_member_densities(warren_problem, jnp.asarray(xi))
+    xi = read_shape_coefficients(warren_problem, warren_q)
+    rebuilt = expand_shape_coefficients(warren_problem, jnp.asarray(xi))
 
     assert np.abs(np.asarray(rebuilt) - warren_q).max() < 1e-9
 
@@ -399,7 +401,7 @@ def test_the_sign_rows_read_the_guarded_densities(problem, params):
 
     design = asked.pipeline(params, asked.loads)
     rows = np.asarray(evaluate_constraints(asked, params, design))
-    signed = -np.asarray(params.force_densities)[guarded]
+    signed = -np.asarray(params.shape_parameters)[guarded]
 
     assert np.allclose(rows[-3:], (signed - guard.margin) / guard.scale)
 
@@ -452,7 +454,7 @@ def test_initialize_optimization_variables_does_not_size_the_seed(
 ):
     q = np.asarray(force_densities)
     start = initialize_optimization_variables(problem, q, SEEDED)
-    sized = envelope_diameters(problem, read_density_coefficients(problem, q), SEEDED)
+    sized = envelope_diameters(problem, read_shape_coefficients(problem, q), SEEDED)
 
     assert not np.array_equal(start, fold_variables(problem, q, sized))
 

@@ -4,15 +4,20 @@
 structure:
   num_edges: 10
   span: 10000.0
-  rise: 3000.0
+  rise: 2500.0
 
 # The held plan in member coordinates: a chain leaves one independent density.
 form_finding:
+  # fdm finds the shape by equilibrium in the force densities; heights
+  # writes the free nodes' height; fixed never moves the drawn geometry.
+  shape_parametrization: fdm
   basis: pivoted
   # A chain needs no symmetry to fold: its held plan is one-dimensional already.
   mirror: null
-  # UniformDensityInitializer: one force density in every member.
-  density_start: {force_density: -80.0}
+  # UniformDensityInitializer: one force density in every member. The rise a
+  # funicular chain reaches is 250000/|q| mm here, so -100 opens every route on
+  # the same 2500 mm parabola the structure above is drawn at.
+  density_start: {force_density: -100.0}
 
 # The first case shapes the arch; every case is checked.
 load_cases:
@@ -43,14 +48,19 @@ constraints:
   diameter_min: 21.3
   # A held plan bounds every member length by its plan projection.
   length_min: 0.0
-  rise_max: null
-  sag_min: null
+  # Held by every parametrization alike: as rows where the coefficients are
+  # densities, and as a plain box where they are the heights themselves.
+  rise_max: 3000.0
+  sag_min: 0.0
   # No sign guard: a chain has one sign, and the bounds keep it.
   sign_margin_fraction: 0.0
   sign_guard: null
   # The one coordinate is a member's own density: the box keeps it in
   # compression and away from zero, where the force density system is singular.
-  bounds: {min: -100.0, max: -1.0e-3}
+  # The floor is deep enough not to bind -- the chain's optimum sits at |q| 179,
+  # and -300 lands on the same answer -- so the shape the search settles on is
+  # the funicular optimum rather than the edge of its own box.
+  bounds: {min: -200.0, max: -1.0e-3}
 
 # The opening penalty is the one setting that decides the answer rather than
 # the speed; every other entry is a budget. Signed exponents, or YAML reads

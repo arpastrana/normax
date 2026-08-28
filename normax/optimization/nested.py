@@ -114,8 +114,18 @@ def size_design(
     The sizing map rather than the check: the diameters set the stiffness and
     the sections come back from the standard, one per load case, so the
     coupling between the two is staggered and closed by `settle_diameters`.
+
+    Raises
+    ------
+    ValueError
+        If the pipeline carries no analysis or no check: the nested route runs
+        all three blocks, and this is where it would first reach for a missing
+        one.
     """
-    shape = pipeline.formfinder(params.force_densities, loads.formfinding)
+    if pipeline.analyzer is None or pipeline.sizer is None:
+        raise ValueError("the nested route needs all three blocks")
+
+    shape = pipeline.formfinder(params.shape_parameters, loads.formfinding)
     forces = pipeline.analyzer(shape.xyz, params.diameters, loads.analysis)
     sizes = pipeline.sizer(forces, shape.lengths)
 
@@ -517,7 +527,16 @@ def design_envelope(
     of the diameter keeps its ratio. The utilization passes through untouched;
     it still describes the per-case sections. A single load case is returned
     as it stands.
+
+    Raises
+    ------
+    ValueError
+        If the design carries no sections, the nested route running only on a
+        pipeline whose three blocks are all present.
     """
+    if design.sizes is None:
+        raise ValueError("the nested route needs a pipeline with a code check")
+
     demanded = design.sizes.sections
     cases = count_load_cases(demanded.diameter)
 
@@ -582,7 +601,7 @@ def settle_diameters(
     moved = float("inf")
 
     for _ in range(settling_passes):
-        _, design = weighed(DesignParameters(params.force_densities, assumed))
+        _, design = weighed(DesignParameters(params.shape_parameters, assumed))
         demanded = design.sizes.sections.diameter
         moved = float(jnp.max(jnp.abs(demanded / assumed - 1.0)))
         assumed = demanded
@@ -653,7 +672,7 @@ def optimize_staggered(
     residual = float("inf")
 
     seed_diameters = jnp.asarray(params.diameters, dtype=params.diameters.dtype)
-    current = DesignParameters(params.force_densities, seed_diameters)
+    current = DesignParameters(params.shape_parameters, seed_diameters)
 
     def seeded_objective(
         force_densities: Float[Array, "members"],
@@ -669,7 +688,7 @@ def optimize_staggered(
         held = current.diameters
         found = minimize_bounded(
             lambda x, seed=held: seeded_objective(x, seed),
-            current.force_densities,
+            current.shape_parameters,
             bounds=bounds,
             iterations=iterations,
             has_aux=True,
