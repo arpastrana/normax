@@ -135,7 +135,7 @@ the parametrization's doing.
 | rise | 2043–2251 mm | 3622–3743 mm |
 | worst ring spread | 1105–1783 mm | 1032 mm |
 | spread / rise | 0.54–0.79 | 0.29 |
-| hoops at the catalogue minimum | 240/240 | 96–144/240 |
+| hoops at the catalog minimum | 240/240 | 96–144/240 |
 | mass at 1 kN/m² | 0.073–0.077 t | 0.102 t |
 
 The corrugated family carries as meridian arches deepened over the drifted
@@ -167,12 +167,12 @@ multiplicative scatter cloud are unchanged. Only the code check responds.
 sublinearly, because capacity grows faster than `d^2`, so members become
 stockier and the buckling reduction moves toward unity — while the end-to-end
 answer scales **2.11x**. It forgoes that discount because at the lower load a
-third of its members sit at the catalogue minimum, contributing mass but no
+third of its members sit at the catalog minimum, contributing mass but no
 work; doubling the load forces 96 of them into service and the corrugation's
 relative amplitude halves, from 0.54 of the rise to 0.29.
 
 **Both numbers belong in any report.** The advantage is real at both load
-levels, but part of it at the lower one is a property of the catalogue rather
+levels, but part of it at the lower one is a property of the catalog rather
 than of EN 1993-1-1. A third point at 0.5 kN/m² would turn this into a trend.
 
 ---

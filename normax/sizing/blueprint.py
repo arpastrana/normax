@@ -33,12 +33,12 @@ from jaxtyping import Bool
 from jaxtyping import Float
 from jaxtyping import Int
 
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 
 # EN 1993-1-1 §6.1, the recommended value.
 GAMMA_M0 = 1.0
 
-# The smallest tube the section family offers, the catalogue minimum.
+# The smallest tube the section catalog offers, the catalog minimum.
 DIAMETER_MINIMUM = 21.3
 
 # Halvings of a log-diameter bracket at most sqrt(2) + cbrt(2) wide.
@@ -54,22 +54,22 @@ PROBE_YIELD = 355.0
 PROBE_FACTOR = 1.0
 
 
-class HostFamily(NamedTuple):
+class HostCatalog(NamedTuple):
     """
-    A section family as the host check reads it: concrete numbers only.
+    A section catalog as the host check reads it: concrete numbers only.
 
     Attributes
     ----------
     area_coefficient :
-        Area per squared diameter of the family's tubes.
+        Area per squared diameter of the catalog's tubes.
     modulus_coefficient :
-        Elastic modulus per cubed diameter of the family's tubes.
+        Elastic modulus per cubed diameter of the catalog's tubes.
     f_y :
-        Yield strength of the family's grade.
+        Yield strength of the catalog's grade.
     gamma_m0 :
         Partial factor for cross-section resistance.
     diameter_min :
-        Smallest diameter the family offers.
+        Smallest diameter the catalog offers.
     """
 
     area_coefficient: float
@@ -79,30 +79,30 @@ class HostFamily(NamedTuple):
     diameter_min: float
 
 
-def coerce_section_family(
+def coerce_section_catalog(
     ratio: float,
     f_y: float,
     gamma_m0: float = GAMMA_M0,
     diameter_min: float = DIAMETER_MINIMUM,
-) -> HostFamily:
+) -> HostCatalog:
     """
-    Reduce a section family to the coefficients the scalar check reads.
+    Reduce a section catalog to the coefficients the scalar check reads.
 
     Parameters
     ----------
     ratio :
-        Diameter over wall thickness of every tube in the family.
+        Diameter over wall thickness of every tube in the catalog.
     f_y :
-        Yield strength of the family's grade.
+        Yield strength of the catalog's grade.
     gamma_m0 :
         Partial factor for cross-section resistance.
     diameter_min :
-        Smallest diameter the family offers.
+        Smallest diameter the catalog offers.
 
     Returns
     -------
-    family :
-        The family's geometry collapsed to two proportionality constants.
+    catalog :
+        The catalog's geometry collapsed to two proportionality constants.
 
     Raises
     ------
@@ -126,7 +126,7 @@ def coerce_section_family(
     second_moment = (math.pi / 64.0) * (1.0 - bore**4)
     modulus_coefficient = 2.0 * second_moment
 
-    return HostFamily(
+    return HostCatalog(
         area_coefficient,
         modulus_coefficient,
         float(f_y),
@@ -135,36 +135,36 @@ def coerce_section_family(
     )
 
 
-def snapshot_family(family: TubeFamily) -> tuple[float, float]:
+def snapshot_catalog(catalog: TubeCatalog) -> tuple[float, float]:
     """
-    Snapshot a family's ratio and yield strength for the host.
+    Snapshot a catalog's ratio and yield strength for the host.
 
     Parameters
     ----------
-    family :
-        The section family a sizer is built over.
+    catalog :
+        The section catalog a sizer is built over.
 
     Returns
     -------
     ratio :
-        The family's wall proportion, as a concrete float.
+        The catalog's wall proportion, as a concrete float.
     f_y :
-        The family's yield strength, as a concrete float.
+        The catalog's yield strength, as a concrete float.
 
     Raises
     ------
     ValueError
-        If the family's ratio leaves no wall at all.
+        If the catalog's ratio leaves no wall at all.
 
     Notes
     -----
-    The two numbers a host check reads off a family, concretized once at
+    The two numbers a host check reads off a catalog, concretized once at
     construction so no material sensitivity flows through a sizer — the
     in-process one and the crossed one snapshot identically.
     """
-    ratio = float(family.ratio)
-    f_y = float(family.material.f_y)
-    coerce_section_family(ratio, f_y)
+    ratio = float(catalog.ratio)
+    f_y = float(catalog.material.f_y)
+    coerce_section_catalog(ratio, f_y)
 
     return ratio, f_y
 
@@ -173,7 +173,7 @@ def _check_scalar(
     diameter: float,
     axial: float,
     moment: float,
-    family: HostFamily,
+    catalog: HostCatalog,
 ) -> float:
     """
     One member's utilization at one diameter, through Blueprints' classes.
@@ -186,8 +186,8 @@ def _check_scalar(
         Axial force the member carries, negative in compression.
     moment :
         Demand moment the member carries, non-negative.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
 
     Returns
     -------
@@ -203,13 +203,13 @@ def _check_scalar(
     if moment < 0.0:
         raise ValueError(f"a moment of {moment} is signed: reduce before checking")
 
-    area = family.area_coefficient * diameter**2
-    modulus = family.modulus_coefficient * diameter**3
+    area = catalog.area_coefficient * diameter**2
+    modulus = catalog.modulus_coefficient * diameter**3
     squashing = Form6Dot10NcRdClass1And2And3(
-        a=area, f_y=family.f_y, gamma_m0=family.gamma_m0
+        a=area, f_y=catalog.f_y, gamma_m0=catalog.gamma_m0
     )
     bending = Form6Dot14MCRdClass3(
-        w_el_min=modulus, f_y=family.f_y, gamma_m0=family.gamma_m0
+        w_el_min=modulus, f_y=catalog.f_y, gamma_m0=catalog.gamma_m0
     )
 
     return abs(axial) / float(squashing) + moment / float(bending)
@@ -257,7 +257,7 @@ def _probe_scalar(
     diameter: float,
     axial: float,
     moment: float,
-    family: HostFamily,
+    catalog: HostCatalog,
 ) -> float:
     """
     The same utilization, evaluated without building the clause objects.
@@ -270,8 +270,8 @@ def _probe_scalar(
         Axial force the member carries, negative in compression.
     moment :
         Demand moment the member carries, non-negative.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
 
     Returns
     -------
@@ -284,29 +284,29 @@ def _probe_scalar(
     answer instead, since every reported value goes through the class itself.
     """
     if not EVALUATOR_REACHED:
-        return _check_scalar(diameter, axial, moment, family)
+        return _check_scalar(diameter, axial, moment, catalog)
 
-    area = family.area_coefficient * diameter**2
-    modulus = family.modulus_coefficient * diameter**3
+    area = catalog.area_coefficient * diameter**2
+    modulus = catalog.modulus_coefficient * diameter**3
     squashing = Form6Dot10NcRdClass1And2And3._evaluate(
-        area, family.f_y, family.gamma_m0
+        area, catalog.f_y, catalog.gamma_m0
     )
-    bending = Form6Dot14MCRdClass3._evaluate(modulus, family.f_y, family.gamma_m0)
+    bending = Form6Dot14MCRdClass3._evaluate(modulus, catalog.f_y, catalog.gamma_m0)
 
     return abs(axial) / squashing + moment / bending
 
 
-def _demand_scales(family: HostFamily) -> tuple[float, float]:
+def _demand_scales(catalog: HostCatalog) -> tuple[float, float]:
     """
     The factors turning a force and a moment into diameter-unit demands.
     """
-    scale_axial = family.gamma_m0 / (family.area_coefficient * family.f_y)
-    scale_moment = family.gamma_m0 / (family.modulus_coefficient * family.f_y)
+    scale_axial = catalog.gamma_m0 / (catalog.area_coefficient * catalog.f_y)
+    scale_moment = catalog.gamma_m0 / (catalog.modulus_coefficient * catalog.f_y)
 
     return scale_axial, scale_moment
 
 
-def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
+def _solve_scalar(axial: float, moment: float, catalog: HostCatalog) -> float:
     """
     The diameter one member's check is exactly satisfied at.
 
@@ -316,8 +316,8 @@ def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
         Axial force the member carries, negative in compression.
     moment :
         Demand moment the member carries, non-negative.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
 
     Returns
     -------
@@ -334,7 +334,7 @@ def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
     if moment < 0.0:
         raise ValueError(f"a moment of {moment} is signed: reduce before solving")
 
-    scale_axial, scale_moment = _demand_scales(family)
+    scale_axial, scale_moment = _demand_scales(catalog)
     demand_axial = abs(axial) * scale_axial
     demand_moment = moment * scale_moment
     if demand_axial == 0.0 and demand_moment == 0.0:
@@ -346,7 +346,7 @@ def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
     high = math.log(upper)
     for _ in range(BISECTION_HALVINGS):
         middle = 0.5 * (low + high)
-        used = _probe_scalar(math.exp(middle), axial, moment, family)
+        used = _probe_scalar(math.exp(middle), axial, moment, catalog)
         if used > 1.0:
             low = middle
         else:
@@ -358,13 +358,13 @@ def _solve_scalar(axial: float, moment: float, family: HostFamily) -> float:
 def _solve_batch(
     axial: Float[np.ndarray, "*load_cases members"],
     moment: Float[np.ndarray, "*load_cases members"],
-    family: HostFamily,
+    catalog: HostCatalog,
 ) -> Float[np.ndarray, "*load_cases members"]:
     """
     Every member's exactly-satisfied diameter, one host loop.
     """
     paired = zip(axial.ravel(), moment.ravel(), strict=True)
-    solved = [_solve_scalar(force, bent, family) for force, bent in paired]
+    solved = [_solve_scalar(force, bent, catalog) for force, bent in paired]
 
     return np.asarray(solved, dtype=np.float64).reshape(axial.shape)
 
@@ -373,13 +373,13 @@ def _check_batch(
     diameter: Float[np.ndarray, "*load_cases members"],
     axial: Float[np.ndarray, "*load_cases members"],
     moment: Float[np.ndarray, "*load_cases members"],
-    family: HostFamily,
+    catalog: HostCatalog,
 ) -> Float[np.ndarray, "*load_cases members"]:
     """
     Every member's utilization at a given diameter, one host loop.
     """
     tripled = zip(diameter.ravel(), axial.ravel(), moment.ravel(), strict=True)
-    used = [_check_scalar(size, force, bent, family) for size, force, bent in tripled]
+    used = [_check_scalar(size, force, bent, catalog) for size, force, bent in tripled]
 
     return np.asarray(used, dtype=np.float64).reshape(diameter.shape)
 
@@ -497,8 +497,8 @@ class SolvedState(NamedTuple):
 
     Attributes
     ----------
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
     axial :
         Axial force every member carries, negative in compression.
     demand :
@@ -506,10 +506,10 @@ class SolvedState(NamedTuple):
     unclamped :
         The root of each member's check, zero where a member is unloaded.
     diameter :
-        The root with the catalogue minimum applied.
+        The root with the catalog minimum applied.
     """
 
-    family: HostFamily
+    catalog: HostCatalog
     axial: Float[np.ndarray, "*load_cases members"]
     demand: DemandMoment
     unclamped: Float[np.ndarray, "*load_cases members"]
@@ -520,7 +520,7 @@ class SolvedState(NamedTuple):
 _SOLVED: dict[bytes, SolvedState] = {}
 
 
-def _solve_fingerprint(actions: HostActions, family: HostFamily) -> bytes:
+def _solve_fingerprint(actions: HostActions, catalog: HostCatalog) -> bytes:
     """
     A digest of everything the bisection reads, by content.
     """
@@ -528,12 +528,12 @@ def _solve_fingerprint(actions: HostActions, family: HostFamily) -> bytes:
     for value in actions:
         digest.update(str(value.shape).encode())
         digest.update(value.tobytes())
-    digest.update(repr(tuple(family)).encode())
+    digest.update(repr(tuple(catalog)).encode())
 
     return digest.digest()
 
 
-def solve_state(actions: HostActions, family: HostFamily) -> SolvedState:
+def solve_state(actions: HostActions, catalog: HostCatalog) -> SolvedState:
     """
     The solved state these actions describe, searched for only once.
 
@@ -541,8 +541,8 @@ def solve_state(actions: HostActions, family: HostFamily) -> SolvedState:
     ----------
     actions :
         What every member carries.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
 
     Returns
     -------
@@ -555,15 +555,15 @@ def solve_state(actions: HostActions, family: HostFamily) -> SolvedState:
     Reverse mode runs every forward call before any backward call, so several
     states are held; a miss only costs the search it would have saved.
     """
-    fingerprint = _solve_fingerprint(actions, family)
+    fingerprint = _solve_fingerprint(actions, catalog)
     held = _SOLVED.get(fingerprint)
     if held is not None:
         return held
 
     demand = reduce_moments(actions)
-    unclamped = _solve_batch(actions.axial, demand.moment, family)
-    diameter = np.maximum(unclamped, family.diameter_min)
-    state = SolvedState(family, actions.axial, demand, unclamped, diameter)
+    unclamped = _solve_batch(actions.axial, demand.moment, catalog)
+    diameter = np.maximum(unclamped, catalog.diameter_min)
+    state = SolvedState(catalog, actions.axial, demand, unclamped, diameter)
     if len(_SOLVED) >= SOLVED_ROOM:
         _SOLVED.pop(next(iter(_SOLVED)))
     _SOLVED[fingerprint] = state
@@ -578,7 +578,7 @@ class SizedMembers(NamedTuple):
     Attributes
     ----------
     diameter :
-        Outer diameter of every member, floored at the family's minimum.
+        Outer diameter of every member, floored at the catalog's minimum.
     utilization :
         Demand over resistance at that diameter — one where the check decided
         the size, below one where the minimum did.
@@ -591,7 +591,7 @@ class SizedMembers(NamedTuple):
     clamped: Bool[np.ndarray, "*load_cases members"]
 
 
-def size_members(actions: HostActions, family: HostFamily) -> SizedMembers:
+def size_members(actions: HostActions, catalog: HostCatalog) -> SizedMembers:
     """
     Size every member to the check, entirely on the host.
 
@@ -599,8 +599,8 @@ def size_members(actions: HostActions, family: HostFamily) -> SizedMembers:
     ----------
     actions :
         What every member carries.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
 
     Returns
     -------
@@ -608,9 +608,9 @@ def size_members(actions: HostActions, family: HostFamily) -> SizedMembers:
         The floored diameters, the utilization re-read at them, and the mask
         of members the minimum decided.
     """
-    state = solve_state(actions, family)
-    used = _check_batch(state.diameter, state.axial, state.demand.moment, family)
-    clamped = state.unclamped < family.diameter_min
+    state = solve_state(actions, catalog)
+    used = _check_batch(state.diameter, state.axial, state.demand.moment, catalog)
+    clamped = state.unclamped < catalog.diameter_min
 
     return SizedMembers(state.diameter, used, clamped)
 
@@ -618,7 +618,7 @@ def size_members(actions: HostActions, family: HostFamily) -> SizedMembers:
 def check_members(
     diameter_held: Float[np.ndarray, "*load_cases members"],
     actions: HostActions,
-    family: HostFamily,
+    catalog: HostCatalog,
 ) -> Float[np.ndarray, "*load_cases members"]:
     """
     Check sizes the caller owns, entirely on the host.
@@ -629,8 +629,8 @@ def check_members(
         Outer diameter every member is checked at.
     actions :
         What every member carries.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
 
     Returns
     -------
@@ -640,7 +640,7 @@ def check_members(
     held = np.asarray(diameter_held, dtype=np.float64)
     demand = reduce_moments(actions)
 
-    return _check_batch(held, actions.axial, demand.moment, family)
+    return _check_batch(held, actions.axial, demand.moment, catalog)
 
 
 class CheckPartials(NamedTuple):
@@ -666,12 +666,12 @@ def _check_partials(
     size: Float[np.ndarray, "*load_cases members"],
     axial: Float[np.ndarray, "*load_cases members"],
     moment: Float[np.ndarray, "*load_cases members"],
-    family: HostFamily,
+    catalog: HostCatalog,
 ) -> CheckPartials:
     """
     The three partials of `U = a/d^2 + b/d^3`, evaluated at a given size.
     """
-    scale_axial, scale_moment = _demand_scales(family)
+    scale_axial, scale_moment = _demand_scales(catalog)
     demand_axial = np.abs(axial) * scale_axial
     demand_moment_units = moment * scale_moment
     positive = size > 0.0
@@ -750,7 +750,7 @@ class SizeCotangents(NamedTuple):
 
 def size_cotangents(
     actions: HostActions,
-    family: HostFamily,
+    catalog: HostCatalog,
     cotangents: SizeCotangents,
 ) -> ActionCotangents:
     """
@@ -760,8 +760,8 @@ def size_cotangents(
     ----------
     actions :
         What every member carries.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
     cotangents :
         Cotangent on the diameter and on the utilization.
 
@@ -777,12 +777,12 @@ def size_cotangents(
     where the minimum did. The reported utilization is the mirror image: pinned
     at one where the check decided, the bare partial at the minimum otherwise.
     """
-    state = solve_state(actions, family)
+    state = solve_state(actions, catalog)
     demand = state.demand
-    at_root = _check_partials(state.unclamped, state.axial, demand.moment, family)
-    at_minimum = _check_partials(state.diameter, state.axial, demand.moment, family)
+    at_root = _check_partials(state.unclamped, state.axial, demand.moment, catalog)
+    at_minimum = _check_partials(state.diameter, state.axial, demand.moment, catalog)
 
-    free = state.unclamped >= family.diameter_min
+    free = state.unclamped >= catalog.diameter_min
     divisor = np.where(free, at_root.slope, -1.0)
     size_axial = np.where(free, -at_root.axial / divisor, 0.0)
     size_moment = np.where(free, -at_root.moment / divisor, 0.0)
@@ -816,7 +816,7 @@ class HeldCotangents(NamedTuple):
 def check_cotangents(
     diameter_held: Float[np.ndarray, "*load_cases members"],
     actions: HostActions,
-    family: HostFamily,
+    catalog: HostCatalog,
     cotangent: Float[np.ndarray, "*load_cases members"],
 ) -> HeldCotangents:
     """
@@ -828,8 +828,8 @@ def check_cotangents(
         Outer diameter every member was checked at.
     actions :
         What every member carries.
-    family :
-        The section family reduced to its host coefficients.
+    catalog :
+        The section catalog reduced to its host coefficients.
     cotangent :
         Cotangent on the held utilization.
 
@@ -846,7 +846,7 @@ def check_cotangents(
     held = np.asarray(diameter_held, dtype=np.float64)
     pulled = np.asarray(cotangent, dtype=np.float64)
     demand = reduce_moments(actions)
-    partials = _check_partials(held, actions.axial, demand.moment, family)
+    partials = _check_partials(held, actions.axial, demand.moment, catalog)
     on_actions = _action_cotangents(
         partials.axial * pulled, partials.moment * pulled, demand
     )

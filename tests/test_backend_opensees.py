@@ -7,8 +7,6 @@ into it and a JAX solver differentiated by tracing. Neither is a reimplementatio
 of the other, so a tolerance is a measurement rather than a round-trip.
 """
 
-import os
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -19,13 +17,11 @@ from normax.analysis import smax
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import solve_equilibrium
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
-from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
-from normax.tesseract import open_tesseract_analysis
 
 # The same 10 m arch rising 3 m under 180 kN the rest of the suite uses.
 SPAN = 10_000.0
@@ -51,8 +47,8 @@ SCALE_MOMENT = 1.0e8
 
 
 @pytest.fixture(scope="module")
-def family():
-    return build_section_family(Steel355(), 3)
+def catalog():
+    return build_section_catalog(Steel355(), 3)
 
 
 @pytest.fixture(scope="module")
@@ -62,7 +58,7 @@ def structure():
 
 @pytest.fixture(scope="module")
 def funicular(structure):
-    return load_uniform(structure, TOTAL_LOAD)
+    return create_load_uniform(structure, TOTAL_LOAD)
 
 
 @pytest.fixture(scope="module")
@@ -88,13 +84,13 @@ def diameters():
 
 
 @pytest.fixture(scope="module")
-def prepared(structure, family):
+def prepared(structure, catalog):
     """
     Both backends' models, prepared once from the same structure.
     """
     return (
-        opensees.prepare_model(structure, family, NORMAL),
-        smax.prepare_model(structure, family(SEED)),
+        opensees.prepare_model(structure, catalog, NORMAL),
+        smax.prepare_model(structure, catalog(SEED)),
     )
 
 
@@ -110,10 +106,12 @@ def relative(actual, expected):
 
 
 @pytest.fixture(scope="module")
-def forces(prepared, xyz, diameters, family, funicular):
+def forces(prepared, xyz, diameters, catalog, funicular):
     ops, traced = prepared
-    mine = opensees.compute_member_forces(ops, xyz, diameters, family, funicular)
-    theirs = smax.compute_member_forces(traced, xyz, diameters, family(SEED), funicular)
+    mine = opensees.compute_member_forces(ops, xyz, diameters, catalog, funicular)
+    theirs = smax.compute_member_forces(
+        traced, xyz, diameters, catalog(SEED), funicular
+    )
 
     return mine, theirs
 
@@ -138,14 +136,14 @@ def test_a_plane_frame_carries_no_minor_axis_moment(forces):
 
 
 @pytest.fixture(scope="module")
-def blocks(prepared, xyz, diameters, family, funicular):
+def blocks(prepared, xyz, diameters, catalog, funicular):
     ops, _ = prepared
 
-    return opensees.compute_force_jacobian(ops, xyz, diameters, family, funicular)
+    return opensees.compute_force_jacobian(ops, xyz, diameters, catalog, funicular)
 
 
 @pytest.fixture(scope="module")
-def traced(prepared, xyz, diameters, family, funicular):
+def traced(prepared, xyz, diameters, catalog, funicular):
     """
     The same derivatives, taken by tracing the oracle.
     """
@@ -153,7 +151,7 @@ def traced(prepared, xyz, diameters, family, funicular):
 
     def run(coords, sizes):
         member = smax.compute_member_forces(
-            model, coords, sizes, family(SEED), funicular
+            model, coords, sizes, catalog(SEED), funicular
         )
 
         return {"axial_force": member.axial_force, "moment_major": member.moment_major}
@@ -190,14 +188,14 @@ def test_the_forces_move_with_a_diameter_as_autodiff_says(blocks, traced):
 
 
 def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
-    prepared, xyz, diameters, family, funicular
+    prepared, xyz, diameters, catalog, funicular
 ):
     # The separation the two-dimensional model relies on, measured not assumed.
     _, model = prepared
 
     def run(coords):
         member = smax.compute_member_forces(
-            model, coords, diameters, family(SEED), funicular
+            model, coords, diameters, catalog(SEED), funicular
         )
 
         return {"axial_force": member.axial_force, "moment_major": member.moment_major}
@@ -208,40 +206,39 @@ def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
         assert np.all(np.asarray(block)[..., NORMAL] == 0.0)
 
 
-def test_a_three_dimensional_frame_is_refused(structure, family):
+def test_a_three_dimensional_frame_is_refused(structure, catalog):
     with pytest.raises(ValueError, match="planar"):
-        opensees.prepare_model(structure, family, None)
+        opensees.prepare_model(structure, catalog, None)
 
 
 def test_a_frame_that_is_not_flat_is_refused(
-    prepared, xyz, diameters, family, funicular
+    prepared, xyz, diameters, catalog, funicular
 ):
     ops, _ = prepared
     warped = jnp.asarray(xyz).at[1, NORMAL].set(500.0)
 
     with pytest.raises(ValueError, match="not planar"):
-        opensees.compute_member_forces(ops, warped, diameters, family, funicular)
+        opensees.compute_member_forces(ops, warped, diameters, catalog, funicular)
 
 
 def test_a_load_out_of_the_plane_is_refused(
-    prepared, xyz, diameters, family, funicular
+    prepared, xyz, diameters, catalog, funicular
 ):
     ops, _ = prepared
     pushed = jnp.asarray(funicular).at[1, NORMAL].set(1_000.0)
 
     with pytest.raises(ValueError, match="normal axis"):
-        opensees.compute_member_forces(ops, xyz, diameters, family, pushed)
+        opensees.compute_member_forces(ops, xyz, diameters, catalog, pushed)
 
 
 def test_the_environment_selects_the_backend(
-    structure, family, xyz, diameters, funicular, forces
+    structure, catalog, xyz, diameters, funicular, forces
 ):
-    client = open_tesseract_analysis("opensees")
-    crossed = TesseractAnalyzer(structure, client, family, NORMAL)
+    crossed = TesseractAnalyzer(structure, catalog, backend="opensees")
     served = crossed(xyz, diameters, jnp.asarray(funicular)[None, ...])
     mine, _ = forces
 
-    assert os.environ[ANALYSIS_VARIABLE] == "opensees"
+    assert crossed.backend == "opensees"
     assert np.array_equal(
         np.asarray(served.axial_force[0]), np.asarray(mine.axial_force)
     )
@@ -251,7 +248,7 @@ def test_the_environment_selects_the_backend(
 
 
 def test_the_gradient_is_the_same_whichever_solver_produced_it(
-    structure, family, densities, diameters, funicular
+    structure, catalog, densities, diameters, funicular
 ):
     # Force densities through the form finder, the analysis and a loss over the
     # forces: the DDM sweep contracted into a VJP against the traced oracle.
@@ -265,12 +262,10 @@ def test_the_gradient_is_the_same_whichever_solver_produced_it(
 
         return axial + major
 
-    crossed = TesseractAnalyzer(
-        structure, open_tesseract_analysis("opensees"), family, NORMAL
-    )
+    crossed = TesseractAnalyzer(structure, catalog, backend="opensees")
     mine = jax.grad(lambda q: loss(crossed, q))(densities)
 
-    traced = smax.SmaxAnalyzer(structure, family(SEED))
+    traced = smax.SmaxAnalyzer(structure, catalog(SEED))
     theirs = jax.grad(lambda q: loss(traced, q))(densities)
 
     assert np.max(np.abs(np.asarray(mine))) > 0.0

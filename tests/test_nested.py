@@ -13,8 +13,8 @@ from normax.form_finding import FdmFormFinder
 from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import solve_equilibrium
 from normax.loads import assemble_load_cases
-from normax.loads import load_half_span
-from normax.loads import load_uniform
+from normax.loads import create_load_half_span
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization.nested import annealing_schedule
 from normax.optimization.nested import design_envelope
@@ -28,7 +28,7 @@ from normax.optimization.nested import settle_diameters
 from normax.optimization.nested import shortest_member
 from normax.optimization.nested import size_design
 from normax.optimization.nested import value_and_gradient
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
@@ -472,7 +472,7 @@ def force_densities(structure):
         trial,
         structure.nodes[graph.indices_fixed],
         graph,
-        load_uniform(structure, TOTAL_LOAD),
+        create_load_uniform(structure, TOTAL_LOAD),
     )
 
     return trial * jnp.max(state.xyz[:, 2]) / RISE
@@ -480,12 +480,12 @@ def force_densities(structure):
 
 @pytest.fixture(scope="module")
 def pipeline(structure):
-    family = build_section_family(Steel355(), 3)
+    catalog = build_section_catalog(Steel355(), 3)
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        Ec3Sizer(structure, family),
+        SmaxAnalyzer(structure, catalog(SEED)),
+        Ec3Sizer(structure, catalog),
     )
 
 
@@ -496,15 +496,15 @@ def params(force_densities):
 
 @pytest.fixture(scope="module")
 def one_case(structure):
-    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
+    return assemble_load_cases([create_load_uniform(structure, TOTAL_LOAD)])
 
 
 @pytest.fixture(scope="module")
 def three_cases(structure):
     cases = [
-        load_uniform(structure, TOTAL_LOAD),
-        load_half_span(structure, TOTAL_LOAD, factor=0.25),
-        load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
+        create_load_uniform(structure, TOTAL_LOAD),
+        create_load_half_span(structure, TOTAL_LOAD, factor=0.25),
+        create_load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
     ]
 
     return assemble_load_cases(cases)

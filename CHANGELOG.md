@@ -2,6 +2,183 @@
 
 ## Unreleased
 
+### The examples name their blocks
+
+Changed 2026-08-27. The four examples compose the pipeline themselves -- form
+finder, analyzer, sizer -- and `build_pipeline` is deleted, its last caller
+gone. What one call settled is now named locals: the mirror, the held-plan
+basis, the fold and the spread. Equivalence was proved against `build_pipeline`
+on all four committed configs before the call sites moved.
+
+- **The basis no longer round-trips.** `basis = pipeline.formfinder.basis`
+  fished the basis back out of the object the line above had just built it
+  into. It is a local now, built before the form finder that takes it.
+- **`normax/tesseract.py` stops importing `normax/design.py`.** Deleting
+  `build_pipeline` orphaned eight imports, `StructuralDesignPipeline` among
+  them, so the module naming every backend no longer reaches for the container
+  they compose into. `build_analyzer` and `build_sizer` stay: two experiments
+  call them.
+- **A named grade replaces a construction inside a call**, and `d_start` is
+  `diameter_start`.
+
+**Every example reads its own verdict.** `is_design_safe` compares the
+utilization against the search's own `violation_tol`, which is the right bar: a
+fully-stressed design sits on the constraint rather than under it, so an exact
+`<= 1.0` would fail every converged answer. Three of the four failed that
+verdict when it was first added, at worst utilizations of 1.0000012, 1.235 and
+1.402, and the per-family utilization columns had carried those numbers all
+along without anything drawing a conclusion from them. The cause was the start,
+not the search: see the next entry.
+
+### The search starts where it is told to
+
+Changed 2026-08-27. `initialize_optimization_variables` folds the diameter
+initializer's seed, floored by the constraints, and no longer envelopes a
+frozen-seed analysis to get there. Opening a search on a fully-stressed design
+was a second sizing rule beside the one the constraints already state, and it
+was the reason three of four examples could not converge.
+
+**A degenerate start, not a bad method.** The enveloped start put the
+Vierendeel on the constraint boundary at worst utilization 1.149 with one
+vertical already collapsed to 125.4 mm against its 1000 mm length floor -- the
+degeneracy the floor exists to forbid, since a vanishing member is free mass
+and unbucklable. From inside it L-BFGS-B returned `ABNORMAL` with `nit = 0` on
+round after round: the first line search failed, no step was taken, and the run
+froze at violation 0.7494 for nine rounds, identical to fifteen digits. The
+plain seed is merely undersized rather than degenerate, and the same search
+descends from it. What each example converges to now:
+
+| example | rounds | worst utilization | mass, tonnes |
+|---|---|---|---|
+| arch | 7 of 10 | 1.000000402 | 0.135622 |
+| Warren | 11 of 12 | 1.000000320 | 0.055613 |
+| Vierendeel | 16 of 20 | 1.000000038 | 0.121547 |
+| gridshell | 11 of 12 | 0.999999842 | 0.105268 |
+
+The Vierendeel's 0.121547 t sits within 0.6% of the 0.122263 t experiment 19
+recorded, so the historical answer is recovered rather than approached.
+
+**The reported saving is now measured against a uniform-diameter start**, which
+is a weaker baseline than the enveloped one it replaced, so the percentages are
+larger and comparable neither to each other nor to anything on record. They
+measure distance from a seed, not engineering merit.
+
+### The budgets are calibrated per structure, and the tolerances by role
+
+Measured 2026-08-27, one structure at a time rather than tuned in common.
+
+- **`violation_tol` is a correctness bar and was never traded.** It stays at
+  1e-6 everywhere. Because the stopping test is a conjunction, feasibility is
+  enforced independently of when a run stops, which is what makes the other
+  tolerance safe to tune at all.
+- **`objective_rtol` is the stopping bar, and 1e-6 was unreachable on two of
+  them.** The Vierendeel's objective never moves less than 6.4e-6 in a round,
+  so the test could never fire and the run always spent every round it had.
+  Reading the stopping round straight off one trace predicted the answer
+  exactly -- round 16, 0.121547 t -- and 1e-4 buys 30% of the runtime for
+  0.028% of the mass, 21% for 0.001% on the arch. It buys nothing on the Warren
+  or the gridshell, whose runs are bit-identical under either value: both are
+  waiting on feasibility, not on the objective, so a looser objective bar
+  cannot release them. Which half binds is a property of the structure and is
+  legible in one trace.
+- **`iterations_after_warmup` selects a basin rather than a precision.** At 50
+  the arch is bit-identical and the Warren differs by 0.06%, but the Vierendeel
+  converges into a basin 4.6% heavier and no number of extra rounds recovers
+  it; the gridshell at 50 needs its rounds raised to 12, after which it is both
+  18% faster and strictly feasible where 10 rounds at 100 iterations left it at
+  1.000001, over the line. So the Vierendeel keeps 100 and the rest take 50.
+
+The four sweep in about 8.3 minutes together, from 11.5, and every one reports
+`converged = True` rather than exhausting its budget.
+
+**Two fixes were tried against the frozen rounds and both made it worse**, so
+neither landed. Growing the penalty on a round that took no step drove it a
+thousandfold inside one round and the line search never recovered: the
+Vierendeel stopped converging at all. Moving the multipliers instead did the
+same. The schedule works because it moves both together and gently, which is to
+say that the remedy for a frozen round is to spend the next one. Raising the
+inner evaluation cap from three to ten times the iteration count is a third
+non-fix: the iteration cap binds underneath it, so the rounds do identical work
+for a few hundred more evaluations. The frozen rounds cost 37 evaluations of
+about 1550, against 492 for the first round alone.
+
+### The section family is a catalog
+
+Renamed 2026-08-27. `TubeFamily` is `TubeCatalog`, `build_section_family` is
+`build_section_catalog`, `HostFamily` is `HostCatalog`, `coerce_section_family`
+is `coerce_section_catalog`, and every parameter, field and fixture naming one
+follows: 487 lines across 40 files, plus the British `catalogue` spellings that
+had drifted in beside them.
+
+- **Three other senses of the word stayed put, and separating them was the
+  work.** `normax/structures.py` names *edge* families -- bottom chord, top
+  chord, rising and falling diagonals -- and `create_groups_warren`,
+  `list_vierendeel_families` and `create_groups_shell` return them; the sign
+  guard, the report's per-family row and the gridshell's polar fold are keyed by
+  those names, so `normax/config.py`, `normax/reporting.py`,
+  `normax/structures.py` and `tests/test_structures.py` were excluded whole.
+  `normax/design.py` and `tests/test_design.py` carry both senses and were
+  resolved line by line. `docs/gridshell_findings.md` holds a third: the
+  corrugated and dome *shape* families.
+- **ec3x's `TubeCatalogue` keeps its own name and gains an alias.** It is
+  imported as `Ec3Catalogue` wherever it is reached for, so a `-ue` ending
+  always means the oracle's class and never one of ours. `ec3_catalog` is
+  reserved for `Ec3Sizer`'s field, the one place an ec3x catalog sits beside a
+  neutral one.
+
+**The sweep went wrong twice, in the two ways a mechanical sweep does.** A regex
+matched an attribute but not the value beside it, so `Ec3Sizer.__init__`
+assigned `self.ec3_catalog = catalog` -- the neutral geometry rather than the
+standard's catalog built one line above. Separately, `class_ratio_sweep` had one
+comprehension variable split into two names, binding `catalog` and reading
+`ec3_catalog`. The suite catches the first, 18 failures across three files when
+it is reintroduced deliberately; nothing covers `experiments/`, so the second
+was found only by running all eight. Both were caught by reading the diff before
+either check ran.
+
+### The README's example runs
+
+Added 2026-08-27. `examples/readme.py` is the README's usage block, byte for
+byte below its own docstring, so the code a reader pastes is code that runs and
+a rename that breaks one breaks the other. Aligning them made the published
+block `ruff`-clean, which it had not been. The block itself gained a
+`value_and_grad` with `has_aux=True`, returning the design beside the mass:
+three pipeline evaluations became one, measured at 14.16 ms to 7.34 ms, and the
+aux route is what lets a non-differentiable payload ride out of a
+differentiated function without a cotangent being seeded into it. Five stale
+claims in the surrounding prose were corrected against the code.
+
+### The backend is a schema input
+
+Changed 2026-08-27. A block names its backend where it is built --
+`TesseractSizer(structure, section_catalog, backend="blueprint")` -- and the
+name travels to the server as an input field beside `solve`.
+
+- **`NORMAX_ANALYSIS_BACKEND` and `NORMAX_SIZING_BACKEND` are gone.** Being
+  process-global, they aliased: two analyzers in one process shared whichever
+  backend opened last, and the second silently ran the first one's solver.
+  Poisoning both variables to a nonsense string and watching both backends
+  still run, and still agree to 5.457e-12, is what retired them.
+- **The normal axis is computed, not passed.** An analyzer took
+  `find_normal_axis(structure)` and validated it against
+  `find_normal_axis(structure)`, so the argument carried no information. It is
+  settled internally, from whether the backend is planar.
+
+### The diameters start from an initializer
+
+Added 2026-08-27. `UniformDiameterInitializer` mirrors the density
+initializers, and `AnalysisConfig` holds one where it held a bare float, so
+both halves of the simultaneous formulation start the same way. The YAMLs are
+unchanged -- `diameter: 100.0` builds the uniform initializer -- and a
+per-member start is a new class rather than a new field.
+
+### Load cases are created, not named
+
+Renamed 2026-08-27. `load_uniform` is `create_load_uniform`, and the six beside
+it follow. The names had drifted from `create_loads_uniform` to a noun phrase
+that reads as a verb only because "load" is a homonym; every other function in
+`normax/loads.py` already led with its verb.
+
 ### The experiments are eight, and every one of them runs
 
 Ruled 2026-08-27: an experiment whose subject the package deliberately removed
@@ -172,8 +349,8 @@ is shared.
   guard)`.
 - **The sign guard is configuration**: `constraints.sign_guard: {family:
   tension | compression}`, resolved by `assign_signs(constraints, families)`
-  against `list_warren_families` / `list_vierendeel_families` /
-  `list_shell_families`, now in `structures.py`. `sign_chords` and
+  against `create_groups_warren` / `list_vierendeel_families` /
+  `create_groups_shell`, now in `structures.py`. `sign_chords` and
   `select_guarded_members` are gone.
 
 A medium-effort review of the change caught five defects, fixed the same day:

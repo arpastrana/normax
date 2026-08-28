@@ -61,12 +61,12 @@ optimization:
   rounds_max: 10                # most multiplier updates, the outer rounds, to spend
   rounds_warmup: 3              # first rounds given the larger inner budget
   iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
-  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  iterations_after_warmup: 50   # most L-BFGS-B iterations in every later round
   penalty_start: 0.1            # penalty parameter of the first round
   penalty_growth: 10.0          # penalty multiplier when a round earns too little
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
-  objective_rtol: 1.0e-6        # relative objective change per round counting as none
+  objective_rtol: 1.0e-4        # relative objective change per round counting as none
 
 # What becomes of the answer; a viewer blocks, so it opens last.
 output:

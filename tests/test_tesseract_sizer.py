@@ -16,8 +16,8 @@ from jax.test_util import check_grads
 
 from normax.analysis import MemberForces
 from normax.materials import Steel355
-from normax.sections import TubeFamily
-from normax.sections import build_section_family
+from normax.sections import TubeCatalog
+from normax.sections import build_section_catalog
 from normax.sizing import MemberSizes
 from normax.sizing import blueprint as blueprint_module
 from normax.sizing.blueprint import DIAMETER_MINIMUM
@@ -25,13 +25,12 @@ from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
 from normax.sizing.blueprint import coerce_member_actions
-from normax.sizing.blueprint import coerce_section_family
+from normax.sizing.blueprint import coerce_section_catalog
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractSizer
-from normax.tesseract import open_tesseract_sizing
 
 # The proof this file makes: an external, non-differentiable, scalar code
 # library fills the sizing contract and carries an exact adjoint, reached only
@@ -80,13 +79,13 @@ def structure():
 
 
 @pytest.fixture(scope="module")
-def family():
-    return TubeFamily(RATIO, Steel355())
+def catalog():
+    return TubeCatalog(RATIO, Steel355())
 
 
 @pytest.fixture(scope="module")
 def host():
-    return coerce_section_family(RATIO, YIELD_SAMPLE)
+    return coerce_section_catalog(RATIO, YIELD_SAMPLE)
 
 
 @pytest.fixture(scope="module")
@@ -102,8 +101,8 @@ def forces():
 
 
 @pytest.fixture(scope="module")
-def remote(structure, family):
-    return TesseractSizer(structure, open_tesseract_sizing("blueprint"), family)
+def remote(structure, catalog):
+    return TesseractSizer(structure, catalog, backend="blueprint")
 
 
 def test_the_backend_names_no_ec3_library():
@@ -273,9 +272,9 @@ def test_an_unloaded_member_sits_at_the_clamp(remote):
     assert np.allclose(np.asarray(gradient), 0.0)
 
 
-def test_a_wall_less_family_is_refused(structure, remote):
+def test_a_wall_less_catalog_is_refused(structure, remote):
     with pytest.raises(ValueError, match="wall"):
-        TesseractSizer(structure, remote.client, TubeFamily(2.0, Steel355()))
+        TesseractSizer(structure, TubeCatalog(2.0, Steel355()), backend="blueprint")
 
 
 def test_the_gradient_survives_jit(remote, forces):
@@ -418,11 +417,11 @@ def test_the_echoed_utilization_pulls_the_held_rule(boundary, crossing):
     assert np.array_equal(via_echo["diameter_held"], via_held["diameter_held"])
 
 
-def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, family, remote):
+def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, catalog, remote):
     # Drive the EC3 sizer's buckling length to zero and set its moment
     # combination linear, and the two libraries size alike — exactly in
     # tension, and to the first-order slenderness residual in compression.
-    silenced = Ec3Sizer(structure, family, resultant=False)
+    silenced = Ec3Sizer(structure, catalog, resultant=False)
     moment = jnp.asarray([2.0e6, 0.0, 5.0e7, 1.0e6])
     ends = jnp.stack([moment, moment], axis=-1)[None, :, :]
     forces = MemberForces(
@@ -435,15 +434,15 @@ def test_the_ec3_sizer_agrees_when_buckling_is_silenced(structure, family, remot
     assert np.allclose(np.asarray(checked), np.asarray(naive), rtol=1e-7, atol=0.0)
 
 
-def test_the_diameter_floor_matches_the_catalogue(structure):
-    checked = Ec3Sizer(structure, build_section_family(Steel355(), 3))
+def test_the_diameter_floor_matches_the_catalog(structure):
+    checked = Ec3Sizer(structure, build_section_catalog(Steel355(), 3))
 
-    assert float(checked.catalogue.diameter_min) == DIAMETER_MINIMUM
+    assert float(checked.ec3_catalog.diameter_min) == DIAMETER_MINIMUM
 
 
-def test_the_host_coefficients_match_the_sections(family):
-    unit = family(1.0)
-    host = coerce_section_family(RATIO, YIELD_SAMPLE)
+def test_the_host_coefficients_match_the_sections(catalog):
+    unit = catalog(1.0)
+    host = coerce_section_catalog(RATIO, YIELD_SAMPLE)
 
     assert float(unit.area) == host.area_coefficient
     assert float(2.0 * unit.second_moment) == pytest.approx(
@@ -454,7 +453,7 @@ def test_the_host_coefficients_match_the_sections(family):
 def test_the_private_evaluator_is_the_public_clause():
     # The bisection runs through Blueprints' `_evaluate`; if a release moves
     # it, this fails here rather than silently changing every size.
-    host = coerce_section_family(RATIO, YIELD_SAMPLE)
+    host = coerce_section_catalog(RATIO, YIELD_SAMPLE)
     generator = np.random.default_rng(20260825)
 
     assert blueprint_module.EVALUATOR_REACHED

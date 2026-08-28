@@ -55,7 +55,7 @@ def view_designs(
     Blocks until the window closes.
     """
     if isinstance(analyzer, TesseractAnalyzer):
-        analyzer = SmaxAnalyzer(structure, analyzer.family(100.0))
+        analyzer = SmaxAnalyzer(structure, analyzer.catalog(100.0))
 
     viewer = vix.Viewer(show_reactions=False)
 

@@ -30,25 +30,17 @@ from normax.analysis import AbstractFrameAnalyzer
 from normax.analysis import MemberForces
 from normax.analysis import find_normal_axis
 from normax.config import AnalysisConfig
-from normax.config import FormFindingConfig
 from normax.config import SizingConfig
-from normax.design import StructuralDesignPipeline
-from normax.form_finding import FdmFormFinder
-from normax.form_finding import build_plan_basis
 from normax.loads import count_load_cases
-from normax.loads import read_polar_plan
 from normax.loads import select_load_case
 from normax.loads import stack_load_cases
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
-from normax.sizing.blueprint import snapshot_family
+from normax.sizing.blueprint import snapshot_catalog
 from normax.structures import Structure
-from normax.symmetry import build_member_spread
-from normax.symmetry import find_mirror_nodes
-from normax.symmetry import find_rotated_nodes
 
 # The crossed solvers, and which of them is planar and must be told its plane.
 ANALYSIS_CROSSED = ("opensees", "pynite")
@@ -59,10 +51,6 @@ SIZING_CROSSED = ("blueprint",)
 
 # Where the Tesseract API modules live, relative to the package.
 TESSERACTS = Path(__file__).resolve().parent.parent / "tesseracts"
-
-# What each stage reads to choose who answers it.
-ANALYSIS_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
-SIZING_VARIABLE = "NORMAX_SIZING_BACKEND"
 
 # Endpoints whose work must not move between threads.
 PINNED_ENDPOINTS = ("apply", "jacobian_vector_product", "vector_jacobian_product")
@@ -155,14 +143,12 @@ def open_tesseract(stage: str, root: Path = TESSERACTS) -> Tesseract:
     return Tesseract.from_tesseract_api(module)
 
 
-def open_tesseract_analysis(backend: str, root: Path = TESSERACTS) -> Tesseract:
+def open_tesseract_analysis(root: Path = TESSERACTS) -> Tesseract:
     """
-    The analysis stage, its solver picked for the whole process.
+    The analysis stage, whichever solver a call asks it for.
 
     Parameters
     ----------
-    backend :
-        Which solver answers the stage, `opensees` or `pynite`.
     root :
         Directory holding one subdirectory per stage.
 
@@ -173,23 +159,18 @@ def open_tesseract_analysis(backend: str, root: Path = TESSERACTS) -> Tesseract:
 
     Notes
     -----
-    The stage reads its solver from the environment, since a schema cannot
-    carry a choice about who implements it and a container is configured once
-    at startup.
+    The solver is a schema input rather than a property of the client, so one
+    client answers for either and two callers cannot disturb each other.
     """
-    os.environ[ANALYSIS_VARIABLE] = backend
-
     return open_tesseract("analysis", root)
 
 
-def open_tesseract_sizing(backend: str, root: Path = TESSERACTS) -> Tesseract:
+def open_tesseract_sizing(root: Path = TESSERACTS) -> Tesseract:
     """
-    The sizing stage, its check picked for the whole process.
+    The sizing stage, whichever check a call asks it for.
 
     Parameters
     ----------
-    backend :
-        Which check answers the stage, `blueprint` being the one that ships.
     root :
         Directory holding one subdirectory per stage.
 
@@ -200,12 +181,9 @@ def open_tesseract_sizing(backend: str, root: Path = TESSERACTS) -> Tesseract:
 
     Notes
     -----
-    The stage reads its check from the environment, since a schema cannot
-    carry a choice about who implements it and a container is configured once
-    at startup.
+    The check is a schema input rather than a property of the client, so one
+    client answers for either and two callers cannot disturb each other.
     """
-    os.environ[SIZING_VARIABLE] = backend
-
     return open_tesseract("sizing", root)
 
 
@@ -215,14 +193,16 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
 
     Attributes
     ----------
+    backend :
+        Which solver answers the stage, `opensees` or `pynite`.
     client :
         The analysis Tesseract.
-    family :
-        The section family the frame is analyzed with, whose ratio fixes the
+    catalog :
+        The section catalog the frame is analyzed with, whose ratio fixes the
         wall and whose grade supplies the material.
     normal :
         Index of the global axis a planar structure has no thickness along, or
-        None for a structure occupying all three dimensions.
+        None where the solver works in three dimensions. Measured, not given.
     edges :
         The two node indices spanned by every member.
     supports :
@@ -234,10 +214,16 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     material property crosses as a plain number, because the schema is meant to
     be satisfiable by a solver whose adjoints were written by hand. One load
     case crosses per call, the schema carrying one.
+
+    **The backend crosses with the call.** It is a schema input, read
+    statically on the far side, so an analyzer means the solver it was built
+    for and two of them may sit in one process without either disturbing the
+    other.
     """
 
+    backend: str = eqx.field(static=True)
     client: Tesseract
-    family: TubeFamily
+    catalog: TubeCatalog
     normal: int | None = eqx.field(static=True)
     edges: Int[Array, "members 2"]
     supports: Int[Array, "supports"]
@@ -245,9 +231,8 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
     def __init__(
         self,
         structure: Structure,
-        client: Tesseract,
-        family: TubeFamily,
-        normal: int | None = None,
+        catalog: TubeCatalog,
+        backend: str,
     ) -> None:
         """
         Build an analyzer that crosses a boundary to solve.
@@ -256,17 +241,25 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         ----------
         structure :
             The structure supplying the connectivity and the supported nodes.
-        client :
-            The analysis Tesseract.
-        family :
-            The section family the frame is analyzed with.
-        normal :
-            Index of the global axis a planar structure has no thickness along,
-            or None for a structure occupying all three dimensions.
+        catalog :
+            The section catalog the frame is analyzed with.
+        backend :
+            Which solver answers the stage, `opensees` or `pynite`.
+
+        Notes
+        -----
+        Whether a structure is planar is a fact about the structure, so it is
+        measured here rather than asked for: a caller told to supply it could
+        only restate what the geometry already says, and the far side raises
+        when the two disagree. A solver working in three dimensions is handed
+        None, having no axis to drop.
         """
-        self.client = client
-        self.family = family
-        self.normal = normal
+        planar = backend in ANALYSIS_PLANAR
+
+        self.backend = backend
+        self.client = open_tesseract_analysis()
+        self.catalog = catalog
+        self.normal = find_normal_axis(structure) if planar else None
         self.edges = jnp.asarray(structure.edges, dtype=jnp.int64)
         self.supports = jnp.asarray(structure.supports, dtype=jnp.int64)
 
@@ -293,7 +286,7 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
         forces :
             Axial force and both end moments, per load case and member.
         """
-        steel = self.family.material
+        steel = self.catalog.material
         per_case = []
         for load_case in loads:
             inputs = {
@@ -305,8 +298,9 @@ class TesseractAnalyzer(AbstractFrameAnalyzer):
                 "f_y": steel.f_y,
                 "e_mod": steel.e_mod,
                 "density": steel.density,
-                "ratio": self.family.ratio,
+                "ratio": self.catalog.ratio,
                 "normal": self.normal,
+                "backend": self.backend,
             }
             crossed = apply_tesseract(self.client, inputs, vmap_method="sequential")
             forces = MemberForces(
@@ -325,14 +319,16 @@ class TesseractSizer(AbstractMemberSizer):
 
     Attributes
     ----------
+    backend :
+        Which check answers the stage, `blueprint`.
     client :
         The check's Tesseract.
-    family :
-        The section family every member is drawn from.
+    catalog :
+        The section catalog every member is drawn from.
     ratio :
-        The family's wall proportion, snapshotted for the host.
+        The catalog's wall proportion, snapshotted for the host.
     f_y :
-        The family's yield strength, snapshotted for the host.
+        The catalog's yield strength, snapshotted for the host.
 
     Notes
     -----
@@ -341,18 +337,23 @@ class TesseractSizer(AbstractMemberSizer):
     back as `utilization_held`. A descent constrained on this block therefore
     crosses on every evaluation, and its gradient takes the far side's
     hand-written adjoint in one crossing.
+
+    **The backend crosses with the call**, for the reason `TesseractAnalyzer`
+    gives: a stage that reads its implementation from a schema input is one
+    two callers may share.
     """
 
+    backend: str = eqx.field(static=True)
     client: Tesseract
-    family: TubeFamily
+    catalog: TubeCatalog
     ratio: float = eqx.field(static=True)
     f_y: float = eqx.field(static=True)
 
     def __init__(
         self,
         structure: Structure,
-        client: Tesseract,
-        family: TubeFamily,
+        catalog: TubeCatalog,
+        backend: str,
     ) -> None:
         """
         Build a sizer that crosses a boundary for every question.
@@ -361,20 +362,21 @@ class TesseractSizer(AbstractMemberSizer):
         ----------
         structure :
             The structure whose members are sized. Read for nothing.
-        client :
-            The check's Tesseract.
-        family :
-            The section family every member is drawn from.
+        catalog :
+            The section catalog every member is drawn from.
+        backend :
+            Which check answers the stage, `blueprint`.
 
         Raises
         ------
         ValueError
-            If the family's ratio leaves no wall at all.
+            If the catalog's ratio leaves no wall at all.
         """
-        ratio, f_y = snapshot_family(family)
+        ratio, f_y = snapshot_catalog(catalog)
 
-        self.client = client
-        self.family = family
+        self.backend = backend
+        self.client = open_tesseract_sizing()
+        self.catalog = catalog
         self.ratio = ratio
         self.f_y = f_y
 
@@ -417,6 +419,7 @@ class TesseractSizer(AbstractMemberSizer):
                 "gamma_m0": jnp.asarray(GAMMA_M0),
                 "ratio": jnp.asarray(self.ratio),
                 "diameter_min": jnp.asarray(DIAMETER_MINIMUM),
+                "backend": self.backend,
                 "solve": solve,
             }
             answer = apply_tesseract(self.client, inputs, vmap_method="sequential")
@@ -450,7 +453,7 @@ class TesseractSizer(AbstractMemberSizer):
         demanded = jnp.stack([answer["diameter"] for answer in crossed])
         used = jnp.stack([answer["utilization"] for answer in crossed])
 
-        return MemberSizes(self.family(demanded), used)
+        return MemberSizes(self.catalog(demanded), used)
 
     def compute_utilization(
         self,
@@ -487,7 +490,7 @@ class TesseractSizer(AbstractMemberSizer):
 
 def build_analyzer(
     structure: Structure,
-    family: TubeFamily,
+    catalog: TubeCatalog,
     config: AnalysisConfig,
 ) -> AbstractFrameAnalyzer:
     """
@@ -497,8 +500,8 @@ def build_analyzer(
     ----------
     structure :
         The structure the block is built on.
-    family :
-        The section family the frame is analyzed with.
+    catalog :
+        The section catalog the frame is analyzed with.
     config :
         The backend.
 
@@ -515,15 +518,12 @@ def build_analyzer(
     if config.backend not in ANALYSIS_CROSSED:
         raise ValueError(f"unknown analysis backend {config.backend!r}")
 
-    normal = find_normal_axis(structure) if config.backend in ANALYSIS_PLANAR else None
-    client = open_tesseract_analysis(config.backend)
-
-    return TesseractAnalyzer(structure, client, family, normal)
+    return TesseractAnalyzer(structure, catalog, config.backend)
 
 
 def build_sizer(
     structure: Structure,
-    family: TubeFamily,
+    catalog: TubeCatalog,
     config: SizingConfig,
 ) -> AbstractMemberSizer:
     """
@@ -533,8 +533,8 @@ def build_sizer(
     ----------
     structure :
         The structure the block is built on.
-    family :
-        The section family every size is drawn from.
+    catalog :
+        The section catalog every size is drawn from.
     config :
         The backend.
 
@@ -551,72 +551,4 @@ def build_sizer(
     if config.backend not in SIZING_CROSSED:
         raise ValueError(f"unknown sizing backend {config.backend!r}")
 
-    client = open_tesseract_sizing(config.backend)
-
-    return TesseractSizer(structure, client, family)
-
-
-def build_pipeline(
-    structure: Structure,
-    section_family: TubeFamily,
-    form_finding: FormFindingConfig,
-    analysis: AnalysisConfig,
-    sizing: SizingConfig,
-) -> StructuralDesignPipeline:
-    """
-    The three blocks a run composes, built on one structure.
-
-    Parameters
-    ----------
-    structure :
-        The structure every block is built from.
-    section_family :
-        The section family both the analysis and the check draw tubes from, so
-        whatever differs downstream is the check itself.
-    form_finding :
-        The basis convention and the mirror the form finder holds the plan
-        with, or neither.
-    analysis :
-        Which solver fills the analysis slot.
-    sizing :
-        Which check fills the sizing slot, and which symmetries fold the
-        diameters.
-
-    Returns
-    -------
-    pipeline :
-        A form finder, a frame analysis and a code check, composed, with the
-        diameter folding beside them.
-
-    Raises
-    ------
-    ValueError
-        If a mirror is named without a basis to fold the densities through, or
-        the diameters are to be folded by a mirror the form finding names none
-        of.
-    """
-    if form_finding.mirror is not None and form_finding.basis is None:
-        raise ValueError("a mirror folds the densities only through a basis: name one")
-    mirror = None
-    if form_finding.mirror is not None:
-        mirror = find_mirror_nodes(structure, form_finding.mirror)
-    basis = None
-    if form_finding.basis is not None:
-        basis = build_plan_basis(structure, mirror, form_finding.basis)
-
-    if sizing.fold_mirror and mirror is None:
-        raise ValueError("fold_mirror asks for a mirror the form finding does not name")
-    rotation = None
-    if sizing.fold_polar:
-        rotation = find_rotated_nodes(structure, read_polar_plan(structure).num_spokes)
-    folded_by = (mirror if sizing.fold_mirror else None, rotation)
-    spread = build_member_spread(structure, folded_by)
-
-    pipeline = StructuralDesignPipeline(
-        FdmFormFinder(structure, basis),
-        build_analyzer(structure, section_family, analysis),
-        build_sizer(structure, section_family, sizing),
-        spread,
-    )
-
-    return pipeline
+    return TesseractSizer(structure, catalog, config.backend)

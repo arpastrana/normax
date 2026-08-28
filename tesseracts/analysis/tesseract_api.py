@@ -10,11 +10,11 @@ downstream consumes moments, and this is where they come from.
 disagree about how they differentiate — a C++ solver with sensitivities compiled
 into it, and a Python solver with none, given an adjoint by hand — and the
 differentiable inputs are exactly the two both can supply: the coordinates and
-the diameters. `NORMAX_ANALYSIS_BACKEND` names the solver, `opensees` in two
-dimensions or `pynite` in three.
+the diameters. The `backend` input names the solver, `opensees` in two
+dimensions or `pynite` in three, and is read statically: who answers a stage
+is a per-call choice here so that one process can hold both and compare them.
 """
 
-import os
 from typing import Any
 
 import jax
@@ -30,8 +30,7 @@ from tesseract_core.runtime import Int64
 
 jax.config.update("jax_enable_x64", True)
 
-# Environment variable naming the backend, and the one used when it is unset.
-BACKEND_VARIABLE = "NORMAX_ANALYSIS_BACKEND"
+# The solver a call gets when it names none.
 BACKEND_DEFAULT = "pynite"
 
 
@@ -74,6 +73,15 @@ class InputSchema(BaseModel):
     backend alone, whose two kept axes become the solver's own.
     """
 
+    backend: str = BACKEND_DEFAULT
+    """Which solver answers the stage, `opensees` or `pynite`.
+
+    Read statically. A schema ordinarily says what a stage computes rather than
+    who computes it, and a served image would be built around one solver; this
+    one ships both so that a single process can hold the two and compare them,
+    and carrying the choice per call is what keeps that comparison honest.
+    """
+
 
 class OutputSchema(BaseModel):
     """
@@ -94,9 +102,19 @@ class OutputSchema(BaseModel):
     """
 
 
-def _selected_backend() -> Any:
+def _selected_backend(selected: str) -> Any:
     """
     The module implementing the selected backend.
+
+    Parameters
+    ----------
+    selected :
+        Which solver answers the stage, as the call named it.
+
+    Returns
+    -------
+    backend :
+        The module owning that solver's forward pass and its derivative.
 
     Raises
     ------
@@ -106,11 +124,9 @@ def _selected_backend() -> Any:
     Notes
     -----
     Imported on use, so an image shipping one backend's dependencies still reads
-    the schema, and read per call, so one process can compare the two. A backend
-    owns its derivative as well as its forward pass.
+    the schema. The name arrives per call, so two callers in one process each
+    get the solver they asked for.
     """
-    selected = os.environ.get(BACKEND_VARIABLE, BACKEND_DEFAULT)
-
     if selected == "opensees":
         import _backend_opensees as backend  # noqa: PLC0415
     elif selected == "pynite":
@@ -126,7 +142,7 @@ def apply(inputs: InputSchema) -> OutputSchema:
     Analyze the frame.
     """
     frame = read_frame(inputs.model_dump())
-    forces = _selected_backend().solve_forces(frame)
+    forces = _selected_backend(inputs.backend).solve_forces(frame)
 
     return force_outputs(forces)
 
@@ -176,6 +192,6 @@ def vector_jacobian_product(
     """
     frame = read_frame(inputs.model_dump())
     cotangent = read_cotangent(cotangent_vector, frame.structure.num_edges)
-    pulled = _selected_backend().forces_vjp(frame, cotangent)
+    pulled = _selected_backend(inputs.backend).forces_vjp(frame, cotangent)
 
     return {name: np.asarray(pulled[name]) for name in vjp_inputs}

@@ -46,8 +46,8 @@ def _fingerprint(frame: AnalyzedFrame) -> bytes:
         digest.update(str(held.dtype).encode())
         digest.update(str(held.shape).encode())
         digest.update(held.tobytes())
-    steel = frame.family.material
-    for scalar in (steel.f_y, steel.e_mod, steel.density, frame.family.ratio):
+    steel = frame.catalog.material
+    for scalar in (steel.f_y, steel.e_mod, steel.density, frame.catalog.ratio):
         digest.update(repr(float(scalar)).encode())
 
     return digest.digest()
@@ -76,7 +76,7 @@ def _frame_problem(frame: AnalyzedFrame) -> pynite.FrameProblem:
     """
     The frame in the container the rule takes; the normal axis is not read.
     """
-    return pynite.FrameProblem(frame.structure, frame.family, frame.loads)
+    return pynite.FrameProblem(frame.structure, frame.catalog, frame.loads)
 
 
 def solve_forces(frame: AnalyzedFrame) -> MemberForces:

@@ -51,7 +51,8 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 from normax.reporting import ToleranceCheck
 from normax.reporting import verify_checks
-from normax.sections import build_section_family
+from normax.sections import UniformDiameterInitializer
+from normax.sections import build_section_catalog
 from normax.structures import Structure
 from normax.structures import build_gridshell_3d
 from normax.tesseract import build_analyzer
@@ -391,7 +392,7 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
     )
 
     structure = sample.structure
-    family = build_section_family(Steel355(), SECTION_CLASS)
+    catalog = build_section_catalog(Steel355(), SECTION_CLASS)
     diameters = jnp.asarray(sample.diameters)
     stacked = jnp.asarray(sample.loads)[None, ...]
 
@@ -403,13 +404,13 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
 
         return axial + major + minor
 
-    traced = SmaxAnalyzer(structure, family(SEED_DIAMETER))
+    traced = SmaxAnalyzer(structure, catalog(SEED_DIAMETER))
     reference = jax.grad(lambda x, d: loss(traced, x, d), argnums=(0, 1))(
         structure.nodes, diameters
     )
 
     problem = pynite.FrameProblem(
-        structure=structure, catalogue=family, loads=sample.loads
+        structure=structure, catalog=catalog, loads=sample.loads
     )
     forces = pynite.compute_member_forces(
         problem, np.asarray(structure.nodes), sample.diameters, sample.loads
@@ -428,8 +429,8 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
     by_node = pulled.xyz
     by_member = pulled.diameter
 
-    analysis = AnalysisConfig(SEED_DIAMETER, "pynite")
-    crossed = build_analyzer(structure, family, analysis)
+    analysis = AnalysisConfig(UniformDiameterInitializer(SEED_DIAMETER), "pynite")
+    crossed = build_analyzer(structure, catalog, analysis)
     served = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
         structure.nodes, diameters
     )
@@ -477,12 +478,12 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
     report.write_heading("What the rule buys")
 
     structure = sample.structure
-    family = build_section_family(Steel355(), SECTION_CLASS)
+    catalog = build_section_catalog(Steel355(), SECTION_CLASS)
     nodes = np.asarray(structure.nodes)
     members = structure.num_edges
     width = nodes.shape[0] * 3 + members
     problem = pynite.FrameProblem(
-        structure=structure, catalogue=family, loads=sample.loads
+        structure=structure, catalog=catalog, loads=sample.loads
     )
 
     # Warmed first: the first call through either compiles, and a cost table

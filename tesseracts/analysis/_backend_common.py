@@ -14,7 +14,7 @@ from jaxtyping import Float
 
 from normax.analysis import MemberForces
 from normax.materials import SteelGrade
-from normax.sections import TubeFamily
+from normax.sections import TubeCatalog
 from normax.structures import Structure
 
 
@@ -26,8 +26,8 @@ class AnalyzedFrame(NamedTuple):
     ----------
     structure :
         The connectivity and the supports, its nodes at the geometry analyzed.
-    family :
-        The section family, whose ratio fixes the wall and whose grade supplies
+    catalog :
+        The section catalog, whose ratio fixes the wall and whose grade supplies
         the material.
     diameters :
         Outer diameter of every member.
@@ -38,7 +38,7 @@ class AnalyzedFrame(NamedTuple):
     """
 
     structure: Structure
-    family: TubeFamily
+    catalog: TubeCatalog
     diameters: Float[np.ndarray, "members"]
     loads: Float[np.ndarray, "nodes 3"]
     normal: int | None
@@ -69,11 +69,11 @@ def read_frame(inputs: dict[str, Any]) -> AnalyzedFrame:
         supports=np.asarray(inputs["supports"]),
     )
     grade = SteelGrade(inputs["f_y"], 0.0, inputs["e_mod"], inputs["density"])
-    family = TubeFamily(inputs["ratio"], grade)
+    catalog = TubeCatalog(inputs["ratio"], grade)
 
     return AnalyzedFrame(
         structure,
-        family,
+        catalog,
         np.asarray(inputs["diameter"]),
         np.asarray(inputs["loads"]),
         inputs["normal"],

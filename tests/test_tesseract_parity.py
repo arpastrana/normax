@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-import os
 import types
 
 import jax
@@ -9,22 +8,20 @@ import pytest
 from conftest import load_tesseract_api
 from tesseract_jax import apply_tesseract
 
-from normax.analysis import find_normal_axis
 from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
-from normax.loads import load_tributary
-from normax.loads import load_uniform
+from normax.loads import create_load_tributary
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
-from normax.tesseract import ANALYSIS_VARIABLE
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
 from normax.tesseract import open_tesseract_analysis
@@ -84,8 +81,8 @@ def relative(oracle, composed):
 # The arch, both routes
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def family():
-    return build_section_family(Steel355(), 3)
+def catalog():
+    return build_section_catalog(Steel355(), 3)
 
 
 @pytest.fixture(scope="module")
@@ -95,7 +92,7 @@ def structure():
 
 @pytest.fixture(scope="module")
 def one_case(structure):
-    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
+    return assemble_load_cases([create_load_uniform(structure, TOTAL_LOAD)])
 
 
 @pytest.fixture(scope="module")
@@ -114,54 +111,39 @@ def params(force_densities):
 
 @pytest.fixture(scope="module")
 def opensees_client():
-    return open_tesseract_analysis("opensees")
+    return open_tesseract_analysis()
 
 
 @pytest.fixture(scope="module")
 def blueprint_client():
-    return open_tesseract_sizing("blueprint")
+    return open_tesseract_sizing()
 
 
 @pytest.fixture(scope="module")
-def shared_sizer(structure, family, blueprint_client):
+def shared_sizer(structure, catalog):
     """One crossed check in both triples, so parity isolates the analysis."""
-    return TesseractSizer(structure, blueprint_client, family)
+    return TesseractSizer(structure, catalog, backend="blueprint")
 
 
 @pytest.fixture(scope="module")
-def oracle_pipeline(structure, family, shared_sizer):
+def oracle_pipeline(structure, catalog, shared_sizer):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
+        SmaxAnalyzer(structure, catalog(SEED)),
         shared_sizer,
     )
 
 
 @pytest.fixture(scope="module")
-def crossed_pipeline(structure, family, opensees_client, shared_sizer):
-    analyzer = TesseractAnalyzer(
-        structure, opensees_client, family, find_normal_axis(structure)
-    )
+def crossed_pipeline(structure, catalog, shared_sizer):
+    analyzer = TesseractAnalyzer(structure, catalog, backend="opensees")
 
     return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, shared_sizer)
-
-
-@pytest.fixture
-def opensees_route():
-    """The analysis stage reads its solver per call, so each test names it."""
-    os.environ[ANALYSIS_VARIABLE] = "opensees"
-
-
-@pytest.fixture
-def pynite_route():
-    os.environ[ANALYSIS_VARIABLE] = "pynite"
 
 
 @pytest.fixture(scope="module")
 def both_designs(oracle_pipeline, crossed_pipeline, params, one_case):
     """The same design taken in process and across the two boundaries."""
-    os.environ[ANALYSIS_VARIABLE] = "opensees"
-
     return oracle_pipeline(params, one_case), crossed_pipeline(params, one_case)
 
 
@@ -198,7 +180,7 @@ def test_the_crossed_check_agrees_on_the_utilization(both_designs):
 
 
 def test_the_sections_and_the_mass_cross_unchanged(both_designs):
-    # Both routes hand the family the same held diameters, so the sections and
+    # Both routes hand the catalog the same held diameters, so the sections and
     # the mass they weigh are identical rather than merely close.
     oracle, crossed = both_designs
 
@@ -228,7 +210,7 @@ def worked_utilization(pipeline, loads):
 
 
 def test_the_utilization_gradient_survives_the_boundary(
-    opensees_route, oracle_pipeline, crossed_pipeline, params, one_case
+    oracle_pipeline, crossed_pipeline, params, one_case
 ):
     oracle = worked_utilization(oracle_pipeline, one_case)
     crossed = worked_utilization(crossed_pipeline, one_case)
@@ -245,7 +227,7 @@ def test_the_utilization_gradient_survives_the_boundary(
 
 
 def test_the_diameter_gradient_survives_the_boundary(
-    opensees_route, oracle_pipeline, crossed_pipeline, params, one_case
+    oracle_pipeline, crossed_pipeline, params, one_case
 ):
     # The diameters reach both crossings: the frame's stiffness on one side of
     # the analysis boundary, the held check on the other.
@@ -264,7 +246,7 @@ def test_the_diameter_gradient_survives_the_boundary(
 
 
 def test_the_crossed_gradient_matches_central_differences(
-    opensees_route, crossed_pipeline, params, one_case
+    crossed_pipeline, params, one_case
 ):
     # Parity says the boundary changed nothing. This says the thing it left
     # unchanged is right, without the in-process pipeline vouching for it.
@@ -287,7 +269,7 @@ def test_the_crossed_gradient_matches_central_differences(
 
 
 def test_the_boundary_does_not_downcast_to_single_precision(
-    opensees_route, crossed_pipeline, params, one_case, both_designs
+    crossed_pipeline, params, one_case, both_designs
 ):
     # Every schema declares float64; a float32 stage would downcast silently
     # and cost eight digits.
@@ -328,7 +310,7 @@ def shell():
 
 @pytest.fixture(scope="module")
 def shell_case(shell):
-    return assemble_load_cases([load_tributary(shell, SHELL_PRESSURE)])
+    return assemble_load_cases([create_load_tributary(shell, SHELL_PRESSURE)])
 
 
 @pytest.fixture(scope="module")
@@ -343,31 +325,29 @@ def shell_params(shell, shell_case):
 
 
 @pytest.fixture(scope="module")
-def shell_sizer(shell, family, blueprint_client):
+def shell_sizer(shell, catalog):
     """One crossed check in both shell triples as well."""
-    return TesseractSizer(shell, blueprint_client, family)
+    return TesseractSizer(shell, catalog, backend="blueprint")
 
 
 @pytest.fixture(scope="module")
-def shell_oracle(shell, family, shell_sizer):
+def shell_oracle(shell, catalog, shell_sizer):
     return StructuralDesignPipeline(
         FdmFormFinder(shell),
-        SmaxAnalyzer(shell, family(SEED)),
+        SmaxAnalyzer(shell, catalog(SEED)),
         shell_sizer,
     )
 
 
 @pytest.fixture(scope="module")
-def shell_crossed(shell, family, shell_sizer):
-    analyzer = TesseractAnalyzer(shell, open_tesseract_analysis("pynite"), family, None)
+def shell_crossed(shell, catalog, shell_sizer):
+    analyzer = TesseractAnalyzer(shell, catalog, backend="pynite")
 
     return StructuralDesignPipeline(FdmFormFinder(shell), analyzer, shell_sizer)
 
 
 @pytest.fixture(scope="module")
 def shell_designs(shell_oracle, shell_crossed, shell_params, shell_case):
-    os.environ[ANALYSIS_VARIABLE] = "pynite"
-
     return shell_oracle(shell_params, shell_case), shell_crossed(
         shell_params, shell_case
     )
@@ -395,7 +375,7 @@ def test_the_space_frame_check_agrees_on_the_utilization(shell_designs):
 
 
 def test_the_space_frame_gradient_survives_the_boundary(
-    pynite_route, shell_oracle, shell_crossed, shell_params, shell_case
+    shell_oracle, shell_crossed, shell_params, shell_case
 ):
     # Held to a frame-free scalar: the blueprint demand sums the two moment
     # axes linearly, so its gradient reads each solver's roll convention, and

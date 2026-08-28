@@ -8,11 +8,11 @@ import pytest
 from normax.analysis.smax import compute_member_forces
 from normax.analysis.smax import prepare_model
 from normax.form_finding import FdmFormFinder
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.materials import SteelGrade
-from normax.sections import TubeFamily
-from normax.sections import build_section_family
+from normax.sections import TubeCatalog
+from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 
 # A 10 m arch of ten members under a 20 kN load at every free node, in the XZ
@@ -50,13 +50,13 @@ def steel():
 
 
 @pytest.fixture(scope="module")
-def catalogue(steel):
-    return build_section_family(steel, 3)
+def catalog(steel):
+    return build_section_catalog(steel, 3)
 
 
 @pytest.fixture(scope="module")
-def section(catalogue):
-    return catalogue(DIAMETER)
+def section(catalog):
+    return catalog(DIAMETER)
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +66,7 @@ def structure():
 
 @pytest.fixture(scope="module")
 def applied(structure):
-    return load_uniform(structure, LOAD * (NUM_EDGES - 1))
+    return create_load_uniform(structure, LOAD * (NUM_EDGES - 1))
 
 
 @pytest.fixture(scope="module")
@@ -100,14 +100,14 @@ def test_a_model_prepared_from_any_geometry_gives_the_same_forces(
 
 
 def test_a_model_prepared_from_any_material_and_section_gives_the_same_forces(
-    structure, xyz, catalogue, section, diameters, applied
+    structure, xyz, catalog, section, diameters, applied
 ):
     # An absurd placeholder: unit strengths, a unit modulus, a unit density and
     # a tube larger than anything the arch uses.
-    absurd_family = TubeFamily(
-        catalogue.ratio, SteelGrade(f_y=1.0, f_u=1.0, e_mod=1.0, density=1.0)
+    absurd_catalog = TubeCatalog(
+        catalog.ratio, SteelGrade(f_y=1.0, f_u=1.0, e_mod=1.0, density=1.0)
     )
-    absurd = prepare_model(structure._replace(nodes=xyz * 3.0), absurd_family(999.0))
+    absurd = prepare_model(structure._replace(nodes=xyz * 3.0), absurd_catalog(999.0))
     honest = prepare_model(structure, section)
 
     a = compute_member_forces(absurd, xyz, diameters, section, applied)
@@ -151,11 +151,11 @@ def test_the_geometry_and_the_diameters_are_live_leaves(
         assert float(jnp.max(jnp.abs(gradient))) > 0.0
 
 
-def test_the_modulus_is_a_live_leaf(model, xyz, steel, catalogue, diameters, applied):
+def test_the_modulus_is_a_live_leaf(model, xyz, steel, catalog, diameters, applied):
     # Member forces of a uniform-E linear frame are E-independent, so a
     # compliance is what distinguishes an injected modulus from a baked one.
     def compliance(e_mod):
-        graded = TubeFamily(catalogue.ratio, steel._replace(e_mod=e_mod))
+        graded = TubeCatalog(catalog.ratio, steel._replace(e_mod=e_mod))
         member = compute_member_forces(model, xyz, diameters, graded(DIAMETER), applied)
 
         return jnp.sum(member.moment_major**2) / e_mod

@@ -19,9 +19,9 @@ from normax.form_finding import FormFoundShape
 from normax.form_finding import PlanBasis
 from normax.form_finding import select_free_nodes
 from normax.loads import assemble_load_cases
-from normax.loads import load_uniform
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
@@ -190,20 +190,20 @@ def structure():
 
 @pytest.fixture(scope="module")
 def loads(structure):
-    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
+    return assemble_load_cases([create_load_uniform(structure, TOTAL_LOAD)])
 
 
 @pytest.fixture(scope="module")
-def family():
-    return build_section_family(Steel355(), 3)
+def catalog():
+    return build_section_catalog(Steel355(), 3)
 
 
-def build_problem(structure, formfinder, family, loads):
+def build_problem(structure, formfinder, catalog, loads):
     """
     A design problem over a comparison finder, whose coordinates are its own.
     """
     pipeline = StructuralDesignPipeline(
-        formfinder, SmaxAnalyzer(structure, family(SEED)), Ec3Sizer(structure, family)
+        formfinder, SmaxAnalyzer(structure, catalog(SEED)), Ec3Sizer(structure, catalog)
     )
     constraints = DesignConstraints(DIAMETER_FLOOR, 0.0, None, None, None, None)
 
@@ -211,10 +211,10 @@ def build_problem(structure, formfinder, family, loads):
 
 
 def test_the_heights_finder_composes_and_the_mass_has_a_gradient(
-    structure, family, loads
+    structure, catalog, loads
 ):
     finder = HeightsFormFinder(structure)
-    problem = build_problem(structure, finder, family, loads)
+    problem = build_problem(structure, finder, catalog, loads)
     heights = jnp.asarray(structure.nodes)[select_free_nodes(structure), 2] * 1.1
     diameters = jnp.full(NUM_EDGES, SEED)
 
@@ -236,10 +236,10 @@ def test_the_heights_finder_composes_and_the_mass_has_a_gradient(
 
 
 def test_the_drawn_finder_composes_and_moves_the_diameters_alone(
-    structure, family, loads
+    structure, catalog, loads
 ):
     finder = DrawnFormFinder(structure)
-    problem = build_problem(structure, finder, family, loads)
+    problem = build_problem(structure, finder, catalog, loads)
     diameters = jnp.full(NUM_EDGES, SEED)
 
     design = problem.pipeline(DesignParameters(jnp.zeros(0), diameters), loads)

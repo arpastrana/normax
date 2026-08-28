@@ -52,10 +52,10 @@ constraints:
 # the speed; this truss is flat across two decades of it, so the conservative
 # end is kept.
 optimization:
-  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_max: 12                # most multiplier updates, the outer rounds, to spend
   rounds_warmup: 3              # first rounds given the larger inner budget
   iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
-  iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
+  iterations_after_warmup: 50   # most L-BFGS-B iterations in every later round
   penalty_start: 0.1            # penalty parameter of the first round
   penalty_growth: 10.0          # penalty multiplier when a round earns too little
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach

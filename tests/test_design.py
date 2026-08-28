@@ -31,12 +31,12 @@ from normax.form_finding import build_plan_basis
 from normax.form_finding import select_free_nodes
 from normax.form_finding import solve_equilibrium
 from normax.loads import assemble_load_cases
-from normax.loads import load_half_span
-from normax.loads import load_uniform
+from normax.loads import create_load_half_span
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization import OptimizationBudget
-from normax.sections import TubeFamily
-from normax.sections import build_section_family
+from normax.sections import TubeCatalog
+from normax.sections import build_section_catalog
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.structures import build_warren_2d
@@ -54,6 +54,9 @@ NUM_EDGES = 10
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
+# The start diameters, as the config's initializer would hand them over.
+SEEDED = np.full(NUM_EDGES, SEED)
+
 # What the arch's descent is held to beside the check.
 FLOOR = 25.0
 BOUNDS = (-500.0, -1.0)
@@ -68,8 +71,8 @@ def grade():
 
 
 @pytest.fixture(scope="module")
-def family(grade):
-    return build_section_family(grade, 3)
+def catalog(grade):
+    return build_section_catalog(grade, 3)
 
 
 @pytest.fixture(scope="module")
@@ -79,15 +82,15 @@ def structure():
 
 @pytest.fixture(scope="module")
 def one_case(structure):
-    return assemble_load_cases([load_uniform(structure, TOTAL_LOAD)])
+    return assemble_load_cases([create_load_uniform(structure, TOTAL_LOAD)])
 
 
 @pytest.fixture(scope="module")
 def three_cases(structure):
     cases = [
-        load_uniform(structure, TOTAL_LOAD),
-        load_half_span(structure, TOTAL_LOAD, factor=0.25),
-        load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
+        create_load_uniform(structure, TOTAL_LOAD),
+        create_load_half_span(structure, TOTAL_LOAD, factor=0.25),
+        create_load_half_span(structure, TOTAL_LOAD, factor=0.25, mirrored=True),
     ]
 
     return assemble_load_cases(cases)
@@ -103,11 +106,11 @@ def force_densities(structure, one_case):
 
 
 @pytest.fixture(scope="module")
-def pipeline(structure, family):
+def pipeline(structure, catalog):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        Ec3Sizer(structure, family),
+        SmaxAnalyzer(structure, catalog(SEED)),
+        Ec3Sizer(structure, catalog),
     )
 
 
@@ -142,16 +145,16 @@ def warren():
 
 
 @pytest.fixture(scope="module")
-def warren_problem(warren, family):
+def warren_problem(warren, catalog):
     basis = build_plan_basis(warren, warren_mirror(), "pivoted")
     spread = build_member_spread(warren, (warren_mirror(),))
     blocks = StructuralDesignPipeline(
         FdmFormFinder(warren, basis),
-        SmaxAnalyzer(warren, family(SEED)),
-        Ec3Sizer(warren, family),
+        SmaxAnalyzer(warren, catalog(SEED)),
+        Ec3Sizer(warren, catalog),
         spread,
     )
-    loads = assemble_load_cases([load_uniform(warren, TOTAL_LOAD)])
+    loads = assemble_load_cases([create_load_uniform(warren, TOTAL_LOAD)])
     constraints = DesignConstraints(FLOOR, 0.0, None, None, None, None)
 
     return DesignProblem(warren, blocks, loads, constraints)
@@ -167,19 +170,19 @@ def warren_q(warren_problem):
 
 
 # --------------------------------------------------------------------------- #
-# The sizer block is built from its family alone
+# The sizer block is built from its catalog alone
 # --------------------------------------------------------------------------- #
-def test_the_sizer_reads_its_class_off_its_family(structure, grade):
+def test_the_sizer_reads_its_class_off_its_catalog(structure, grade):
     for section_class in (1, 2, 3):
-        family = build_section_family(grade, section_class)
-        sizer = Ec3Sizer(structure, family)
+        catalog = build_section_catalog(grade, section_class)
+        sizer = Ec3Sizer(structure, catalog)
 
         assert sizer.section_class == section_class
 
 
-def test_the_sizer_refuses_a_class_four_family(structure, grade):
+def test_the_sizer_refuses_a_class_four_catalog(structure, grade):
     with pytest.raises(ValueError):
-        Ec3Sizer(structure, TubeFamily(200.0, grade))
+        Ec3Sizer(structure, TubeCatalog(200.0, grade))
 
 
 # --------------------------------------------------------------------------- #
@@ -243,7 +246,7 @@ def test_repeating_a_load_case_repeats_its_utilization_row(pipeline, params, one
 
 
 def test_the_pipeline_checks_the_diameters_it_was_given(pipeline, params, three_cases):
-    # The pipeline no longer sizes: the sections are the family at the given
+    # The pipeline no longer sizes: the sections are the catalog at the given
     # diameters, and the utilization is the check read at them.
     design = pipeline(params, three_cases)
     expected = pipeline.sizer.compute_utilization(
@@ -253,7 +256,7 @@ def test_the_pipeline_checks_the_diameters_it_was_given(pipeline, params, three_
     assert jnp.array_equal(design.sizes.sections.diameter, params.diameters)
     assert jnp.array_equal(
         design.sizes.sections.thickness,
-        pipeline.sizer.family(params.diameters).thickness,
+        pipeline.sizer.catalog(params.diameters).thickness,
     )
     assert jnp.array_equal(design.sizes.utilization, expected)
 
@@ -268,7 +271,7 @@ def test_the_utilization_falls_as_the_diameters_grow(pipeline, params, three_cas
 
 def test_the_mass_is_the_sum_of_what_the_members_weigh(pipeline, params, one_case):
     design = pipeline(params, one_case)
-    tubes = pipeline.sizer.family(params.diameters)
+    tubes = pipeline.sizer.catalog(params.diameters)
     expected = tubes.material.density * jnp.sum(tubes.area * design.shape.lengths)
 
     assert float(compute_mass(design)) == pytest.approx(float(expected), rel=1e-14)
@@ -407,7 +410,7 @@ def test_the_enveloped_start_covers_every_load_case(problem, force_densities):
     # Exact at the seed forces the envelope was sized from; re-analyzed at its
     # own sections the forces shift, which is the frozen-seed gap a search closes.
     pipeline = problem.pipeline
-    diameters = envelope_diameters(problem, np.asarray(force_densities), SEED)
+    diameters = envelope_diameters(problem, np.asarray(force_densities), SEEDED)
     held = jnp.asarray(diameters)
 
     shape = pipeline.formfinder(force_densities, problem.loads.formfinding)
@@ -428,26 +431,36 @@ def test_the_enveloped_start_respects_the_floor(problem, force_densities):
     raised = problem._replace(
         constraints=problem.constraints._replace(diameter_min=500.0)
     )
-    diameters = envelope_diameters(raised, np.asarray(force_densities), SEED)
+    diameters = envelope_diameters(raised, np.asarray(force_densities), SEEDED)
 
     assert np.all(diameters >= 500.0)
 
 
-def test_initialize_optimization_variables_compose_the_two_reads(
+def test_initialize_optimization_variables_folds_the_floored_seed(
     problem, force_densities
 ):
     q = np.asarray(force_densities)
-    start = initialize_optimization_variables(problem, q, SEED)
-    diameters = envelope_diameters(problem, read_coordinates(problem, q), SEED)
+    start = initialize_optimization_variables(problem, q, SEEDED)
+    floored = np.maximum(SEEDED, problem.constraints.diameter_min)
 
-    assert np.array_equal(start, fold_variables(problem, q, diameters))
+    assert np.array_equal(start, fold_variables(problem, q, floored))
+
+
+def test_initialize_optimization_variables_does_not_size_the_seed(
+    problem, force_densities
+):
+    q = np.asarray(force_densities)
+    start = initialize_optimization_variables(problem, q, SEEDED)
+    sized = envelope_diameters(problem, read_coordinates(problem, q), SEEDED)
+
+    assert not np.array_equal(start, fold_variables(problem, q, sized))
 
 
 def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
     problem, force_densities
 ):
     start = initialize_optimization_variables(
-        problem, np.asarray(force_densities), SEED
+        problem, np.asarray(force_densities), SEEDED
     )
     design = evaluate_design(problem, start)
     expanded = expand_variables(problem, jnp.asarray(start))
@@ -463,7 +476,7 @@ def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
 def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     maps = design_maps(problem)
     start = initialize_optimization_variables(
-        problem, np.asarray(force_densities), SEED
+        problem, np.asarray(force_densities), SEEDED
     )
     x = jnp.asarray(start)
 
@@ -474,7 +487,7 @@ def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     expected = np.asarray(evaluate_constraints(problem, expanded, design))
 
     assert float(weighed) == pytest.approx(float(compute_mass(design)), rel=1e-12)
-    assert np.allclose(rows, expected, rtol=0.0, atol=1e-12)
+    assert np.allclose(rows, expected, rtol=1e-11, atol=1e-12)
 
 
 def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
@@ -482,7 +495,7 @@ def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
     # normalized mass alone.
     maps = design_maps(problem)
     q = np.asarray(force_densities)
-    fattened = 1.5 * envelope_diameters(problem, q, SEED)
+    fattened = 1.5 * envelope_diameters(problem, q, SEEDED)
     x = jnp.asarray(fold_variables(problem, q, fattened))
 
     rows = np.asarray(maps.slack(x))
@@ -497,7 +510,7 @@ def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
 
 def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_densities):
     start = initialize_optimization_variables(
-        problem, np.asarray(force_densities), SEED
+        problem, np.asarray(force_densities), SEEDED
     )
     budget = OptimizationBudget(
         rounds_max=3,

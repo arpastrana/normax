@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 from ec3x.actions import MemberActions
 from ec3x.material import Steel
-from ec3x.section import TubeCatalogue
+from ec3x.section import TubeCatalogue as Ec3Catalogue
 from ec3x.sizing import diameter_required
 from ec3x.sizing import mass_of_tubes
 from jaxtyping import Array
@@ -35,7 +35,7 @@ from normax.reporting import Report
 from normax.reporting import ReportColumn
 
 STEEL = Steel()
-CATALOGUE = TubeCatalogue.at_class_limit(STEEL, 3)
+CATALOG = Ec3Catalogue.at_class_limit(STEEL, 3)
 SECTION_CLASS = 3
 
 # Moment factors of a member bent in single curvature, as Table B.3 reads them.
@@ -119,7 +119,7 @@ def diameters_per_case(forces: Float[Array, "cases members"]) -> Float[Array, ".
     Fully-stressed diameter of every member under every load case.
     """
     actions = MemberActions(forces, MOMENTS, 0.0, MOMENT_FACTOR, MOMENT_FACTOR)
-    diameters = diameter_required(actions, LENGTHS, CATALOGUE)
+    diameters = diameter_required(actions, LENGTHS, CATALOG)
 
     return diameters
 
@@ -130,7 +130,7 @@ def mass_smooth(forces: Float[Array, "cases members"], beta: float) -> Float[Arr
     """
     per_case = diameters_per_case(forces)
     sizes = diameter_envelope(per_case, beta)
-    tubes = CATALOGUE(sizes)
+    tubes = CATALOG(sizes)
 
     return mass_of_tubes(tubes, LENGTHS)
 
@@ -141,7 +141,7 @@ def mass_hard(forces: Float[Array, "cases members"]) -> Float[Array, ""]:
     """
     per_case = diameters_per_case(forces)
     sizes = jnp.max(per_case, axis=0)
-    tubes = CATALOGUE(sizes)
+    tubes = CATALOG(sizes)
 
     return mass_of_tubes(tubes, LENGTHS)
 
@@ -176,7 +176,7 @@ def report_sizes(report: Report, per_case: Float[Array, "..."]) -> float:
     What each load case asks of each member, and the exact largest of them.
     """
     exact = jnp.max(per_case, axis=0)
-    tubes = CATALOGUE(exact)
+    tubes = CATALOG(exact)
     exact_mass = float(mass_of_tubes(tubes, LENGTHS)) * 1e3
 
     per_case_columns = [

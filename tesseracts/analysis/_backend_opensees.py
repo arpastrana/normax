@@ -29,10 +29,10 @@ def solve_forces(frame: AnalyzedFrame) -> MemberForces:
     forces :
         Axial force and both end moments of every member.
     """
-    model = opensees.prepare_model(frame.structure, frame.family, frame.normal)
+    model = opensees.prepare_model(frame.structure, frame.catalog, frame.normal)
 
     return opensees.compute_member_forces(
-        model, frame.structure.nodes, frame.diameters, frame.family, frame.loads
+        model, frame.structure.nodes, frame.diameters, frame.catalog, frame.loads
     )
 
 
@@ -60,9 +60,9 @@ def forces_vjp(frame: AnalyzedFrame, cotangent: MemberForces) -> dict[str, np.nd
     identically zero, and its one nonzero derivative is the block the plane
     cannot reach.
     """
-    model = opensees.prepare_model(frame.structure, frame.family, frame.normal)
+    model = opensees.prepare_model(frame.structure, frame.catalog, frame.normal)
     blocks = opensees.compute_force_jacobian(
-        model, frame.structure.nodes, frame.diameters, frame.family, frame.loads
+        model, frame.structure.nodes, frame.diameters, frame.catalog, frame.loads
     )
     axial = np.asarray(cotangent.axial_force)
     major = np.asarray(cotangent.moment_major)

@@ -15,15 +15,15 @@ from normax.exporting.replay import replay_trajectory
 from normax.exporting.replay import save_trajectory
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
-from normax.loads import load_half_span
-from normax.loads import load_uniform
+from normax.loads import create_load_half_span
+from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization.nested import Trajectory
 from normax.optimization.nested import design_envelope
 from normax.optimization.nested import minimize_bounded
 from normax.optimization.nested import penalized_mass
 from normax.optimization.nested import size_design
-from normax.sections import build_section_family
+from normax.sections import build_section_catalog
 from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 
@@ -64,20 +64,20 @@ def structure():
 
 @pytest.fixture(scope="module")
 def loads(structure):
-    uniform = load_uniform(structure, TOTAL_LOAD)
-    lopsided = load_half_span(structure, TOTAL_LOAD)
+    uniform = create_load_uniform(structure, TOTAL_LOAD)
+    lopsided = create_load_half_span(structure, TOTAL_LOAD)
 
     return assemble_load_cases([uniform, lopsided])
 
 
 @pytest.fixture(scope="module")
 def pipeline(structure):
-    family = build_section_family(Steel355(), 3)
+    catalog = build_section_catalog(Steel355(), 3)
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, family(SEED)),
-        Ec3Sizer(structure, family),
+        SmaxAnalyzer(structure, catalog(SEED)),
+        Ec3Sizer(structure, catalog),
     )
 
 
