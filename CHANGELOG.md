@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+### Every endpoint a server offers is pinned, and the pin stops overclaiming
+
+Changed 2026-08-28. `PINNED_ENDPOINTS` gains `abstract_eval`, which both
+Tesseracts offer and which redirects file descriptors like any other crossing.
+`jacobian` stays out, and a comment says why rather than leaving the next reader
+to compare our four against `Jaxeract`'s five and reach the wrong conclusion: no
+server here offers one and none will, the augmented Lagrangian aggregating its
+rows into one scalar so that a gradient is a single cotangent.
+
+**`pin_dispatch_thread` was claiming more than it can show.** Its docstring said
+that under `jit` the runtime *runs* several dispatches at once; measured, it does
+not. With `NORMAX_PIN_DISPATCH=0` the whole arch descent returns an identical
+0.150150 t, two independent crossings under one `jit` leave descriptors 1 and 2
+untouched, and the 53 crossing tests pass serially in the file order that once
+produced a 311-error cascade. On the CPU backend XLA does not overlap these
+callbacks, and the two stages are chained by a data dependency that forbids
+reordering regardless. The docstring now says the runtime is *permitted* to --
+`emit_python_callback` carries no `ordered=True` -- and states plainly that the
+pin is insurance, kept against a GPU backend or a newer XLA taking that
+permission. What actually holds where this has bitten is the separate rule that
+`tests/test_tesseract_parity.py` leaves the composed side eager.
+
+### The stdio race in tesseract-core is reproduced and written up
+
+Added 2026-08-28. `docs/tesseract_stdio_race.md` records a real defect in
+`tesseract-core`: `redirect_stdio` swaps process-global file descriptors 1 and 2
+through `os.dup2` with no lock, once per endpoint call, assuming a LIFO nesting
+nothing enforces. Overlapping calls leave the host process's stdout pointing at a
+temporary log file permanently, and close a descriptor another part of the
+process owns -- which is where the `OSError: [Errno 9] Bad file descriptor` in
+this project's August pytest cascade came from.
+
+Verified rather than assumed: present in the current PyPI release (1.12.0, whose
+release commit is what was tested), not previously reported, and unaffected by
+how many clients exist -- the race is in concurrent *calls*. A twelve-line
+reentrant lock fixes it, and a regression test asserting that descriptors 1 and 2
+end where they started fails five runs out of five on `main` and passes in
+0.50 s with the lock. Reentrant because upstream's own `test_nested_runs`
+re-enters on one thread and a plain lock deadlocks it.
+
+The file carries the issue text and the PR description ready to file, in the
+order `CONTRIBUTING.md` asks for. It also records what this investigation got
+wrong -- that the pin was load-bearing -- and that a first version of the test
+passed by timing out.
+
+### Tesseract run logs are ignored
+
+Changed 2026-08-28. A local Tesseract writes `logs/tesseract.log` and
+`logs/metrics.csv` beside wherever it ran, on every crossing. Untracked and
+reproducible, so `.gitignore` names them alongside `data/`.
+
 ### A start that reads no fields is None, not a shared empty dict
 
 Changed 2026-08-28. `FormFindingConfig.density_start` defaults to `None`

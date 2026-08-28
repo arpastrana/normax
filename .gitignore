@@ -33,6 +33,10 @@ CLAUDE.md
 # reported numbers. Reproducible from the run description that names it.
 data/
 
+# What a local Tesseract writes per run: its captured stdio and its metrics.
+# The client redirects file descriptors into here on every crossing.
+logs/
+
 # Viewer state polyscope writes beside wherever it ran.
 .polyscope.ini
 imgui.ini
