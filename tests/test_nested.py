@@ -5,7 +5,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -29,8 +28,9 @@ from normax.optimization.nested import shortest_member
 from normax.optimization.nested import size_design
 from normax.optimization.nested import value_and_gradient
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 
 # A bowl whose minimum is known exactly, so the driver is tested against
 # arithmetic rather than against the pipeline it usually drives.
@@ -480,12 +480,13 @@ def force_densities(structure):
 
 @pytest.fixture(scope="module")
 def pipeline(structure):
+    """The shipped crossed blocks, standing in for nothing that is asserted."""
     catalog = build_section_catalog(Steel355(), 3)
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        Ec3Sizer(structure, catalog),
+        TesseractAnalyzer(structure, catalog, "pynite"),
+        TesseractSizer(structure, catalog, "blueprint"),
     )
 
 

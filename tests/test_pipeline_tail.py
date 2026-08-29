@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
 from normax.design import DesignProblem
@@ -26,8 +25,9 @@ from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization import OptimizationAnswer
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 from normax.visualization import draw_design_figures
 
 SPAN = 4_000.0
@@ -70,9 +70,9 @@ def build_pipeline(structure, catalog, blocks):
     analyzer = None
     sizer = None
     if blocks >= 2:
-        analyzer = SmaxAnalyzer(structure, catalog(SEED))
+        analyzer = TesseractAnalyzer(structure, catalog, "pynite")
     if blocks >= 3:
-        sizer = Ec3Sizer(structure, catalog)
+        sizer = TesseractSizer(structure, catalog, "blueprint")
 
     return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, sizer)
 
@@ -94,10 +94,11 @@ def test_a_cut_tail_leaves_the_fields_its_blocks_never_filled(
 
 
 def test_a_check_with_no_analysis_behind_it_is_refused(structure, catalog):
+    formfinder = FdmFormFinder(structure)
+    sizer = TesseractSizer(structure, catalog, "blueprint")
+
     with pytest.raises(ValueError, match="needs an analyzer"):
-        StructuralDesignPipeline(
-            FdmFormFinder(structure), None, Ec3Sizer(structure, catalog)
-        )
+        StructuralDesignPipeline(formfinder, None, sizer)
 
 
 def test_a_design_reports_what_it_holds_and_refuses_what_it_does_not(

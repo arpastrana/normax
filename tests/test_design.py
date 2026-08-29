@@ -3,7 +3,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.config import ConstraintsConfig
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
@@ -35,14 +34,14 @@ from normax.loads import create_load_half_span
 from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization import OptimizationBudget
-from normax.sections import TubeCatalog
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.structures import build_warren_2d
 from normax.symmetry import SignGuard
 from normax.symmetry import build_section_groups
 from normax.symmetry import permute_members
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
 # millimeters and newtons.
@@ -109,8 +108,8 @@ def force_densities(structure, one_case):
 def pipeline(structure, catalog):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        Ec3Sizer(structure, catalog),
+        TesseractAnalyzer(structure, catalog, "pynite"),
+        TesseractSizer(structure, catalog, "blueprint"),
     )
 
 
@@ -150,8 +149,8 @@ def warren_problem(warren, catalog):
     section_groups = build_section_groups(warren, (warren_mirror(),))
     blocks = StructuralDesignPipeline(
         FdmFormFinder(warren, basis),
-        SmaxAnalyzer(warren, catalog(SEED)),
-        Ec3Sizer(warren, catalog),
+        TesseractAnalyzer(warren, catalog, "pynite"),
+        TesseractSizer(warren, catalog, "blueprint"),
     )
     loads = assemble_load_cases([create_load_uniform(warren, TOTAL_LOAD)])
     constraints = DesignConstraints(FLOOR, 0.0, None, None, None, None)
@@ -171,17 +170,14 @@ def warren_q(warren_problem):
 # --------------------------------------------------------------------------- #
 # The sizer block is built from its catalog alone
 # --------------------------------------------------------------------------- #
-def test_the_sizer_reads_its_class_off_its_catalog(structure, grade):
+def test_the_sizer_reads_its_wall_off_its_catalog(structure, grade):
     for section_class in (1, 2, 3):
         catalog = build_section_catalog(grade, section_class)
-        sizer = Ec3Sizer(structure, catalog)
+        sizer = TesseractSizer(structure, catalog, "blueprint")
 
-        assert sizer.section_class == section_class
-
-
-def test_the_sizer_refuses_a_class_four_catalog(structure, grade):
-    with pytest.raises(ValueError):
-        Ec3Sizer(structure, TubeCatalog(200.0, grade))
+        assert sizer.ratio == float(catalog.ratio)
+        assert sizer.f_y == float(catalog.material.f_y)
+        assert sizer.catalog is catalog
 
 
 # --------------------------------------------------------------------------- #

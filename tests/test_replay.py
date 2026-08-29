@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 from matplotlib.figure import Figure
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -24,8 +23,9 @@ from normax.optimization.nested import minimize_bounded
 from normax.optimization.nested import penalized_mass
 from normax.optimization.nested import size_design
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 
 matplotlib.use("Agg")
 
@@ -76,8 +76,8 @@ def pipeline(structure):
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        Ec3Sizer(structure, catalog),
+        TesseractAnalyzer(structure, catalog, "pynite"),
+        TesseractSizer(structure, catalog, "blueprint"),
     )
 
 

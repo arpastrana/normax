@@ -5,7 +5,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.config import FormFindingConfig
 from normax.config import read_run_arguments
 from normax.config import read_run_config
@@ -33,10 +32,11 @@ from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.reporting import list_unused_settings
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import ArchDescription
 from normax.structures import build_arch_2d
 from normax.symmetry import SignGuard
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 
 # A small arch under 180 kN, in millimeters and newtons.
 SPAN = 4_000.0
@@ -73,9 +73,9 @@ def build_problem(structure, formfinder, catalog, loads):
     """
     A design problem over a comparison finder, whose parameters are its own.
     """
-    pipeline = StructuralDesignPipeline(
-        formfinder, SmaxAnalyzer(structure, catalog(SEED)), Ec3Sizer(structure, catalog)
-    )
+    analyzer = TesseractAnalyzer(structure, catalog, "pynite")
+    sizer = TesseractSizer(structure, catalog, "blueprint")
+    pipeline = StructuralDesignPipeline(formfinder, analyzer, sizer)
     constraints = DesignConstraints(DIAMETER_FLOOR, 0.0, None, None, None, None)
 
     return DesignProblem(structure, pipeline, loads, constraints)
@@ -288,9 +288,9 @@ def test_the_shipped_arch_carries_every_route_through_one_search(word):
 
     basis = build_plan_basis(structure, None, config.form_finding.basis)
     finder = build_form_finder(structure, basis, config.form_finding)
-    pipeline = StructuralDesignPipeline(
-        finder, SmaxAnalyzer(structure, catalog(SEED)), Ec3Sizer(structure, catalog)
-    )
+    analyzer = TesseractAnalyzer(structure, catalog, "pynite")
+    sizer = TesseractSizer(structure, catalog, "blueprint")
+    pipeline = StructuralDesignPipeline(finder, analyzer, sizer)
     initializer = UniformDensityInitializer(config.form_finding.density_start)
     density_start = initializer(structure, loads.formfinding, basis, None)
     guarded = assign_signs(config.constraints, (), structure.num_edges)
