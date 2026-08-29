@@ -37,10 +37,11 @@ from normax.visualization import animate_descent
 from normax.visualization import draw_design_figures
 from normax.visualization.animations import FRAMES_HELD
 from normax.visualization.animations import FRAMES_MOST
-from normax.visualization.animations import HEIGHT_DRAWING
+from normax.visualization.animations import WIDTH_FIGURE
 from normax.visualization.animations import name_frame
 from normax.visualization.animations import pick_frames
-from normax.visualization.animations import read_drawing_height
+from normax.visualization.plots import HEIGHT_DRAWING
+from normax.visualization.plots import read_drawing_height
 
 SPAN = 4_000.0
 RISE = 1_200.0
@@ -282,13 +283,14 @@ def test_a_checkless_run_draws_a_descent_but_no_utilization_figure(
 
     trace = DescentTrace("auglag", answer.rounds, 1e-6)
     panel = DescentPanel("objective", "round", (trace,))
-    drawn, descended = draw_design_figures(structure, designs, ("LC1",), panel)
+    figures = draw_design_figures(structure, designs, ("LC1",), panel)
 
-    # No design carries a utilization to color by, so there is no first figure
-    # rather than an empty one — draw_utilization reads a widest diameter and a
-    # least-worked member across the designs, and neither exists over none.
-    assert drawn is None
-    assert descended is not None
+    # No design carries a utilization to color by, so the two design figures
+    # are absent rather than empty — draw_utilization reads a widest diameter
+    # and a least-worked member across them, and neither exists over none.
+    assert figures.designs is None
+    assert figures.load_cases is None
+    assert figures.optimization is not None
 
 
 def test_a_descent_recorded_per_iteration_draws_its_round_crossings(
@@ -317,13 +319,15 @@ def test_a_descent_recorded_per_iteration_draws_its_round_crossings(
 
     trace = DescentTrace("auglag", answer.iterations, 1e-6)
     panel = DescentPanel("objective", "iteration", (trace,))
-    _, descended = draw_design_figures(structure, designs, ("LC1",), panel)
+    descended = draw_design_figures(structure, designs, ("LC1",), panel).optimization
 
-    # Two rounds after the first, so two rules behind the curve on each panel.
+    # Two rounds after the first, so two open marks on each panel's curve, at
+    # the points the walk crossed into a round rather than across the panel.
     violated, descent = descended.axes[0], descended.axes[1]
     for panel in (violated, descent):
-        crossings = [line for line in panel.lines if line.get_linewidth() == 0.5]
-        assert len(crossings) == 2
+        rings = [line for line in panel.lines if line.get_markerfacecolor() == "none"]
+        assert len(rings) == 1
+        assert list(rings[0].get_xdata()) == [1, 3]
     plt.close(descended)
 
 
@@ -389,7 +393,7 @@ def test_an_animation_refuses_more_than_one_descent(structure, catalog, loads, p
 def test_a_flat_shape_still_gets_a_readable_drawing_panel():
     # A span a hundred times its own height would otherwise ask for a panel of
     # a few millimeters and push the curves off the page.
-    tall = read_drawing_height((0.0, 10000.0), (0.0, 100.0))
+    tall = read_drawing_height((0.0, 10000.0), (0.0, 100.0), WIDTH_FIGURE)
 
     assert tall == pytest.approx(HEIGHT_DRAWING)
 

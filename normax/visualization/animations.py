@@ -11,27 +11,37 @@ is a design the search really evaluated.
 from pathlib import Path
 from typing import NamedTuple
 
+import imageio_ffmpeg
 import matplotlib.pyplot as plt
 import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
+from matplotlib.animation import FFMpegWriter
 from matplotlib.animation import FuncAnimation
-from matplotlib.animation import PillowWriter
 
 from normax.design import DesignProblem
 from normax.design import create_design
 from normax.optimization import DescentHistory
+from normax.visualization.plots import FAINT
 from normax.visualization.plots import GREY
-from normax.visualization.plots import WIDTH_MAX
+from normax.visualization.plots import INK
+from normax.visualization.plots import SHADES
+from normax.visualization.plots import UTILIZATION_CAP
+from normax.visualization.plots import UTILIZATION_FLOOR
+from normax.visualization.plots import UTILIZATION_TICKS
 from normax.visualization.plots import ColorRange
 from normax.visualization.plots import DescentPanel
+from normax.visualization.plots import DiameterRange
 from normax.visualization.plots import DrawnStructure
 from normax.visualization.plots import draw_members
 from normax.visualization.plots import draw_outline
+from normax.visualization.plots import draw_round_starts
+from normax.visualization.plots import paint_figure
+from normax.visualization.plots import read_drawing_height
+from normax.visualization.plots import read_member_widths
 from normax.visualization.plots import read_round_bounds
 from normax.visualization.plots import read_violation_floor
-from normax.visualization.plots import track_best_feasible
 
 # Frames a second the walk is played back at.
 FRAMES_RATE = 8
@@ -46,16 +56,13 @@ FRAMES_HELD = 12
 FRAMES_MOST = 240
 
 # Color the curves are drawn in, matching the single trace of a still figure.
-SHADE_DRAWN = "#31688e"
+SHADE_DRAWN = SHADES[0]
 
 # Inches across every panel, and down the two curves and the page's margins.
 WIDTH_FIGURE = 6.4
 HEIGHT_VIOLATION = 1.3
 HEIGHT_OBJECTIVE = 1.8
 HEIGHT_MARGINS = 1.6
-
-# Shortest the drawing is allowed to be, whatever the shape's proportions.
-HEIGHT_DRAWING = 1.3
 
 
 class WalkedDesigns(NamedTuple):
@@ -70,24 +77,23 @@ class WalkedDesigns(NamedTuple):
         Outer diameter of every member at every point.
     envelopes :
         Worst utilization over the load cases of every member at every point.
-    widest :
-        Largest diameter over the whole walk, which sets the drawn widths.
-    least :
-        Least envelope utilization over the whole walk, flooring the colors.
+    width_scale :
+        Least and largest diameter over the whole walk, which set the widths
+        the members are drawn at.
 
     Notes
     -----
     The three columns are read off the designs once rather than per frame, and
-    the two scales over the whole walk rather than per frame: a width or a
-    color that rescaled as the animation ran would show the same member
-    changing when only the extremes around it had moved.
+    the width scale over the whole walk rather than per frame: a width that
+    rescaled as the animation ran would show the same member changing when only
+    the extremes around it had moved. The colors need no such scale, running
+    the whole unit range in every drawing.
     """
 
     shapes: tuple[Float[Array, "nodes 3"], ...]
     diameters: tuple[Float[Array, "members"], ...]
     envelopes: tuple[Float[Array, "members"], ...]
-    widest: float
-    least: float
+    width_scale: DiameterRange
 
 
 def rebuild_walk(problem: DesignProblem, history: DescentHistory) -> WalkedDesigns:
@@ -137,10 +143,9 @@ def rebuild_walk(problem: DesignProblem, history: DescentHistory) -> WalkedDesig
         envelopes.append(np.asarray(sizes.utilization).max(axis=0))
 
     widest = max(float(column.max()) for column in diameters)
-    least = min(float(column.min()) for column in envelopes)
-    walked = WalkedDesigns(
-        tuple(shapes), tuple(diameters), tuple(envelopes), widest, least
-    )
+    thinnest = min(float(column.min()) for column in diameters)
+    scale = DiameterRange(thinnest, widest)
+    walked = WalkedDesigns(tuple(shapes), tuple(diameters), tuple(envelopes), scale)
 
     return walked
 
@@ -254,36 +259,6 @@ def name_frame(panel: DescentPanel, history: DescentHistory, frame: int) -> str:
     return f"{panel.axis} {frame}, round {int(numbered[frame])}"
 
 
-def read_drawing_height(
-    across: tuple[float, float],
-    upward: tuple[float, float],
-) -> float:
-    """
-    How tall the drawing panel must be for the shape to sit in it undistorted.
-
-    Parameters
-    ----------
-    across :
-        The horizontal limits the drawing is held to.
-    upward :
-        The vertical limits the drawing is held to.
-
-    Returns
-    -------
-    tall :
-        Inches, floored so a very flat shape still gets a readable panel.
-
-    Notes
-    -----
-    The drawing is at equal aspect, so a height chosen without reading the
-    shape's proportions leaves the panel mostly empty and pushes the curves off
-    the page. A span twice as wide as it is high asks for half the width.
-    """
-    spanned = (upward[1] - upward[0]) / (across[1] - across[0])
-
-    return max(spanned * WIDTH_FIGURE, HEIGHT_DRAWING)
-
-
 def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimation:
     """
     The design at every point of a descent, beside the curve that scored it.
@@ -340,14 +315,14 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
 
     values = np.asarray(history.objectives)
     gaps = np.asarray(history.violations)
-    best = track_best_feasible(values, gaps, trace.tolerance)
+    crossings = read_round_bounds(history)
     floor = read_violation_floor(panel.traces)
     placed = np.maximum(gaps, floor)
     steps = np.arange(values.size)
     edges = problem.structure.edges
     started = walked.shapes[0]
 
-    tall = read_drawing_height(across, upward)
+    tall = read_drawing_height(across, upward, WIDTH_FIGURE)
     proportions = (tall, HEIGHT_VIOLATION, HEIGHT_OBJECTIVE)
     figure, axes = plt.subplots(
         3,
@@ -362,12 +337,16 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
 
     outline = draw_outline(drawing, started, edges)
     outline.set_label("starting shape")
-    blank = DrawnStructure(started, edges, np.zeros(len(edges)), walked.widest)
-    coloring = ColorRange(None, np.floor(walked.least * 20.0) / 20.0, 1.0)
+    supports = problem.structure.supports
+    blank = DrawnStructure(
+        started, edges, np.zeros(len(edges)), walked.width_scale, supports
+    )
+    coloring = ColorRange(None, UTILIZATION_FLOOR, UTILIZATION_CAP)
     members = draw_members(drawing, blank, coloring)
 
-    # draw_members plots the nodes as its last line, and they move with them.
-    dotted = drawing.lines[-1]
+    # draw_members plots the nodes and then the supports, and both move with
+    # the design.
+    dotted, seated = drawing.lines[-2], drawing.lines[-1]
     drawing.set_xlim(*across)
     drawing.set_ylim(*upward)
     drawing.legend(loc="lower center", fontsize=8, frameon=False)
@@ -377,36 +356,36 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
     bar = figure.colorbar(
         members, ax=drawing, location="top", fraction=0.09, pad=0.03, aspect=44
     )
-    bar.set_label("envelope utilization", fontsize=9)
+    bar.set_ticks(list(UTILIZATION_TICKS))
+    bar.set_label("utilization", fontsize=9)
+    bar.outline.set_edgecolor(FAINT)
+    bar.outline.set_linewidth(0.6)
     named = drawing.text(
-        0.015, 0.93, "", transform=drawing.transAxes, fontsize=10, va="top"
+        0.015, 0.93, "", transform=drawing.transAxes, fontsize=10, va="top", color=INK
     )
-
-    for crossing in read_round_bounds(history):
-        violated.axvline(crossing, color=GREY, lw=0.5, alpha=0.5)
-        descent.axvline(crossing, color=GREY, lw=0.5, alpha=0.5)
 
     violated.axhspan(floor, trace.tolerance, color=GREY, alpha=0.15, lw=0.0)
     violated.axhline(trace.tolerance, color=GREY, ls="--", lw=1.0, label="tolerance")
     (walking,) = violated.plot([], [], "-", color=SHADE_DRAWN, lw=1.4)
+    entered = draw_round_starts(violated, [], [], SHADE_DRAWN, None)
     (standing,) = violated.plot([], [], "o", color=SHADE_DRAWN, ms=4.5)
     violated.set_xlim(0, max(values.size - 1, 1))
     violated.set_yscale("log")
     violated.set_ylim(floor, float(placed.max()) * 2.0)
-    violated.set_ylabel("worst violation")
+    violated.set_ylabel("constraints violation")
     violated.legend(frameon=False, fontsize=9)
     violated.grid(alpha=0.3, which="both")
 
-    reading = descent.plot(
-        [], [], "-", color=GREY, lw=1.0, label="as the search read it"
-    )
-    landing = descent.plot([], [], "-", color=SHADE_DRAWN, lw=1.8, label=trace.title)
+    (reading,) = descent.plot([], [], "-", color=SHADE_DRAWN, lw=1.6, label=trace.title)
+    started_round = "round start" if crossings.size > 0 else None
+    rounding = draw_round_starts(descent, [], [], SHADE_DRAWN, started_round)
     (sitting,) = descent.plot([], [], "o", color=SHADE_DRAWN, ms=4.5)
     descent.set_ylim(*read_objective_bounds(values))
     descent.set_xlabel(panel.axis)
     descent.set_ylabel(panel.heading)
     descent.legend(frameon=False, fontsize=9, loc="upper right")
     descent.grid(alpha=0.3)
+    paint_figure(figure)
 
     pairs = np.asarray(edges)
 
@@ -417,18 +396,21 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
         starts = nodes[pairs[:, 0]][:, [0, 2]]
         ends = nodes[pairs[:, 1]][:, [0, 2]]
         segments = list(np.stack([starts, ends], axis=1))
-        widths = WIDTH_MAX * walked.diameters[held] / walked.widest
+        widths = read_member_widths(walked.diameters[held], walked.width_scale)
 
         members.set_segments(segments)
         members.set_linewidth(list(widths))
         members.set_array(walked.envelopes[held])
         dotted.set_data(nodes[:, 0], nodes[:, 2])
+        seated.set_data(nodes[supports, 0], nodes[supports, 2])
         named.set_text(name_frame(panel, history, reached))
 
         shown = slice(0, reached + 1)
+        entries = crossings[crossings <= reached]
         walking.set_data(steps[shown], placed[shown])
-        reading[0].set_data(steps[shown], values[shown])
-        landing[0].set_data(steps[shown], best[shown])
+        reading.set_data(steps[shown], values[shown])
+        entered.set_data(steps[entries], placed[entries])
+        rounding.set_data(steps[entries], values[entries])
 
         # A head on each curve, so the first frame shows a point rather than a
         # line of one and the eye has the current design to follow.
@@ -448,7 +430,7 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
 
 def save_animation(played: FuncAnimation, path: Path) -> None:
     """
-    Write an animation to disk as a GIF.
+    Write an animation to disk as an MP4.
 
     Parameters
     ----------
@@ -459,7 +441,16 @@ def save_animation(played: FuncAnimation, path: Path) -> None:
 
     Notes
     -----
-    Pillow rather than ffmpeg, matplotlib depending on the first already and on
-    the second not at all, so a run writes its animation on every install.
+    H.264 rather than a GIF, which carries a 256-color palette and one frame
+    per file: the same walk lands an order of magnitude smaller and reads
+    without banding, and a video is what a writeup embeds. The encoder is the
+    binary `imageio-ffmpeg` ships as a wheel rather than one the machine is
+    asked to have, so a run still writes its animation on every install.
     """
-    played.save(path, writer=PillowWriter(fps=FRAMES_RATE))
+    plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+    # H.264 refuses an odd pixel dimension, which a figure sized in inches reaches.
+    evened = "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white"
+    settings = ["-vf", evened, "-pix_fmt", "yuv420p"]
+    writer = FFMpegWriter(fps=FRAMES_RATE, extra_args=settings)
+
+    played.save(path, writer=writer)

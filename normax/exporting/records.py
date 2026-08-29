@@ -14,7 +14,7 @@ import numpy as np
 
 from normax.config import RunConfig
 from normax.design import ProblemRecord
-from normax.loads import label_load_cases
+from normax.loads import number_load_cases
 from normax.reporting import Report
 from normax.reporting import name_objective
 from normax.visualization import DescentPanel
@@ -123,20 +123,26 @@ def export_design(
     np.savez(archive, **columns)
 
     target.figures.mkdir(exist_ok=True)
-    designs = {"start": record.initial, "answer": record.optimized}
-    labels = label_load_cases(config.load_cases)
+    # The answer first, the drawings reading from what the search arrived at
+    # down to where it left from.
+    designs = {"solution": record.optimized, "start": record.initial}
+    labels = number_load_cases(config.load_cases)
     structure = record.problem.structure
     trace = DescentTrace("auglag", walked, config.optimization.violation_tol)
     axis = "round" if solution.iterations is None else "iteration"
     panel = DescentPanel(name_objective(record.problem), axis, (trace,))
-    drawn, descended = draw_design_figures(structure, designs, labels, panel)
-    if drawn is not None:
-        drawn.savefig(target.figures / f"{stem}_designs.png", dpi=FIGURE_DPI)
-    descended.savefig(target.figures / f"{stem}_descent.png", dpi=FIGURE_DPI)
+    figures = draw_design_figures(structure, designs, labels, panel)
+    if figures.designs is not None:
+        figures.designs.savefig(target.figures / f"{stem}_designs.png", dpi=FIGURE_DPI)
+    if figures.load_cases is not None:
+        governed = target.figures / f"{stem}_load_cases.png"
+        figures.load_cases.savefig(governed, dpi=FIGURE_DPI)
+    optimized = target.figures / f"{stem}_optimization.png"
+    figures.optimization.savefig(optimized, dpi=FIGURE_DPI)
 
     played = None
     if config.output.animate:
-        played = target.figures / f"{stem}_descent.gif"
+        played = target.figures / f"{stem}_optimization.mp4"
         save_animation(animate_descent(record.problem, panel), played)
 
     # Continues the run's report, so the heading separates itself from it.

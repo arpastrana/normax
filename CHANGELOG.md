@@ -2,6 +2,182 @@
 
 ## Unreleased
 
+### The descent panel draws one curve, and rounds are marks on it
+
+Changed 2026-08-29. `draw_objective_descent` and `animate_descent` drew the
+objective twice: the value the search actually read, faintly in grey, and the
+running best over satisfied rounds in the trace's color under the trace's name.
+The named curve was the unreadable one. It is undefined until the first
+satisfied round, so it starts as a gap; it is flat across every round that
+improves nothing and steps only where one does, so a long constrained descent
+came out as a handful of disconnected horizontal segments with the interesting
+part -- the objective rising while feasibility is bought -- drawn in the color
+of a reference. The curve the reader wants is the one the search read, and it
+now carries the trace's name and color alone. `track_best_feasible` is left in
+place, exported and tested, but nothing draws with it.
+
+The round crossings were ruled in as thin vertical lines across both panels.
+They land at irregular places, since an outer round is one L-BFGS-B descent and
+those take as many iterations as they take, so they crossed the gridlines
+everywhere and read as a second, broken axis. They are now open circles sitting
+on the curve itself at the first point of each new round, in the curve's own
+color, unfilled so a short walk already marked at every point still shows the
+crossing through the ring. They are named `round start` in the objective
+panel's legend alone, the two panels sharing an axis and carrying the same
+crossings, and only where a walk has any -- a walk recorded a round at a time
+has none by construction. In an animation they are revealed with the curve
+rather than drawn ahead of it.
+
+The panel is titled `Constrained mass minimization` -- the objective's own name
+read off the panel's heading, so a compliance search is titled for what it
+minimized rather than for what the default one does -- over `constraints
+violation` and
+the objective, and the descent's `_descent.png` export is now
+`_optimization.png`. The secondary axis reading the objective as a fraction of
+its start is gone -- it doubled the
+left-hand axis at a fixed scale and was drawn only on a single-trace panel, so
+the same figure carried a right-hand axis or not depending on how many runs it
+compared.
+
+### The animation is an MP4, and `report_descent` is `report_optimization`
+
+Changed 2026-08-29. `save_animation` writes H.264 through `FFMpegWriter` rather
+than a GIF through Pillow, and the export is `{stem}_optimization.mp4`. A GIF
+carries a 256-color palette and one full frame per file, so a viridis colorbar
+bands and the file is several times larger than the same walk encoded: 176 kB
+against 40 kB on a twenty-four frame arch. The encoder is the binary
+`imageio-ffmpeg` ships inside its wheel, pointed at through
+`animation.ffmpeg_path`, so nothing is asked of the machine and the property
+the Pillow writer was chosen for -- every install writes its animation --
+survives. H.264 refuses an odd pixel dimension and a figure sized in inches
+lands on one, so the encode pads to the next even row in white.
+
+`report_descent` is `report_optimization` and the section it prints under is
+`The optimization`, matching the figure's title. The colorbar over the designs
+and over the animation's drawing is labeled `utilization` rather than `envelope
+utilization` -- there is one utilization drawn and it is the envelope's, so the
+qualifier separated it from nothing.
+
+### A load case is `LC1` on the axis and a line in the report
+
+Changed 2026-08-29. The bar chart's ticks were `label_load_cases`, the pattern
+with its options dict stringified after it, which put `half_span mirrored=True`
+under a bar and, on the gridshell, the same
+`sector center=3 spokes=3 factor=0.5` twice with only the center telling them
+apart. `number_load_cases` labels the axis `LC1` and up, short enough to sit
+level rather than rotated.
+
+A number that resolves nowhere is worse than an ugly name, so `report_design`
+gained **The load cases**, a three-column key printed above the descent: the
+number, the pattern with its options, and the magnitude. That is where a case
+is named now, with a line to spend on it. The magnitude carries no unit, the
+patterns not agreeing on one -- a total force for most, a pressure for those
+stated per unit of plan area.
+
+### The page and the ink are four constants
+
+Changed 2026-08-29. `paint_figure` paints a finished figure's page, titles,
+axis labels, ticks, spines and legend text from `GROUND`, `INK`, `MUTED` and
+`FAINT` -- applied once a figure is built rather than through the process's
+global style, which would recolor every other plot in whatever imports this
+package. It stays white.
+
+**A dark page was tried and rolled back the same day.** It looked well and it
+is four constants away, the members, the curves and the colorbar reading on
+either ground already -- the utilization map is the middle of a perceptual one
+rather than the whole of it, which is what makes the swap that cheap. What
+stopped it is the target: a page on GitHub renders in the reader's theme, so a
+dark figure is a slab on a light page exactly as a white one is on a dark, and
+committing to one picks a side for readers who have already picked. Serving
+both, through a `<picture>` with a `prefers-color-scheme` source, is a second
+palette behind the same function.
+
+Two things the attempt left behind, both worth keeping on a white page: a node
+is drawn in the page's own color rather than a hardcoded white, so the disk is
+a hole in the member whichever page it lands on; and a support is that disk
+filled with the ink.
+
+### The drawings are redrawn: stretched widths, a cut colormap, disks for nodes
+
+Reworked 2026-08-29, after reading how `jax-fdm` and `compas_plotter` draw a
+network in matplotlib.
+
+**Member widths are stretched, not scaled.** A width was `WIDTH_MAX * d /
+widest`, so the arch's 172.6 to 196.8 mm came out as 7.9 against 9.0 points and
+the eye read one uniform bar. `read_member_widths` maps the narrowest diameter
+of the figure onto `WIDTH_MIN` and the widest onto `WIDTH_MAX`, so what is read
+is where the material went rather than how many millimeters across a member is
+-- the same min-max remap `jax-fdm`'s plotter applies to its edge forces, and
+the reason the Warren's chords now read as chords and its diagonals as
+hairlines. The range is taken across every design a figure holds, so the two
+panels still compare; `DiameterRange` carries it, on `DrawnStructure` and on
+the animation's `WalkedDesigns` alike.
+
+**The color scale is pinned to the unit range.** It was floored just under the
+least worked member of the figure, which made a color mean one thing in one run
+and another in the next: the same violet was 0.30 on the arch and 0.10 on the
+Warren. It runs 0.0 to 1.0 in every drawing now, so a member's color is read
+across parametrizations and across experiments, and `WalkedDesigns` drops the
+`least` it carried for the old floor. The bar is labeled at quarters, five
+labels rather than the ten or so a locator picks for a unit range, the bar
+being read for where a member sits and not for a number.
+
+**The colormap is the middle of plasma, not all of viridis.** Both ends of a
+full perceptual map run into the page -- viridis' darkest purple disappears on
+black and its yellow on white -- so `UTILIZATION_MAP` is plasma cut to
+[0.28, 0.90], violet through coral to gold, whose every color has a lightness
+of 35 to 80 and so stays a color on either ground.
+
+**A node is a disk, and a support is a filled one.** It was a 2.5 point dark
+dot. It is now a white disk with a dark rim drawn over the members, which is
+what both plotters do: the rim reads against a member of any color and the
+opaque fill hides the joint where two members of different widths meet, which
+is also how those plotters get away with drawing an edge center to center.
+Supports are the same disk filled in, so what is held reads without a legend --
+`DrawnStructure` carries them, and `draw_utilization` takes the structure
+rather than its edges to have them. The disks are sized in points rather than
+in the structure's own units: compas builds its circles in data units, which
+its own docstring calls constant on screen and which is not, and our drawings
+are figures rather than a viewport to pan.
+
+The axes lose their top and right spines, and what is left of them, the ticks
+and the colorbar's frame are drawn in grey rather than black.
+
+### The designs and the load cases become two figures
+
+Split 2026-08-29. `*_designs.png` carried the drawings over a row of bar charts
+counting members governed per load case, and the two wanted opposite panels: a
+shape spanning several times its own height wants a wide short panel, a bar
+chart a squarer one, and one grid could not give both. `draw_utilization` now
+draws the designs alone and `draw_governing_cases` the counts, written as
+`*_designs.png` and `*_load_cases.png`. `draw_design_figures` returns
+`DrawnFigures` -- one field per file -- rather than a pair unpacked by
+position, both design fields being None together where no design carries a
+utilization to color by.
+
+The solution is drawn first and the start under it, the run's own record naming
+them in that order, so both design figures read from what the search arrived at
+down to where it left from. The last design named is outlined behind the rest
+-- thin, dashed and grey, the way an animation outlines the shape its walk left
+from -- so the drawing of the solution carries the start behind it and the
+difference is read without moving between panels. The panel is titled
+`solution`, and the report's section with it. The designs are stacked down the page rather than
+set side by side, sharing an
+axis with only the lower one labeled along it, and the colorbar runs under both
+at the width of the drawings: the three read as one column. The drawings are at
+equal aspect, so the figure is sized from the shape's own proportions through
+`read_drawing_height`, which moves from `animations.py` to `plots.py` and takes
+the width it is sizing against; without it the panel was a third full and the
+rest white.
+
+**The bar is placed rather than asked for.** `figure.colorbar(ax=...)` carves
+its axes out of the parent's box before the equal-aspect constraint has shrunk
+it, so the bar came out wider than the drawings it belonged to and offset from
+them. The band under the drawings is held out of the layout engine's rect
+instead, the layout is settled with `draw_without_rendering`, and the bar is
+given the settled drawing's own `x0` and width -- which is what makes the three
+widths agree.
+
 ### A collapsed geometry is refused before a solver is handed it
 
 Added 2026-08-29 on branch `mirror-folding`. Folding the heights drove the

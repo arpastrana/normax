@@ -435,9 +435,9 @@ def test_the_design_figures_build(structure, pipeline, force_densities, three_ca
     designs = {"start": design, "answer": design}
     trace = DescentTrace("auglag", answer.rounds, 1e-6)
     panel = DescentPanel("mass [t]", "round", (trace,))
-    drawn, descended = draw_design_figures(structure, designs, labels, panel)
+    figures = draw_design_figures(structure, designs, labels, panel)
 
-    assert len(drawn.axes) > 0
-    assert len(descended.axes) > 0
-    plt.close(drawn)
-    plt.close(descended)
+    assert len(figures.designs.axes) > 0
+    assert len(figures.load_cases.axes) > 0
+    assert len(figures.optimization.axes) > 0
+    plt.close("all")

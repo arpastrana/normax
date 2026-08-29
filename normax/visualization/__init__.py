@@ -13,6 +13,7 @@ from normax.visualization.animations import animate_descent
 from normax.visualization.animations import save_animation
 from normax.visualization.plots import DescentPanel
 from normax.visualization.plots import DescentTrace
+from normax.visualization.plots import DrawnFigures
 from normax.visualization.plots import draw_design_figures
 from normax.visualization.plots import read_round_bounds
 from normax.visualization.plots import track_best_feasible
@@ -20,6 +21,7 @@ from normax.visualization.plots import track_best_feasible
 __all__ = [
     "DescentPanel",
     "DescentTrace",
+    "DrawnFigures",
     "animate_descent",
     "draw_design_figures",
     "read_round_bounds",
