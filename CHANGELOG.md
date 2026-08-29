@@ -52,6 +52,13 @@ solution belongs, so `report_design` raised
 runs and lands on its recorded mass: arch 0.150150, Warren 0.055613,
 Vierendeel 0.121547, gridshell 0.082971 t, each at worst utilization 1.000000.
 
+### Where a search starts is written up in `docs/initialization.md`
+
+Added 2026-08-29. The measurements below outgrew a changelog entry and are a
+result rather than a decision, so they have a file: the flat-start stationary
+point, the escape threshold, the converged and equal-budget comparisons, and
+what each of them does and does not license anyone to claim.
+
 ### The written-heights route gets a start of its own, and the arch is drawn flat
 
 Changed 2026-08-29. `form_finding.height_start: {rise: 50.0}` names the crown a
