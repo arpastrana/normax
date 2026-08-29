@@ -200,6 +200,19 @@ continuous optimum is a lower bound on any catalog design.
 buckling length; nothing computes a critical load factor of the whole frame
 per §5.2. Frame-stability checks are future work.
 
+**Commercial engineering software integration is future work.** Products such
+as SkyCiv or Dlubal could provide valuable independent analysis and design
+checks, first as validators of a finished design and eventually as pipeline
+backends. The present bottlenecks are common to black-box commercial systems:
+their APIs expose less calculation state and implementation detail than an
+exact adjoint needs, generally return forward results without sensitivities,
+and may restrict section parametrization to the software's own catalogs. API
+keys, licensing, usage limits, network latency and service availability also
+make an inner optimization loop harder to reproduce and test offline. A final
+batched validation is therefore the practical first integration; an in-loop
+backend can follow when a product exposes enough information to define and
+verify its derivative contract.
+
 **Every adjoint is verified against finite differences of its own forward pass,
 rather than against a second implementation.** During development the crossed
 stack was checked against two in-process JAX implementations — a frame solver

@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+### One set of load cases for the arch and both trusses
+
+Changed 2026-08-29. The arch was loaded in one vocabulary and the trusses in
+another, and the two did not agree on what a patch case is: the arch carried
+`uniform` 180 kN, `half_span` 90 kN and that same case mirrored, while the
+trusses carried `deck` 180 kN, `deck_half` at the *full* 180 kN grading the two
+halves 2:1, and `deck_point` 90 kN. Three structures whose masses are compared
+side by side were being asked three different questions.
+
+All three now name the identical block -- the whole load over the deck, half of
+it on one half of the deck, a quarter of it on the midspan node:
+
+```yaml
+load_cases:
+  - name: deck
+    magnitude: 180000.0
+  - name: deck_half
+    magnitude: 90000.0
+  - name: deck_point
+    magnitude: 45000.0
+```
+
+**The deck vocabulary is the one that transfers, and only one way.** On the
+flat-drawn arch every free node sits at the lowest free height, so `deck` and
+`deck_half` are bit-identical to the `uniform` and `half_span` they replace --
+the arch's shaping case has not moved. The reverse does not hold: `uniform` on
+a truss loads the top chord too, 13.7 kN a node away from a deck load. The
+coupling that buys this is the arch's flat drawing, so
+`test_the_flat_arch_decks_every_free_node` pins it: give the drawing a rise and
+its deck collapses onto the two nodes beside the supports, silently moving every
+case off the span.
+
+**The mirrored case is gone, and folding is why.** The trusses already omitted
+it on the argument that a symmetric design makes it a reindexing of the near
+one; with the mirror folding the heights and the diameters alike, that argument
+now holds on the arch too. Measured before its removal: the arch's mirrored
+half-span agreed with the near one's reflection to 1.8e-14, and the worst
+utilization per folded section group over three cases matched the same over two
+to 1.7e-14. It cost a third of the analysis and the check per iteration and
+bought nothing.
+
+**Every reported mass moves.** Under the new cases, at the shipped budgets:
+
+| structure | `fdm` | `fixed` | geometry buys |
+|---|---|---|---|
+| arch | 0.151592 t | 0.491156 t | 69.14% |
+| warren | 0.046243 t | 0.095423 t | 51.54% |
+| vierendeel | 0.111340 t | 0.363392 t | 69.36% |
+
+The point load was set at a quarter of the uniform total rather than a half,
+decided 2026-08-29. **It is worth knowing what that costs:** at 45 kN the case
+governs no member of the vierendeel at all (worst utilization 0.504) and three
+of thirty-one on the Warren truss, against two of ten on the arch. At 90 kN it
+governs on all three but takes over the Warren truss, seventeen of thirty-one,
+which would read as a truss designed by its point load rather than by its form.
+The quarter was chosen to keep the form-finding story dominant; the case is
+close to decorative on the vierendeel, and the writeup should not claim three
+governing cases there.
+
+Worth recording separately: **the uniform case governs no member of the arch**
+(worst utilization 0.382). The arch is form-found for it, so it is free, and the
+asymmetric cases are what size the structure. That is the project's argument
+showing up in the numbers.
+
+### The folds are held to the shipped runs, not to their flags
+
+Added 2026-08-29. `tests/test_symmetry.py` holds the arch, the Warren truss and
+the vierendeel to both folds: one diameter per mirrored pair of members on every
+baseline, and one height per mirrored pair of free nodes on the written-geometry
+one. The orbit maps and the mirror-folded basis were already tested where they
+are built, and the density half of `fdm` with them. What was not tested is the
+wiring, which is where this last broke twice over -- the arch carried
+`fold_mirror: true` past an example hardcoding no groups at all, and
+`build_form_finder` dropped the orbits before the written-heights finder saw
+them. A test reading the flags alone passes in both worlds, so the file asserts
+that the counts actually come down and that the expanded vectors are invariant
+under the node permutation.
+
+Three tests, 0.01 s each: both folds are linear maps on the host, so nothing
+here builds a basis, a start, a solver or a check. Verified by mutation --
+flipping either flag in either file, dropping the orbits in `build_form_finder`,
+and returning an identity from `build_section_groups` each fail it on all three
+structures.
+
 ### The descent panel draws one curve, and rounds are marks on it
 
 Changed 2026-08-29. `draw_objective_descent` and `animate_descent` drew the

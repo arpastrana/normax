@@ -29,15 +29,20 @@ form_finding:
   # above it.
   height_start: {rise: 50.0}
 
-# The first case shapes the arch; every case is checked.
+# The same three cases on the arch and on both trusses, so the masses compare:
+# the whole load over the deck, half of it on one half of the deck, and a
+# quarter of it on the midspan node. The first shapes the structure; every case
+# is checked. No mirrored case -- the mirror folds the heights and the diameters
+# alike, so a mirrored patch is a reindexing of the near one.
+# Drawn flat, so the arch's deck is every free node; a drawn rise would put the
+# load on the two nodes beside the supports instead.
 load_cases:
-  - name: uniform
+  - name: deck
     magnitude: 180000.0
-  - name: half_span
+  - name: deck_half
     magnitude: 90000.0
-  - name: half_span
-    magnitude: 90000.0
-    options: {mirrored: true}
+  - name: deck_point
+    magnitude: 45000.0
 
 analysis:
   # UniformDiameterInitializer: one outer diameter in every member.

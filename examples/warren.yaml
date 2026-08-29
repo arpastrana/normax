@@ -17,17 +17,18 @@ form_finding:
   # LensShapeInitializer: the densities that make a sketched lens funicular.
   density_start: {sag: 600.0, rise: 800.0, held_plan: false}
 
-# Every case sits on the deck. The first shapes the truss; every case is
-# checked. The mirrored half-span case is a reindexing of the near one on a
-# symmetric design, so it is left out.
+# The same three cases on the arch and on both trusses, so the masses compare:
+# the whole load over the deck, half of it on one half of the deck, and a
+# quarter of it on the midspan node. The first shapes the structure; every case
+# is checked. No mirrored case -- the mirror folds the heights and the diameters
+# alike, so a mirrored patch is a reindexing of the near one.
 load_cases:
   - name: deck
     magnitude: 180000.0
   - name: deck_half
-    magnitude: 180000.0
-    options: {factor: 0.5}
-  - name: deck_point
     magnitude: 90000.0
+  - name: deck_point
+    magnitude: 45000.0
 
 analysis:
   # UniformDiameterInitializer: one outer diameter in every member.
