@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### The moment demand is the vector's magnitude, and it stops depending on the roll
+
+Changed 2026-08-28. `reduce_moments` took the larger end moment on each axis
+*independently* and added the two. Both halves of that were wrong for a circular
+hollow section, and the second was wrong for any section.
+
+**The axes.** A tube bends the same way about every axis, so the split of one
+bending into a major and a minor component is a reporting convention --
+`compute_direction_cosines` completes its transverse pair against the vertical,
+and nothing physical picks it. Roll that frame and the components rotate, which
+leaves `sqrt(M_y^2 + M_z^2)` alone but not `|M_y| + |M_z|`: the sum runs from
+`|M|` when the moment lands on an axis to `sqrt(2) |M|` at 45 degrees. A size
+therefore moved when nothing about the structure or its loads had.
+
+**Verified against the standard, not against memory.** 6.2.9.1(6) eq. (6.41) is
+`(M_y/M_N,y,Rd)^alpha + (M_z/M_N,z,Rd)^beta <= 1` with **alpha = beta = 2 for
+circular hollow sections**, which is the magnitude; 6.2.9(6) permits taking them
+as unity, "thus reverting to a conservative linear interaction", which is what
+this reduction did. The shipped check is Class 3, so 6.2.9.2 eq. (6.42) governs
+and makes the case sharper still: it limits the maximum longitudinal **fibre**
+stress, and on a round section the peak from `M_y` sits a quarter turn around
+the circumference from the peak from `M_z`. Adding them reports a stress no
+fibre carries. This is not a relaxation of the code; it is the clause the code
+gives for this section.
+
+**The ends.** The two maxima were taken independently over ends, so a demand
+could pair `M_y` at one end with `M_z` at the other -- a state no single
+cross-section is ever in. Measured on the shell, **47.6%** of members had their
+two components winning at different ends. This is what let the old reduction
+exceed `sqrt(2)`, which the axis error alone cannot: **15.9%** of member-cases
+did.
+
+**How much it was inflating, measured on the 16x16 shell at the seed diameter:**
+
+| | mean | worst |
+|---|---|---|
+| summing the axes at one end | 1.179 | **1.4142** |
+| each axis at its own end, on top | 1.032 | 1.506 |
+| both, as shipped until today | **1.220** | **1.885** |
+
+The first row's worst case lands exactly on `sqrt(2)`, which is the algebra
+confirming itself.
+
+**Only the gridshell moves, and it moves a long way.** The three planar
+structures carry `M_minor` identically `0.0`, so the two reductions are the same
+number there -- arch **0.150150 t**, Warren **0.055613 t**, Vierendeel
+**0.121547 t**, unchanged to the last digit, and the arch's other two routes
+with them. The shell falls from **0.105268 t to 0.082971 t, 21.2% lighter**,
+reproduced bit for bit on a repeat run, at worst utilization 1.000000. Note what
+that is and is not: a change in the check, not a search improvement. The saving
+compounds beyond a re-section because a cheaper check lets the search move the
+shape as well.
+
+**The adjoint changed shape.** `WinningEnd` carried a winner and a sign per
+axis; it now carries one winner and the two direction cosines, those being the
+derivatives of the magnitude, and `_action_cotangents` routes both components to
+that single end. Both cosines are zero where a member carries no moment, the
+magnitude having no derivative at the origin. Checked against a tight central
+difference at **1.25e-9**.
+
+`tests/test_tesseract_sizer.py::test_the_check_matches_check_grads` needed an
+explicit `eps=1e-7`: the magnitude's curvature goes as `1/|M|` and that
+fixture's lightest member carries 1e-3 of the scale, so the default 1e-4 step
+straddles it and the difference loses accuracy, not the rule. Two tests that
+asserted the old reduction now assert the new one, and
+`test_rolling_the_local_frame_leaves_the_demand_alone` states the claim the
+shipped stack could not make before.
+
 ### The oracles are deleted, and CI stops skipping two thirds of the suite
 
 Removed 2026-08-28, planned in `docs/oracle_removal.md`, snapshotted at the tag
@@ -664,10 +732,16 @@ descends from it. What each example converges to now:
 | arch | 7 of 10 | 1.000000402 | 0.135622 |
 | Warren | 11 of 12 | 1.000000320 | 0.055613 |
 | Vierendeel | 16 of 20 | 1.000000038 | 0.121547 |
-| gridshell | 11 of 12 | 0.999999842 | 0.105268 |
+| gridshell | 11 of 12 | 0.999999842 | 0.105268 (see below) |
 
 The Vierendeel's 0.121547 t sits within 0.6% of the 0.122263 t experiment 19
 recorded, so the historical answer is recovered rather than approached.
+
+**Superseded for the gridshell, 2026-08-28.** The moment reduction changed that
+day, and the shell is the only one of the four it touches: it now converges in
+the same 11 of 12 rounds and 2144 evaluations to **0.082971 t** at worst
+utilization 1.000000, diameters 21.3 to 45.2 mm. The other three rows still
+hold to the digit.
 
 **The reported saving is now measured against a uniform-diameter start**, which
 is a weaker baseline than the enveloped one it replaced, so the percentages are

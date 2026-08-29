@@ -9,6 +9,19 @@ re-descended.
 Reasoning and rationale for the machinery live in `CHANGELOG.md`; this file is
 the results and their standing.
 
+> **⚠ Every mass below predates 2026-08-28 and is not comparable with a current
+> run.** On that date the moment demand stopped being `|M_y| + |M_z|` read at
+> each axis's own end and became the magnitude of the worse end's moment vector,
+> which is what EN 1993-1-1 gives for a circular hollow section (6.2.9.2
+> eq. (6.42), and 6.2.9.1(6) eq. (6.41) with alpha = beta = 2). The old
+> reduction inflated the demand on this shell by 1.220 on average and 1.885 at
+> worst, so **every mass here is too heavy** — the shipped example fell from
+> 0.105268 t to 0.082971 t, 21.2%. The *relative* findings below — which
+> parametrization wins, how the basis behaves, where the gradient is small —
+> were not re-measured and are the part worth trusting; the absolute masses are
+> history. `CHANGELOG.md` carries the reasoning under the entry naming the
+> reduction.
+
 ---
 
 ## The structure and the loading
