@@ -129,23 +129,51 @@ def test_a_prepared_frame_carries_no_load_case_of_its_own(
     )
 
 
-def test_a_prepared_frame_answers_at_the_geometry_it_was_prepared_at(
-    problem, xyz, diameters, applied
-):
-    # The trap this path has and the traced one did not: a prepared frame is
-    # the geometry, and the coordinates beside it are then never read.
+def test_a_frame_prepared_elsewhere_is_refused(problem, xyz, diameters, applied):
+    # The trap this path had: a prepared frame IS the geometry, so coordinates
+    # beside it decided nothing and were read by nothing.
     lifted = xyz.copy()
     lifted[:, 2] *= 1.4
     stale = pynite.prepare_frame(problem, lifted, diameters)
 
-    at_lifted = pynite.compute_member_forces(problem, lifted, diameters, applied)
-    via_stale = pynite.compute_member_forces(problem, xyz, diameters, applied, stale)
+    with pytest.raises(ValueError, match="geometry differs"):
+        pynite.compute_member_forces(problem, xyz, diameters, applied, stale)
+
+    cotangent = MemberForces(
+        axial_force=np.ones(NUM_EDGES),
+        moment_major=np.zeros((NUM_EDGES, 2)),
+        moment_minor=np.zeros((NUM_EDGES, 2)),
+    )
+    with pytest.raises(ValueError, match="geometry differs"):
+        pynite.pull_back_cotangents(problem, xyz, diameters, cotangent, stale)
+
+
+def test_a_frame_prepared_at_other_diameters_is_refused(
+    problem, xyz, diameters, applied, prepared
+):
+    thinner = diameters * 0.5
+
+    with pytest.raises(ValueError, match="diameters differ"):
+        pynite.compute_member_forces(problem, xyz, thinner, applied, prepared)
+
+
+def test_the_geometry_it_was_prepared_at_is_accepted(
+    problem, xyz, diameters, applied, prepared
+):
+    # The guard refuses a disagreement and nothing else: the same arrays pass,
+    # and so does an equal copy, since the comparison is by value.
+    via_prepared = pynite.compute_member_forces(
+        problem, xyz, diameters, applied, prepared
+    )
+    via_copy = pynite.compute_member_forces(
+        problem, xyz.copy(), diameters.copy(), applied, prepared
+    )
     honest = pynite.compute_member_forces(problem, xyz, diameters, applied)
 
     assert np.all(
-        np.asarray(via_stale.axial_force) == np.asarray(at_lifted.axial_force)
+        np.asarray(via_prepared.axial_force) == np.asarray(honest.axial_force)
     )
-    assert relative(via_stale.axial_force, honest.axial_force) > 1e-3
+    assert np.all(np.asarray(via_copy.axial_force) == np.asarray(honest.axial_force))
 
 
 def test_several_load_cases_cost_one_factorization(

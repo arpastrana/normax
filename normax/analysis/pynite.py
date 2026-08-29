@@ -461,6 +461,53 @@ def refuse_upright(
         )
 
 
+def refuse_disagreement(
+    prepared: PreparedFrame,
+    edges: Int[np.ndarray, "members 2"],
+    xyz: Float[np.ndarray, "nodes 3"],
+    diameters: Float[np.ndarray, "members"],
+) -> None:
+    """
+    Refuse a geometry that is not the one the frame was prepared at.
+
+    Raises
+    ------
+    ValueError
+        If the passed coordinates or diameters differ anywhere from those the
+        prepared frame was assembled and factorized at.
+
+    Notes
+    -----
+    A prepared frame holds a factorization of one geometry, so the coordinates
+    and diameters passed beside it decide nothing and were formerly read by
+    nothing. Silence there answers about the prepared frame while the caller
+    believes it asked about the frame it described. Compared exactly rather
+    than to a tolerance: `prepare_frame` stores these by gather and performs no
+    arithmetic on them, so any difference at all is a caller's disagreement and
+    not round-off.
+    """
+    spans = np.asarray(edges)
+    positions = np.asarray(xyz)
+    start = np.asarray(prepared.members.start)
+    end = np.asarray(prepared.members.end)
+
+    moved = not (
+        np.array_equal(positions[spans[:, 0]], start)
+        and np.array_equal(positions[spans[:, 1]], end)
+    )
+    if moved:
+        raise ValueError(
+            "the geometry differs from the one this frame was prepared at; "
+            "prepare a frame at it, or pass no prepared frame"
+        )
+
+    if not np.array_equal(np.asarray(diameters), np.asarray(prepared.members.diameter)):
+        raise ValueError(
+            "the diameters differ from those this frame was prepared at; "
+            "prepare a frame at them, or pass no prepared frame"
+        )
+
+
 def prepare_frame(
     problem: FrameProblem,
     xyz: Float[np.ndarray, "nodes 3"],
@@ -615,13 +662,20 @@ def compute_member_forces(
         Force applied at every node, with or without a leading load case axis.
     prepared :
         The frame already assembled at this geometry and these diameters, or
-        None to prepare one.
+        None to prepare one. One that was prepared at any other geometry is
+        refused rather than answered for.
 
     Returns
     -------
     forces :
         Axial force and both end moments, carrying a load case axis exactly
         when the loading did.
+
+    Raises
+    ------
+    ValueError
+        If a prepared frame disagrees with the coordinates or diameters passed
+        beside it.
 
     Notes
     -----
@@ -633,6 +687,8 @@ def compute_member_forces(
 
     if prepared is None:
         prepared = prepare_frame(problem, xyz, diameters)
+    else:
+        refuse_disagreement(prepared, problem.structure.edges, xyz, diameters)
     displaced = solve_displacements(prepared, cases)
     moved = prepared.members._replace(
         displacement=jnp.asarray(displaced[:, prepared.indexed])
@@ -671,12 +727,19 @@ def pull_back_cotangents(
         Cotangent on each reported quantity, without a load case axis.
     prepared :
         The frame already assembled at this geometry and these diameters, or
-        None to prepare one.
+        None to prepare one. One that was prepared at any other geometry is
+        refused rather than answered for.
 
     Returns
     -------
     pulled :
         Cotangent on every node coordinate and every diameter.
+
+    Raises
+    ------
+    ValueError
+        If a prepared frame disagrees with the coordinates or diameters passed
+        beside it.
 
     Notes
     -----
@@ -688,6 +751,8 @@ def pull_back_cotangents(
     """
     if prepared is None:
         prepared = prepare_frame(problem, xyz, diameters)
+    else:
+        refuse_disagreement(prepared, problem.structure.edges, xyz, diameters)
     displaced = solve_displacements(prepared, np.asarray(problem.loads)[None, ...])[0]
     state = prepared.members._replace(
         displacement=jnp.asarray(displaced[prepared.indexed])
