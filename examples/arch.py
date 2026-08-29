@@ -57,7 +57,6 @@ from normax.structures import build_arch_2d
 from normax.symmetry import build_section_groups
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
-from normax.visualization import view_design
 
 # The arch and the search, unless another file is named on the command line.
 CONFIG = Path(__file__).with_name("arch.yaml")
@@ -134,11 +133,10 @@ def main(arguments: RunArguments) -> None:
     is_design_safe = bool(jnp.all(optimized.sizes.utilization <= slack))
     print(f"design safe: {is_design_safe}")
 
-    # What the run arrived at; the report, the record and the viewer read it.
+    # What the run arrived at; the report and the record read it.
     record = DesignRecord(problem, found, initial, optimized, ())
     report_design(record, config, TITLE)
     export_design(record, config, EXPORT)
-    view_design(record, config)
 
 
 if __name__ == "__main__":

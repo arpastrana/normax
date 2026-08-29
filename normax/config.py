@@ -191,13 +191,10 @@ class OutputConfig(NamedTuple):
         Whether the run prints its report.
     export :
         Whether the run writes its record and its figures.
-    viewer :
-        Whether the run ends in a viewer.
     """
 
     verbose: bool
     export: bool
-    viewer: bool
 
 
 class RunConfig(NamedTuple, Generic[StructureT]):
