@@ -293,12 +293,16 @@ def report_descent(
         ReportColumn(heading, ".6f"),
         ReportColumn("violation", ".2e"),
     )
-    walked = zip(solution.objectives, solution.violations, strict=True)
+    coarse = solution.rounds
+    walked = zip(coarse.objectives, coarse.violations, strict=True)
     rows = [(index, value, gap) for index, (value, gap) in enumerate(walked)]
     report.write_table(columns, rows)
 
     ended = "converged" if solution.converged else "stopped on its round budget"
     entries = [("evaluations", str(solution.evaluations)), ("ended", ended)]
+    if solution.iterations is not None:
+        traced = np.size(solution.iterations.objectives)
+        entries.insert(1, ("iterations traced", str(traced)))
     report.write_entries(entries)
 
 

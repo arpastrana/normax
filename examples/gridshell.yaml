@@ -16,6 +16,7 @@ form_finding:
   shape_parametrization: fdm
   basis: svd
   mirror: y
+  fold_heights: true            # one height per mirrored pair of free nodes
   # DrawnShapeInitializer: the drawn cap is its own fit, so it reads no start.
 
 # The load is a pressure on the plan, spread by tributary area, so the boundary
@@ -70,8 +71,10 @@ optimization:
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-6        # relative objective change per round counting as none
+  trace_iterations: false       # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
+  animate: false                # write an animation of the descent, frame by frame

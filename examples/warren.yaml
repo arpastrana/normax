@@ -13,6 +13,7 @@ form_finding:
   shape_parametrization: fdm
   basis: svd
   mirror: x
+  fold_heights: true            # one height per mirrored pair of free nodes
   # LensShapeInitializer: the densities that make a sketched lens funicular.
   density_start: {sag: 600.0, rise: 800.0, held_plan: false}
 
@@ -66,8 +67,10 @@ optimization:
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-6        # relative objective change per round counting as none
+  trace_iterations: true        # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
+  animate: true                 # write an animation of the descent, frame by frame

@@ -48,6 +48,7 @@ from normax.structures import ShellDescription
 from normax.structures import Structure
 from normax.structures import build_gridshell_3d
 from normax.structures import create_groups_shell
+from normax.symmetry import build_height_groups
 from normax.symmetry import build_section_groups
 from normax.symmetry import find_mirror_nodes
 from normax.symmetry import find_rotated_nodes
@@ -106,9 +107,15 @@ def main(arguments: RunArguments) -> None:
         spokes = read_polar_plan(structure).num_spokes
         rotation = find_rotated_nodes(structure, spokes)
     section_groups = build_section_groups(structure, (folded, rotation))
+    # Only the mirror folds a height: the rotation carries no load case onto
+    # another, so folding by it would hold a shape the loads do not ask for.
+    lifted = mirror if config.form_finding.fold_heights else None
+    height_groups = build_height_groups(structure, (lifted,))
 
     # The three main computation blocks of the structural design pipeline
-    form_finder = build_form_finder(structure, basis, config.form_finding)
+    form_finder = build_form_finder(
+        structure, basis, config.form_finding, height_groups
+    )
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
 
@@ -134,7 +141,9 @@ def main(arguments: RunArguments) -> None:
     design = create_design(problem, params)
 
     # Search, baby, search...
-    solution = solve_problem(problem, params, config.optimization)
+    solution = solve_problem(
+        problem, params, config.optimization, config.output.verbose
+    )
     design_found = create_design(problem, solution.parameters)
 
     # Is every member cross-section compliant to the structural engineering standards?

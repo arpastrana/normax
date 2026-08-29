@@ -2,6 +2,238 @@
 
 ## Unreleased
 
+### A collapsed geometry is refused before a solver is handed it
+
+Added 2026-08-29 on branch `mirror-folding`. Folding the heights drove the
+vierendeel's midspan vertical to a length of exactly zero, and the crossed
+frame solver given a member of no length does not raise -- it takes the
+process down, exit code 0, no traceback, no figures. That is the one failure
+`recoil_point_to_last_good` cannot catch, because there is nothing left to
+catch it in.
+
+`ConstrainedMaps` gains `shortest`, a compiled map reading the **form finder
+alone** rather than the whole pipeline, and `optimize_augmented_lagrangian`
+consults it before every trial point, charging the same recoil to a geometry
+that has collapsed. A descent leaving from an already-collapsed geometry is
+refused outright, there being no length to measure a collapse against.
+
+**The threshold is relative to the start and deliberately tiny**
+(`DEGENERATE_SHARE = 1e-9`, so 1.25e-6 mm on the vierendeel). A first attempt
+at 1e-2 -- 12.5 mm there, chosen to also catch the 1.8 mm members seen beside
+the collapsed one -- broke the fdm route outright: the descent froze at round
+one and stayed at a violation of 0.8506 for twenty rounds, ending infeasible
+at worst utilization 1.2566. The frozen point sat at 149 mm, twelve times
+clear of the threshold, so the guard was not rejecting it; the *line search*
+has to probe below the threshold to escape a constrained round, and the recoil
+charged there poisons L-BFGS-B's curvature estimate for the rest of it. With
+the guard disabled the same run converges to worst utilization 1.000000 and
+13.71% saved, which is how the cause was pinned. The guard exists to keep a
+solver from being handed a member of no length, not to keep the search away
+from short ones; anything merely tiny that returns a non-finite number is
+already covered by the finiteness check, which is catchable.
+
+The Vierendeel is the structure that needs this and the reason is geometric,
+not a matter of symmetry: its verticals join two nodes at one plan position,
+so they are the only members with no lower bound on their length from the held
+plan, and both chords draw their heights from one shared box. Bay parity does
+not help -- an odd count removes the self-paired vertical at midspan, and the
+mirrored pairs collapse just the same, as they did at 1.8 mm in the run that
+died.
+
+### The mirror folds the written heights, and the arch folds at all
+
+Added 2026-08-29 on branch `mirror-folding`. A design was symmetric only where
+something folded it, and the written-heights route was folded by nothing:
+`HeightsFormFinder` hardcoded `basis = None` with a docstring saying a height
+is its own coefficient, and `build_form_finder` did not pass it a symmetry
+even where the file named one. The trusses folded their diameters and their
+`fdm` plan basis; `heights` slipped past both. Measured before the change, on
+the shipped `vierendeel.yaml` run with `--shape-parametrization heights`: the
+converged design leans 325 mm off its own mirror and **fails the mirrored
+patch load by 112.2%**, a case the file omits on the argument -- true for
+`fdm` and `fixed`, false here -- that a symmetric design makes it redundant.
+
+**Heights now fold by orbits, as diameters do.** `build_height_groups` is the
+nodal counterpart of `build_section_groups`, over `permute_free_nodes` rather
+than `permute_members`; `HeightsFormFinder` takes the orbit columns and
+overrides `expand_shape_coefficients` so a coefficient is one orbit's shared
+height. `fold_heights` folds a start back down, and takes the **mean** where
+`fold_values` takes the largest -- a folded diameter must cover every member
+it sizes, while a folded height that took the largest of its orbit would lift
+a start merely drawn a little off its own mirror.
+
+**Only a mirror folds a height, never a rotation.** The gridshell folds its
+diameters by a one-spoke rotation as well, which is a buildability constraint
+rather than a symmetry: no load case there is rotation-invariant, so folding
+heights by it would hold a shape the loads never ask for. The mirror is
+different -- it carries the two `sector` cases onto each other -- so folding by
+it leaves the answer symmetric rather than constrained.
+
+**The arch folded nothing at all and now folds both.** Its file said
+`mirror: null` with the comment that a chain needs no symmetry to fold, true of
+the held plan (one coefficient, nothing left to fold) and silent about the ten
+diameters. `examples/arch.py` never read `fold_mirror`, hardcoding
+`build_section_groups(structure, (None, None))`, so the setting could not have
+worked had the file asked. Now `mirror: x`, `fold_mirror: true`,
+`fold_heights: true`, and the mirror is found and threaded like the other three.
+
+Design variables at the shipped defaults:
+
+| structure | nodes | members | `fdm` | `heights` | `fixed` |
+|---|---|---|---|---|---|
+| arch | 11 | 10 | 11 → **6** | 19 → **10** | 10 → **5** |
+| warren | 17 | 31 | 25 | 31 → **24** | 16 |
+| vierendeel | 18 | 23 | 18 | 26 → **20** | 12 |
+| gridshell | 257 | 496 | 54 | 272 → **167** | 31 |
+
+The arch's `fdm` answer is unchanged at 0.150150 t and 48.52% saved: folding
+costs nothing where the design was already landing symmetric, which is what
+the mirrored load case had been buying it.
+
+`form_finding.fold_heights` is a required field in all four run descriptions,
+and `read_run_config` refuses it where `form_finding.mirror` names no axis --
+silently folding nothing is exactly the failure this change exists to remove.
+
+### The descent figure reads the violation, and the objective it draws is monotone
+
+Reworked 2026-08-29. The descent figure drew one line -- the objective at the
+end of every round -- and dropped the violation column entirely, though the
+column was stored, exported and printed in the report table. That line is not
+a descent: the augmented Lagrangian re-evaluates the *true* objective at each
+round while minimizing the augmented one, so it falls into the infeasible
+region, buys feasibility back, and rises doing it. On the arch it drops to
+0.131957 t at round 1 at a violation of 2.28e-1 and settles at 0.150150 t, so
+the figure's own minimum was a design that does not exist.
+
+**The figure is now two panels sharing the round axis.** Above, the worst
+violation on a logarithmic axis, the tolerance as a dashed line with the
+satisfied band shaded under it. Below, the objective drawn twice: faintly as
+the search read it, and in full as `track_best_feasible` -- a running minimum
+over the satisfied rounds only,
+
+    f_best(k) = min { f(x_j) : j <= k, v(x_j) <= tol }
+
+which is monotone by construction and answers what the raw column cannot,
+namely what the search would have handed over had it stopped there. Rounds
+before the first satisfied one are `nan` rather than a floor, so the curve is
+a gap where no design has been found yet. A right-hand axis carries the
+fraction of the start.
+
+Nothing needed normalizing to make the violation comparable across families:
+`assemble_constraint_rows` already divides each family by its own scale, so the
+worst row is the infinity norm of the positive part of a dimensionless set and
+no row dominates the measure by carrying larger units.
+
+`measure_violation` returned `-0.0` at a satisfied round, which printed as
+`-0.00e+00` and read as negative on a comparison against zero. It returns `0.0`.
+
+### The descent is recorded at two resolutions
+
+Added 2026-08-29. A round is one whole L-BFGS-B descent, so the walk read a
+round at a time has a point where the multipliers moved and nowhere else: the
+arch converges in eight, which is enough to read convergence off and far too
+few to watch a design change. `optimization.trace_iterations` in the run
+description turns on a second record, one point per inner iteration.
+
+`OptimizationSolution` now carries two `DescentHistory` values rather than
+loose columns -- `rounds`, always present, and `iterations`, `None` where the
+budget asked for no such record. Each holds the iterates, the objective, the
+violation and the `round_index` every point came out of, so the two are one
+timeline read at two resolutions and anything reading a walk takes the finer
+of them without knowing which it got. The last point of a round is that
+round's endpoint, and every round carries a point even where it moved nowhere
+and L-BFGS-B called back not at all -- otherwise the numbering skips a round
+and the join onto the round history is partial. Both are asserted rather than
+assumed; the arch has such a round, its fourth.
+
+**The walk is measured after the descent lands, never inside it.** The inner
+callback appends the iterate and nothing else, and the objective and rows are
+read in one pass afterwards, so the loop is the same program either way and
+the answer, the round column and the evaluation count are bit-identical with
+the record on. What the record costs is one forward pass per iteration through
+a fourth compiled map, `ConstrainedMaps.readings`, which returns the objective
+and the rows together: asking for both at once shares one form finding between
+them, and no gradient is taken, where the obvious spelling -- `maps.objective`
+beside `maps.slack` -- would have paid for a reverse pass and a second form
+finding at every point. Compiled lazily, so a run that reads no walk pays for
+none of it.
+
+On the arch the finer record is 69 points against 8 rounds, and it shows a
+feasible design at iteration 1 weighing 0.188 t that the round view cannot
+see, the search having left feasibility again before round 1 ended.
+
+Measured on all four examples, the record changing no answer on any of them:
+
+| example | untraced | traced | points | evaluations |
+|---|---|---|---|---|
+| arch | 8 s | 9 s | 69 | 202 |
+| warren | 140 s | 139 s | 617 | 2030 |
+| vierendeel | 146 s | 153 s | 1243 | 3056 |
+| gridshell | 195 s | 297 s | 1601 | 2144 |
+
+**The cost is the product of two ratios, and the gridshell is unlucky in
+both.** Overhead is `(points / evaluations) x (cost of a read / cost of an
+evaluation)`, and both factors were measured over the same sixty distinct
+points of a real walk:
+
+| | points / evaluations | read | evaluation | ratio | predicted | measured |
+|---|---|---|---|---|---|---|
+| vierendeel (2D) | 0.41 | 4.5 ms | 48.4 ms | 0.09 | 4% | 5% |
+| gridshell (3D) | 0.75 | 59.4 ms | 87.4 ms | 0.68 | 51% | 52% |
+
+The first factor is the line search: the gridshell accepts its first trial
+almost every time, 1.34 evaluations to an iteration against the arch's 2.9, so
+three evaluations in four are a point to be read back.
+
+**The second factor inverts the intuition -- the backend with the better
+gradient pays the most.** The read is a forward pass and the evaluation is a
+forward pass and a gradient, so the ratio is high exactly where the gradient is
+cheap. On the crossed 3D PyNite backend the hand-written adjoint is one solve
+whatever the parameter count, so the gradient adds only half again to the
+forward and a forward-only read costs 0.68 of an evaluation. On 2D OpenSees the
+DDM sensitivities are computed per registered parameter and dominate: 43.9 ms
+of the 48.4 ms is gradient, and a read is nearly free beside it. The structure's
+size lands on the forward alone -- 2226 constraint rows against 136 -- which is
+why the gridshell's read is 13x the vierendeel's while its evaluation is only
+1.8x.
+
+Neither is compilation: the first read on the gridshell takes 73 ms against a
+60.8 ms steady state, and 1601 x 59.4 ms accounts for 95 s of the 97 s the pass
+actually spent. The arch ships with the record on and the other three off.
+
+### A descent can be written as an animation
+
+Added 2026-08-29 in `normax/visualization/animations.py`, behind
+`output.animate` in the run description. One frame per recorded point: the
+design carried back through the pipeline and drawn beside the two curves
+revealed to exactly that point, written as a GIF by Pillow, which matplotlib
+already depends on where it depends on ffmpeg not at all.
+
+Nothing is smoothed, interpolated or resampled -- a frame is a design the
+search really evaluated, which the finer record is what makes worth watching.
+Every limit, width and color scale is read off the whole walk before the first
+frame, so what moves between frames is the design and the curves and nothing
+else; a member that appears to change is one that changed. The drawing panel's
+height is computed from the shape's own proportions, the drawing being at equal
+aspect, and the colorbar sits above it rather than beside it so one iteration
+is at one place down the whole page.
+
+`animate_descent` refuses a pipeline carrying no check -- an animation colored
+by utilization has nothing to color by, and there is no honest stand-in -- and
+refuses a panel of more than one trace, having one design to draw at a time.
+
+### The solution carries the variables of every round
+
+Added 2026-08-29. `OptimizationSolution.iterates` is the variable vector at the
+end of each round, the start first, so the last row is `parameters`; it goes
+into the run's `.npz` beside the two columns. One small array, and the
+pipeline is deterministic in its parameters, so it is the design behind every
+point of the curve -- which is what an animation of the design evolving beside
+the loss needs and what the record could not previously supply. The curve
+itself is prefix-closed for the same reason: `track_best_feasible` at a point
+depends on no point after it, so one call on the whole run is sliced into
+frames rather than recomputed per frame.
+
 ### The search and its objectives are named for the problem they take
 
 Renamed 2026-08-29. `optimize_design` took no `Design` and returned none: it

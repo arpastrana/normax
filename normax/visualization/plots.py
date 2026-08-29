@@ -20,7 +20,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from normax.design import Design
-from normax.optimization import OptimizationSolution
+from normax.optimization import DescentHistory
 from normax.structures import Structure
 
 # Points of line width given to the thickest member of a drawing.
@@ -31,6 +31,12 @@ GREY = "0.55"
 
 # A load case governs every member within this distance of the member's worst.
 TIE_MARGIN = 1e-9
+
+# Where a satisfied point is drawn, as a share of the smallest violation seen.
+VIOLATION_DECADE = 0.1
+
+# Longest walk whose every point is still marked rather than only drawn.
+MARKED_STEPS = 40
 
 
 class DrawnStructure(NamedTuple):
@@ -316,49 +322,240 @@ def draw_utilization(
 
 class DescentTrace(NamedTuple):
     """
-    One constrained descent, read as the objective at the end of every round.
+    One constrained descent, read at every point it was recorded at.
 
     Attributes
     ----------
     title :
         Name of the search, shown in the legend.
-    mass :
-        Objective at the end of every round, the starting value first.
+    history :
+        Where it went, its objective and violation at every point.
+    tolerance :
+        Violation at or under which a point counts as a design.
+
+    Notes
+    -----
+    The tolerance travels with the descent rather than with the drawing, being
+    the budget the search was actually run under. The rows behind the violation
+    are normalized where they are assembled, each family divided by its own
+    scale, so the worst of them is comparable across families and no row
+    dominates the measure by carrying larger units.
     """
 
     title: str
-    mass: Float[np.ndarray, "rounds"]
+    history: DescentHistory
+    tolerance: float
 
 
-def draw_mass_descent(traces: Sequence[DescentTrace]) -> Figure:
+class DescentPanel(NamedTuple):
     """
-    Constrained descents side by side, one line of objective per search.
+    The descents drawn on one pair of axes, and what their two axes are called.
+
+    Attributes
+    ----------
+    heading :
+        Name and unit of the objective, from `name_objective`.
+    axis :
+        What one point of a curve is: a round, or an inner iteration.
+    traces :
+        The descents to compare, in the order they are drawn.
+    """
+
+    heading: str
+    axis: str
+    traces: tuple[DescentTrace, ...]
+
+
+def read_round_bounds(history: DescentHistory) -> Int[np.ndarray, "rounds"]:
+    """
+    The points at which a walk crossed from one outer round into the next.
+
+    Parameters
+    ----------
+    history :
+        Where a descent went.
+
+    Returns
+    -------
+    crossings :
+        Index of the first point of every round after the first, empty on a
+        walk that was recorded a round at a time.
+
+    Notes
+    -----
+    Empty on the coarse walk by construction, every point there being its own
+    round, so a drawing marks the crossings unconditionally and gets lines only
+    where they say something.
+    """
+    numbered = np.asarray(history.round_index)
+    if numbered.size == np.unique(numbered).size:
+        return np.empty(0, dtype=int)
+
+    return np.flatnonzero(np.diff(numbered)) + 1
+
+
+def track_best_feasible(
+    objective: Float[np.ndarray, "rounds"],
+    violation: Float[np.ndarray, "rounds"],
+    tolerance: float,
+) -> Float[np.ndarray, "rounds"]:
+    """
+    The best objective reached at a satisfied round, up to and including each.
+
+    Parameters
+    ----------
+    objective :
+        Objective at the end of every round.
+    violation :
+        Worst violation over the rows at the end of every round.
+    tolerance :
+        Violation at or under which a round counts as a design.
+
+    Returns
+    -------
+    best :
+        The running best, and `nan` at every round before the first satisfied
+        one, where no design has been found yet.
+
+    Notes
+    -----
+    A running minimum over the satisfied rounds only, which is monotone by
+    construction and answers what the raw column cannot: what the search would
+    have handed over had it stopped here. The gap before the first satisfied
+    round is the honest reading of a search still crossing the infeasible
+    region, and drawing it as `nan` leaves it a gap rather than a floor.
+    Prefix-closed, so the value at a round depends on no round after it: one
+    call on the whole run and a frame is the curve sliced to it.
+    """
+    values = np.asarray(objective, dtype=np.float64)
+    gaps = np.asarray(violation, dtype=np.float64)
+    admitted = np.where(gaps <= tolerance, values, np.inf)
+    running = np.minimum.accumulate(admitted)
+    best = np.where(np.isfinite(running), running, np.nan)
+
+    return best
+
+
+def read_violation_floor(traces: Sequence[DescentTrace]) -> float:
+    """
+    The value an exactly satisfied point is drawn at on a logarithmic axis.
 
     Parameters
     ----------
     traces :
-        The descents to compare, in the order they are drawn.
+        The descents about to be drawn.
+
+    Returns
+    -------
+    floor :
+        One decade below the smaller of the least violation any of them
+        actually reached and the tightest tolerance any of them was run under.
+
+    Notes
+    -----
+    A satisfied point sits at zero, which no logarithmic axis can place.
+    Clipping to a decade below puts it off the bottom of the data, where it
+    reads as satisfied, and distorts no value that was really attained. The
+    tolerance is taken into the floor as well, since a run that lands cleanly
+    can leave every violation it reached above its own tolerance, and a
+    tolerance line drawn off the bottom of the axis says nothing.
+    """
+    columns = [np.asarray(trace.history.violations) for trace in traces]
+    gaps = np.concatenate(columns)
+    positive = gaps[gaps > 0.0]
+    tightest = min(trace.tolerance for trace in traces)
+    if positive.size == 0:
+        reached = tightest
+    else:
+        reached = float(positive.min())
+
+    return min(reached, tightest) * VIOLATION_DECADE
+
+
+def draw_objective_descent(panel: DescentPanel) -> Figure:
+    """
+    A constrained descent as the two curves that explain each other.
+
+    Parameters
+    ----------
+    panel :
+        The descents to draw, and what their two axes are called.
 
     Returns
     -------
     figure :
-        One panel of mass against round, shared so the lines compare where
-        each flattens.
+        Violation against the panel's axis on a logarithmic scale over the
+        objective against the same, shared so a rise in one is read against
+        the fall in the other.
+
+    Notes
+    -----
+    The objective is drawn twice: faintly as the search read it, which is free
+    to rise while feasibility is bought, and in full as the best satisfied
+    point so far, which is monotone and is the curve the reader wants. Where a
+    walk was recorded finer than a round, the rounds are ruled in behind it, so
+    a step in the curve is read against the multiplier update that caused it.
+    Every limit is set from the whole run rather than from what is drawn, so
+    the same axes hold while a frame reveals a prefix of the curve.
     """
-    figure, descent = plt.subplots(figsize=(6.0, 4.0), layout="constrained")
+    proportions = (1.0, 1.6)
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(6.0, 5.6),
+        sharex=True,
+        height_ratios=proportions,
+        layout="constrained",
+    )
+    violated, descent = axes
     shades = ("#31688e", "#35b779", "#c0392b")
+    floor = read_violation_floor(panel.traces)
 
-    for index, trace in enumerate(traces):
-        mass = np.asarray(trace.mass)
-        rounds = np.arange(len(mass))
+    for index, trace in enumerate(panel.traces):
         color = shades[index % len(shades)]
-        descent.plot(rounds, mass, "-", color=color, lw=1.4, label=trace.title)
+        history = trace.history
+        values = np.asarray(history.objectives)
+        gaps = np.asarray(history.violations)
+        best = track_best_feasible(values, gaps, trace.tolerance)
+        steps = np.arange(values.size)
+        marks = "-o" if values.size <= MARKED_STEPS else "-"
 
-    descent.set_xlabel("round")
-    descent.set_ylabel("mass [t]")
-    descent.set_title("The constrained descents", fontsize=11)
+        for crossing in read_round_bounds(history):
+            violated.axvline(crossing, color=GREY, lw=0.5, alpha=0.5)
+            descent.axvline(crossing, color=GREY, lw=0.5, alpha=0.5)
+
+        placed = np.maximum(gaps, floor)
+        violated.plot(steps, placed, marks, color=color, lw=1.4, ms=2.5)
+        raw = "as the search read it" if index == 0 else None
+        descent.plot(steps, values, "-", color=GREY, lw=1.0, label=raw)
+        descent.plot(steps, best, marks, color=color, lw=1.8, ms=3.0, label=trace.title)
+
+    levels = sorted({trace.tolerance for trace in panel.traces})
+    violated.axhspan(floor, levels[0], color=GREY, alpha=0.15, lw=0.0)
+    for order, level in enumerate(levels):
+        named = "tolerance" if order == 0 else None
+        violated.axhline(level, color=GREY, ls="--", lw=1.0, label=named)
+
+    spent = max(np.size(trace.history.objectives) for trace in panel.traces) - 1
+    violated.set_xlim(0, max(spent, 1))
+    violated.set_yscale("log")
+    violated.set_ylim(bottom=floor)
+    violated.set_ylabel("worst violation")
+    violated.set_title("The constrained descent", fontsize=11)
+    violated.legend(frameon=False, fontsize=9)
+    violated.grid(alpha=0.3, which="both")
+
+    descent.set_xlabel(panel.axis)
+    descent.set_ylabel(panel.heading)
     descent.legend(frameon=False, fontsize=9)
     descent.grid(alpha=0.3)
+
+    if len(panel.traces) == 1:
+        start = float(panel.traces[0].history.objectives[0])
+        if np.isfinite(start) and start != 0.0:
+            conversions = (lambda value: value / start, lambda share: share * start)
+            shared = descent.secondary_yaxis("right", functions=conversions)
+            shared.set_ylabel("fraction of the start")
 
     return figure
 
@@ -367,7 +564,7 @@ def draw_design_figures(
     structure: Structure,
     designs: dict[str, Design],
     case_names: tuple[str, ...],
-    solution: OptimizationSolution,
+    panel: DescentPanel,
 ) -> tuple[Figure | None, Figure]:
     """
     The two figures a run draws: its designs, and the descent between them.
@@ -380,14 +577,14 @@ def draw_design_figures(
         The designs to draw, keyed by the name each appears under.
     case_names :
         Name of every load case, naming who governs each member.
-    solution :
-        What the descent arrived at, whose objective column is drawn.
+    panel :
+        The descent to draw, and what its objective is called.
 
     Returns
     -------
     figures :
         The designs colored by utilization, or None where no design carries a
-        utilization to color by, and the objective against the round.
+        utilization to color by, and the descent.
 
     Notes
     -----
@@ -395,7 +592,7 @@ def draw_design_figures(
     nothing to draw the first figure is None rather than empty — `draw_utilization`
     reads a widest diameter and a least-worked member across the designs, and
     neither exists over no designs. The descent figure is drawn either way, its
-    column being whatever the search minimized.
+    curve being whatever the search minimized.
     """
     forms = []
     for title, design in designs.items():
@@ -409,8 +606,6 @@ def draw_design_figures(
         )
         forms.append(form)
     drawn = draw_utilization(structure.edges, forms, case_names) if forms else None
-
-    traces = (DescentTrace("auglag", solution.objectives),)
-    descended = draw_mass_descent(traces)
+    descended = draw_objective_descent(panel)
 
     return drawn, descended

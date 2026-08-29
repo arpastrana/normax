@@ -23,6 +23,7 @@ dependencies = [
     "scipy>=1.18.0",
     "tesseract-core[runtime]>=1.11.0",
     "tesseract-jax>=0.4.1",
+    "tqdm>=4.70.0",
 ]
 
 [tool.setuptools.packages.find]

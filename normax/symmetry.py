@@ -401,6 +401,119 @@ def shift_densities(
     return np.asarray(q) + shift * np.asarray(mode)
 
 
+def permute_free_nodes(
+    nodes_permuted: Int[np.ndarray, "nodes"],
+    structure: Structure,
+) -> Int[np.ndarray, "nodes_free"]:
+    """
+    Position among the free nodes of every free node's image.
+
+    Parameters
+    ----------
+    nodes_permuted :
+        The node the permutation carries each node onto.
+    structure :
+        The structure supplying the supports the free nodes are what is left of.
+
+    Returns
+    -------
+    free_permuted :
+        Where in the free-node ordering each free node lands, so the result
+        indexes a vector of one height per free node rather than one per node.
+
+    Raises
+    ------
+    ValueError
+        If a free node's image is supported, so the permutation does not carry
+        the free nodes among themselves and cannot fold a height.
+    """
+    every = np.arange(structure.num_nodes)
+    free = np.setdiff1d(every, np.asarray(structure.supports))
+    ranked = {int(node): index for index, node in enumerate(free.tolist())}
+
+    landed = []
+    for node in free.tolist():
+        image = int(nodes_permuted[node])
+        if image not in ranked:
+            raise ValueError(f"free node {node} maps onto support {image}")
+        landed.append(ranked[image])
+
+    return np.asarray(landed)
+
+
+def build_height_groups(
+    structure: Structure,
+    nodes_permuted: tuple[Int[np.ndarray, "nodes"] | None, ...],
+) -> Float[np.ndarray, "nodes_free groups"] | None:
+    """
+    The orbit columns folding the free nodes' heights by several permutations.
+
+    Parameters
+    ----------
+    structure :
+        The structure the permutations act on.
+    nodes_permuted :
+        The node each permutation carries each node onto, None entries
+        standing for a symmetry the run does not ask for.
+
+    Returns
+    -------
+    height_groups :
+        One column per orbit of the free nodes, or None when no permutation is
+        given and every height moves on its own.
+
+    Notes
+    -----
+    The nodal counterpart of `build_section_groups`, and the reason a written
+    geometry can be symmetric by construction rather than by being checked
+    against the mirrored load case it would otherwise lean away from.
+    """
+    offered = [nodes for nodes in nodes_permuted if nodes is not None]
+    if not offered:
+        return None
+
+    generators = tuple(permute_free_nodes(nodes, structure) for nodes in offered)
+
+    return build_orbit_matrix(generators)
+
+
+def fold_heights(
+    heights: Float[np.ndarray, "nodes_free"],
+    height_groups: Float[np.ndarray, "nodes_free groups"] | None,
+) -> Float[np.ndarray, "groups"]:
+    """
+    Fold heights into one value per orbit, the mean of each.
+
+    Parameters
+    ----------
+    heights :
+        Height of every free node.
+    height_groups :
+        The orbit columns, or None to leave the heights as they are.
+
+    Returns
+    -------
+    folded :
+        One height per orbit.
+
+    Notes
+    -----
+    The mean where `fold_values` takes the largest, and the difference is not
+    a preference: a folded diameter must cover every member it sizes, while a
+    folded height that took the largest of its orbit would lift a start that
+    was merely drawn a little off its own mirror. Exact either way on a start
+    already symmetric, which every drawn geometry here is.
+    """
+    if height_groups is None:
+        return np.asarray(heights)
+
+    columns = np.asarray(height_groups)
+    counted = columns.sum(axis=0)
+    averaged = (columns.T @ np.asarray(heights)) / counted
+
+    return averaged
+
+
 def build_section_groups(
     structure: Structure,
     nodes_permuted: tuple[Int[np.ndarray, "nodes"] | None, ...],

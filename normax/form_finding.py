@@ -31,6 +31,7 @@ from normax.structures import Structure
 from normax.structures import compute_member_lengths
 from normax.structures import read_drawn_shape
 from normax.symmetry import SignGuard
+from normax.symmetry import fold_heights
 from normax.symmetry import guard_signs
 from normax.symmetry import permute_members
 from normax.symmetry import shift_densities
@@ -495,9 +496,12 @@ class HeightsFormFinder(AbstractFormFinder):
     nodes_free :
         Indices of the nodes whose height a call writes.
     width :
-        How many heights a call takes.
+        How many coefficients a call's heights are expanded from.
     basis :
-        None: a height is its own coefficient, and no subspace holds them.
+        None: the density subspace is not what holds a written geometry.
+    height_groups :
+        The orbit columns folding the free nodes' heights, or None to move
+        every height on its own.
 
     Notes
     -----
@@ -507,6 +511,12 @@ class HeightsFormFinder(AbstractFormFinder):
     except where two nodes share a plan position -- a Vierendeel vertical --
     which a height crossing can still collapse. The length floor walls that
     off.
+
+    Folded by orbits rather than by a basis, since a height belongs to a node
+    and the density subspace belongs to the members. A coefficient is then one
+    orbit's shared height, and a shape that answers to a mirrored pair of load
+    cases is symmetric by construction rather than by being checked against
+    both -- which is what an unfolded set of heights leans away from.
 
     The rival the shipped finder is measured against: the same members, loads,
     analysis and check, differing only in whether the geometry answers to
@@ -520,11 +530,13 @@ class HeightsFormFinder(AbstractFormFinder):
     width: int = eqx.field(static=True)
     rise_start: float | None = eqx.field(static=True)
     basis: PlanBasis | None
+    height_groups: Float[np.ndarray, "nodes_free groups"] | None
 
     def __init__(
         self,
         structure: Structure,
         start: dict[str, float] | None = None,
+        height_groups: Float[np.ndarray, "nodes_free groups"] | None = None,
     ) -> None:
         """
         Build a heights finder on a drawn structure.
@@ -536,24 +548,51 @@ class HeightsFormFinder(AbstractFormFinder):
         start :
             The `rise` a generated parabolic start reaches, or None to leave
             from the drawn heights.
+        height_groups :
+            The orbit columns the heights are folded by, from
+            `build_height_groups`, or None to move every height on its own.
         """
         if start is not None:
             check_start_fields(start, ("rise",))
         nodes_free = select_free_nodes(structure)
+        folded = None if height_groups is None else np.asarray(height_groups)
 
         self.xyz = jnp.asarray(structure.nodes)
         self.edges = np.asarray(structure.edges)
         self.nodes_free = nodes_free
         self.supports = np.asarray(structure.supports)
-        self.width = int(nodes_free.size)
+        self.width = int(nodes_free.size if folded is None else folded.shape[1])
         self.rise_start = None if start is None else float(start["rise"])
         self.basis = None
+        self.height_groups = folded
 
     def count_shape_coefficients(self) -> int:
         """
-        How many heights a call takes, one per free node.
+        How many coefficients a call takes, one per orbit of the free nodes.
         """
         return self.width
+
+    def expand_shape_coefficients(
+        self,
+        coefficients: Float[Array, "coefficients"],
+    ) -> Float[Array, "nodes_free"]:
+        """
+        The height of every free node, at given orbit coefficients.
+
+        Parameters
+        ----------
+        coefficients :
+            One height per orbit, or one per free node where none are folded.
+
+        Returns
+        -------
+        heights :
+            Height of every free node, an orbit's nodes sharing one value.
+        """
+        if self.height_groups is None:
+            return coefficients
+
+        return self.height_groups @ coefficients
 
     def read_shape_coefficients(
         self,
@@ -570,16 +609,19 @@ class HeightsFormFinder(AbstractFormFinder):
 
         Returns
         -------
-        heights :
-            Height of every free node, generated at the named rise where the
-            file names one and read off the drawing where it does not.
+        coefficients :
+            One height per orbit of the free nodes, generated at the named
+            rise where the file names one and read off the drawing where it
+            does not.
         """
         if self.rise_start is None:
-            return np.asarray(self.xyz)[self.nodes_free, 2]
+            started = np.asarray(self.xyz)[self.nodes_free, 2]
+        else:
+            started = build_parabolic_heights(
+                self.xyz, self.supports, self.nodes_free, self.rise_start
+            )
 
-        return build_parabolic_heights(
-            self.xyz, self.supports, self.nodes_free, self.rise_start
-        )
+        return fold_heights(started, self.height_groups)
 
     def bound_coefficients(
         self,
@@ -630,6 +672,9 @@ class HeightsFormFinder(AbstractFormFinder):
     ) -> DesignShape:
         """
         The drawn geometry with the free nodes lifted to the given heights.
+
+        Takes one height per free node, already expanded out of the orbit
+        coefficients by `expand_shape_coefficients`.
 
         Parameters
         ----------
@@ -768,6 +813,7 @@ def build_form_finder(
     structure: Structure,
     basis: PlanBasis | None,
     config: FormFindingConfig,
+    height_groups: Float[np.ndarray, "nodes_free groups"] | None = None,
 ) -> AbstractFormFinder:
     """
     The shape parametrization a run config asks for.
@@ -781,6 +827,10 @@ def build_form_finder(
         form-found parametrization alone.
     config :
         The parametrization, and where its densities start.
+    height_groups :
+        The orbit columns the free nodes' heights are folded by, or None to
+        move every height on its own. Read by the written-heights
+        parametrization alone.
 
     Returns
     -------
@@ -802,7 +852,7 @@ def build_form_finder(
     if named == "fdm":
         return FdmFormFinder(structure, basis)
     if named == "heights":
-        return HeightsFormFinder(structure, config.height_start)
+        return HeightsFormFinder(structure, config.height_start, height_groups)
     if named == "fixed":
         return FixedFormFinder(structure)
 

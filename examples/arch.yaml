@@ -14,8 +14,10 @@ form_finding:
   # writes the free nodes' height; fixed never moves the drawn geometry.
   shape_parametrization: fdm
   basis: pivoted
-  # A chain needs no symmetry to fold: its held plan is one-dimensional already.
-  mirror: null
+  # The held plan is one-dimensional already, so the mirror folds nothing there;
+  # it is what folds the sections and the written heights.
+  mirror: x
+  fold_heights: true            # one height per mirrored pair of free nodes
   # UniformDensityInitializer: one force density in every member. The rise a
   # funicular chain reaches is 250000/|q| mm here, so -100 form-finds a 2500 mm
   # parabola from the flat drawing above: the fdm route reads no drawn height.
@@ -49,7 +51,7 @@ sizing:
   # blueprint is Blueprints' cross-section check, across a Tesseract
   # boundary. Blueprints implements no 6.3.1 buckling.
   backend: blueprint
-  fold_mirror: false
+  fold_mirror: true
   fold_polar: false
 
 constraints:
@@ -83,8 +85,10 @@ optimization:
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-4        # relative objective change per round counting as none
+  trace_iterations: true        # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
+  animate: true                 # write an animation of the descent, frame by frame

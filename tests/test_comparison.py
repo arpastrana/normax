@@ -132,7 +132,7 @@ def described(word, basis="pivoted", start=None):
     """
     A form-finding section naming one parametrization.
     """
-    return FormFindingConfig(word, basis, None, start or {})
+    return FormFindingConfig(word, basis, None, False, start or {})
 
 
 def test_the_builder_names_every_parametrization_and_refuses_any_other(structure):
@@ -388,8 +388,8 @@ def test_an_unnamed_start_still_reads_the_drawn_heights(structure):
 def test_an_omitted_start_is_none_and_no_config_shares_it(structure):
     # A NamedTuple evaluates its defaults once, so a mutable default would be
     # one object every config in the process holds. None cannot be mutated.
-    first = FormFindingConfig("fdm", "svd", "y")
-    second = FormFindingConfig("fdm", "pivoted", None)
+    first = FormFindingConfig("fdm", "svd", "y", False)
+    second = FormFindingConfig("fdm", "pivoted", None, False)
 
     assert first.density_start is None
     assert second.density_start is None
@@ -413,3 +413,28 @@ def test_a_start_is_still_held_to_the_fields_its_initializer_reads():
 
     with pytest.raises(ValueError, match="must name force_density, got \\[\\]"):
         UniformDensityInitializer(None)
+
+
+def test_folding_the_heights_needs_a_mirror_to_fold_them_by(tmp_path):
+    # Asking for a fold the file names no symmetry for is a mistake worth a
+    # refusal: silently folding nothing would leave the shape free to lean
+    # away from a mirrored load case the file believes it no longer needs.
+    written = Path("examples/arch.yaml").read_text()
+    spoiled = written.replace("  mirror: x\n", "  mirror: null\n")
+    path = tmp_path / "arch.yaml"
+    path.write_text(spoiled)
+
+    with pytest.raises(ValueError, match="names none"):
+        read_run_config(read_run_arguments([str(path)], path), ArchDescription)
+
+
+def test_the_shipped_arch_folds_its_heights_by_its_mirror(tmp_path):
+    written = Path("examples/arch.yaml").read_text()
+    path = tmp_path / "arch.yaml"
+    path.write_text(written)
+
+    config = read_run_config(read_run_arguments([str(path)], path), ArchDescription)
+
+    assert config.form_finding.mirror == "x"
+    assert config.form_finding.fold_heights is True
+    assert config.sizing.fold_mirror is True
