@@ -25,12 +25,12 @@ from normax.config import RunConfig
 from normax.config import read_run_arguments
 from normax.config import read_run_config
 from normax.design import DesignProblem
-from normax.design import DesignRecord
+from normax.design import ProblemRecord
 from normax.design import StructuralDesignPipeline
 from normax.design import assign_signs
 from normax.design import build_design_constraints
 from normax.design import create_design
-from normax.design import initialize_optimization_variables
+from normax.design import initialize_optimization_parameters
 from normax.design import optimize_design
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
@@ -50,9 +50,8 @@ from normax.symmetry import build_section_groups
 from normax.symmetry import find_mirror_nodes
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
-from normax.visualization import view_design
 
-# The truss and the search, unless another file is named on the command line.
+# The truss and the search, unless another file is named on the command line
 CONFIG = Path(__file__).with_name("warren.yaml")
 
 REPO = Path(__file__).resolve().parent.parent
@@ -81,12 +80,12 @@ def main(arguments: RunArguments) -> None:
     """
     config: RunConfig[TrussDescription] = read_run_config(arguments, TrussDescription)
 
-    # The structure, its load cases, and the catalog both backends draw from.
+    # The structure, its load cases, and the catalog both backends draw from
     structure = build_truss(config.structure)
     loads = build_load_cases(structure, config.load_cases)
     section_catalog = build_section_catalog(MATERIAL, config.sizing.section_class)
 
-    # The plan is held in a subspace, and the symmetries fold the sizes.
+    # The plan is held in a subspace, and the symmetries fold the sizes
     mirror = find_mirror_nodes(structure, config.form_finding.mirror)
     basis = build_plan_basis(structure, mirror, config.form_finding.basis)
     folded = mirror if config.sizing.fold_mirror else None
@@ -97,35 +96,40 @@ def main(arguments: RunArguments) -> None:
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
 
+    # One pipeline to rule them all
     pipeline = StructuralDesignPipeline(form_finder, analyzer, sizer)
 
-    # The start: a lens sketched over the plan, signed by the guard the file names.
+    # The start: a lens truss with the same diameter per member and guarded signs
     groups = create_groups_warren(config.structure)
     guarded = assign_signs(config.constraints, groups, structure.num_edges)
     density_initializer = LensShapeInitializer(config.form_finding.density_start)
     density_start = density_initializer(structure, loads.formfinding, basis, guarded)
-    constraints = build_design_constraints(config.constraints, guarded, density_start)
-    problem = DesignProblem(structure, pipeline, loads, constraints, section_groups)
     diameter_initializer = UniformDiameterInitializer(config.analysis.diameter_start)
     diameter_start = diameter_initializer(structure)
-    start = initialize_optimization_variables(problem, density_start, diameter_start)
-    initial = create_design(problem, start)
 
-    # The descent: one reverse pass per gradient, whatever the constraint set.
-    found = optimize_design(problem, start, config.optimization)
-    optimized = create_design(problem, found.variables)
+    # Constraints spur creativity
+    constraints = build_design_constraints(config.constraints, guarded, density_start)
 
-    # Is every member within what EN 1993-1-1 allows, to the search's own
-    # tolerance? A fully-stressed design sits on the constraint, not below it.
+    # Construct the design task with all the ingredients created thus far
+    problem = DesignProblem(structure, pipeline, loads, constraints, section_groups)
+
+    # Generate structural design from initial guess of design parameters
+    params = initialize_optimization_parameters(problem, density_start, diameter_start)
+    design = create_design(problem, params)
+
+    # Search, baby, search...
+    solution = optimize_design(problem, params, config.optimization)
+    design_found = create_design(problem, solution.parameters)
+
+    # Is every member cross-section compliant with the structural engineering standard?
     slack = 1.0 + config.optimization.violation_tol
-    is_design_safe = bool(jnp.all(optimized.sizes.utilization <= slack))
-    print(f"design safe: {is_design_safe}")
+    is_design_safe = bool(jnp.all(design_found.sizes.utilization <= slack))
+    print(f"Is the design safe? {is_design_safe}")
 
-    # What the run arrived at; the report, the record and the viewer read it.
-    record = DesignRecord(problem, found, initial, optimized, groups)
+    # Bureaucracy
+    record = ProblemRecord(problem, solution, design, design_found, groups)
     report_design(record, config, TITLE)
     export_design(record, config, EXPORT)
-    view_design(record, config)
 
 
 if __name__ == "__main__":

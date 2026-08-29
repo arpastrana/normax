@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import subprocess
 import sys
-from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -17,9 +16,9 @@ from normax.sections import TubeCatalog
 from normax.sections import build_section_catalog
 from normax.sizing import AbstractMemberSizer
 from normax.sizing import MemberSizes
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractSizer
 
 # The proof this file makes: the sizing contract is fillable without any
 # standard's library, by a different design philosophy rather than a
@@ -121,20 +120,9 @@ def forces():
     return MemberForces(axial, major, minor)
 
 
-def test_this_file_names_no_standard_library():
-    # The one EC3 name here is normax's own adapter, imported to be disagreed with.
-    source = Path(__file__).read_text()
-    imported = [line for line in source.splitlines() if line.startswith("from ")]
-
-    assert not any("ec3x" in line for line in imported)
-
-
 def test_the_contract_imports_no_standard():
-    # `import normax.sizing` must pull neither clause library along.
-    script = (
-        "import sys, normax.sizing; "
-        "assert 'ec3x' not in sys.modules and 'blueprints' not in sys.modules"
-    )
+    # `import normax.sizing` must pull no clause library along.
+    script = "import sys, normax.sizing; assert 'blueprints' not in sys.modules"
     finished = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True
     )
@@ -190,9 +178,11 @@ def test_the_check_differentiates_in_the_diameters(sizer, forces):
 
 
 def test_the_two_philosophies_disagree_about_the_sizes(structure, sizer, forces):
-    # A different standard, not a reimplementation: EC3 sees buckling and
-    # bending and this sizer sees neither, so compressed members differ.
-    limit_state = Ec3Sizer(structure, build_section_catalog(Steel355(), 3))
+    # A different standard, not a reimplementation: the crossed code check sees
+    # bending and a partial-factor format, and this sizer one global factor of
+    # safety on the axial force alone, so every member differs.
+    catalog = build_section_catalog(Steel355(), 3)
+    limit_state = TesseractSizer(structure, catalog, backend="blueprint")
 
     naive = sizer(forces, LENGTHS).sections.diameter
     checked = limit_state(forces, LENGTHS).sections.diameter

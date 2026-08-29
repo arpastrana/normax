@@ -13,7 +13,7 @@ from typing import NamedTuple
 import numpy as np
 
 from normax.config import RunConfig
-from normax.design import DesignRecord
+from normax.design import ProblemRecord
 from normax.loads import label_load_cases
 from normax.reporting import Report
 from normax.visualization import draw_design_figures
@@ -73,7 +73,7 @@ def read_export_stem(target: ExportTarget, config: RunConfig[Any]) -> str:
 
 
 def export_design(
-    record: DesignRecord,
+    record: ProblemRecord,
     config: RunConfig[Any],
     target: ExportTarget,
 ) -> None:
@@ -98,22 +98,22 @@ def export_design(
     if not config.output.export:
         return
 
-    answer = record.answer
+    solution = record.solution
     stem = read_export_stem(target, config)
     target.data.mkdir(exist_ok=True)
     archive = target.data / f"{stem}.npz"
     np.savez(
         archive,
-        variables=answer.variables,
-        objectives=answer.objectives,
-        violations=answer.violations,
+        parameters=solution.parameters,
+        objectives=solution.objectives,
+        violations=solution.violations,
     )
 
     target.figures.mkdir(exist_ok=True)
     designs = {"start": record.initial, "answer": record.optimized}
     labels = label_load_cases(config.load_cases)
     structure = record.problem.structure
-    drawn, descended = draw_design_figures(structure, designs, labels, answer)
+    drawn, descended = draw_design_figures(structure, designs, labels, solution)
     if drawn is not None:
         drawn.savefig(target.figures / f"{stem}_designs.png", dpi=FIGURE_DPI)
     descended.savefig(target.figures / f"{stem}_descent.png", dpi=FIGURE_DPI)

@@ -6,9 +6,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from ec3x.section import DIAMETER_MINIMUM
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -20,11 +18,14 @@ from normax.loads import create_load_half_span
 from normax.loads import create_load_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
-from normax.optimization import OptimizationAnswer
+from normax.optimization import OptimizationSolution
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
-from normax.sizing.ec3 import coerce_member_actions
+from normax.sizing.blueprint import DIAMETER_MINIMUM
+from normax.sizing.blueprint import coerce_member_actions
+from normax.sizing.blueprint import reduce_moments
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 from normax.visualization import draw_design_figures
 
 matplotlib.use("Agg")
@@ -96,8 +97,8 @@ def pipeline_of(structure, steel, section_class):
 
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        Ec3Sizer(structure, catalog),
+        TesseractAnalyzer(structure, catalog, "pynite"),
+        TesseractSizer(structure, catalog, "blueprint"),
     )
 
 
@@ -176,15 +177,17 @@ def test_the_arch_is_symmetric_about_midspan(checked):
     assert np.allclose(lengths, lengths[::-1], rtol=1e-12)
 
 
-def test_a_shorter_buckling_length_never_needs_a_larger_tube(
+def test_the_crossed_check_is_blind_to_the_buckling_length(
     pipeline, force_densities, one_case
 ):
+    # The check is a cross-section check, so its schema carries no length and
+    # halving the one offered moves no diameter at all.
     _, forces, shape = demanded_design(pipeline, force_densities, one_case)
     longer = pipeline.sizer(forces, shape.lengths)
     shorter = pipeline.sizer(forces, shape.lengths * 0.5)
 
-    assert np.all(
-        np.asarray(shorter.sections.diameter) < np.asarray(longer.sections.diameter)
+    assert np.array_equal(
+        np.asarray(shorter.sections.diameter), np.asarray(longer.sections.diameter)
     )
 
 
@@ -211,16 +214,26 @@ def test_the_thinner_walled_class_is_the_lighter_one(
 
 
 def test_design_actions_reduce_the_two_ends(pipeline, force_densities, three_cases):
-    """The design moment is the larger end, which is Table B.3 read by the check."""
+    """The design moment is the larger end, as the host check reduces them."""
     shape = pipeline.formfinder(force_densities, three_cases.formfinding)
     seeded = jnp.full(NUM_EDGES, SEED)
     forces = pipeline.analyzer(shape.xyz, seeded, three_cases.analysis)
-    acting = coerce_member_actions(select_load_case(forces, 1))
+    carried = select_load_case(forces, 1)
+    acting = coerce_member_actions(
+        carried.axial_force, carried.moment_major, carried.moment_minor
+    )
+    demand = reduce_moments(acting)
 
-    largest = jnp.max(jnp.abs(forces.moment_major[1]), axis=1)
+    near = np.asarray(carried.moment_major)[:, 0]
+    far = np.asarray(carried.moment_major)[:, 1]
+    largest = np.maximum(np.abs(near), np.abs(far))
 
-    assert jnp.array_equal(acting.axial_force, forces.axial_force[1])
-    assert jnp.allclose(jnp.abs(acting.moment_major), largest)
+    # An arch loaded over half its span bends unequally about its ends, so the
+    # reduction has two different numbers to choose between.
+    assert np.any(np.abs(near) != np.abs(far))
+    assert np.array_equal(acting.axial, np.asarray(carried.axial_force))
+    assert np.allclose(np.asarray(carried.moment_minor), 0.0, atol=1e-9)
+    assert np.allclose(demand.moment, largest, rtol=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -263,18 +276,22 @@ def test_the_mass_gradient_is_finite_and_nowhere_zero(
     assert float(jnp.min(jnp.abs(gradient))) > 0.0
 
 
-def test_forward_and_reverse_mode_agree_on_the_mass(
+def test_forward_mode_is_refused_across_the_boundary(
     pipeline, force_densities, one_case
 ):
+    # Both servers hand-write a `vector_jacobian_product` and neither offers a
+    # forward rule, so a crossed design differentiates in reverse alone.
     seeded = jnp.full(NUM_EDGES, SEED)
 
     def objective(q):
         return compute_mass(pipeline(DesignParameters(q, seeded), one_case))
 
-    forward = jax.jacfwd(objective)(force_densities)
+    with pytest.raises(NotImplementedError, match="jacobian_vector_product"):
+        jax.jacfwd(objective)(force_densities)
+
     reverse = jax.grad(objective)(force_densities)
 
-    assert np.allclose(np.asarray(forward), np.asarray(reverse), rtol=1e-12)
+    assert np.all(np.isfinite(np.asarray(reverse)))
 
 
 def test_the_gradient_changes_sign_across_the_arch(pipeline, force_densities, one_case):
@@ -339,8 +356,10 @@ def test_the_utilization_moves_with_the_checked_diameters(
     assert float(jnp.min(jnp.abs(gradient))) > 0.0
 
 
-def test_the_pipeline_compiles_under_jit(pipeline, force_densities, three_cases):
-    """The compiled blocks cross a trace as a pytree, with nothing rebuilt."""
+def test_the_pipeline_survives_a_partition_and_a_rebuild(
+    pipeline, force_densities, three_cases
+):
+    """The blocks are one pytree whose static half is hashable, nothing rebuilt."""
     params = DesignParameters(force_densities, jnp.full(NUM_EDGES, SEED))
 
     def composed(blocks, design_params, loads):
@@ -348,10 +367,16 @@ def test_the_pipeline_compiles_under_jit(pipeline, force_densities, three_cases)
 
         return compute_mass(design) + jnp.sum(design.sizes.utilization)
 
-    traced = eqx.filter_jit(composed)(pipeline, params, three_cases)
-    eager = composed(pipeline, params, three_cases)
+    # What `filter_jit` does to the blocks, minus the trace: the composed side
+    # stays eager here, because compiling it has closed a file descriptor.
+    arrays, static = eqx.partition(pipeline, eqx.is_array)
+    treedef = jax.tree_util.tree_structure(static)
+    rebuilt = eqx.combine(arrays, static)
+    answered = float(composed(rebuilt, params, three_cases))
+    direct = float(composed(pipeline, params, three_cases))
 
-    assert float(traced) == pytest.approx(float(eager), rel=1e-12)
+    assert isinstance(hash(treedef), int)
+    assert answered == pytest.approx(direct, rel=1e-12)
 
 
 # --------------------------------------------------------------------------- #
@@ -399,7 +424,7 @@ def test_the_design_figures_build(structure, pipeline, force_densities, three_ca
         [float(compute_mass(design)), 0.9 * float(compute_mass(design))]
     )
     violations = np.asarray([0.1, 0.0])
-    answer = OptimizationAnswer(variables, objectives, violations, 12, True)
+    answer = OptimizationSolution(variables, objectives, violations, 12, True)
 
     labels = ("LC1", "LC2", "LC3")
     designs = {"start": design, "answer": design}

@@ -1,28 +1,47 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-One non-differentiable code library, differentiated two ways and tabulated.
+The shipped sizing adjoint, differentiated four ways and tabulated.
 
 Blueprints is scalar Python: its EN 1993-1-1 formula classes subclass `float`
-and cannot be traced. This experiment sizes an arch through it twice — in
-process behind `jax.pure_callback` with a hand-derived implicit rule, and
-across a Tesseract boundary whose derivative endpoint is literal NumPy — and
-measures that the two routes agree with each other, with a closed form, and
-with central differences.
+and cannot be traced. What is validated here is the hand-written adjoint of
+`normax.sizing.blueprint`, the host half of the sizing Tesseract and a shipped
+component. The same check is differentiated twice over — in process behind
+`jax.pure_callback` with a hand-derived implicit rule, and across the boundary
+the package ships, whose derivative endpoint is literal NumPy — and no leg of
+the comparison is a second code library, so nothing here can pass by
+inheriting a mistake.
 
     forward     the implicit tangent rule of normax.sizing.blueprint
     reverse     that same rule, transposed by JAX into an adjoint
     closed      implicit differentiation of the cubic d^3 = a d + b, on paper
     numeric     a central difference of the host bisection
 
+The five member cases straddle zero, so the adjoint's `sign(N_Ed)` branch is
+dispatched both ways; the catalog floor is its other branch, and the members
+it rather than the check decides are the ones the unity assertion masks out.
+There is no reduction-factor branch to exercise, the cross-section check
+having no reduction factor.
+
+The arch section reads that rule end to end: both routes' mass gradients
+against each other, and against central differences of the crossed forward
+pass. The frame is analyzed across the analysis Tesseract on both routes, so
+the sizer's boundary is the only thing that differs between them. Reverse mode
+only out there — a Tesseract serves `vector_jacobian_product` and no tangent
+endpoint, which is what an augmented Lagrangian aggregating its rows into one
+scalar asks for. Forward mode appears in the single-member section alone,
+where the rule is a `custom_jvp` that never leaves the process.
+
 The last section prices the philosophy gap: Blueprints implements no member
 buckling, so its cross-section check sizes a compressed arch thinner than
-EN 1993-1-1's member check does. That gap is the point, not an error.
+EN 1993-1-1 6.3.1 does. The buckling size beside it is written out here from
+the standard's own equations. That gap is the point, not an error.
 
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
 
-Run with `uv run --group pipeline python validation/blueprint_adjoint.py`.
+Run with `uv run python validation/blueprint_adjoint.py`.
 """
 
+import math
 from collections.abc import Callable
 from collections.abc import Sequence
 from functools import partial
@@ -35,7 +54,6 @@ import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.design import Design
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
@@ -43,6 +61,7 @@ from normax.design import compute_mass
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import create_load_uniform
+from normax.materials import E_MODULUS
 from normax.materials import Steel355
 from normax.optimization.nested import design_envelope
 from normax.reporting import Report
@@ -63,12 +82,12 @@ from normax.sizing.blueprint import coerce_section_catalog
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 from normax.sizing.contract import AbstractMemberSizer
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import Structure
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
 
-TITLE = "One non-differentiable code library, differentiated two ways."
+TITLE = "One non-differentiable code library, differentiated four ways."
 
 SPAN = 10_000.0
 RISE = 3_000.0
@@ -78,18 +97,34 @@ NUM_EDGES = 10
 # The diameter the frame is analyzed with before the check has spoken.
 SEED = 100.0
 
-# Class 3 at S355, so the EC3 comparison shares the exact same geometry.
+# Class 3 at S355, so the buckling comparison shares the exact same geometry.
 RATIO = 50.0
 
 YIELD_STRENGTH = 355.0
+
+# EN 1993-1-1 Table 6.1, curve a, which Table 6.2 gives hot-finished tubes.
+IMPERFECTION = 0.21
+
+# EN 1993-1-1 6.1, the recommended value for member buckling.
+GAMMA_M1 = 1.0
+
+# The smallest diameter the buckling bracket starts from, in millimeters.
+PROBE_SMALLEST = 1.0
+
+# Halvings of that bracket, enough to reach the root to the last bit.
+BUCKLING_HALVINGS = 100
 
 TARGET = 1e-8
 TOLERANCE_UNITY = 1e-9
 TOLERANCE_PARITY = 1e-14
 TOLERANCE_DERIVATIVE = 1e-12
+TOLERANCE_NUMERIC = 1e-8
 
 # Relative step the central differences are taken at.
 STEP = 1e-6
+
+# The same, for the mass gradient, where the differences are sharpest.
+STEP_DENSITY = 1e-5
 
 
 class MemberCase(NamedTuple):
@@ -187,13 +222,15 @@ GRADIENT_COLUMNS = (
     ReportColumn("edge", align="<"),
     ReportColumn("in process", "+.12e"),
     ReportColumn("boundary", "+.12e"),
-    ReportColumn("scaled gap", ".2e"),
+    ReportColumn("central diff", "+.12e"),
+    ReportColumn("route gap", ".2e"),
+    ReportColumn("difference gap", ".2e"),
 )
 
 GAP_COLUMNS = (
     ReportColumn("member", align="<"),
-    ReportColumn("blueprints [mm]", ".3f"),
-    ReportColumn("EN 1993-1-1 [mm]", ".3f"),
+    ReportColumn("section check [mm]", ".3f"),
+    ReportColumn("6.3.1 buckling [mm]", ".3f"),
     ReportColumn("ratio", ".3f"),
 )
 
@@ -564,27 +601,39 @@ def derivatives_moment(case: MemberCase) -> DerivativeSet:
     return DerivativeSet(forward, reverse, closed, float(quotient))
 
 
-def arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
+def build_arch_problem() -> tuple[StructuralDesignPipeline, StructuralDesignPipeline]:
     """
     The same arch pipeline twice: the sizer in process, and across a boundary.
+
+    Returns
+    -------
+    local :
+        The pipeline whose check runs behind a callback in this process.
+    crossed :
+        The pipeline whose check runs behind the sizing Tesseract.
+
+    Notes
+    -----
+    One analyzer serves both, and it crosses the analysis boundary in either,
+    so the sizer's boundary is the only difference the arch tables read.
     """
     structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
     grade = Steel355()
     catalog = TubeCatalog(RATIO, grade)
     formfinder = FdmFormFinder(structure)
-    analyzer = SmaxAnalyzer(structure, catalog(SEED))
+    analyzer = TesseractAnalyzer(structure, catalog, "pynite")
 
     local = StructuralDesignPipeline(
         formfinder, analyzer, CallbackSizer(structure, catalog)
     )
     crossed = StructuralDesignPipeline(
-        formfinder, analyzer, TesseractSizer(structure, catalog, backend="blueprint")
+        formfinder, analyzer, TesseractSizer(structure, catalog, "blueprint")
     )
 
     return local, crossed
 
 
-def arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
+def read_arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
     """
     Force densities that land the funicular arch on its intended rise.
     """
@@ -597,17 +646,79 @@ def arch_parameters(pipeline: StructuralDesignPipeline) -> DesignParameters:
     return DesignParameters(trial * reached / RISE, jnp.full(NUM_EDGES, SEED))
 
 
-def mass_objective(pipeline: StructuralDesignPipeline, params: DesignParameters, loads):
+def build_mass_objective(
+    pipeline: StructuralDesignPipeline,
+    params: DesignParameters,
+    loads,
+) -> Callable:
     """
-    The mass as a compiled function of the force densities alone.
+    The mass as a function of the force densities alone.
+
+    Parameters
+    ----------
+    pipeline :
+        The three blocks, whichever side of the boundary their check sits on.
+    params :
+        The design the diameters are read from; its densities are replaced.
+    loads :
+        The load cases every stage is run under.
+
+    Returns
+    -------
+    compute_objective :
+        Force densities in, total mass out, differentiable in reverse mode.
+
+    Notes
+    -----
+    Eager on purpose: a compiled trace around a Tesseract call has closed a
+    process-global file descriptor here, so the composed side is never jitted.
     """
 
-    def objective(q):
-        design = pipeline(DesignParameters(q, params.diameters), loads)
+    def compute_objective(densities):
+        moved = DesignParameters(densities, params.diameters)
+        design = pipeline(moved, loads)
 
         return compute_mass(design)
 
-    return jax.jit(objective)
+    return compute_objective
+
+
+def compute_differences(
+    objective: Callable,
+    densities: Float[Array, "edges"],
+) -> Float[np.ndarray, "edges"]:
+    """
+    Central differences of a scalar objective in every force density.
+
+    Parameters
+    ----------
+    objective :
+        Force densities in, one number out.
+    densities :
+        The point the differences are taken at.
+
+    Returns
+    -------
+    quotients :
+        One difference quotient per force density.
+
+    Notes
+    -----
+    The forward pass alone, which is all a Tesseract needs to answer: the
+    gradient this judges is the one the boundary's own adjoint returned.
+    """
+    center = np.asarray(densities)
+    quotients = []
+    for index in range(center.size):
+        step = abs(float(center[index])) * STEP_DENSITY
+        moved = center.copy()
+        moved[index] = center[index] + step
+        raised = float(objective(jnp.asarray(moved)))
+        moved[index] = center[index] - step
+        lowered = float(objective(jnp.asarray(moved)))
+        quotients.append((raised - lowered) / (2.0 * step))
+
+    return np.asarray(quotients)
 
 
 def sized_design(pipeline: StructuralDesignPipeline, params, loads) -> Design:
@@ -669,53 +780,208 @@ def report_parity(report: Report, local: Design, crossed: Design) -> float:
 
 def report_gradients(
     report: Report,
-    oracle: Float[Array, "members"],
-    carried: Float[Array, "members"],
-) -> float:
+    in_process: Float[Array, "edges"],
+    crossed: Float[Array, "edges"],
+    numeric: Float[np.ndarray, "edges"],
+) -> tuple[float, float]:
     """
-    Both routes' mass gradients, scaled by the largest component.
-    """
-    largest = float(jnp.max(jnp.abs(oracle)))
-    ours = np.asarray(oracle)
-    theirs = np.asarray(carried)
-    gaps = [abs(b - a) / largest for a, b in zip(ours, theirs)]
-    rows = [
-        (f"{index}", a, b, gap)
-        for index, (a, b, gap) in enumerate(zip(ours, theirs, gaps))
-    ]
+    Both routes' mass gradients and the differences, scaled by the largest.
 
-    report.write_heading("The mass gradient, in process and across the boundary")
+    Parameters
+    ----------
+    report :
+        Where the table is written.
+    in_process :
+        The gradient through the callback route.
+    crossed :
+        The gradient through the boundary the package ships.
+    numeric :
+        Central differences of the crossed forward pass.
+
+    Returns
+    -------
+    worst_route :
+        Largest scaled gap between the two routes.
+    worst_numeric :
+        Largest scaled gap between the crossed gradient and the differences.
+    """
+    ours = np.asarray(in_process)
+    theirs = np.asarray(crossed)
+    quotients = np.asarray(numeric)
+    largest = float(np.max(np.abs(ours)))
+    route = [abs(b - a) / largest for a, b in zip(ours, theirs)]
+    against = [abs(c - b) / largest for b, c in zip(theirs, quotients)]
+    measured = zip(ours, theirs, quotients, route, against)
+    rows = [(f"{index}", *found) for index, found in enumerate(measured)]
+
+    report.write_heading("The mass gradient, by two routes and by difference")
     report.write_table(GRADIENT_COLUMNS, rows)
 
-    return max(gaps)
+    return max(route), max(against)
 
 
-def report_philosophy(report: Report, local: Design, params, loads) -> None:
+# EN 1993-1-1 6.3.1, the member check Blueprints does not implement.
+
+
+def compute_slenderness(diameter: float, length: float) -> float:
+    """
+    Non-dimensional slenderness of a CHS strut.
+
+    Parameters
+    ----------
+    diameter :
+        Outer diameter of the tube.
+    length :
+        Buckling length, taken as the member itself.
+
+    Returns
+    -------
+    slenderness :
+        The bar-lambda of EN 1993-1-1 6.3.1.3, Eq. 6.50.
+
+    Notes
+    -----
+    With the wall a fixed proportion of the diameter the radius of gyration is
+    proportional to it, so the slenderness falls as one over the diameter.
+    """
+    shape = HOST_CATALOG.modulus_coefficient / (2.0 * HOST_CATALOG.area_coefficient)
+    gyration = math.sqrt(shape) * diameter
+    reference = math.pi * gyration / math.sqrt(YIELD_STRENGTH / E_MODULUS)
+
+    return length / reference
+
+
+def compute_reduction(slenderness: float) -> float:
+    """
+    The buckling reduction factor, capped at one.
+
+    Parameters
+    ----------
+    slenderness :
+        The bar-lambda the member reaches.
+
+    Returns
+    -------
+    reduction :
+        The chi of EN 1993-1-1 6.3.1.2, Eq. 6.49, never above one.
+    """
+    shifted = IMPERFECTION * (slenderness - 0.2)
+    factor = 0.5 * (1.0 + shifted + slenderness**2)
+    reduction = 1.0 / (factor + math.sqrt(factor**2 - slenderness**2))
+
+    return min(reduction, 1.0)
+
+
+def solve_residual(residual: Callable[[float], float]) -> float:
+    """
+    The one root of a residual that rises strictly in the diameter.
+
+    Parameters
+    ----------
+    residual :
+        Capacity less demand, negative below the root.
+
+    Returns
+    -------
+    root :
+        The diameter the residual vanishes at, bracketed then halved.
+
+    Notes
+    -----
+    Capacity rises strictly because the area grows as the diameter squared
+    while the slenderness falls, so the bracket needs only to be widened until
+    it contains the root and bisection is unconditionally safe.
+    """
+    low = PROBE_SMALLEST
+    high = PROBE_SMALLEST
+    while residual(high) < 0.0:
+        high *= 2.0
+    for _ in range(BUCKLING_HALVINGS):
+        middle = 0.5 * (low + high)
+        if residual(middle) < 0.0:
+            low = middle
+        else:
+            high = middle
+    root = 0.5 * (low + high)
+
+    return root
+
+
+def size_for_buckling(axial_force: float, length: float) -> float:
+    """
+    The diameter EN 1993-1-1 6.3.1 works to exactly one, floored.
+
+    Parameters
+    ----------
+    axial_force :
+        Design axial force, negative in compression.
+    length :
+        Buckling length, taken as the member itself.
+
+    Returns
+    -------
+    diameter :
+        The size the member check demands, at the catalog's minimum or above.
+
+    Notes
+    -----
+    A tie does not buckle, so tension is 6.2.3, Eq. 6.6 in closed form; a strut
+    is Eq. 6.47 with the reduction factor, and its residual is bisected.
+    """
+    scale = GAMMA_M0 / (HOST_CATALOG.area_coefficient * YIELD_STRENGTH)
+    if axial_force >= 0.0:
+        stretched = math.sqrt(axial_force * scale)
+
+        return max(stretched, DIAMETER_MINIMUM)
+
+    def residual(diameter):
+        slenderness = compute_slenderness(diameter, length)
+        reduction = compute_reduction(slenderness)
+        area = HOST_CATALOG.area_coefficient * diameter**2
+        capacity = reduction * area * YIELD_STRENGTH / GAMMA_M1
+
+        return capacity - abs(axial_force)
+
+    buckled = solve_residual(residual)
+
+    return max(buckled, DIAMETER_MINIMUM)
+
+
+def select_worst_axial(
+    axial_force: Float[Array, "load_cases members"],
+) -> Float[np.ndarray, "members"]:
+    """
+    Each member's governing axial force, the largest it carries anywhere.
+    """
+    carried = np.atleast_2d(np.asarray(axial_force))
+    governing = np.argmax(np.abs(carried), axis=0)
+    members = np.arange(carried.shape[1])
+
+    return carried[governing, members]
+
+
+def report_philosophy(report: Report, design: Design) -> None:
     """
     The philosophy gap: the same arch sized without and with member buckling.
     """
-    structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=RISE)
-    grade = Steel355()
-    catalog = TubeCatalog(RATIO, grade)
-    checked_pipeline = StructuralDesignPipeline(
-        FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        Ec3Sizer(structure, catalog),
-    )
-    checked = sized_design(checked_pipeline, params, loads)
-
-    naive = np.asarray(local.sizes.sections.diameter)
-    strict = np.asarray(checked.sizes.sections.diameter)
-    rows = [
-        (f"{index}", a, b, b / a) for index, (a, b) in enumerate(zip(naive, strict))
-    ]
+    axial = select_worst_axial(design.forces.axial_force)
+    lengths = np.asarray(design.shape.lengths)
+    naive = np.asarray(design.sizes.sections.diameter)
+    strict = [size_for_buckling(force, span) for force, span in zip(axial, lengths)]
+    measured = zip(naive, strict)
+    rows = [(f"{index}", a, b, b / a) for index, (a, b) in enumerate(measured)]
 
     report.write_heading("The philosophy gap: no buckling against EN 1993-1-1")
     report.write_table(GAP_COLUMNS, rows)
     report.write_note(
-        "Same catalog, same forces: the ratio prices the member check. "
-        "Blueprints implements no 6.3.1 flexural buckling, and this gap is "
-        "that absence."
+        "Same arch, same forces: the ratio prices the member check. On the "
+        "left is Blueprints' cross-section check, axial force with bending and "
+        "no 6.3.1; on the right is flexural buckling for the same axial force "
+        "over a buckling length of one member, Eq. 6.47 with Eq. 6.49 and "
+        "Eq. 6.50 written out in this file. Blueprints implements no such "
+        "clause, and this gap is that absence. The left column carries an end "
+        "moment the right one does not, so the ratio understates the price by "
+        "the few percent that bending adds."
     )
 
 
@@ -741,8 +1007,8 @@ def main(verbose: bool = True) -> None:
     worst_moment = report_derivatives(report, MOMENT_TITLE, by_moment)
     worst_derivative = max(worst_force, worst_moment)
 
-    local_pipeline, crossed_pipeline = arch_problem()
-    params = arch_parameters(local_pipeline)
+    local_pipeline, crossed_pipeline = build_arch_problem()
+    params = read_arch_parameters(local_pipeline)
     structure = local_pipeline.sizer.structure
     loads = assemble_load_cases(
         [create_load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
@@ -752,11 +1018,14 @@ def main(verbose: bool = True) -> None:
     crossed_design = sized_design(crossed_pipeline, params, loads)
     worst_parity = report_parity(report, local_design, crossed_design)
 
-    local_mass = mass_objective(local_pipeline, params, loads)
-    crossed_mass = mass_objective(crossed_pipeline, params, loads)
-    oracle = jax.grad(local_mass)(params.shape_parameters)
+    local_mass = build_mass_objective(local_pipeline, params, loads)
+    crossed_mass = build_mass_objective(crossed_pipeline, params, loads)
+    in_process = jax.grad(local_mass)(params.shape_parameters)
     carried = jax.grad(crossed_mass)(params.shape_parameters)
-    worst_gradient = report_gradients(report, oracle, carried)
+    quotients = compute_differences(crossed_mass, params.shape_parameters)
+    worst_gradient, worst_numeric = report_gradients(
+        report, in_process, carried, quotients
+    )
 
     # Utilization keeps its load case axis; one section per member is checked
     # in every case, so the floor mask is broadcast across them.
@@ -765,15 +1034,19 @@ def main(verbose: bool = True) -> None:
     free = np.broadcast_to(sized, used.shape)
     worst_unity = float(np.max(np.abs(used[free] - 1.0)))
 
-    report_philosophy(report, local_design, params, loads)
+    report_philosophy(report, crossed_design)
 
     gradient_check = ToleranceCheck(
         "route parity on the gradient", worst_gradient, TOLERANCE_DERIVATIVE
+    )
+    numeric_check = ToleranceCheck(
+        "the gradient against differences", worst_numeric, TOLERANCE_NUMERIC
     )
     checks = (
         ToleranceCheck("derivative disagreement", worst_derivative, TARGET),
         ToleranceCheck("route parity on the sizes", worst_parity, TOLERANCE_PARITY),
         gradient_check,
+        numeric_check,
         ToleranceCheck("departure from unity", worst_unity, TOLERANCE_UNITY),
     )
     report.write_heading("Summary")

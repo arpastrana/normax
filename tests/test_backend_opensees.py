@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-The OpenSees backend against the smax oracle, which is the point of having two.
+The OpenSees backend against the other shipped solver, and against differences.
 
 Every agreement here is between a C++ solver differentiated by rules compiled
-into it and a JAX solver differentiated by tracing. Neither is a reimplementation
-of the other, so a tolerance is a measurement rather than a round-trip.
+into it and a Python solver differentiated by hand. Neither is a reimplementation
+of the other, so a tolerance is a measurement rather than a round-trip. What the
+compiled sensitivities are held to is a central difference of the solve itself.
 """
 
 import jax
@@ -12,8 +13,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from normax.analysis import MemberForces
 from normax.analysis import opensees
-from normax.analysis import smax
+from normax.analysis import pynite
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import solve_equilibrium
@@ -32,14 +34,28 @@ NORMAL = 1
 SEED = 100.0
 
 # Two solvers agreeing on a value they compute independently. Measured at
-# 1.4e-15 on the axial force and 9.0e-13 on the moments.
+# 1.3e-15 on the axial force and 1.6e-12 on the moments.
 TOLERANCE_PRIMAL = 1e-11
 
-# Hand-derived C++ sensitivities against traced autodiff. Measured at 1.1e-11.
-TOLERANCE_JACOBIAN = 1e-9
+# Compiled sensitivities against a difference of the solve they differentiate,
+# where the difference is the loose party. Measured at 9.1e-10 and 7.9e-8.
+TOLERANCE_DIFFERENCE = 1e-6
 
-# Force densities to a loss over the forces, across the boundary and back.
-TOLERANCE_GRADIENT = 1e-9
+# Force densities to a loss over the forces, across the boundary and back,
+# differenced rather than compared. Measured at 7.3e-9.
+TOLERANCE_GRADIENT = 1e-7
+
+# Steps at which each difference is least contaminated, measured by sweeping.
+STEP_COORDINATE = 1.0e-2
+STEP_DIAMETER = 1.0e-2
+STEP_DENSITY = 1.0e-4
+
+# Where a coordinate is differenced: a node near the springing, and the crown.
+NODES_DIFFERENCED = (1, 5)
+AXES_IN_PLANE = (0, 2)
+
+# Where a diameter is differenced: both end members and one in the middle.
+MEMBERS_DIFFERENCED = (0, 4, 9)
 
 # Scales that bring both reported quantities to unit order before summing.
 SCALE_FORCE = 1.0e5
@@ -84,14 +100,14 @@ def diameters():
 
 
 @pytest.fixture(scope="module")
-def prepared(structure, catalog):
+def prepared(structure, catalog, funicular):
     """
-    Both backends' models, prepared once from the same structure.
+    Both shipped solvers' models, prepared once from the same structure.
     """
-    return (
-        opensees.prepare_model(structure, catalog, NORMAL),
-        smax.prepare_model(structure, catalog(SEED)),
-    )
+    plane = opensees.prepare_model(structure, catalog, NORMAL)
+    space = pynite.FrameProblem(structure, catalog, np.asarray(funicular))
+
+    return plane, space
 
 
 def relative(actual, expected):
@@ -107,10 +123,10 @@ def relative(actual, expected):
 
 @pytest.fixture(scope="module")
 def forces(prepared, xyz, diameters, catalog, funicular):
-    ops, traced = prepared
+    ops, space = prepared
     mine = opensees.compute_member_forces(ops, xyz, diameters, catalog, funicular)
-    theirs = smax.compute_member_forces(
-        traced, xyz, diameters, catalog(SEED), funicular
+    theirs = pynite.compute_member_forces(
+        space, np.asarray(xyz), np.asarray(diameters), np.asarray(funicular)
     )
 
     return mine, theirs
@@ -143,67 +159,102 @@ def blocks(prepared, xyz, diameters, catalog, funicular):
 
 
 @pytest.fixture(scope="module")
-def traced(prepared, xyz, diameters, catalog, funicular):
+def solved(prepared, catalog, funicular):
     """
-    The same derivatives, taken by tracing the oracle.
+    The forward pass alone, at any geometry and any set of diameters.
     """
-    _, model = prepared
+    ops, _ = prepared
 
     def run(coords, sizes):
-        member = smax.compute_member_forces(
-            model, coords, sizes, catalog(SEED), funicular
+        return opensees.compute_member_forces(
+            ops, jnp.asarray(coords), jnp.asarray(sizes), catalog, funicular
         )
 
-        return {"axial_force": member.axial_force, "moment_major": member.moment_major}
-
-    return jax.jacfwd(run, argnums=0)(xyz, diameters), jax.jacfwd(run, argnums=1)(
-        xyz, diameters
-    )
+    return run
 
 
-def test_the_forces_move_with_a_coordinate_as_autodiff_says(blocks, traced):
-    by_coordinate, _ = traced
-
-    assert (
-        relative(blocks.axial_force_xyz, by_coordinate["axial_force"])
-        < TOLERANCE_JACOBIAN
-    )
-    assert (
-        relative(blocks.moment_major_xyz, by_coordinate["moment_major"])
-        < TOLERANCE_JACOBIAN
-    )
-
-
-def test_the_forces_move_with_a_diameter_as_autodiff_says(blocks, traced):
-    _, by_diameter = traced
-
-    assert (
-        relative(blocks.axial_force_diameter, by_diameter["axial_force"])
-        < TOLERANCE_JACOBIAN
-    )
-    assert (
-        relative(blocks.moment_major_diameter, by_diameter["moment_major"])
-        < TOLERANCE_JACOBIAN
-    )
-
-
-def test_nothing_in_the_plane_moves_when_a_node_leaves_it(
-    prepared, xyz, diameters, catalog, funicular
+def test_the_forces_move_with_a_coordinate_as_a_difference_says(
+    blocks, solved, xyz, diameters
 ):
-    # The separation the two-dimensional model relies on, measured not assumed.
-    _, model = prepared
+    # The compiled sensitivities against two solves of the model they were
+    # compiled into, which is the only witness that shares nothing with them.
+    base = np.asarray(xyz)
+    scale_axial = float(np.max(np.abs(np.asarray(blocks.axial_force_xyz))))
+    scale_moment = float(np.max(np.abs(np.asarray(blocks.moment_major_xyz))))
 
-    def run(coords):
-        member = smax.compute_member_forces(
-            model, coords, diameters, catalog(SEED), funicular
+    for node in NODES_DIFFERENCED:
+        for axis in AXES_IN_PLANE:
+            up = base.copy()
+            down = base.copy()
+            up[node, axis] += STEP_COORDINATE
+            down[node, axis] -= STEP_COORDINATE
+            plus = solved(up, diameters)
+            minus = solved(down, diameters)
+            axial = np.asarray(plus.axial_force) - np.asarray(minus.axial_force)
+            moment = np.asarray(plus.moment_major) - np.asarray(minus.moment_major)
+            central_axial = axial / (2.0 * STEP_COORDINATE)
+            central_moment = moment / (2.0 * STEP_COORDINATE)
+            reported_axial = np.asarray(blocks.axial_force_xyz)[:, node, axis]
+            reported_moment = np.asarray(blocks.moment_major_xyz)[:, :, node, axis]
+
+            assert (
+                np.max(np.abs(reported_axial - central_axial)) / scale_axial
+                < TOLERANCE_DIFFERENCE
+            )
+            assert (
+                np.max(np.abs(reported_moment - central_moment)) / scale_moment
+                < TOLERANCE_DIFFERENCE
+            )
+
+
+def test_the_forces_move_with_a_diameter_as_a_difference_says(
+    blocks, solved, xyz, diameters
+):
+    base = np.asarray(diameters)
+    scale_axial = float(np.max(np.abs(np.asarray(blocks.axial_force_diameter))))
+    scale_moment = float(np.max(np.abs(np.asarray(blocks.moment_major_diameter))))
+
+    for member in MEMBERS_DIFFERENCED:
+        fatter = base.copy()
+        thinner = base.copy()
+        fatter[member] += STEP_DIAMETER
+        thinner[member] -= STEP_DIAMETER
+        plus = solved(xyz, fatter)
+        minus = solved(xyz, thinner)
+        axial = np.asarray(plus.axial_force) - np.asarray(minus.axial_force)
+        moment = np.asarray(plus.moment_major) - np.asarray(minus.moment_major)
+        central_axial = axial / (2.0 * STEP_DIAMETER)
+        central_moment = moment / (2.0 * STEP_DIAMETER)
+        reported_axial = np.asarray(blocks.axial_force_diameter)[:, member]
+        reported_moment = np.asarray(blocks.moment_major_diameter)[:, :, member]
+
+        assert (
+            np.max(np.abs(reported_axial - central_axial)) / scale_axial
+            < TOLERANCE_DIFFERENCE
+        )
+        assert (
+            np.max(np.abs(reported_moment - central_moment)) / scale_moment
+            < TOLERANCE_DIFFERENCE
         )
 
-        return {"axial_force": member.axial_force, "moment_major": member.moment_major}
 
-    jacobian = jax.jacfwd(run)(xyz)
+def test_nothing_in_the_plane_moves_when_a_node_leaves_it(prepared, xyz, diameters):
+    # The separation the two-dimensional model relies on, measured not assumed,
+    # through the shipped solver that has a third dimension to lose it in.
+    _, space = prepared
+    generator = np.random.default_rng(4711)
+    seed = MemberForces(
+        generator.normal(size=NUM_EDGES),
+        generator.normal(size=(NUM_EDGES, 2)),
+        np.zeros((NUM_EDGES, 2)),
+    )
+    pulled = pynite.pull_back_cotangents(
+        space, np.asarray(xyz), np.asarray(diameters), seed
+    )
+    reached = np.asarray(pulled.xyz)
 
-    for block in jacobian.values():
-        assert np.all(np.asarray(block)[..., NORMAL] == 0.0)
+    assert np.all(reached[:, NORMAL] == 0.0)
+    assert float(np.max(np.abs(reached))) > 0.0
 
 
 def test_a_three_dimensional_frame_is_refused(structure, catalog):
@@ -247,26 +298,31 @@ def test_the_environment_selects_the_backend(
     )
 
 
-def test_the_gradient_is_the_same_whichever_solver_produced_it(
+def test_the_gradient_matches_a_difference_of_the_crossed_route(
     structure, catalog, densities, diameters, funicular
 ):
     # Force densities through the form finder, the analysis and a loss over the
-    # forces: the DDM sweep contracted into a VJP against the traced oracle.
+    # forces: the DDM sweep contracted into a VJP, against two runs of itself.
     finder = FdmFormFinder(structure)
     stacked = jnp.asarray(funicular)[None, ...]
+    crossed = TesseractAnalyzer(structure, catalog, backend="opensees")
 
-    def loss(analyzer, q):
-        forces = analyzer(finder(q, funicular).xyz, diameters, stacked)
+    def loss(q):
+        forces = crossed(finder(q, funicular).xyz, diameters, stacked)
         axial = jnp.sum((forces.axial_force / SCALE_FORCE) ** 2)
         major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
 
         return axial + major
 
-    crossed = TesseractAnalyzer(structure, catalog, backend="opensees")
-    mine = jax.grad(lambda q: loss(crossed, q))(densities)
+    gradient = jax.grad(loss)(densities)
+    scale = float(jnp.max(jnp.abs(gradient)))
 
-    traced = smax.SmaxAnalyzer(structure, catalog(SEED))
-    theirs = jax.grad(lambda q: loss(traced, q))(densities)
+    assert scale > 0.0
 
-    assert np.max(np.abs(np.asarray(mine))) > 0.0
-    assert relative(mine, theirs) < TOLERANCE_GRADIENT
+    for edge in (0, NUM_EDGES // 2):
+        step = abs(float(densities[edge])) * STEP_DENSITY
+        plus = loss(densities.at[edge].add(step))
+        minus = loss(densities.at[edge].add(-step))
+        central = float((plus - minus) / (2.0 * step))
+
+        assert abs(float(gradient[edge]) - central) / scale < TOLERANCE_GRADIENT

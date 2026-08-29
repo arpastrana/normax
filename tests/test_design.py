@@ -3,7 +3,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.config import ConstraintsConfig
 from normax.design import DesignConstraints
 from normax.design import DesignParameters
@@ -21,7 +20,7 @@ from normax.design import evaluate_constraints
 from normax.design import expand_shape_coefficients
 from normax.design import expand_variables
 from normax.design import fold_variables
-from normax.design import initialize_optimization_variables
+from normax.design import initialize_optimization_parameters
 from normax.design import optimize_design
 from normax.design import read_shape_coefficients
 from normax.design import unfold_diameters
@@ -35,14 +34,14 @@ from normax.loads import create_load_half_span
 from normax.loads import create_load_uniform
 from normax.materials import Steel355
 from normax.optimization import OptimizationBudget
-from normax.sections import TubeCatalog
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import Ec3Sizer
 from normax.structures import build_arch_2d
 from normax.structures import build_warren_2d
 from normax.symmetry import SignGuard
 from normax.symmetry import build_section_groups
 from normax.symmetry import permute_members
+from normax.tesseract import TesseractAnalyzer
+from normax.tesseract import TesseractSizer
 
 # A 10 m arch rising 3 m under 180 kN spread over its free nodes. Units are
 # millimeters and newtons.
@@ -109,8 +108,8 @@ def force_densities(structure, one_case):
 def pipeline(structure, catalog):
     return StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
-        Ec3Sizer(structure, catalog),
+        TesseractAnalyzer(structure, catalog, "pynite"),
+        TesseractSizer(structure, catalog, "blueprint"),
     )
 
 
@@ -150,8 +149,8 @@ def warren_problem(warren, catalog):
     section_groups = build_section_groups(warren, (warren_mirror(),))
     blocks = StructuralDesignPipeline(
         FdmFormFinder(warren, basis),
-        SmaxAnalyzer(warren, catalog(SEED)),
-        Ec3Sizer(warren, catalog),
+        TesseractAnalyzer(warren, catalog, "pynite"),
+        TesseractSizer(warren, catalog, "blueprint"),
     )
     loads = assemble_load_cases([create_load_uniform(warren, TOTAL_LOAD)])
     constraints = DesignConstraints(FLOOR, 0.0, None, None, None, None)
@@ -171,17 +170,14 @@ def warren_q(warren_problem):
 # --------------------------------------------------------------------------- #
 # The sizer block is built from its catalog alone
 # --------------------------------------------------------------------------- #
-def test_the_sizer_reads_its_class_off_its_catalog(structure, grade):
+def test_the_sizer_reads_its_wall_off_its_catalog(structure, grade):
     for section_class in (1, 2, 3):
         catalog = build_section_catalog(grade, section_class)
-        sizer = Ec3Sizer(structure, catalog)
+        sizer = TesseractSizer(structure, catalog, "blueprint")
 
-        assert sizer.section_class == section_class
-
-
-def test_the_sizer_refuses_a_class_four_catalog(structure, grade):
-    with pytest.raises(ValueError):
-        Ec3Sizer(structure, TubeCatalog(200.0, grade))
+        assert sizer.ratio == float(catalog.ratio)
+        assert sizer.f_y == float(catalog.material.f_y)
+        assert sizer.catalog is catalog
 
 
 # --------------------------------------------------------------------------- #
@@ -443,7 +439,7 @@ def test_initialize_optimization_variables_folds_the_floored_seed(
     problem, force_densities
 ):
     q = np.asarray(force_densities)
-    start = initialize_optimization_variables(problem, q, SEEDED)
+    start = initialize_optimization_parameters(problem, q, SEEDED)
     floored = np.maximum(SEEDED, problem.constraints.diameter_min)
 
     assert np.array_equal(start, fold_variables(problem, q, floored))
@@ -453,7 +449,7 @@ def test_initialize_optimization_variables_does_not_size_the_seed(
     problem, force_densities
 ):
     q = np.asarray(force_densities)
-    start = initialize_optimization_variables(problem, q, SEEDED)
+    start = initialize_optimization_parameters(problem, q, SEEDED)
     sized = envelope_diameters(problem, read_shape_coefficients(problem, q), SEEDED)
 
     assert not np.array_equal(start, fold_variables(problem, q, sized))
@@ -462,7 +458,7 @@ def test_initialize_optimization_variables_does_not_size_the_seed(
 def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
     problem, force_densities
 ):
-    start = initialize_optimization_variables(
+    start = initialize_optimization_parameters(
         problem, np.asarray(force_densities), SEEDED
     )
     design = create_design(problem, start)
@@ -478,7 +474,7 @@ def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
 # --------------------------------------------------------------------------- #
 def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     maps = design_maps(problem)
-    start = initialize_optimization_variables(
+    start = initialize_optimization_parameters(
         problem, np.asarray(force_densities), SEEDED
     )
     x = jnp.asarray(start)
@@ -512,7 +508,7 @@ def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
 
 
 def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_densities):
-    start = initialize_optimization_variables(
+    start = initialize_optimization_parameters(
         problem, np.asarray(force_densities), SEEDED
     )
     budget = OptimizationBudget(
@@ -527,10 +523,10 @@ def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_den
         objective_rtol=1e-8,
     )
     answer = optimize_design(problem, start, budget)
-    landed = compute_mass(create_design(problem, answer.variables))
+    landed = compute_mass(create_design(problem, answer.parameters))
 
     assert answer.objectives.shape == answer.violations.shape
-    assert answer.variables.shape == start.shape
+    assert answer.parameters.shape == start.shape
     assert float(answer.objectives[0]) == pytest.approx(
         float(compute_mass(create_design(problem, start))), rel=1e-12
     )

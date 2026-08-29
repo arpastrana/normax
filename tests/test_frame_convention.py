@@ -2,28 +2,32 @@
 """
 A size may not depend on the local frame the analysis happened to pick.
 
-Two solvers orient a member's cross-section differently, and a tube has no weak
-axis for that to be a property of. So the check reads the bending without naming
-an axis, and these hold it to that.
+A tube has no weak axis, so how one bending splits over two transverse axes is a
+reporting convention and not a force. This repository keeps that convention in
+one place — `compute_direction_cosines`, which completes its pair against the
+vertical — and the design actions the check reads follow the structure rather
+than the solver: turn the whole frame about the vertical and nothing changes,
+and the two routes to the same solver demand the same sizes.
 """
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from normax.analysis import MemberForces
 from normax.analysis import pynite
-from normax.analysis.smax import SmaxAnalyzer
 from normax.loads import select_load_case
 from normax.materials import Steel355
 from normax.sections import build_section_catalog
-from normax.sizing.ec3 import coerce_member_actions
+from normax.sizing.blueprint import coerce_member_actions
+from normax.sizing.blueprint import reduce_moments
 from normax.structures import Structure
+from normax.tesseract import TesseractAnalyzer
 
 SECTION_CLASS = 3
 SEED_DIAMETER = 100.0
 
-# Tight enough that only the invariant reading passes, loose enough for a solve.
+# Tight enough that only a frame-following reading passes, loose enough for a
+# solve. Measured at 2.1e-15 turned and bitwise across the boundary.
 TOLERANCE_INVARIANT = 1e-9
 
 
@@ -51,20 +55,46 @@ def canopy():
     return Structure(nodes=nodes, edges=edges, supports=np.array([0, 1, 2, 3]))
 
 
-def rotated_pair(forces, angle):
+@pytest.fixture(scope="module")
+def canopy_loads(canopy):
     """
-    The same bending, reported about local axes turned by one angle.
+    One load case with a component the shell has no symmetry about.
+    """
+    pushed = np.zeros_like(np.asarray(canopy.nodes))
+    pushed[4, 2] = -6.0e4
+    pushed[4, 0] = 2.0e4
+
+    return pushed
+
+
+@pytest.fixture(scope="module")
+def canopy_diameters(canopy):
+    return jnp.full((canopy.num_edges,), SEED_DIAMETER)
+
+
+def read_design_actions(forces):
+    """
+    What the shipped check reads off one load case of an analysis.
+    """
+    return coerce_member_actions(
+        forces.axial_force, forces.moment_major, forces.moment_minor
+    )
+
+
+def turn_about_vertical(vectors, angle):
+    """
+    The same vectors, turned about the vertical the convention is completed on.
     """
     cosine = np.cos(angle)
     sine = np.sin(angle)
-    major = np.asarray(forces.moment_major)
-    minor = np.asarray(forces.moment_minor)
+    block = [
+        [cosine, -sine, 0.0],
+        [sine, cosine, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    turning = np.asarray(block)
 
-    return MemberForces(
-        axial_force=forces.axial_force,
-        moment_major=jnp.asarray(cosine * major - sine * minor),
-        moment_minor=jnp.asarray(sine * major + cosine * minor),
-    )
+    return np.asarray(vectors) @ turning.T
 
 
 def assert_same_actions(mine, theirs):
@@ -77,57 +107,117 @@ def assert_same_actions(mine, theirs):
         gap = float(np.max(np.abs(expected - np.asarray(getattr(mine, field)))))
         assert gap / scale < TOLERANCE_INVARIANT, field
 
+    demanded = reduce_moments(mine).moment
+    reference = reduce_moments(theirs).moment
+    scale = max(float(np.max(np.abs(reference))), 1.0)
+
+    assert float(np.max(np.abs(demanded - reference))) / scale < TOLERANCE_INVARIANT
+
+
+def analyze_crossed(structure, catalog, diameters, loads):
+    """
+    One load case of the crossed analysis, without its load case axis.
+    """
+    analyzer = TesseractAnalyzer(structure, catalog, "pynite")
+    stacked = analyzer(structure.nodes, diameters, jnp.asarray(loads)[None, ...])
+
+    return select_load_case(stacked, 0)
+
+
+@pytest.fixture(scope="module")
+def canopy_actions(canopy, catalog, canopy_diameters, canopy_loads):
+    forces = analyze_crossed(canopy, catalog, canopy_diameters, canopy_loads)
+
+    return read_design_actions(forces)
+
 
 @pytest.mark.parametrize("angle", [0.3, 1.0, 2.4, -0.7])
-def test_turning_the_local_frame_leaves_the_design_actions_alone(angle):
-    # The whole claim, without a solver in the way: one bending, two frames.
-    members = 5
-    generator = np.random.default_rng(20260825)
-    forces = MemberForces(
-        axial_force=jnp.asarray(generator.normal(size=members) * 1.0e4),
-        moment_major=jnp.asarray(generator.normal(size=(members, 2)) * 1.0e6),
-        moment_minor=jnp.asarray(generator.normal(size=(members, 2)) * 1.0e6),
+def test_turning_the_structure_leaves_the_design_actions_alone(
+    angle, canopy, catalog, canopy_diameters, canopy_loads, canopy_actions
+):
+    # The whole claim: the reporting frame is completed against the vertical, so
+    # it turns with the structure and the actions never learn that it turned.
+    nodes = turn_about_vertical(canopy.nodes, angle)
+    turned = Structure(
+        nodes=nodes,
+        edges=np.asarray(canopy.edges),
+        supports=np.asarray(canopy.supports),
+    )
+    loads = turn_about_vertical(canopy_loads, angle)
+    forces = analyze_crossed(turned, catalog, canopy_diameters, loads)
+
+    assert_same_actions(read_design_actions(forces), canopy_actions)
+
+
+def test_the_worse_end_is_the_moment_the_check_reads():
+    # A cross-section check at the worse end, so a reversal is not reduced: the
+    # equivalent uniform moment of Table B.3 belongs to a buckling check.
+    ends = np.array([[1.0e6, 1.0e6], [1.0e6, -1.0e6], [1.0e6, 0.0]])
+    actions = coerce_member_actions(np.zeros(3), ends, np.zeros((3, 2)))
+    demand = reduce_moments(actions)
+
+    assert np.allclose(demand.moment, 1.0e6)
+    assert np.all(demand.worse.winner == 0)
+    assert np.all(demand.worse.cosine_major == 1.0)
+    assert np.all(demand.worse.cosine_minor == 0.0)
+
+    # The two components at ONE end combine as the vector's magnitude, eq.
+    # (6.42) read on a section that bends the same way about every axis.
+    together = coerce_member_actions(
+        np.zeros(1), np.array([[1.0e6, 0.0]]), np.array([[6.0e5, 0.0]])
     )
 
-    assert_same_actions(
-        coerce_member_actions(rotated_pair(forces, angle)),
-        coerce_member_actions(forces),
+    assert np.allclose(reduce_moments(together).moment, np.hypot(1.0e6, 6.0e5))
+
+    # Components at DIFFERENT ends are not combined at all: no fibre carries a
+    # peak from one end and a peak from the other. The worse end is 1.0e6, and
+    # the linear superposition this reduction used until 2026-08-28 read 1.6e6.
+    split = coerce_member_actions(
+        np.zeros(1), np.array([[1.0e6, 0.0]]), np.array([[0.0, 6.0e5]])
     )
 
+    assert np.allclose(reduce_moments(split).moment, 1.0e6)
 
-def test_collinear_ends_keep_the_curvature_they_had():
-    # A plane frame reports one component, and there the signed reading is not
-    # in doubt: a reversal must stay a reversal, or the factor doubles.
-    ends = jnp.asarray([[1.0e6, 1.0e6], [1.0e6, -1.0e6], [1.0e6, 0.0]])
-    forces = MemberForces(
-        axial_force=jnp.zeros(3),
-        moment_major=ends,
-        moment_minor=jnp.zeros((3, 2)),
+
+def test_rolling_the_local_frame_leaves_the_demand_alone():
+    # What the shipped reduction could not say before 2026-08-28. The transverse
+    # pair is a convention, so a demand that moved with it would make a size
+    # depend on an arbitrary axis choice.
+    major = np.array([[7.0e5, -3.0e5], [1.0e6, 2.0e5]])
+    minor = np.array([[4.0e5, 5.0e5], [-8.0e5, 1.0e5]])
+    upright = reduce_moments(coerce_member_actions(np.zeros(2), major, minor))
+
+    for angle in (0.1, 0.7, np.pi / 4.0, 1.9, 3.0):
+        turned_major = major * np.cos(angle) + minor * np.sin(angle)
+        turned_minor = -major * np.sin(angle) + minor * np.cos(angle)
+        turned = reduce_moments(
+            coerce_member_actions(np.zeros(2), turned_major, turned_minor)
+        )
+
+        assert np.allclose(turned.moment, upright.moment, rtol=1e-15, atol=0.0)
+        assert np.all(turned.worse.winner == upright.worse.winner)
+
+
+def test_a_member_carrying_no_moment_routes_nothing():
+    quiet = coerce_member_actions(np.zeros(1), np.zeros((1, 2)), np.zeros((1, 2)))
+    demand = reduce_moments(quiet)
+
+    assert demand.moment[0] == 0.0
+    assert demand.worse.cosine_major[0] == 0.0
+    assert demand.worse.cosine_minor[0] == 0.0
+
+
+def test_two_routes_demand_the_same_design_actions(
+    canopy, catalog, canopy_diameters, canopy_loads, canopy_actions
+):
+    # The regression this file exists for. One crossed and stacked over load
+    # cases, one called in process on a single case; the actions must not know.
+    problem = pynite.FrameProblem(structure=canopy, catalog=catalog, loads=canopy_loads)
+    forces = pynite.compute_member_forces(
+        problem,
+        np.asarray(canopy.nodes),
+        np.asarray(canopy_diameters),
+        canopy_loads,
     )
 
-    factor = np.asarray(coerce_member_actions(forces).moment_factor_major)
-
-    # Table B.3, first row: one for a uniform moment, floored under reversal.
-    assert factor[0] == pytest.approx(1.0)
-    assert factor[1] == pytest.approx(0.4)
-    assert factor[2] == pytest.approx(0.6)
-
-
-def test_two_solvers_demand_the_same_design_actions(canopy, catalog):
-    # The regression this file exists for. One traced, one not; one vertical on
-    # the third axis, one on the second; and the actions must not know.
-    diameters = jnp.full((canopy.num_edges,), SEED_DIAMETER)
-    loads = np.zeros_like(np.asarray(canopy.nodes))
-    loads[4, 2] = -6.0e4
-    loads[4, 0] = 2.0e4
-
-    stacked = SmaxAnalyzer(canopy, catalog(SEED_DIAMETER))(
-        canopy.nodes, diameters, jnp.asarray(loads)[None, ...]
-    )
-    traced = select_load_case(stacked, 0)
-    problem = pynite.FrameProblem(structure=canopy, catalog=catalog, loads=loads)
-    foreign = pynite.compute_member_forces(
-        problem, np.asarray(canopy.nodes), np.asarray(diameters), loads
-    )
-
-    assert_same_actions(coerce_member_actions(foreign), coerce_member_actions(traced))
+    assert_same_actions(read_design_actions(forces), canopy_actions)

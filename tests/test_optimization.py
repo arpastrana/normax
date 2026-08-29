@@ -127,7 +127,7 @@ def test_the_descent_lands_on_the_constraint_surface():
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
-    assert np.allclose(answer.variables, CORNER, atol=1e-5)
+    assert np.allclose(answer.parameters, CORNER, atol=1e-5)
     assert float(answer.objectives[-1]) == pytest.approx(2.0, abs=1e-5)
 
 
@@ -137,7 +137,7 @@ def test_the_landing_sits_at_the_row_rather_than_inside_it():
     answer = descend_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
-    rows = np.asarray(maps.slack(jnp.asarray(answer.variables)))
+    rows = np.asarray(maps.slack(jnp.asarray(answer.parameters)))
 
     assert abs(float(rows[0])) < 1e-6
 
@@ -172,7 +172,7 @@ def test_a_row_the_answer_does_not_need_costs_nothing():
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
-    assert np.allclose(answer.variables, np.array([4.0, 4.0]), atol=1e-5)
+    assert np.allclose(answer.parameters, np.array([4.0, 4.0]), atol=1e-5)
 
 
 def test_the_descent_is_repeatable():
@@ -184,7 +184,7 @@ def test_the_descent_is_repeatable():
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
-    assert np.array_equal(first.variables, again.variables)
+    assert np.array_equal(first.parameters, again.parameters)
 
 
 def test_a_trial_point_outside_the_model_is_walked_back_in():
@@ -209,7 +209,7 @@ def test_a_trial_point_outside_the_model_is_walked_back_in():
     )
 
     assert refused["count"] > 0
-    assert float(answer.variables[0]) >= 0.9
+    assert float(answer.parameters[0]) >= 0.9
     assert np.isfinite(answer.objectives[-1])
 
 
@@ -234,7 +234,7 @@ def test_a_runtime_error_from_a_compiled_solver_is_caught_too():
     )
 
     assert refused["count"] > 0
-    assert float(answer.variables[0]) >= 0.9
+    assert float(answer.parameters[0]) >= 0.9
     assert np.isfinite(answer.objectives[-1])
 
 
@@ -256,7 +256,7 @@ def test_a_non_finite_objective_is_treated_as_outside_the_model():
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
-    assert np.all(np.isfinite(answer.variables))
+    assert np.all(np.isfinite(answer.parameters))
     assert np.isfinite(answer.objectives[-1])
 
 

@@ -71,8 +71,7 @@ optimization:
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-6        # relative objective change per round counting as none
 
-# What becomes of the answer; a viewer blocks, so it opens last.
+# What becomes of the answer.
 output:
   verbose: true
   export: true
-  viewer: false

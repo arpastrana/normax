@@ -30,8 +30,8 @@ from normax.form_finding import SignGuardSpec
 from normax.form_finding import select_free_nodes
 from normax.loads import LoadCases
 from normax.optimization import ConstrainedMaps
-from normax.optimization import OptimizationAnswer
 from normax.optimization import OptimizationBudget
+from normax.optimization import OptimizationSolution
 from normax.optimization import compute_penalty
 from normax.optimization import descend_augmented_lagrangian
 from normax.sections import MemberSections
@@ -505,30 +505,30 @@ class DesignProblem(NamedTuple):
     )
 
 
-class DesignRecord(NamedTuple):
+class ProblemRecord(NamedTuple):
     """
-    What a run arrived at, for the report, the record and the viewer to read.
+    What a run arrived at, for the report and the record to read.
 
     Attributes
     ----------
     problem :
         The problem the descent ran on.
-    answer :
+    solution :
         What the descent arrived at, and the road there.
     initial :
         The design at the start.
     optimized :
-        The design at the answer.
+        The design at the solution.
     families :
-        Name and member slice of every member family, or none to read the
+        Name and member slice of every member family, or None to read the
         design whole.
     """
 
     problem: DesignProblem
-    answer: OptimizationAnswer
+    solution: OptimizationSolution
     initial: Design
     optimized: Design
-    families: tuple[tuple[str, slice], ...]
+    families: tuple[tuple[str, slice], ...] | None
 
 
 def count_shape_coefficients(problem: DesignProblem) -> int:
@@ -800,7 +800,7 @@ def optimize_design(
     problem: DesignProblem,
     start: Float[np.ndarray, "variables"],
     budget: OptimizationBudget,
-) -> OptimizationAnswer:
+) -> OptimizationSolution:
     """
     Descend the mass under the check and the constraints, from a start.
 
@@ -815,8 +815,8 @@ def optimize_design(
 
     Returns
     -------
-    answer :
-        The variables, the mass and violation of every round, and how it ended.
+    solution :
+        The parameters, the mass and violation of every round, and how it ended.
     """
     maps = design_maps(problem)
     boxes = bound_variables(problem)
@@ -867,13 +867,13 @@ def envelope_diameters(
     return np.maximum(demanded, problem.constraints.diameter_min)
 
 
-def initialize_optimization_variables(
+def initialize_optimization_parameters(
     problem: DesignProblem,
     q: Float[np.ndarray, "members"],
     diameters: Float[np.ndarray, "members"],
 ) -> Float[np.ndarray, "variables"]:
     """
-    The variable vector a search leaves from, at given force densities.
+    The design parameters a search leaves from, at given force densities.
 
     Parameters
     ----------
@@ -887,7 +887,7 @@ def initialize_optimization_variables(
 
     Returns
     -------
-    x :
+    parameters :
         The densities' coefficients, and the diameters folded.
 
     Notes

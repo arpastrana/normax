@@ -31,7 +31,11 @@ cd normax
 uv sync
 ```
 
-The form-finding solver, the structural analysis backends, and the structural engineering norm verifier are all installed as a regular dependency.
+The form-finding solver, the structural analysis backends, and the structural
+engineering norm verifier are all installed as regular dependencies. Nothing
+else is needed: `uv sync` followed by `uv run pytest` runs the whole suite, and
+no step of it requires Docker — the Tesseract stages are imported into the test
+process.
 
 ## An example
 
@@ -195,6 +199,19 @@ continuous optimum is a lower bound on any catalog design.
 **Global stability is not checked.** Every member is verified over its own
 buckling length; nothing computes a critical load factor of the whole frame
 per §5.2. Frame-stability checks are future work.
+
+**Every adjoint is verified against finite differences of its own forward pass,
+rather than against a second implementation.** During development the crossed
+stack was checked against two in-process JAX implementations — a frame solver
+and an EN 1993-1-1 check written independently of it — and they agreed to
+1.3e-14 on gradients and 6.7e-16 on every field crossing the boundary. Neither
+could ship, so both were deleted before submission; `docs/oracle_removal.md`
+records the reasoning and the tag `local-dev` marks the tree where that
+agreement reproduces. What ships is held to central differences of the crossed
+primal, to closed-form section algebra, and to references frozen at that tag.
+That is weaker in one respect — a second implementation can disagree in a way a
+difference cannot — and stronger in another, since a difference of a function's
+own primal cannot inherit a mistake two implementations share.
 
 ## Development
 

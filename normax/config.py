@@ -123,12 +123,20 @@ class FormFindingConfig(NamedTuple):
         carrying a default, and it defaults to None rather than to an empty
         mapping: a NamedTuple evaluates its defaults once, so a mutable one
         would be a single dict shared by every config in the process.
+    height_start :
+        Fields of the written-heights start, by keyword: `rise` for the crown a
+        generated parabolic lift over the drawn plan reaches. None leaves that
+        route starting from the drawn heights themselves, which is right when
+        the drawing is the shape somebody meant and wrong when it is flat — a
+        flat geometry is a stationary point of both the mass and the
+        utilization, and no descent leaves one. Read by `heights` alone.
     """
 
     shape_parametrization: str
     basis: str | None
     mirror: str | None
     density_start: dict[str, float | bool] | None = None
+    height_start: dict[str, float] | None = None
 
 
 class BoundsConfig(NamedTuple):
@@ -191,13 +199,10 @@ class OutputConfig(NamedTuple):
         Whether the run prints its report.
     export :
         Whether the run writes its record and its figures.
-    viewer :
-        Whether the run ends in a viewer.
     """
 
     verbose: bool
     export: bool
-    viewer: bool
 
 
 class RunConfig(NamedTuple, Generic[StructureT]):

@@ -420,28 +420,51 @@ def coerce_member_actions(
 
 class WinningEnd(NamedTuple):
     """
-    Which end carries the larger moment on one axis, and that moment's sign.
+    Which end carries the larger moment, and where that moment points.
 
     Attributes
     ----------
     winner :
-        Index of the end whose moment is larger in magnitude.
-    sign :
-        Sign of that moment.
+        Index of the end whose moment vector is larger in magnitude.
+    cosine_major :
+        Major component of that end's moment over its magnitude.
+    cosine_minor :
+        Minor component of that end's moment over its magnitude.
+
+    Notes
+    -----
+    The cosines are the derivative of the magnitude with respect to each
+    component, so the adjoint routes a cotangent on the demand by them. Both
+    are zero where a member carries no moment at all, the magnitude having no
+    derivative at the origin and an unmoved member no demand to route.
     """
 
     winner: Int[np.ndarray, "*load_cases members"]
-    sign: Float[np.ndarray, "*load_cases members"]
+    cosine_major: Float[np.ndarray, "*load_cases members"]
+    cosine_minor: Float[np.ndarray, "*load_cases members"]
 
 
-def _winning_end(ends: Float[np.ndarray, "*load_cases members ends"]) -> WinningEnd:
+def _read_worse_end(
+    major: Float[np.ndarray, "*load_cases members ends"],
+    minor: Float[np.ndarray, "*load_cases members ends"],
+) -> tuple[Float[np.ndarray, "*load_cases members"], WinningEnd]:
     """
-    Pick the end whose moment is larger in magnitude on one axis.
+    The larger of the two end moment vectors, and where it points.
     """
-    winner = np.argmax(np.abs(ends), axis=-1)
-    winning = np.take_along_axis(ends, winner[..., None], axis=-1)[..., 0]
+    per_end = np.sqrt(major**2 + minor**2)
+    winner = np.argmax(per_end, axis=-1)
+    take = winner[..., None]
 
-    return WinningEnd(winner, np.sign(winning))
+    moment = np.take_along_axis(per_end, take, axis=-1)[..., 0]
+    won_major = np.take_along_axis(major, take, axis=-1)[..., 0]
+    won_minor = np.take_along_axis(minor, take, axis=-1)[..., 0]
+
+    carried = moment > 0.0
+    divisor = np.where(carried, moment, 1.0)
+    cosine_major = np.where(carried, won_major / divisor, 0.0)
+    cosine_minor = np.where(carried, won_minor / divisor, 0.0)
+
+    return moment, WinningEnd(winner, cosine_major, cosine_minor)
 
 
 class DemandMoment(NamedTuple):
@@ -451,16 +474,13 @@ class DemandMoment(NamedTuple):
     Attributes
     ----------
     moment :
-        The larger end moment in magnitude on each axis, summed over axes.
-    major :
-        The end that won on the major axis, and its sign.
-    minor :
-        The end that won on the minor axis, and its sign.
+        Magnitude of the larger of the two end moment vectors.
+    worse :
+        The end that carried it, and where it points.
     """
 
     moment: Float[np.ndarray, "*load_cases members"]
-    major: WinningEnd
-    minor: WinningEnd
+    worse: WinningEnd
 
 
 def reduce_moments(actions: HostActions) -> DemandMoment:
@@ -480,15 +500,28 @@ def reduce_moments(actions: HostActions) -> DemandMoment:
 
     Notes
     -----
-    A modeling choice rather than a clause: the check is read at the worse
-    end, the two axes superposed linearly per EN 1993-1-1 eq. (6.2).
-    """
-    major = _winning_end(actions.end_major)
-    minor = _winning_end(actions.end_minor)
-    moment = np.max(np.abs(actions.end_major), axis=-1)
-    moment = moment + np.max(np.abs(actions.end_minor), axis=-1)
+    The check is read at the worse end, and the two components there are
+    combined as the **magnitude of the moment vector** rather than summed.
 
-    return DemandMoment(moment, major, minor)
+    For a circular hollow section that is the standard's own combination, not
+    a relaxation of it. EN 1993-1-1 6.2.9.2 eq. (6.42) limits the maximum
+    longitudinal fibre stress; a moment vector on an axisymmetric section
+    bends about the axis perpendicular to itself, so that maximum is set by
+    its magnitude. Summing the two components instead adds a peak stress
+    occurring at one point of the circumference to one occurring a quarter
+    turn away, which no single fibre carries. The same conclusion reaches
+    Classes 1 and 2 by 6.2.9.1(6) eq. (6.41), whose exponents are alpha =
+    beta = 2 for a circular hollow section; 6.2.9(6) permits taking them as
+    unity, which is the linear interaction this reduction used until
+    2026-08-28.
+
+    Which end wins is therefore decided by the magnitude, not per axis. The
+    two components no longer win separately, so a demand can no longer be
+    assembled from moments at two different ends.
+    """
+    moment, worse = _read_worse_end(actions.end_major, actions.end_minor)
+
+    return DemandMoment(moment, worse)
 
 
 class SolvedState(NamedTuple):
@@ -705,15 +738,14 @@ class ActionCotangents(NamedTuple):
 
 def _route_axis(
     pull: Float[np.ndarray, "*load_cases members"],
-    end: WinningEnd,
+    winner: Int[np.ndarray, "*load_cases members"],
+    cosine: Float[np.ndarray, "*load_cases members"],
 ) -> Float[np.ndarray, "*load_cases members ends"]:
     """
-    Place a signed cotangent at the winning end of one axis, zero at the other.
+    Place one component's share of a cotangent at the winning end.
     """
     ends = np.zeros((*pull.shape, 2))
-    np.put_along_axis(
-        ends, end.winner[..., None], (pull * end.sign)[..., None], axis=-1
-    )
+    np.put_along_axis(ends, winner[..., None], (pull * cosine)[..., None], axis=-1)
 
     return ends
 
@@ -724,10 +756,17 @@ def _action_cotangents(
     demand: DemandMoment,
 ) -> ActionCotangents:
     """
-    Route a cotangent on the demand moment to the winning end of each axis.
+    Route a cotangent on the demand moment back to the end that carried it.
+
+    Notes
+    -----
+    Both components are routed to the one winning end, each by its own
+    direction cosine, those being the derivatives of the magnitude the demand
+    now is. A member carrying no moment routes zero to both.
     """
-    end_major = _route_axis(pull_moment, demand.major)
-    end_minor = _route_axis(pull_moment, demand.minor)
+    worse = demand.worse
+    end_major = _route_axis(pull_moment, worse.winner, worse.cosine_major)
+    end_minor = _route_axis(pull_moment, worse.winner, worse.cosine_minor)
 
     return ActionCotangents(pull_axial, end_major, end_minor)
 

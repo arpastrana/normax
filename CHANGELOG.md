@@ -2,6 +2,340 @@
 
 ## Unreleased
 
+### The record and the optimizer's solution are renamed, and the examples share one shape
+
+Renamed 2026-08-29, five names, mechanically across 20 files but checked site by
+site rather than by spelling:
+
+| was | is |
+|---|---|
+| `DesignRecord` | `ProblemRecord` |
+| `OptimizationAnswer` | `OptimizationSolution` |
+| `initialize_optimization_variables` | `initialize_optimization_parameters` |
+| `OptimizationAnswer.variables` | `OptimizationSolution.parameters` |
+| `DesignRecord.answer` | `ProblemRecord.solution` |
+
+**Three sites a spelling sweep would have missed**, which is why the field
+renames were done by hand. A **keyword construction**,
+`OptimizationSolution(variables=...)` in `tests/test_pipeline_tail.py`, which
+attribute renaming does not touch and which fails only at runtime. The **npz
+key** in `exporting/records.py`, which was `variables=answer.variables`; nothing
+in the repo reads that key back, so it became `parameters=` rather than being
+left to drift, and the on-disk record schema changes with it. And the **local
+that mirrored the field**, `answer = record.answer`, which had to move with it.
+
+**Three `answer` identifiers deliberately kept.** The printed heading
+`"The answer"`, the figure-label dict key `{"start": ..., "answer": ...}`, and
+the local in `tesseract.py` holding a crossed server's response dict -- a
+different meaning of the word. Along with every ordinary English use of
+"answer" and "answers" in prose, which is most of them.
+
+Two parameters were renamed beyond the list above, being the same mismatch:
+`report_descent` and `draw_design_figures` each took an `answer` typed on
+`OptimizationSolution`, so a `record.solution` would have been passed to a
+parameter called `answer`.
+
+The jaxtyping dimension name `"variables"` stays in about ten annotations. It
+names the length of the design vector, which is still what it is.
+
+**The four examples now share one skeleton.** `main` reads the same in
+`arch.py`, `warren.py`, `vierendeel.py` and `gridshell.py` -- same section
+headings, same `params` / `design` / `solution` / `design_found` names, both
+initializers together and the constraints and the problem after them. A diff of
+the four differs only where the structures do: the symmetry block (`mirror`,
+`folded`, `rotation`) and the sign-guard block (`groups`, `guarded`).
+
+**One bug fixed while propagating that shape.** The reorganized `arch.py` passed
+`design_found` into `ProblemRecord`'s first Design slot where the descent's own
+solution belongs, so `report_design` raised
+`AttributeError: 'Design' object has no attribute 'variables'`. Every example
+runs and lands on its recorded mass: arch 0.150150, Warren 0.055613,
+Vierendeel 0.121547, gridshell 0.082971 t, each at worst utilization 1.000000.
+
+### Where a search starts is written up in `docs/initialization.md`
+
+Added 2026-08-29. The measurements below outgrew a changelog entry and are a
+result rather than a decision, so they have a file: the flat-start stationary
+point, the escape threshold, the converged and equal-budget comparisons, and
+what each of them does and does not license anyone to claim.
+
+### The written-heights route gets a start of its own, and the arch is drawn flat
+
+Changed 2026-08-29. `form_finding.height_start: {rise: 50.0}` names the crown a
+generated parabolic lift reaches, and `HeightsFormFinder` leaves from that
+instead of from the drawing. `build_parabolic_heights` is quadratic in each free
+node's plan distance to the nearest support, which on a chain is the parabola
+through the two supports and the named crown exactly, and on a cap is a dome.
+Where no start is named the route still reads the drawn heights, as before.
+
+`examples/arch.yaml` is now drawn at **rise 0.0**, so the three routes no longer
+open on one geometry -- which was a stated property and is deliberately given
+up. Each opens where its own start says: `fixed` flat, `heights` at the named
+50 mm, `fdm` on the 2500 mm parabola its density start form-finds. The fdm route
+reads no drawn height at all, which is the point.
+
+**Why the heights route needed a start it could not read off a flat drawing.** A
+flat geometry is an exact stationary point of the whole problem, measured on the
+arch:
+
+    d(mass)/d(height)               0.000000e+00   all nine
+    d(worst utilization)/d(height)  0.000000e+00   all nine
+    d(mass)/d(diameter)             2.034961e-04   the only live direction
+
+Two reasons, neither a tuning matter. Mass is `rho * sum A(d) L` and
+`dL/dz ∝ dz/L` vanishes when `dz = 0`, so length is first-order insensitive to a
+transverse motion. And flat is a symmetry point of the mechanics: raising gives
+an arch, lowering a cable, both shed bending equally, so the response is even in
+`z`. From a flat drawing the route returns **bit-identical results to `fixed`** --
+same mass, same diameters -- with its nine variables provably inert. From 1 mm it
+is pulled back into the stationary point.
+
+**The escape threshold is between 1 mm and 50 mm**, 0.5% of the span. Above it
+the route lands on the same answer from every start tried, spanning 50x in rise:
+
+| start rise | heights answer | its crown |
+|---|---|---|
+| 0 mm | 0.491027 t | 0.0, never moved |
+| 1 mm | 0.491027 t | 0.0, fell back |
+| 50 mm | 0.144129 t | 1464.8 |
+| 250 mm | 0.144129 t | 1464.8 |
+| 1000 mm | 0.144129 t | 1464.9 |
+| 2500 mm | 0.144128 t | 1466.8 |
+
+So the earlier record that free heights is "start-ruled" no longer holds on this
+code: the only failing start is the degenerate one.
+
+**Converged against converged, the arch's three routes:**
+
+| route | mass | evaluations | ended | worst U |
+|---|---|---|---|---|
+| `fdm` | 0.150150 t | **202** | converged at round 8 | 1.000000 |
+| `heights` | **0.144129 t** | **901** | converged, needs `rounds_max: 20` | 1.000000 |
+| `fixed` | 0.491027 t | 145 | converged | 0.999999 |
+
+`heights` is **4.0% lighter for 4.46x the evaluations**, and that is expected
+rather than surprising: any shape the form finder reaches is a shape the written
+route can write, so its feasible set strictly contains the other's and it can
+only be lighter or equal. What is notable is how little the extra freedom buys
+-- nine variables against one, landing 5% apart in rise -- and that `fdm` needs
+`rounds_max: 10` where `heights` needs 20.
+
+**At equal budget the mass claim does not go the way one might hope, and it is
+recorded here so nobody re-derives it hopefully.** Sweeping the iteration
+budget:
+
+| budget | fdm evals / mass | heights evals / mass / worst U |
+|---|---|---|
+| tiny | 159 / 0.150150 converged | 145 / 0.144196 / 1.000011 |
+| small | 164 / 0.150150 converged | 332 / 0.144187 / 1.000003 |
+| medium | 202 / 0.150150 converged | 643 / 0.144130 / 1.000052 |
+| large | 202 / 0.150150 converged | 780 / 0.144129 / 1.000007 |
+
+`fdm`'s mass is **identical at every budget**, converged from 159 evaluations
+up. But `heights` is within **0.05%** of its converged answer after 145
+evaluations, so its 4.46x is spent certifying feasibility to 1e-6 rather than
+searching, and it is lighter at every budget. Its violation also wanders
+non-monotonically with budget. **The defensible end-to-end claims on this arch
+are budget-insensitivity, start-insensitivity and one variable against nine --
+not a lighter design and not a faster search.**
+
+### The moment demand is the vector's magnitude, and it stops depending on the roll
+
+Changed 2026-08-28. `reduce_moments` took the larger end moment on each axis
+*independently* and added the two. Both halves of that were wrong for a circular
+hollow section, and the second was wrong for any section.
+
+**The axes.** A tube bends the same way about every axis, so the split of one
+bending into a major and a minor component is a reporting convention --
+`compute_direction_cosines` completes its transverse pair against the vertical,
+and nothing physical picks it. Roll that frame and the components rotate, which
+leaves `sqrt(M_y^2 + M_z^2)` alone but not `|M_y| + |M_z|`: the sum runs from
+`|M|` when the moment lands on an axis to `sqrt(2) |M|` at 45 degrees. A size
+therefore moved when nothing about the structure or its loads had.
+
+**Verified against the standard, not against memory.** 6.2.9.1(6) eq. (6.41) is
+`(M_y/M_N,y,Rd)^alpha + (M_z/M_N,z,Rd)^beta <= 1` with **alpha = beta = 2 for
+circular hollow sections**, which is the magnitude; 6.2.9(6) permits taking them
+as unity, "thus reverting to a conservative linear interaction", which is what
+this reduction did. The shipped check is Class 3, so 6.2.9.2 eq. (6.42) governs
+and makes the case sharper still: it limits the maximum longitudinal **fibre**
+stress, and on a round section the peak from `M_y` sits a quarter turn around
+the circumference from the peak from `M_z`. Adding them reports a stress no
+fibre carries. This is not a relaxation of the code; it is the clause the code
+gives for this section.
+
+**The ends.** The two maxima were taken independently over ends, so a demand
+could pair `M_y` at one end with `M_z` at the other -- a state no single
+cross-section is ever in. Measured on the shell, **47.6%** of members had their
+two components winning at different ends. This is what let the old reduction
+exceed `sqrt(2)`, which the axis error alone cannot: **15.9%** of member-cases
+did.
+
+**How much it was inflating, measured on the 16x16 shell at the seed diameter:**
+
+| | mean | worst |
+|---|---|---|
+| summing the axes at one end | 1.179 | **1.4142** |
+| each axis at its own end, on top | 1.032 | 1.506 |
+| both, as shipped until today | **1.220** | **1.885** |
+
+The first row's worst case lands exactly on `sqrt(2)`, which is the algebra
+confirming itself.
+
+**Only the gridshell moves, and it moves a long way.** The three planar
+structures carry `M_minor` identically `0.0`, so the two reductions are the same
+number there -- arch **0.150150 t**, Warren **0.055613 t**, Vierendeel
+**0.121547 t**, unchanged to the last digit, and the arch's other two routes
+with them. The shell falls from **0.105268 t to 0.082971 t, 21.2% lighter**,
+reproduced bit for bit on a repeat run, at worst utilization 1.000000. Note what
+that is and is not: a change in the check, not a search improvement. The saving
+compounds beyond a re-section because a cheaper check lets the search move the
+shape as well.
+
+**The adjoint changed shape.** `WinningEnd` carried a winner and a sign per
+axis; it now carries one winner and the two direction cosines, those being the
+derivatives of the magnitude, and `_action_cotangents` routes both components to
+that single end. Both cosines are zero where a member carries no moment, the
+magnitude having no derivative at the origin. Checked against a tight central
+difference at **1.25e-9**.
+
+`tests/test_tesseract_sizer.py::test_the_check_matches_check_grads` needed an
+explicit `eps=1e-7`: the magnitude's curvature goes as `1/|M|` and that
+fixture's lightest member carries 1e-3 of the scale, so the default 1e-4 step
+straddles it and the difference loses accuracy, not the rule. Two tests that
+asserted the old reduction now assert the new one, and
+`test_rolling_the_local_frame_leaves_the_demand_alone` states the claim the
+shipped stack could not make before.
+
+### The oracles are deleted, and CI stops skipping two thirds of the suite
+
+Removed 2026-08-28, planned in `docs/oracle_removal.md`, snapshotted at the tag
+`local-dev`. `smax` and `ec3x` were path-pinned JAX implementations -- a frame
+solver and an EN 1993-1-1 check -- that the crossed stack was validated against
+during development. They could not ship: one is pinned to
+`git+file:///Users/.../smax` at a revision, the other to a relative path, and
+between them they described one machine. Worse for a submission, two JAX
+implementations sitting in the tree invite exactly one question -- if a JAX frame
+solver and a JAX code check already exist here, what is Tesseract for? There is
+now **one** analysis and **one** check, and both cross a boundary.
+
+**What it buys is measured, not asserted.** `conftest.py` skipped any test file
+whose imports reached an oracle, so CI ran **126 of 395 tests across 4 of 20
+files**. Every package the skipped files actually need -- `blue-prints`,
+`openseespy`, `pynitefea` -- is already a main dependency; the skips existed for
+the two private packages alone. The guard apparatus is gone, 63 lines of it, and
+`conftest.py` is down to `load_tesseract_api`. A clean `uv sync` now runs the
+whole suite, and no part of it wants Docker: the Tesseract stages are imported
+into the test process by `Tesseract.from_tesseract_api`.
+
+**The swap was faster than the thing it replaced, which the plan got wrong.**
+The plan warned the suite would slow down, reasoning from the 26% the boundary
+costs on the PyNite adjoint. Measured on the 10-edge arch at `d = 100 mm`:
+
+    crossed pynite analyze      1.30 ms   against smax  25.53 ms
+    crossed blueprint size      1.21 ms   against ec3x  18.69 ms
+
+so 20x and 15x the other way. The oracles were paying JAX dispatch per call
+where the crossed blocks pay one host round trip. `test_nested.py` fell from
+8.0 s to 7.0 s; the ten fixture-only files run 191 tests in 9.5 s.
+
+**No shipped number moved.** `examples/arch.py` still reports **0.150150 t** at
+worst utilization **1.000000** and 48.52% saved -- the same figures as before the
+removal, to the last digit, because the examples always ran the crossed blocks.
+
+**Three replacements, in descending order of preference.** Where an assertion
+had an oracle on its right-hand side, it became a finite difference of the
+crossed forward pass, a value frozen from the oracle at the tag with its
+provenance in a one-line comment, or nothing. A hand adjoint checked against
+differences of its own primal cannot inherit a mistake shared with a second
+implementation, so the first of those is a stronger test than what it replaced.
+Where it is weaker is stated in `README.md` rather than left for a reader to
+find: a second implementation can disagree in a way a difference cannot, and
+`docs/fast_backward_pass.md` records that a central difference cannot referee a
+1e-14 derivative at all -- its own best agreement is 2.1e-10. What carries
+exactness there is the V-shaped step sweep, which needs no oracle.
+
+**The section tests moved to closed form, and Blueprints was rejected as a
+substitute oracle.** `tests/test_sections.py` asserted bitwise agreement with
+`ec3x.section`; it now asserts the annulus algebra itself, which the container
+reproduces to 2.2e-16 on area and 2.1e-15 on the second moment. Blueprints was
+the obvious replacement and does not work: its `CHSProfile` builds a polygon
+(`accuracy = 6`) and returns 2073.81101 mm² where the exact area at `d = 200`,
+`d/t = 90 eps²` is 2073.84549869 -- 1.7e-5 relative, fine as a loose check and
+useless as a bitwise one. Asserting against the standard's own algebra was the
+better answer anyway. Class limits likewise read Table 5.2 directly.
+
+**The viewer went with them.** `visualization/viewer.py` drew whole solver
+responses with `vix` and read them out of `SmaxAnalyzer`, and it already
+converted a `TesseractAnalyzer` *into* an `SmaxAnalyzer` because the schema
+returns `N` and `M` rather than a response -- there was nothing to re-point it
+at. `guard.py` and `unavailable.py` went too, and with them the last import path
+on which the package could pull a private package: the `find_spec` guard only
+hid that leak on an install that had one, and on this machine
+`import normax.visualization` did pull `smax` and `vix`. `OutputConfig.viewer`
+and four `viewer: false` lines are gone; all four examples shipped it off.
+
+**`validation/` was repurposed rather than exported.** The plan filed four
+clause studies for a move into `../ec3x`; they were instead re-pointed at the
+shipped stack, which is worth more than validating a package that will not
+exist. `strut_gradients.py` now agrees three analytic routes -- the crossed
+adjoint, the host adjoint in `normax/sizing/blueprint.py`, and the
+implicit-function rule written out in the script from its own residual -- to
+**1.05e-15**, with the 1.39e-09 against a central difference being the
+difference's own truncation, and its independent Cardano root matching the
+crossed bisection to 1.34e-15. `interaction_gradients.py` gradchecks the crossed
+sizer in four inputs at 4.08e-09 worst over 47 probes, with unity to 1.67e-15.
+`class_ratio_sweep.py` re-points its shear diagnostic at Blueprints'
+`Form6Dot18` pair, so the diagnostic that licenses declining §6.2.6-6.2.8 now
+reads the same library the shipped check does.
+
+**Two claims that turned out to belong to the oracle rather than to the shipped
+stack.** Both were found by re-pointing a test and watching it stop being true.
+
+`tests/test_frame_convention.py` asserted that turning a member's local frame
+leaves the design actions alone. That is a property of `ec3x`'s
+`read_axisymmetric_moment`, which reduces the two end-moment vectors to their
+*resultant*; the shipped `reduce_moments` takes `max|M_major| + max|M_minor|`,
+a linear superposition per Eq. 6.2, which is **not** roll-invariant by
+construction. The file now asserts the property the shipped stack does hold,
+which is equivariance rather than invariance: turn the structure *and its loads*
+and every design action is unchanged to ~1e-15, because the convention completes
+its transverse pair against the vertical, so the frame turns with the structure
+and the reading never learns it turned. Element-level roll invariance (1.7e-16)
+is unaffected -- that is a fact about a CHS stiffness matrix, and
+`tests/test_backend_pynite.py` still asserts it.
+
+`tests/test_analysis_prepared.py` asserted that a model prepared from *any*
+geometry gives the same forces, because `smax`'s `prepare_model` took a
+placeholder whose values never survived. PyNite's `prepare_frame` assembles and
+factorizes at the actual geometry, so the honest statements are the opposite
+ones, and the file now makes them: a prepared frame answers at the geometry it
+was prepared at, and the `xyz` passed beside it is never read. Same behavior
+asserted, opposite sign.
+
+**Two facts about the shipped stack that the removal surfaced, neither of them
+new but both worth stating where a reader will meet them.** Forward mode does
+not exist across either boundary: both servers implement `apply`,
+`abstract_eval` and `vector_jacobian_product` and nothing else, so `jax.jvp`
+raises and `check_grads` needs `modes=("rev",)`. And the shipped check is
+cross-section only -- eq. 6.10 plus eq. 6.14, summed linearly, no §6.3.1 -- so
+`buckling_length` is accepted, ignored and never serialized. That was already
+documented on the sizing schema and in the example run descriptions, and it
+means `ec3x` held the only §6.3.1 code in the tree. Deleting it moved no
+reported number, because no reported number ever came from it.
+
+**What would have been lost with it is the buckling story, so it was rewritten
+from the standard rather than surrendered.** `validation/blueprint_adjoint.py`
+now implements 6.3.1 itself -- Eq. 6.50 for the slenderness, Eq. 6.49 for the
+reduction factor capped at one, Eq. 6.47 bisected, with 6.2.3 Eq. 6.6 closed
+form on the tension branch -- and prices the shipped cross-section check against
+it. The gap runs **1.541 at the springing to 1.339 at the crown**: a member the
+shipped check sizes at 25.384 mm wants 39.106 mm once its own buckling is
+priced. Against `Ec3Sizer` the same ratios read 1.544 to 1.371, the difference
+being the bending interaction the ec3 route carried and this closed form does
+not. So the claim is now made from the standard's own equations inside this
+repo, which is a better place for it than a private package.
+
 ### `experiments/` is gone and `validation/` sits at the root
 
 Moved 2026-08-28. The directory had one child left -- `archive/` went with the
@@ -535,10 +869,16 @@ descends from it. What each example converges to now:
 | arch | 7 of 10 | 1.000000402 | 0.135622 |
 | Warren | 11 of 12 | 1.000000320 | 0.055613 |
 | Vierendeel | 16 of 20 | 1.000000038 | 0.121547 |
-| gridshell | 11 of 12 | 0.999999842 | 0.105268 |
+| gridshell | 11 of 12 | 0.999999842 | 0.105268 (see below) |
 
 The Vierendeel's 0.121547 t sits within 0.6% of the 0.122263 t experiment 19
 recorded, so the historical answer is recovered rather than approached.
+
+**Superseded for the gridshell, 2026-08-28.** The moment reduction changed that
+day, and the shell is the only one of the four it touches: it now converges in
+the same 11 of 12 rounds and 2144 evaluations to **0.082971 t** at worst
+utilization 1.000000, diameters 21.3 to 45.2 mm. The other three rows still
+hold to the digit.
 
 **The reported saving is now measured against a uniform-diameter start**, which
 is a weaker baseline than the enveloped one it replaced, so the percentages are

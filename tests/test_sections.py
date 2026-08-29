@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
+"""
+The tube catalog, checked against the annulus algebra itself.
+
+The right-hand side is the closed form written out here rather than a second
+library's tube, which is the stronger test: two implementations can inherit
+one shared mistake, the standard's own algebra cannot.
+"""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ec3x.material import Steel
-from ec3x.section import TubeCatalogue as Ec3Catalogue
 
 from normax.materials import Steel355
 from normax.materials import SteelGrade
@@ -14,10 +20,8 @@ from normax.sections import UniformDiameterInitializer
 from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 
-# The derived properties both libraries state. The two must agree bit for bit,
-# or the mass normax weighs and the resistance ec3x checks describe two
-# different tubes; this file is the drift alarm the sections doc promises.
-PROPERTIES = ("ratio", "diameter_inner", "area", "second_moment")
+# The derived properties the container states, all of them closed form.
+PROPERTIES = ("ratio", "thickness", "diameter_inner", "area", "second_moment")
 
 RATIO = 59.5934
 
@@ -26,31 +30,65 @@ DIAMETERS = jnp.asarray([21.3, 100.0, 244.5, 508.0])
 # EN 1993-1-1 Table 5.2, the class 3 limit for S355: 90 * 235 / 355.
 RATIO_CLASS_3_S355 = 59.57746478873239
 
+# The same algebra arranged differently, so a few ulps rather than bit for bit.
+TOLERANCE = 1e-14
 
-def tube_pair(diameters):
+
+def build_tube_sections(diameters):
     """
-    The same tubes, stated by both libraries at one wall proportion.
+    The tubes at one wall proportion.
     """
-    ec3_catalog = Ec3Catalogue(RATIO, 3, Steel())
     catalog = TubeCatalog(RATIO, Steel355())
+    sections = catalog(diameters)
 
-    return ec3_catalog(diameters), catalog(diameters)
+    return sections
 
 
-def test_every_property_agrees_bitwise_with_ec3x():
-    tubes, sections = tube_pair(DIAMETERS)
+def compute_closed_form(diameters, ratio):
+    """
+    Every derived property of the annulus, from its own algebra.
+    """
+    thickness = diameters / ratio
+    diameter_inner = diameters * (1.0 - 2.0 / ratio)
+    area = jnp.pi * diameters**2 * (ratio - 1.0) / ratio**2
+    second_moment = (jnp.pi / 64.0) * diameters**4 * (1.0 - (1.0 - 2.0 / ratio) ** 4)
+
+    stated = {
+        "ratio": jnp.full_like(diameters, ratio),
+        "thickness": thickness,
+        "diameter_inner": diameter_inner,
+        "area": area,
+        "second_moment": second_moment,
+    }
+
+    return stated
+
+
+def test_every_property_agrees_with_the_closed_form():
+    sections = build_tube_sections(DIAMETERS)
+    stated = compute_closed_form(DIAMETERS, RATIO)
 
     for name in PROPERTIES:
-        left = np.asarray(getattr(tubes, name))
+        left = np.asarray(stated[name])
         right = np.asarray(getattr(sections, name))
 
-        assert np.array_equal(left, right), name
+        assert right == pytest.approx(left, rel=TOLERANCE), name
 
 
-def test_the_catalog_chooses_the_same_wall_as_the_catalog():
-    tubes, sections = tube_pair(DIAMETERS)
+def test_the_wall_follows_the_ratio_at_every_diameter():
+    sections = build_tube_sections(DIAMETERS)
+    proportions = np.asarray(sections.diameter) / np.asarray(sections.thickness)
 
-    assert np.array_equal(np.asarray(tubes.thickness), np.asarray(sections.thickness))
+    assert proportions == pytest.approx(RATIO, rel=TOLERANCE)
+
+
+def test_the_radius_of_gyration_is_proportional_to_the_diameter():
+    # i = sqrt(I / A) = c d, with c a function of the wall proportion alone.
+    sections = build_tube_sections(DIAMETERS)
+    radii = np.sqrt(np.asarray(sections.second_moment) / np.asarray(sections.area))
+    coefficients = radii / np.asarray(DIAMETERS)
+
+    assert coefficients == pytest.approx(coefficients[0], rel=TOLERANCE)
 
 
 def test_the_sections_carry_no_clause_field():
@@ -59,7 +97,7 @@ def test_the_sections_carry_no_clause_field():
 
 
 def test_the_sections_are_a_plain_pytree():
-    _, sections = tube_pair(DIAMETERS)
+    sections = build_tube_sections(DIAMETERS)
     leaves = jax.tree.leaves(sections)
 
     assert len(leaves) == 2 + len(SteelGrade._fields)
@@ -67,7 +105,7 @@ def test_the_sections_are_a_plain_pytree():
 
 def test_the_load_case_axis_is_variadic():
     stacked = jnp.stack([DIAMETERS, 2.0 * DIAMETERS])
-    _, sections = tube_pair(stacked)
+    sections = build_tube_sections(stacked)
 
     assert sections.area.shape == stacked.shape
 
@@ -92,12 +130,16 @@ def test_the_class_3_catalog_sits_on_the_table_limit():
     assert catalog.material == Steel355()
 
 
-def test_the_class_limits_agree_with_ec3x():
-    for section_class in (1, 2, 3):
-        catalog = build_section_catalog(Steel355(), section_class)
-        ec3_catalog = Ec3Catalogue(catalog.ratio, section_class, Steel())
+def test_the_class_limits_are_the_table_5_2_limits():
+    # EN 1993-1-1 Table 5.2 sheet 3: d/t <= k epsilon^2, with epsilon^2 = 235 / f_y.
+    epsilon_squared = 235.0 / Steel355().f_y
+    limits = {1: 50.0, 2: 70.0, 3: 90.0}
 
-        assert bool(ec3_catalog.at_class_limit)
+    for section_class, limit in limits.items():
+        catalog = build_section_catalog(Steel355(), section_class)
+        expected = limit * epsilon_squared
+
+        assert catalog.ratio == pytest.approx(expected, rel=1e-15), section_class
 
 
 def test_a_class_4_catalog_is_refused():

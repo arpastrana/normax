@@ -8,7 +8,6 @@ import pytest
 from conftest import load_tesseract_api
 from tesseract_jax import apply_tesseract
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.design import DesignParameters
 from normax.design import StructuralDesignPipeline
 from normax.design import compute_mass
@@ -27,8 +26,8 @@ from normax.tesseract import TesseractSizer
 from normax.tesseract import open_tesseract_analysis
 from normax.tesseract import open_tesseract_sizing
 
-# The same 10 m arch rising 3 m under 180 kN that the in-process pipeline is
-# tested on, so the two routes are compared on identical ground.
+# The same 10 m arch rising 3 m under 180 kN the rest of the suite uses, so the
+# two crossed routes are compared on identical ground.
 SPAN = 10_000.0
 RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
@@ -44,20 +43,31 @@ SHELL_RADIUS = 5_000.0
 SHELL_RISE = 2_000.0
 SHELL_PRESSURE = 3.0e-3
 
+# Recorded from smax at tag local-dev; see docs/oracle_removal.md.
+SHELL_AXIAL_NORM = 1.97649588267220708e05
+SHELL_AXIAL_SAMPLED = (
+    -1.15775588229506848e04,
+    -6.54659209604083298e04,
+    -3.49976430528596684e04,
+)
+SHELL_SAMPLED_MEMBERS = (0, 12, 29)
+SHELL_MOMENT_NORM = 8.29685660578915966e05
+SHELL_UTILIZATION_NORM = 1.21362960862376923e00
+
 # The two analysis solvers are different programs, so parity is close rather
-# than exact. Axial forces measured at 1.2e-15 (opensees) and 5.4e-15 (pynite).
+# than exact. Axial forces measured at 1.3e-15 (arch) and 5.4e-15 (shell).
 TOLERANCE_AXIAL = 1e-13
 
 # A funicular member's moment is a near-cancellation read against the axial
-# scale, so it inherits that larger scale. Measured 2.1e-12 / 2.7e-13.
+# scale, so it inherits that larger scale. Measured 1.6e-12 / 2.7e-13.
 TOLERANCE_MOMENT = 1e-10
 
 # The check is one shared crossed block, so any utilization disagreement is
-# inherited from the analysis crossing alone. Measured 4.9e-14.
+# inherited from the analysis crossing alone. Measured 3.6e-14.
 TOLERANCE_UTILIZATION = 1e-12
 
 # Each route linearizes its own program, so the same sum is accumulated in a
-# different order. Measured 3.9e-12 (wrt q) and 5.3e-14 (wrt diameters).
+# different order. Measured 3.9e-12 (wrt q) and 2.9e-14 (wrt diameters).
 TOLERANCE_DERIVATIVE = 1e-10
 
 # Relative step at which the central difference plateaus, and the agreement
@@ -66,12 +76,12 @@ STEP = 1e-4
 TOLERANCE_GRADIENT = 2e-7
 
 
-def relative(oracle, composed):
+def relative(reference, compared):
     """
     Largest disagreement between two arrays, scaled by the size of the first.
     """
-    left = np.asarray(oracle, dtype=np.float64)
-    right = np.asarray(composed, dtype=np.float64)
+    left = np.asarray(reference, dtype=np.float64)
+    right = np.asarray(compared, dtype=np.float64)
     scale = max(float(np.max(np.abs(left))), np.finfo(np.float64).tiny)
 
     return float(np.max(np.abs(left - right))) / scale
@@ -126,23 +136,23 @@ def shared_sizer(structure, catalog):
 
 
 @pytest.fixture(scope="module")
-def oracle_pipeline(structure, catalog, shared_sizer):
-    return StructuralDesignPipeline(
-        FdmFormFinder(structure), SmaxAnalyzer(structure, catalog(SEED)), shared_sizer
-    )
+def pynite_pipeline(structure, catalog, shared_sizer):
+    analyzer = TesseractAnalyzer(structure, catalog, backend="pynite")
+
+    return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, shared_sizer)
 
 
 @pytest.fixture(scope="module")
-def crossed_pipeline(structure, catalog, shared_sizer):
+def opensees_pipeline(structure, catalog, shared_sizer):
     analyzer = TesseractAnalyzer(structure, catalog, backend="opensees")
 
     return StructuralDesignPipeline(FdmFormFinder(structure), analyzer, shared_sizer)
 
 
 @pytest.fixture(scope="module")
-def both_designs(oracle_pipeline, crossed_pipeline, params, one_case):
-    """The same design taken in process and across the two boundaries."""
-    return oracle_pipeline(params, one_case), crossed_pipeline(params, one_case)
+def both_designs(pynite_pipeline, opensees_pipeline, params, one_case):
+    """The same design taken across the boundary to either foreign solver."""
+    return pynite_pipeline(params, one_case), opensees_pipeline(params, one_case)
 
 
 # --------------------------------------------------------------------------- #
@@ -151,44 +161,50 @@ def both_designs(oracle_pipeline, crossed_pipeline, params, one_case):
 def test_the_geometry_never_changes_at_the_boundary(both_designs):
     # The form finder runs in process on both routes, so the shape is bit-equal
     # and any disagreement downstream entered downstream.
-    oracle, crossed = both_designs
+    through_pynite, through_opensees = both_designs
 
-    assert jnp.array_equal(oracle.shape.xyz, crossed.shape.xyz)
-    assert jnp.array_equal(oracle.shape.lengths, crossed.shape.lengths)
+    assert jnp.array_equal(through_pynite.shape.xyz, through_opensees.shape.xyz)
+    assert jnp.array_equal(through_pynite.shape.lengths, through_opensees.shape.lengths)
 
 
 def test_the_two_routes_agree_on_what_the_members_carry(both_designs):
-    oracle, crossed = both_designs
+    # Two foreign solvers, one hand-adjointed and one differentiated by rules
+    # compiled into it, reached across the same schema.
+    through_pynite, through_opensees = both_designs
 
-    assert relative(oracle.forces.axial_force, crossed.forces.axial_force) < (
-        TOLERANCE_AXIAL
-    )
-    assert relative(oracle.forces.moment_major, crossed.forces.moment_major) < (
-        TOLERANCE_MOMENT
-    )
-    assert np.allclose(np.asarray(crossed.forces.moment_minor), 0.0)
+    assert relative(
+        through_pynite.forces.axial_force, through_opensees.forces.axial_force
+    ) < (TOLERANCE_AXIAL)
+    assert relative(
+        through_pynite.forces.moment_major, through_opensees.forces.moment_major
+    ) < (TOLERANCE_MOMENT)
+    assert np.allclose(np.asarray(through_opensees.forces.moment_minor), 0.0)
+    assert np.allclose(np.asarray(through_pynite.forces.moment_minor), 0.0)
 
 
 def test_the_crossed_check_agrees_on_the_utilization(both_designs):
-    oracle, crossed = both_designs
+    through_pynite, through_opensees = both_designs
 
-    assert relative(oracle.sizes.utilization, crossed.sizes.utilization) < (
-        TOLERANCE_UTILIZATION
-    )
+    assert relative(
+        through_pynite.sizes.utilization, through_opensees.sizes.utilization
+    ) < (TOLERANCE_UTILIZATION)
 
 
 def test_the_sections_and_the_mass_cross_unchanged(both_designs):
     # Both routes hand the catalog the same held diameters, so the sections and
     # the mass they weigh are identical rather than merely close.
-    oracle, crossed = both_designs
+    through_pynite, through_opensees = both_designs
 
     assert jnp.array_equal(
-        oracle.sizes.sections.diameter, crossed.sizes.sections.diameter
+        through_pynite.sizes.sections.diameter, through_opensees.sizes.sections.diameter
     )
     assert jnp.array_equal(
-        oracle.sizes.sections.thickness, crossed.sizes.sections.thickness
+        through_pynite.sizes.sections.thickness,
+        through_opensees.sizes.sections.thickness,
     )
-    assert relative(compute_mass(oracle), compute_mass(crossed)) < 1e-14
+    assert (
+        relative(compute_mass(through_pynite), compute_mass(through_opensees)) < 1e-14
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -208,66 +224,76 @@ def worked_utilization(pipeline, loads):
 
 
 def test_the_utilization_gradient_survives_the_boundary(
-    oracle_pipeline, crossed_pipeline, params, one_case
+    pynite_pipeline, opensees_pipeline, params, one_case
 ):
-    oracle = worked_utilization(oracle_pipeline, one_case)
-    crossed = worked_utilization(crossed_pipeline, one_case)
+    # Two adjoints written in two languages by two strategies, contracted into
+    # the same reverse-mode sweep.
+    through_pynite = worked_utilization(pynite_pipeline, one_case)
+    through_opensees = worked_utilization(opensees_pipeline, one_case)
 
     def by_densities(route):
         return lambda q: route(DesignParameters(q, params.diameters))
 
     q = params.shape_parameters
     difference = relative(
-        jax.grad(by_densities(oracle))(q), jax.grad(by_densities(crossed))(q)
+        jax.grad(by_densities(through_pynite))(q),
+        jax.grad(by_densities(through_opensees))(q),
     )
 
     assert difference < TOLERANCE_DERIVATIVE
 
 
 def test_the_diameter_gradient_survives_the_boundary(
-    oracle_pipeline, crossed_pipeline, params, one_case
+    pynite_pipeline, opensees_pipeline, params, one_case
 ):
     # The diameters reach both crossings: the frame's stiffness on one side of
     # the analysis boundary, the held check on the other.
-    oracle = worked_utilization(oracle_pipeline, one_case)
-    crossed = worked_utilization(crossed_pipeline, one_case)
+    through_pynite = worked_utilization(pynite_pipeline, one_case)
+    through_opensees = worked_utilization(opensees_pipeline, one_case)
 
     def by_diameters(route):
         return lambda d: route(DesignParameters(params.shape_parameters, d))
 
     held = params.diameters
     difference = relative(
-        jax.grad(by_diameters(oracle))(held), jax.grad(by_diameters(crossed))(held)
+        jax.grad(by_diameters(through_pynite))(held),
+        jax.grad(by_diameters(through_opensees))(held),
     )
 
     assert difference < TOLERANCE_DERIVATIVE
 
 
 def test_the_crossed_gradient_matches_central_differences(
-    crossed_pipeline, params, one_case
+    opensees_pipeline, params, one_case
 ):
-    # Parity says the boundary changed nothing. This says the thing it left
-    # unchanged is right, without the in-process pipeline vouching for it.
-    crossed = worked_utilization(crossed_pipeline, one_case)
+    # Agreement between the two routes says the boundary changed nothing. This
+    # says the thing it left unchanged is right, vouched for by nothing.
+    crossed = worked_utilization(opensees_pipeline, one_case)
 
-    def objective(q):
+    def by_densities(q):
         return crossed(DesignParameters(q, params.diameters))
 
-    q = params.shape_parameters
-    gradient = jax.grad(objective)(q)
-    scale = float(jnp.max(jnp.abs(gradient)))
+    def by_diameters(diameters):
+        return crossed(DesignParameters(params.shape_parameters, diameters))
 
-    for edge in (0, NUM_EDGES // 2):
-        step = abs(float(q[edge])) * STEP
-        plus = objective(q.at[edge].add(step))
-        minus = objective(q.at[edge].add(-step))
-        central = float((plus - minus) / (2.0 * step))
+    for objective, start in (
+        (by_densities, params.shape_parameters),
+        (by_diameters, params.diameters),
+    ):
+        gradient = jax.grad(objective)(start)
+        scale = float(jnp.max(jnp.abs(gradient)))
 
-        assert abs(float(gradient[edge]) - central) / scale < TOLERANCE_GRADIENT
+        for edge in (0, NUM_EDGES // 2):
+            step = abs(float(start[edge])) * STEP
+            plus = objective(start.at[edge].add(step))
+            minus = objective(start.at[edge].add(-step))
+            central = float((plus - minus) / (2.0 * step))
+
+            assert abs(float(gradient[edge]) - central) / scale < TOLERANCE_GRADIENT
 
 
 def test_the_boundary_does_not_downcast_to_single_precision(
-    crossed_pipeline, params, one_case, both_designs
+    opensees_pipeline, params, one_case, both_designs
 ):
     # Every schema declares float64; a float32 stage would downcast silently
     # and cost eight digits.
@@ -285,7 +311,7 @@ def test_the_boundary_does_not_downcast_to_single_precision(
     for value in payloads:
         assert jnp.asarray(value).dtype == jnp.float64
 
-    worked = worked_utilization(crossed_pipeline, one_case)
+    worked = worked_utilization(opensees_pipeline, one_case)
     gradient = jax.grad(lambda q: worked(DesignParameters(q, params.diameters)))(
         params.shape_parameters
     )
@@ -324,15 +350,8 @@ def shell_params(shell, shell_case):
 
 @pytest.fixture(scope="module")
 def shell_sizer(shell, catalog):
-    """One crossed check in both shell triples as well."""
+    """One crossed check for the space frame as well."""
     return TesseractSizer(shell, catalog, backend="blueprint")
-
-
-@pytest.fixture(scope="module")
-def shell_oracle(shell, catalog, shell_sizer):
-    return StructuralDesignPipeline(
-        FdmFormFinder(shell), SmaxAnalyzer(shell, catalog(SEED)), shell_sizer
-    )
 
 
 @pytest.fixture(scope="module")
@@ -343,52 +362,51 @@ def shell_crossed(shell, catalog, shell_sizer):
 
 
 @pytest.fixture(scope="module")
-def shell_designs(shell_oracle, shell_crossed, shell_params, shell_case):
-    return shell_oracle(shell_params, shell_case), shell_crossed(
-        shell_params, shell_case
-    )
+def shell_design(shell_crossed, shell_params, shell_case):
+    return shell_crossed(shell_params, shell_case)
 
 
-def test_the_space_frame_routes_agree_on_what_the_members_carry(shell_designs):
-    # The minor moment is left out: how one bending splits over the two local
-    # axes of a tube is each solver's frame convention, not a force.
-    oracle, crossed = shell_designs
+def test_the_space_frame_route_carries_the_recorded_forces(shell_design):
+    # No second solver reaches three dimensions here, so the claim is held to
+    # the recorded answer: a norm, and three members a permutation would move.
+    axial = np.asarray(shell_design.forces.axial_force, dtype=np.float64)[0]
+    sampled = [float(axial[member]) for member in SHELL_SAMPLED_MEMBERS]
+    moment = np.asarray(shell_design.forces.moment_major, dtype=np.float64)[0]
 
-    assert relative(oracle.forces.axial_force, crossed.forces.axial_force) < (
-        TOLERANCE_AXIAL
-    )
-    assert relative(oracle.forces.moment_major, crossed.forces.moment_major) < (
-        TOLERANCE_MOMENT
-    )
-
-
-def test_the_space_frame_check_agrees_on_the_utilization(shell_designs):
-    oracle, crossed = shell_designs
-
-    assert relative(oracle.sizes.utilization, crossed.sizes.utilization) < (
-        TOLERANCE_UTILIZATION
-    )
+    assert relative(SHELL_AXIAL_NORM, float(np.linalg.norm(axial))) < TOLERANCE_AXIAL
+    assert relative(SHELL_AXIAL_SAMPLED, sampled) < TOLERANCE_AXIAL
+    assert relative(SHELL_MOMENT_NORM, float(np.linalg.norm(moment))) < TOLERANCE_MOMENT
 
 
-def test_the_space_frame_gradient_survives_the_boundary(
-    shell_oracle, shell_crossed, shell_params, shell_case
+def test_the_space_frame_check_carries_the_recorded_utilization(shell_design):
+    utilization = np.asarray(shell_design.sizes.utilization, dtype=np.float64)[0]
+    reached = float(np.linalg.norm(utilization))
+
+    assert relative(SHELL_UTILIZATION_NORM, reached) < TOLERANCE_UTILIZATION
+
+
+def test_the_space_frame_gradient_matches_central_differences(
+    shell_crossed, shell_params, shell_case
 ):
     # Held to a frame-free scalar: the blueprint demand sums the two moment
-    # axes linearly, so its gradient reads each solver's roll convention, and
-    # only a convention-free objective compares the two adjoints themselves.
-    def carried_squared(pipeline):
-        def worked(q):
-            design = pipeline(DesignParameters(q, shell_params.diameters), shell_case)
+    # axes linearly, so its gradient reads the solver's roll convention, and
+    # only a convention-free objective differences the adjoint itself.
+    def carried_squared(q):
+        design = shell_crossed(DesignParameters(q, shell_params.diameters), shell_case)
 
-            return jnp.sum(design.forces.axial_force**2)
-
-        return worked
+        return jnp.sum(design.forces.axial_force**2)
 
     q = shell_params.shape_parameters
-    slope_oracle = jax.grad(carried_squared(shell_oracle))(q)
-    slope_crossed = jax.grad(carried_squared(shell_crossed))(q)
+    gradient = jax.grad(carried_squared)(q)
+    scale = float(jnp.max(jnp.abs(gradient)))
 
-    assert relative(slope_oracle, slope_crossed) < TOLERANCE_DERIVATIVE
+    for edge in (0, shell_params.shape_parameters.shape[0] // 2):
+        step = abs(float(q[edge])) * STEP
+        plus = carried_squared(q.at[edge].add(step))
+        minus = carried_squared(q.at[edge].add(-step))
+        central = float((plus - minus) / (2.0 * step))
+
+        assert abs(float(gradient[edge]) - central) / scale < TOLERANCE_GRADIENT
 
 
 # --------------------------------------------------------------------------- #

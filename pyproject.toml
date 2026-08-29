@@ -36,11 +36,6 @@ dev = [
     "pytest-xdist>=3.8.0",
     "ruff>=0.16.2",
 ]
-local-dev = [
-    "ec3x",
-    "smax",
-    "vix",
-]
 
 [build-system]
 requires = ["setuptools"]
@@ -96,10 +91,3 @@ addopts = [
     "--dist",
     "loadfile",
 ]
-
-[tool.uv.sources]
-ec3x = { path = "../ec3x", editable = true }
-# Pinned to a revision, not to a branch: smax deleted CompiledStructure on
-# 2026-08-15 and this is the last commit that still exports it.
-smax = { git = "file:///Users/arpj/code/libraries/smax", rev = "750c85d06ab699a485476835852460c9c7c7e49d" }
-vix = { git = "file:///Users/arpj/code/libraries/vix", rev = "main" }

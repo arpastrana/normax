@@ -4,7 +4,9 @@
 structure:
   num_edges: 10
   span: 10000.0
-  rise: 2500.0
+  # Drawn FLAT, so the `fixed` route sizes a straight pin-ended beam and the
+  # comparison is against having no shape freedom at all.
+  rise: 0.0
 
 # The held plan in member coordinates: a chain leaves one independent density.
 form_finding:
@@ -15,9 +17,15 @@ form_finding:
   # A chain needs no symmetry to fold: its held plan is one-dimensional already.
   mirror: null
   # UniformDensityInitializer: one force density in every member. The rise a
-  # funicular chain reaches is 250000/|q| mm here, so -100 opens every route on
-  # the same 2500 mm parabola the structure above is drawn at.
+  # funicular chain reaches is 250000/|q| mm here, so -100 form-finds a 2500 mm
+  # parabola from the flat drawing above: the fdm route reads no drawn height.
   density_start: {force_density: -100.0}
+  # Where the written-heights route leaves from: a generated parabolic lift to
+  # this crown, since the flat drawing it would otherwise read is a stationary
+  # point of both the mass and the utilization. Measured: below about 50 mm the
+  # route cannot move at all, and it lands on the same answer from every start
+  # above it.
+  height_start: {rise: 50.0}
 
 # The first case shapes the arch; every case is checked.
 load_cases:
@@ -76,8 +84,7 @@ optimization:
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-4        # relative objective change per round counting as none
 
-# What becomes of the answer; a viewer blocks, so it opens last.
+# What becomes of the answer.
 output:
   verbose: true
   export: true
-  viewer: false
