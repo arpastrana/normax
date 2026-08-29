@@ -431,6 +431,57 @@ class FdmFormFinder(AbstractFormFinder):
         return DesignShape(state.xyz, state.lengths[:, 0])
 
 
+def build_parabolic_heights(
+    xyz: Float[np.ndarray, "nodes 3"],
+    supports: Int[np.ndarray, "supports"],
+    nodes_free: Int[np.ndarray, "nodes_free"],
+    rise: float,
+) -> Float[np.ndarray, "nodes_free"]:
+    """
+    A lift over the drawn plan, at a named rise, for a written start to leave from.
+
+    Parameters
+    ----------
+    xyz :
+        The drawn geometry, read for its plan alone.
+    supports :
+        Indices of the nodes the lift is zero at.
+    nodes_free :
+        Indices of the nodes a height is returned for.
+    rise :
+        Height the farthest free node is lifted to.
+
+    Returns
+    -------
+    heights :
+        Height of every free node, zero at the supports and `rise` at the
+        farthest of them from a support.
+
+    Notes
+    -----
+    Quadratic in the plan distance to the nearest support, which on a chain is
+    the parabola through the two supports and the named crown exactly, and on a
+    cap is a dome. Generated rather than scaled off the drawing, so a flat draw
+    is as good a starting point as a raised one -- which is the whole reason
+    this exists: the written-heights route reads the drawing as its start, and a
+    flat drawing is a stationary point of both the mass and the utilization,
+    where no descent can begin.
+    """
+    plan = np.asarray(xyz)[:, :2]
+    held = np.asarray(supports).ravel()
+    free = np.asarray(nodes_free)
+
+    spans = plan[free][:, None, :] - plan[held][None, :, :]
+    nearest = np.min(np.linalg.norm(spans, axis=-1), axis=-1)
+    farthest = float(np.max(nearest))
+    if farthest <= 0.0:
+        raise ValueError("every free node shares a support's plan position")
+
+    reach = nearest / farthest
+
+    return rise * (2.0 * reach - reach**2)
+
+
 class HeightsFormFinder(AbstractFormFinder):
     """
     Free heights: the coefficients are the free nodes' height, in the drawn plan.
@@ -465,10 +516,16 @@ class HeightsFormFinder(AbstractFormFinder):
     xyz: Float[Array, "nodes 3"]
     edges: Int[np.ndarray, "members 2"]
     nodes_free: Int[np.ndarray, "nodes_free"]
+    supports: Int[np.ndarray, "supports"]
     width: int = eqx.field(static=True)
+    rise_start: float | None = eqx.field(static=True)
     basis: PlanBasis | None
 
-    def __init__(self, structure: Structure) -> None:
+    def __init__(
+        self,
+        structure: Structure,
+        start: dict[str, float] | None = None,
+    ) -> None:
         """
         Build a heights finder on a drawn structure.
 
@@ -476,13 +533,20 @@ class HeightsFormFinder(AbstractFormFinder):
         ----------
         structure :
             The structure supplying the plan, the members and the supports.
+        start :
+            The `rise` a generated parabolic start reaches, or None to leave
+            from the drawn heights.
         """
+        if start is not None:
+            check_start_fields(start, ("rise",))
         nodes_free = select_free_nodes(structure)
 
         self.xyz = jnp.asarray(structure.nodes)
         self.edges = np.asarray(structure.edges)
         self.nodes_free = nodes_free
+        self.supports = np.asarray(structure.supports)
         self.width = int(nodes_free.size)
+        self.rise_start = None if start is None else float(start["rise"])
         self.basis = None
 
     def count_shape_coefficients(self) -> int:
@@ -496,7 +560,7 @@ class HeightsFormFinder(AbstractFormFinder):
         parameters: Float[np.ndarray, "shape_parameters"],
     ) -> Float[np.ndarray, "nodes_free"]:
         """
-        The heights this finder starts from, which are the drawn ones.
+        The heights this finder starts from: a named lift, or the drawn ones.
 
         Parameters
         ----------
@@ -507,9 +571,15 @@ class HeightsFormFinder(AbstractFormFinder):
         Returns
         -------
         heights :
-            Height of every free node as drawn.
+            Height of every free node, generated at the named rise where the
+            file names one and read off the drawing where it does not.
         """
-        return np.asarray(self.xyz)[self.nodes_free, 2]
+        if self.rise_start is None:
+            return np.asarray(self.xyz)[self.nodes_free, 2]
+
+        return build_parabolic_heights(
+            self.xyz, self.supports, self.nodes_free, self.rise_start
+        )
 
     def bound_coefficients(
         self,
@@ -732,7 +802,7 @@ def build_form_finder(
     if named == "fdm":
         return FdmFormFinder(structure, basis)
     if named == "heights":
-        return HeightsFormFinder(structure)
+        return HeightsFormFinder(structure, config.height_start)
     if named == "fixed":
         return FixedFormFinder(structure)
 

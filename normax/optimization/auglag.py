@@ -74,14 +74,14 @@ class OptimizationBudget(NamedTuple):
     objective_rtol: float
 
 
-class OptimizationAnswer(NamedTuple):
+class OptimizationSolution(NamedTuple):
     """
     What an augmented Lagrangian descent arrived at, and the road there.
 
     Attributes
     ----------
-    variables :
-        The variable vector the loop stopped on.
+    parameters :
+        The design parameters the loop stopped on.
     objectives :
         Objective at the end of every round, the starting value first.
     violations :
@@ -99,7 +99,7 @@ class OptimizationAnswer(NamedTuple):
     with the violation under the tolerance is a design.
     """
 
-    variables: Float[np.ndarray, "variables"]
+    parameters: Float[np.ndarray, "variables"]
     objectives: Float[np.ndarray, "rounds"]
     violations: Float[np.ndarray, "rounds"]
     evaluations: int
@@ -260,7 +260,7 @@ def descend_augmented_lagrangian(
     start: Float[np.ndarray, "variables"],
     boxes: list[tuple[float | None, float | None]],
     budget: OptimizationBudget,
-) -> OptimizationAnswer:
+) -> OptimizationSolution:
     """
     Minimize under inequality rows by an augmented Lagrangian, in box bounds.
 
@@ -392,7 +392,7 @@ def descend_augmented_lagrangian(
             converged = True
             break
 
-    answer = OptimizationAnswer(
+    answer = OptimizationSolution(
         x, np.asarray(objectives), np.asarray(violations), spent, converged
     )
 

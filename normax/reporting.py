@@ -18,11 +18,11 @@ import numpy as np
 from normax.config import RunConfig
 from normax.design import Design
 from normax.design import DesignProblem
-from normax.design import DesignRecord
+from normax.design import ProblemRecord
 from normax.design import compute_compliance
 from normax.design import compute_mass
 from normax.design import weigh_design
-from normax.optimization import OptimizationAnswer
+from normax.optimization import OptimizationSolution
 
 # Spaces of indentation given to anything printed under a heading.
 INDENT = "  "
@@ -273,7 +273,7 @@ def name_objective(problem: DesignProblem) -> str:
 
 def report_descent(
     report: Report,
-    answer: OptimizationAnswer,
+    solution: OptimizationSolution,
     heading: str = "mass [t]",
 ) -> None:
     """
@@ -283,7 +283,7 @@ def report_descent(
     ----------
     report :
         Where to print.
-    answer :
+    solution :
         What the descent arrived at.
     heading :
         What the objective column is called, from `name_objective`.
@@ -293,12 +293,12 @@ def report_descent(
         ReportColumn(heading, ".6f"),
         ReportColumn("violation", ".2e"),
     )
-    walked = zip(answer.objectives, answer.violations, strict=True)
+    walked = zip(solution.objectives, solution.violations, strict=True)
     rows = [(index, value, gap) for index, (value, gap) in enumerate(walked)]
     report.write_table(columns, rows)
 
-    ended = "converged" if answer.converged else "stopped on its round budget"
-    entries = [("evaluations", str(answer.evaluations)), ("ended", ended)]
+    ended = "converged" if solution.converged else "stopped on its round budget"
+    entries = [("evaluations", str(solution.evaluations)), ("ended", ended)]
     report.write_entries(entries)
 
 
@@ -403,21 +403,23 @@ def list_unused_settings(config: RunConfig[Any]) -> tuple[str, ...]:
     guard look honored when it was not.
     """
     found = config.form_finding
-    if found.shape_parametrization == "fdm":
-        return ()
+    written = found.shape_parametrization != "fdm"
 
     named = {
-        "basis": found.basis is not None,
-        "density_start": bool(found.density_start),
-        "bounds": config.constraints.bounds is not None,
-        "sign_guard": config.constraints.sign_guard is not None,
+        "basis": written and found.basis is not None,
+        "density_start": written and bool(found.density_start),
+        "bounds": written and config.constraints.bounds is not None,
+        "sign_guard": written and config.constraints.sign_guard is not None,
+        "height_start": (
+            found.shape_parametrization != "heights" and bool(found.height_start)
+        ),
     }
 
     return tuple(setting for setting, given in named.items() if given)
 
 
 def report_design(
-    record: DesignRecord,
+    record: ProblemRecord,
     config: RunConfig[Any],
     title: str,
 ) -> None:
@@ -444,7 +446,7 @@ def report_design(
     basis = record.problem.pipeline.formfinder.basis
     if basis is not None:
         entries.append(("coefficients", str(basis.width)))
-    entries.append(("variables", str(record.answer.variables.size)))
+    entries.append(("parameters", str(record.solution.parameters.size)))
     report.write_heading("Backends")
     report.write_entries(entries)
 
@@ -458,7 +460,7 @@ def report_design(
         )
 
     report.write_heading("The descent")
-    report_descent(report, record.answer, name_objective(record.problem))
+    report_descent(report, record.solution, name_objective(record.problem))
     summarize_design(report, record.initial, "The start")
     summarize_design(report, record.optimized, "The answer")
     if record.families:

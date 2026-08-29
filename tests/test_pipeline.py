@@ -18,7 +18,7 @@ from normax.loads import create_load_half_span
 from normax.loads import create_load_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
-from normax.optimization import OptimizationAnswer
+from normax.optimization import OptimizationSolution
 from normax.sections import build_section_catalog
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import coerce_member_actions
@@ -424,7 +424,7 @@ def test_the_design_figures_build(structure, pipeline, force_densities, three_ca
         [float(compute_mass(design)), 0.9 * float(compute_mass(design))]
     )
     violations = np.asarray([0.1, 0.0])
-    answer = OptimizationAnswer(variables, objectives, violations, 12, True)
+    answer = OptimizationSolution(variables, objectives, violations, 12, True)
 
     labels = ("LC1", "LC2", "LC3")
     designs = {"start": design, "answer": design}

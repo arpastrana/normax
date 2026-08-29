@@ -20,7 +20,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from normax.design import Design
-from normax.optimization import OptimizationAnswer
+from normax.optimization import OptimizationSolution
 from normax.structures import Structure
 
 # Points of line width given to the thickest member of a drawing.
@@ -367,7 +367,7 @@ def draw_design_figures(
     structure: Structure,
     designs: dict[str, Design],
     case_names: tuple[str, ...],
-    answer: OptimizationAnswer,
+    solution: OptimizationSolution,
 ) -> tuple[Figure | None, Figure]:
     """
     The two figures a run draws: its designs, and the descent between them.
@@ -380,7 +380,7 @@ def draw_design_figures(
         The designs to draw, keyed by the name each appears under.
     case_names :
         Name of every load case, naming who governs each member.
-    answer :
+    solution :
         What the descent arrived at, whose objective column is drawn.
 
     Returns
@@ -410,7 +410,7 @@ def draw_design_figures(
         forms.append(form)
     drawn = draw_utilization(structure.edges, forms, case_names) if forms else None
 
-    traces = (DescentTrace("auglag", answer.objectives),)
+    traces = (DescentTrace("auglag", solution.objectives),)
     descended = draw_mass_descent(traces)
 
     return drawn, descended

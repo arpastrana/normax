@@ -2,6 +2,136 @@
 
 ## Unreleased
 
+### The record and the optimizer's solution are renamed, and the examples share one shape
+
+Renamed 2026-08-29, five names, mechanically across 20 files but checked site by
+site rather than by spelling:
+
+| was | is |
+|---|---|
+| `DesignRecord` | `ProblemRecord` |
+| `OptimizationAnswer` | `OptimizationSolution` |
+| `initialize_optimization_variables` | `initialize_optimization_parameters` |
+| `OptimizationAnswer.variables` | `OptimizationSolution.parameters` |
+| `DesignRecord.answer` | `ProblemRecord.solution` |
+
+**Three sites a spelling sweep would have missed**, which is why the field
+renames were done by hand. A **keyword construction**,
+`OptimizationSolution(variables=...)` in `tests/test_pipeline_tail.py`, which
+attribute renaming does not touch and which fails only at runtime. The **npz
+key** in `exporting/records.py`, which was `variables=answer.variables`; nothing
+in the repo reads that key back, so it became `parameters=` rather than being
+left to drift, and the on-disk record schema changes with it. And the **local
+that mirrored the field**, `answer = record.answer`, which had to move with it.
+
+**Three `answer` identifiers deliberately kept.** The printed heading
+`"The answer"`, the figure-label dict key `{"start": ..., "answer": ...}`, and
+the local in `tesseract.py` holding a crossed server's response dict -- a
+different meaning of the word. Along with every ordinary English use of
+"answer" and "answers" in prose, which is most of them.
+
+Two parameters were renamed beyond the list above, being the same mismatch:
+`report_descent` and `draw_design_figures` each took an `answer` typed on
+`OptimizationSolution`, so a `record.solution` would have been passed to a
+parameter called `answer`.
+
+The jaxtyping dimension name `"variables"` stays in about ten annotations. It
+names the length of the design vector, which is still what it is.
+
+**The four examples now share one skeleton.** `main` reads the same in
+`arch.py`, `warren.py`, `vierendeel.py` and `gridshell.py` -- same section
+headings, same `params` / `design` / `solution` / `design_found` names, both
+initializers together and the constraints and the problem after them. A diff of
+the four differs only where the structures do: the symmetry block (`mirror`,
+`folded`, `rotation`) and the sign-guard block (`groups`, `guarded`).
+
+**One bug fixed while propagating that shape.** The reorganized `arch.py` passed
+`design_found` into `ProblemRecord`'s first Design slot where the descent's own
+solution belongs, so `report_design` raised
+`AttributeError: 'Design' object has no attribute 'variables'`. Every example
+runs and lands on its recorded mass: arch 0.150150, Warren 0.055613,
+Vierendeel 0.121547, gridshell 0.082971 t, each at worst utilization 1.000000.
+
+### The written-heights route gets a start of its own, and the arch is drawn flat
+
+Changed 2026-08-29. `form_finding.height_start: {rise: 50.0}` names the crown a
+generated parabolic lift reaches, and `HeightsFormFinder` leaves from that
+instead of from the drawing. `build_parabolic_heights` is quadratic in each free
+node's plan distance to the nearest support, which on a chain is the parabola
+through the two supports and the named crown exactly, and on a cap is a dome.
+Where no start is named the route still reads the drawn heights, as before.
+
+`examples/arch.yaml` is now drawn at **rise 0.0**, so the three routes no longer
+open on one geometry -- which was a stated property and is deliberately given
+up. Each opens where its own start says: `fixed` flat, `heights` at the named
+50 mm, `fdm` on the 2500 mm parabola its density start form-finds. The fdm route
+reads no drawn height at all, which is the point.
+
+**Why the heights route needed a start it could not read off a flat drawing.** A
+flat geometry is an exact stationary point of the whole problem, measured on the
+arch:
+
+    d(mass)/d(height)               0.000000e+00   all nine
+    d(worst utilization)/d(height)  0.000000e+00   all nine
+    d(mass)/d(diameter)             2.034961e-04   the only live direction
+
+Two reasons, neither a tuning matter. Mass is `rho * sum A(d) L` and
+`dL/dz ∝ dz/L` vanishes when `dz = 0`, so length is first-order insensitive to a
+transverse motion. And flat is a symmetry point of the mechanics: raising gives
+an arch, lowering a cable, both shed bending equally, so the response is even in
+`z`. From a flat drawing the route returns **bit-identical results to `fixed`** --
+same mass, same diameters -- with its nine variables provably inert. From 1 mm it
+is pulled back into the stationary point.
+
+**The escape threshold is between 1 mm and 50 mm**, 0.5% of the span. Above it
+the route lands on the same answer from every start tried, spanning 50x in rise:
+
+| start rise | heights answer | its crown |
+|---|---|---|
+| 0 mm | 0.491027 t | 0.0, never moved |
+| 1 mm | 0.491027 t | 0.0, fell back |
+| 50 mm | 0.144129 t | 1464.8 |
+| 250 mm | 0.144129 t | 1464.8 |
+| 1000 mm | 0.144129 t | 1464.9 |
+| 2500 mm | 0.144128 t | 1466.8 |
+
+So the earlier record that free heights is "start-ruled" no longer holds on this
+code: the only failing start is the degenerate one.
+
+**Converged against converged, the arch's three routes:**
+
+| route | mass | evaluations | ended | worst U |
+|---|---|---|---|---|
+| `fdm` | 0.150150 t | **202** | converged at round 8 | 1.000000 |
+| `heights` | **0.144129 t** | **901** | converged, needs `rounds_max: 20` | 1.000000 |
+| `fixed` | 0.491027 t | 145 | converged | 0.999999 |
+
+`heights` is **4.0% lighter for 4.46x the evaluations**, and that is expected
+rather than surprising: any shape the form finder reaches is a shape the written
+route can write, so its feasible set strictly contains the other's and it can
+only be lighter or equal. What is notable is how little the extra freedom buys
+-- nine variables against one, landing 5% apart in rise -- and that `fdm` needs
+`rounds_max: 10` where `heights` needs 20.
+
+**At equal budget the mass claim does not go the way one might hope, and it is
+recorded here so nobody re-derives it hopefully.** Sweeping the iteration
+budget:
+
+| budget | fdm evals / mass | heights evals / mass / worst U |
+|---|---|---|
+| tiny | 159 / 0.150150 converged | 145 / 0.144196 / 1.000011 |
+| small | 164 / 0.150150 converged | 332 / 0.144187 / 1.000003 |
+| medium | 202 / 0.150150 converged | 643 / 0.144130 / 1.000052 |
+| large | 202 / 0.150150 converged | 780 / 0.144129 / 1.000007 |
+
+`fdm`'s mass is **identical at every budget**, converged from 159 evaluations
+up. But `heights` is within **0.05%** of its converged answer after 145
+evaluations, so its 4.46x is spent certifying feasibility to 1e-6 rather than
+searching, and it is lighter at every budget. Its violation also wanders
+non-monotonically with budget. **The defensible end-to-end claims on this arch
+are budget-insensitivity, start-insensitivity and one variable against nine --
+not a lighter design and not a faster search.**
+
 ### The moment demand is the vector's magnitude, and it stops depending on the roll
 
 Changed 2026-08-28. `reduce_moments` took the larger end moment on each axis

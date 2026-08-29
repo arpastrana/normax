@@ -20,7 +20,7 @@ from normax.design import evaluate_constraints
 from normax.design import expand_shape_coefficients
 from normax.design import expand_variables
 from normax.design import fold_variables
-from normax.design import initialize_optimization_variables
+from normax.design import initialize_optimization_parameters
 from normax.design import optimize_design
 from normax.design import read_shape_coefficients
 from normax.design import unfold_diameters
@@ -439,7 +439,7 @@ def test_initialize_optimization_variables_folds_the_floored_seed(
     problem, force_densities
 ):
     q = np.asarray(force_densities)
-    start = initialize_optimization_variables(problem, q, SEEDED)
+    start = initialize_optimization_parameters(problem, q, SEEDED)
     floored = np.maximum(SEEDED, problem.constraints.diameter_min)
 
     assert np.array_equal(start, fold_variables(problem, q, floored))
@@ -449,7 +449,7 @@ def test_initialize_optimization_variables_does_not_size_the_seed(
     problem, force_densities
 ):
     q = np.asarray(force_densities)
-    start = initialize_optimization_variables(problem, q, SEEDED)
+    start = initialize_optimization_parameters(problem, q, SEEDED)
     sized = envelope_diameters(problem, read_shape_coefficients(problem, q), SEEDED)
 
     assert not np.array_equal(start, fold_variables(problem, q, sized))
@@ -458,7 +458,7 @@ def test_initialize_optimization_variables_does_not_size_the_seed(
 def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
     problem, force_densities
 ):
-    start = initialize_optimization_variables(
+    start = initialize_optimization_parameters(
         problem, np.asarray(force_densities), SEEDED
     )
     design = create_design(problem, start)
@@ -474,7 +474,7 @@ def test_read_design_evaluates_the_pipeline_at_the_expanded_parameters(
 # --------------------------------------------------------------------------- #
 def test_the_maps_agree_with_their_eager_counterparts(problem, force_densities):
     maps = design_maps(problem)
-    start = initialize_optimization_variables(
+    start = initialize_optimization_parameters(
         problem, np.asarray(force_densities), SEEDED
     )
     x = jnp.asarray(start)
@@ -508,7 +508,7 @@ def test_a_satisfied_start_pays_no_penalty(problem, force_densities):
 
 
 def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_densities):
-    start = initialize_optimization_variables(
+    start = initialize_optimization_parameters(
         problem, np.asarray(force_densities), SEEDED
     )
     budget = OptimizationBudget(
@@ -523,10 +523,10 @@ def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_den
         objective_rtol=1e-8,
     )
     answer = optimize_design(problem, start, budget)
-    landed = compute_mass(create_design(problem, answer.variables))
+    landed = compute_mass(create_design(problem, answer.parameters))
 
     assert answer.objectives.shape == answer.violations.shape
-    assert answer.variables.shape == start.shape
+    assert answer.parameters.shape == start.shape
     assert float(answer.objectives[0]) == pytest.approx(
         float(compute_mass(create_design(problem, start))), rel=1e-12
     )

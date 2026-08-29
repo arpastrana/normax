@@ -9,8 +9,8 @@ the comparison and reached by its own name.
 """
 
 from normax.optimization.auglag import ConstrainedMaps
-from normax.optimization.auglag import OptimizationAnswer
 from normax.optimization.auglag import OptimizationBudget
+from normax.optimization.auglag import OptimizationSolution
 from normax.optimization.auglag import compute_penalty
 from normax.optimization.auglag import descend_augmented_lagrangian
 from normax.optimization.auglag import measure_violation
@@ -19,7 +19,7 @@ from normax.optimization.auglag import update_multipliers
 
 __all__ = [
     "ConstrainedMaps",
-    "OptimizationAnswer",
+    "OptimizationSolution",
     "OptimizationBudget",
     "compute_penalty",
     "descend_augmented_lagrangian",

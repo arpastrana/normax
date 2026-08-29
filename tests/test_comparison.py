@@ -17,7 +17,7 @@ from normax.design import bound_variables
 from normax.design import build_design_constraints
 from normax.design import create_design
 from normax.design import design_maps
-from normax.design import initialize_optimization_variables
+from normax.design import initialize_optimization_parameters
 from normax.form_finding import CoefficientBounds
 from normax.form_finding import DrawnShapeInitializer
 from normax.form_finding import FdmFormFinder
@@ -25,6 +25,7 @@ from normax.form_finding import FixedFormFinder
 from normax.form_finding import HeightsFormFinder
 from normax.form_finding import UniformDensityInitializer
 from normax.form_finding import build_form_finder
+from normax.form_finding import build_parabolic_heights
 from normax.form_finding import build_plan_basis
 from normax.form_finding import select_free_nodes
 from normax.loads import assemble_load_cases
@@ -259,15 +260,15 @@ def test_a_written_route_reports_the_settings_it_did_not_read(tmp_path):
 
     unused = list_unused_settings(config)
 
-    assert set(unused) == {"basis", "density_start", "bounds"}
-    assert (
-        list_unused_settings(
-            config._replace(
-                form_finding=config.form_finding._replace(shape_parametrization="fdm")
-            )
+    assert set(unused) == {"basis", "density_start", "bounds", "height_start"}
+
+    # The form-found route reads every density setting and no written one, so
+    # the height start is the one thing it has to be told it ignored.
+    assert list_unused_settings(
+        config._replace(
+            form_finding=config.form_finding._replace(shape_parametrization="fdm")
         )
-        == ()
-    )
+    ) == ("height_start",)
 
 
 # What the shipped arch carries per route: one basis coefficient and ten
@@ -298,7 +299,7 @@ def test_the_shipped_arch_carries_every_route_through_one_search(word):
     problem = DesignProblem(structure, pipeline, loads, held)
 
     diameters = np.full(described.num_edges, SEED)
-    start = initialize_optimization_variables(problem, density_start, diameters)
+    start = initialize_optimization_parameters(problem, density_start, diameters)
     boxes = bound_variables(problem)
     slack = np.asarray(design_maps(problem).slack(jnp.asarray(start)))
 
@@ -321,12 +322,67 @@ def test_the_shipped_arch_carries_every_route_through_one_search(word):
     else:
         assert all(box == expected for box in coefficients)
 
-    # The arch is drawn at the rise its density start form-finds to, so every
-    # route opens on one geometry and the comparison measures the search alone.
+    # Each route opens where its OWN start names, which is no longer one shared
+    # geometry: the arch is drawn flat, so `fixed` opens flat, `heights` opens at
+    # the crown its start names, and `fdm` form-finds a rise the drawing never
+    # had. Read off the file rather than pinned, so the config can move.
     design = create_design(problem, start)
-    assert float(jnp.max(design.shape.xyz[:, 2])) == pytest.approx(
-        described.rise, abs=1e-6
+    crown = float(jnp.max(design.shape.xyz[:, 2]))
+    if word == "fixed":
+        assert crown == pytest.approx(described.rise, abs=1e-6)
+    elif word == "heights":
+        named = config.form_finding.height_start["rise"]
+        assert crown == pytest.approx(named, abs=1e-6)
+    else:
+        assert crown > described.rise
+
+
+def test_a_generated_start_reaches_the_rise_it_names(structure):
+    free = select_free_nodes(structure)
+    lifted = build_parabolic_heights(
+        np.asarray(structure.nodes), structure.supports, free, 50.0
     )
+
+    assert lifted.shape == free.shape
+    assert float(np.max(lifted)) == pytest.approx(50.0, abs=1e-9)
+    assert float(np.min(lifted)) > 0.0
+
+    # Quadratic in the plan distance to a support, so on a chain it is the
+    # parabola through the two supports and the named crown, exactly.
+    plan = np.asarray(structure.nodes)[free, 0]
+    middle = 0.5 * SPAN
+    exact = 50.0 * (1.0 - ((plan - middle) / middle) ** 2)
+
+    assert np.allclose(lifted, exact, rtol=1e-12, atol=0.0)
+
+
+def test_a_generated_start_leaves_a_flat_drawing_climbable(catalog, loads):
+    # The reason the start exists. A flat drawing is a stationary point of the
+    # mass AND of the utilization -- every shape derivative is exactly zero, so
+    # no descent can begin from it. A named rise gives the search a slope.
+    flat = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=0.0)
+    diameters = jnp.full(NUM_EDGES, SEED)
+
+    def read_shape_slope(start):
+        described_route = described("heights", basis=None)._replace(height_start=start)
+        finder = build_form_finder(flat, None, described_route)
+        problem = build_problem(flat, finder, catalog, loads)
+        coefficients = jnp.asarray(finder.read_shape_coefficients(jnp.zeros(0)))
+        x = jnp.concatenate([coefficients, diameters])
+        _, gradient = design_maps(problem).objective(x)
+        width = finder.count_shape_coefficients()
+
+        return float(np.max(np.abs(np.asarray(gradient)[:width])))
+
+    assert read_shape_slope(None) == 0.0
+    assert read_shape_slope({"rise": 50.0}) > 0.0
+
+
+def test_an_unnamed_start_still_reads_the_drawn_heights(structure):
+    finder = build_form_finder(structure, None, described("heights", basis=None))
+    drawn = np.asarray(structure.nodes)[select_free_nodes(structure), 2]
+
+    assert np.array_equal(finder.read_shape_coefficients(jnp.zeros(0)), drawn)
 
 
 def test_an_omitted_start_is_none_and_no_config_shares_it(structure):

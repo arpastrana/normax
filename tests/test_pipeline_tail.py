@@ -23,7 +23,7 @@ from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import create_load_uniform
 from normax.materials import Steel355
-from normax.optimization import OptimizationAnswer
+from normax.optimization import OptimizationSolution
 from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
@@ -254,8 +254,8 @@ def test_a_checkless_run_draws_a_descent_but_no_utilization_figure(
         "start": build_pipeline(structure, catalog, 2)(params, loads),
         "answer": build_pipeline(structure, catalog, 2)(params, loads),
     }
-    answer = OptimizationAnswer(
-        variables=np.zeros(2 * NUM_EDGES - 1),
+    answer = OptimizationSolution(
+        parameters=np.zeros(2 * NUM_EDGES - 1),
         objectives=np.array([2.0, 1.0]),
         violations=np.array([0.0, 0.0]),
         evaluations=2,
