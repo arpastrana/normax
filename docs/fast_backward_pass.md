@@ -24,8 +24,14 @@ most people bring to a differentiable-programming boundary.
 | 6 | remember the assembled frame between endpoint calls | **0.077 s** |
 
 A descent of 2408 evaluations fell from **37 minutes to about 3**, and the
-gradient's agreement with a traced JAX solver never moved: **2.9e-12** over the
-coordinates throughout.
+gradient never moved while it was being made faster. That was checked at the
+time against a traced JAX solver, at **2.9e-12** over the coordinates
+throughout; that solver was deleted 2026-08-28 (see `oracle_removal.md`) and the
+figure is history the tag `local-dev` reproduces. Two checks stand in its place
+and are what the script prints now: the crossed adjoint against the identical
+rule in process, **2.587e-15**, which is the boundary's own round-off and is
+tighter than any difference could referee; and the two gradient-block norms
+frozen from that solver before it went, matched to **1.168e-14**.
 
 ---
 
@@ -41,8 +47,10 @@ lookalike, it is the same element, and the test says so on every run.
 
 **The global element stiffness does not know how the frame was rolled.** Turning
 a member's transverse axes about its own axis moves the global matrix by
-**1.7e-16** when the two second moments are equal, against 8.7e-3 when they are
-not. A circular hollow section is what buys this, and three things follow: the
+**1.7e-16** when the two second moments are equal. The unequal case is not
+measured here and cannot be: `SectionRigidity` carries a single bending
+rigidity, so this element has no way to be given two. A circular hollow section
+is what buys the invariance, and three things follow: the
 frame used to *build* stiffness may be chosen for conditioning alone; the frame
 used to *report* bending is a convention rather than a fact; and the adjoint
 needs only `∂Ke/∂p`, never the transformation's derivative.
@@ -54,13 +62,30 @@ known pathology under rigid-body rotation whose error grows with slenderness,
 which is exactly the regime of a slender gridshell. A number measured at one
 configuration is not a bound along a descent.
 
-**The trap here is the oracle.** A central difference cannot referee a
-derivative at 1e-14; its own best agreement is 2.1e-10. What it *can* do is
-confirm the shape of the error: sweeping the step gives a clean V, minimising at
-h≈1e-2 and worsening in both directions. That V is the proof of exactness — a
-wrong rule plateaus instead. For the value itself we check against a solver JAX
-differentiates end to end, which is an independent *exact* answer rather than a
-finer approximation.
+**The trap here is the oracle, and since 2026-08-28 there is no oracle.** A
+central difference cannot referee a derivative at 1e-14 — it is limited by its
+own truncation and round-off. What it *can* do is confirm the shape of the
+error: sweeping the step gives a clean V, interior and not at an endpoint, and a
+wrong rule plateaus instead of dipping. **That V now carries the whole exactness
+argument**, so here it is, measured on the canopy (6 nodes, 8 members, 26
+parameters) rather than on the shell:
+
+| step [mm] | by node | by diameter |
+|---|---|---|
+| 1e-05 | 1.364e-07 | 1.564e-07 |
+| 1e-04 | 1.072e-08 | 1.823e-08 |
+| **1e-03** | **1.555e-09** | **2.218e-09** |
+| 1e-02 | 4.949e-09 | 1.240e-08 |
+| 1e-01 | 5.065e-07 | 1.242e-06 |
+
+The floor is `h = 1e-3` mm at 1.6e-9 and 2.2e-9. Until 2026-08-28 the value
+itself was also checked against a frame solver JAX differentiates end to end — an
+independent *exact* answer rather than a finer approximation. That solver was
+private and was deleted (`oracle_removal.md`); what replaces it is the crossed
+adjoint against the identical rule in process at **2.587e-15**, which is the
+boundary's own round-off and is far below anything a difference could see, plus
+the two gradient-block norms frozen from the retired solver and matched to
+**1.168e-14**.
 
 ## Stage 2 — Most of the JAX cost was dispatch, not arithmetic
 
@@ -151,7 +176,11 @@ Profiling made it unnecessary. **The expensive half of a solve does not depend
 on the loading at all**: assembling and factorizing is 0.0413 s of a 0.0414 s
 forward pass. So one remembered frame, keyed on the geometry and the diameters,
 serves every load case in an evaluation *and* the adjoint that follows each —
-hit five times in six. Three load cases now cost **1.00×** what one costs.
+hit five times in six, so the load cases after the first pay for a solve and
+not for a factorization. On the 16x16 shell the three of them together cost
+**2.24x** one forward solve rather than the 3x they would unshared -- an earlier
+edition of this appendix read 1.00x here, which the script has never printed and
+which overstated the sharing.
 
 The key omitting the loads is also why a **single** entry suffices. Under
 reverse-mode automatic differentiation all the forward calls complete before any

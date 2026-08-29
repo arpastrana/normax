@@ -2,6 +2,135 @@
 
 ## Unreleased
 
+### The oracles are deleted, and CI stops skipping two thirds of the suite
+
+Removed 2026-08-28, planned in `docs/oracle_removal.md`, snapshotted at the tag
+`local-dev`. `smax` and `ec3x` were path-pinned JAX implementations -- a frame
+solver and an EN 1993-1-1 check -- that the crossed stack was validated against
+during development. They could not ship: one is pinned to
+`git+file:///Users/.../smax` at a revision, the other to a relative path, and
+between them they described one machine. Worse for a submission, two JAX
+implementations sitting in the tree invite exactly one question -- if a JAX frame
+solver and a JAX code check already exist here, what is Tesseract for? There is
+now **one** analysis and **one** check, and both cross a boundary.
+
+**What it buys is measured, not asserted.** `conftest.py` skipped any test file
+whose imports reached an oracle, so CI ran **126 of 395 tests across 4 of 20
+files**. Every package the skipped files actually need -- `blue-prints`,
+`openseespy`, `pynitefea` -- is already a main dependency; the skips existed for
+the two private packages alone. The guard apparatus is gone, 63 lines of it, and
+`conftest.py` is down to `load_tesseract_api`. A clean `uv sync` now runs the
+whole suite, and no part of it wants Docker: the Tesseract stages are imported
+into the test process by `Tesseract.from_tesseract_api`.
+
+**The swap was faster than the thing it replaced, which the plan got wrong.**
+The plan warned the suite would slow down, reasoning from the 26% the boundary
+costs on the PyNite adjoint. Measured on the 10-edge arch at `d = 100 mm`:
+
+    crossed pynite analyze      1.30 ms   against smax  25.53 ms
+    crossed blueprint size      1.21 ms   against ec3x  18.69 ms
+
+so 20x and 15x the other way. The oracles were paying JAX dispatch per call
+where the crossed blocks pay one host round trip. `test_nested.py` fell from
+8.0 s to 7.0 s; the ten fixture-only files run 191 tests in 9.5 s.
+
+**No shipped number moved.** `examples/arch.py` still reports **0.150150 t** at
+worst utilization **1.000000** and 48.52% saved -- the same figures as before the
+removal, to the last digit, because the examples always ran the crossed blocks.
+
+**Three replacements, in descending order of preference.** Where an assertion
+had an oracle on its right-hand side, it became a finite difference of the
+crossed forward pass, a value frozen from the oracle at the tag with its
+provenance in a one-line comment, or nothing. A hand adjoint checked against
+differences of its own primal cannot inherit a mistake shared with a second
+implementation, so the first of those is a stronger test than what it replaced.
+Where it is weaker is stated in `README.md` rather than left for a reader to
+find: a second implementation can disagree in a way a difference cannot, and
+`docs/fast_backward_pass.md` records that a central difference cannot referee a
+1e-14 derivative at all -- its own best agreement is 2.1e-10. What carries
+exactness there is the V-shaped step sweep, which needs no oracle.
+
+**The section tests moved to closed form, and Blueprints was rejected as a
+substitute oracle.** `tests/test_sections.py` asserted bitwise agreement with
+`ec3x.section`; it now asserts the annulus algebra itself, which the container
+reproduces to 2.2e-16 on area and 2.1e-15 on the second moment. Blueprints was
+the obvious replacement and does not work: its `CHSProfile` builds a polygon
+(`accuracy = 6`) and returns 2073.81101 mm² where the exact area at `d = 200`,
+`d/t = 90 eps²` is 2073.84549869 -- 1.7e-5 relative, fine as a loose check and
+useless as a bitwise one. Asserting against the standard's own algebra was the
+better answer anyway. Class limits likewise read Table 5.2 directly.
+
+**The viewer went with them.** `visualization/viewer.py` drew whole solver
+responses with `vix` and read them out of `SmaxAnalyzer`, and it already
+converted a `TesseractAnalyzer` *into* an `SmaxAnalyzer` because the schema
+returns `N` and `M` rather than a response -- there was nothing to re-point it
+at. `guard.py` and `unavailable.py` went too, and with them the last import path
+on which the package could pull a private package: the `find_spec` guard only
+hid that leak on an install that had one, and on this machine
+`import normax.visualization` did pull `smax` and `vix`. `OutputConfig.viewer`
+and four `viewer: false` lines are gone; all four examples shipped it off.
+
+**`validation/` was repurposed rather than exported.** The plan filed four
+clause studies for a move into `../ec3x`; they were instead re-pointed at the
+shipped stack, which is worth more than validating a package that will not
+exist. `strut_gradients.py` now agrees three analytic routes -- the crossed
+adjoint, the host adjoint in `normax/sizing/blueprint.py`, and the
+implicit-function rule written out in the script from its own residual -- to
+**1.05e-15**, with the 1.39e-09 against a central difference being the
+difference's own truncation, and its independent Cardano root matching the
+crossed bisection to 1.34e-15. `interaction_gradients.py` gradchecks the crossed
+sizer in four inputs at 4.08e-09 worst over 47 probes, with unity to 1.67e-15.
+`class_ratio_sweep.py` re-points its shear diagnostic at Blueprints'
+`Form6Dot18` pair, so the diagnostic that licenses declining §6.2.6-6.2.8 now
+reads the same library the shipped check does.
+
+**Two claims that turned out to belong to the oracle rather than to the shipped
+stack.** Both were found by re-pointing a test and watching it stop being true.
+
+`tests/test_frame_convention.py` asserted that turning a member's local frame
+leaves the design actions alone. That is a property of `ec3x`'s
+`read_axisymmetric_moment`, which reduces the two end-moment vectors to their
+*resultant*; the shipped `reduce_moments` takes `max|M_major| + max|M_minor|`,
+a linear superposition per Eq. 6.2, which is **not** roll-invariant by
+construction. The file now asserts the property the shipped stack does hold,
+which is equivariance rather than invariance: turn the structure *and its loads*
+and every design action is unchanged to ~1e-15, because the convention completes
+its transverse pair against the vertical, so the frame turns with the structure
+and the reading never learns it turned. Element-level roll invariance (1.7e-16)
+is unaffected -- that is a fact about a CHS stiffness matrix, and
+`tests/test_backend_pynite.py` still asserts it.
+
+`tests/test_analysis_prepared.py` asserted that a model prepared from *any*
+geometry gives the same forces, because `smax`'s `prepare_model` took a
+placeholder whose values never survived. PyNite's `prepare_frame` assembles and
+factorizes at the actual geometry, so the honest statements are the opposite
+ones, and the file now makes them: a prepared frame answers at the geometry it
+was prepared at, and the `xyz` passed beside it is never read. Same behavior
+asserted, opposite sign.
+
+**Two facts about the shipped stack that the removal surfaced, neither of them
+new but both worth stating where a reader will meet them.** Forward mode does
+not exist across either boundary: both servers implement `apply`,
+`abstract_eval` and `vector_jacobian_product` and nothing else, so `jax.jvp`
+raises and `check_grads` needs `modes=("rev",)`. And the shipped check is
+cross-section only -- eq. 6.10 plus eq. 6.14, summed linearly, no §6.3.1 -- so
+`buckling_length` is accepted, ignored and never serialized. That was already
+documented on the sizing schema and in the example run descriptions, and it
+means `ec3x` held the only §6.3.1 code in the tree. Deleting it moved no
+reported number, because no reported number ever came from it.
+
+**What would have been lost with it is the buckling story, so it was rewritten
+from the standard rather than surrendered.** `validation/blueprint_adjoint.py`
+now implements 6.3.1 itself -- Eq. 6.50 for the slenderness, Eq. 6.49 for the
+reduction factor capped at one, Eq. 6.47 bisected, with 6.2.3 Eq. 6.6 closed
+form on the tension branch -- and prices the shipped cross-section check against
+it. The gap runs **1.541 at the springing to 1.339 at the crown**: a member the
+shipped check sizes at 25.384 mm wants 39.106 mm once its own buckling is
+priced. Against `Ec3Sizer` the same ratios read 1.544 to 1.371, the difference
+being the bending interaction the ec3 route carried and this closed form does
+not. So the claim is now made from the standard's own equations inside this
+repo, which is a better place for it than a private package.
+
 ### `experiments/` is gone and `validation/` sits at the root
 
 Moved 2026-08-28. The directory had one child left -- `archive/` went with the
