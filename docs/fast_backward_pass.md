@@ -26,8 +26,9 @@ most people bring to a differentiable-programming boundary.
 A descent of 2408 evaluations fell from **37 minutes to about 3**, and the
 gradient never moved while it was being made faster. That was checked at the
 time against a traced JAX solver, at **2.9e-12** over the coordinates
-throughout; that solver was deleted 2026-08-28 (see `oracle_removal.md`) and the
-figure is history the tag `local-dev` reproduces. Two checks stand in its place
+throughout; that solver was deleted 2026-08-28 and the `local-dev` tag preserves
+the state in which the comparison was made. The evidence transition is recorded
+in [results.md](results.md#validation-evidence). Two checks stand in its place
 and are what the script prints now: the crossed adjoint against the identical
 rule in process, **2.587e-15**, which is the boundary's own round-off and is
 tighter than any difference could referee; and the two gradient-block norms
@@ -81,7 +82,8 @@ parameters) rather than on the shell:
 The floor is `h = 1e-3` mm at 1.6e-9 and 2.2e-9. Until 2026-08-28 the value
 itself was also checked against a frame solver JAX differentiates end to end — an
 independent *exact* answer rather than a finer approximation. That solver was
-private and was deleted (`oracle_removal.md`); what replaces it is the crossed
+private and was deleted; [the current validation record](results.md#validation-evidence)
+explains what replaces it: the crossed
 adjoint against the identical rule in process at **2.587e-15**, which is the
 boundary's own round-off and is far below anything a difference could see, plus
 the two gradient-block norms frozen from the retired solver and matched to
@@ -238,7 +240,7 @@ is to run unbuffered.
 
 ---
 
-# Appendix to the appendix: the same method, applied to the check
+## Appendix to the appendix: the same method, applied to the check
 
 Making the analysis cheap moved the bottleneck rather than removing it. Profiled
 again, one crossed evaluation was **94% the check and 6% the solver**, and
@@ -351,43 +353,17 @@ uncomfortable: **a comparison of two pipelines is only as good as the search
 behind each side of it**, and matching the method on both sides is not a
 refinement, it is the difference between a result and an artifact.
 
-# The record those numbers came from, and how to plot it
+## Provenance of the historical scatter study
 
-The measurement is kept rather than regenerated, in `data/trajectories/`, and it
-splits by what it cost.
+The 24-start table above is a development measurement, not a current headline
+result. Its driver and trajectory bundle were retired before submission and are
+not distributed in this repository. Git history preserves the implementation
+record, while [results.md](results.md) defines the protocol for the final,
+reproducible comparisons. Do not mix the historical gridshell masses above with
+the final table.
 
-**The expensive part.** `*_starts.json` and `*.log` — 92 KB holding all 24
-fixed-seed starts per route, and behind them the 4h20 above. Every landing:
-mass, worst violation, violated rows, evaluations, wall clock, and the design
-variables. This is where the table comes from.
-
-**The cheap part.** `*.npz` — about 2 MB and nine minutes, the path of each
-route's winning start at one frame per objective evaluation, kept for the
-descent animations. Each file holds `opening` (the start), `steps` (every
-evaluation's variables), `masses` (mass per frame), `rounds` (the per-round
-trail the method reports), `landing`, `route` and `start`.
-
-**Regeneration was by fixed seed, not by luck.** The starts were drawn from a
-fixed `SCATTER_SEED`, so a winner reconstructed exactly, and all three
-re-descents reproduced their recorded mass to every digit — which is what says
-the reconstruction was the same descent rather than a near neighbour.
-
-**The script that made them is gone, deleted 2026-08-27.** It drove the
-dissolved `normax.searches` through thirteen call sites, seven of them the
-scattered multi-start apparatus and unique to it, so reviving it was a rebuild
-rather than a repair. These files are therefore a record rather than a
-regenerable output: what is on disk is what there is.
-
-## Two things to know before plotting
-
-**The paths dive below where they land, and that is the method working.** End to
-end reaches 0.073284 mid-descent and settles at 0.074724; sizing only touches
-0.116707 and settles at 0.145735. A small opening penalty lets the mass lead
-until the multipliers pull it back onto the constraint surface, so those minima
-are infeasible points and not better answers. Plot the violation beside the mass
-or the picture says the opposite of what happened. Sizing only starts at 7.89 t
-and ends at 0.146, a sixty-fold sweep — that axis wants to be logarithmic.
-
-**A frame is an evaluation, not an accepted step.** The line search evaluates
-points it then rejects, so consecutive frames can move backwards. Fine for a
-morph; for a monotone curve use `rounds`, or take a running minimum.
+Two interpretation rules survive independently of those files. First, an
+augmented-Lagrangian path can dive below its accepted mass while infeasible, so
+plot violation beside mass and quote the final feasible landing. Second, a
+recorded frame is an objective evaluation, not necessarily an accepted line
+search step; use the per-round trace for a monotone summary.

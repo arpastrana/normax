@@ -70,7 +70,7 @@ END_MINOR = jnp.asarray(
 HELD = jnp.asarray([150.0, 80.0, 200.0, 30.0])
 LENGTHS = jnp.full(NUM_EDGES, 1000.0)
 
-# Recorded from Ec3Sizer at tag local-dev; see docs/oracle_removal.md.
+# Recorded from Ec3Sizer at tag local-dev; see docs/results.md#validation-evidence.
 DIAMETER_SILENCED = [
     158.9649432815509,
     117.1503198873905,

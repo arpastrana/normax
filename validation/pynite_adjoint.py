@@ -97,7 +97,7 @@ DIFFERENCE_STEPS = (1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1)
 # The sweep's floor, which is the step the reported gaps are read at.
 DIFFERENCE_STEP = 1.0e-3
 
-# Recorded from smax at tag local-dev; see docs/oracle_removal.md.
+# Recorded from smax at tag local-dev; see docs/results.md#validation-evidence.
 FROZEN_NODE_NORM = 7.90769880190019154587e-03
 FROZEN_DIAMETER_NORM = 3.56475439539378179121e-03
 
