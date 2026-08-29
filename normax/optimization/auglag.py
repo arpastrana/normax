@@ -255,7 +255,7 @@ def measure_violation(
     return violation, rows
 
 
-def descend_augmented_lagrangian(
+def optimize_augmented_lagrangian(
     maps: ConstrainedMaps,
     start: Float[np.ndarray, "variables"],
     boxes: list[tuple[float | None, float | None]],

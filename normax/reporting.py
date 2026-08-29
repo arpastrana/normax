@@ -21,7 +21,7 @@ from normax.design import DesignProblem
 from normax.design import ProblemRecord
 from normax.design import compute_compliance
 from normax.design import compute_mass
-from normax.design import weigh_design
+from normax.design import compute_mass_problem
 from normax.optimization import OptimizationSolution
 
 # Spaces of indentation given to anything printed under a heading.
@@ -263,9 +263,9 @@ def name_objective(problem: DesignProblem) -> str:
     search printed under `mass [t]` reports a real number against the wrong
     name, which is worse than printing no name at all.
     """
-    if problem.objective is weigh_design:
+    if problem.objective is compute_mass_problem:
         return "mass [t]"
-    if getattr(problem.objective, "__name__", "") == "strain_design":
+    if getattr(problem.objective, "__name__", "") == "compute_compliance_problem":
         return "compliance [N mm]"
 
     return "objective"

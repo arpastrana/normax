@@ -301,8 +301,8 @@ The expensive half, and the reason this is one job rather than two.
   `_check_scalar:151`, `_solve_scalar:189`, `_solve_batch:240`, `_check_batch:268`,
   `_callback_solve:299`, `_callback_check:329`, `sized_diameter:362`,
   `_traced_partials:423`, `_sized_jvp:466`, `checked_utilization:491`,
-  `_checked_jvp:531`. `HostCatalog:68` gains a shear coefficient; `CheckPartials:401`
-  gains a partial; both JVP rules gain a term.
+  `_checked_jvp:531`. `SectionCoefficients:57` gains a shear coefficient;
+  `CheckPartials:401` gains a partial; both JVP rules gain a term.
 - **The bracket is the trap.** `_solve_scalar:225-226` brackets by putting one term
   at exactly 1 and each term at ≤ ½. Because `A_v = (2/π)A ∝ d²`, a shear term read
   as a *linear sum* folds into the axial power and the closed-form cubic root
@@ -319,8 +319,8 @@ The expensive half, and the reason this is one job rather than two.
   payload literally, twice.
 - Tests that break and must be extended, not deleted: `:284` (cubic root), `:642`
   (hardcodes the slope literal), `:673` (ec3-vs-blueprint agreement at `rtol=1e-7`
-  — this is the one that forces both sizers to move together), `:703` (host
-  coefficients pinned to the catalog).
+  — this is the one that forces both sizers to move together), `:703`
+  (coefficients pinned to the catalog).
 
 ### 4. Torsion — recommend declining, in writing
 

@@ -72,13 +72,13 @@ from normax.sections import TubeCatalog
 from normax.sizing import MemberSizes
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
-from normax.sizing.blueprint import HostActions
-from normax.sizing.blueprint import HostCatalog
+from normax.sizing.blueprint import MemberActions
+from normax.sizing.blueprint import SectionCoefficients
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import _check_partials
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
-from normax.sizing.blueprint import coerce_section_catalog
+from normax.sizing.blueprint import coerce_section_coefficients
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 from normax.sizing.contract import AbstractMemberSizer
@@ -260,25 +260,25 @@ def central_difference(function: Callable[[float], float], x: float, step: float
 # around it, which the package shed when the sizer moved across the boundary.
 
 
-def call_host_sizer(host, axial, end_major, end_minor):
+def call_host_sizer(coefficients, axial, end_major, end_minor):
     """
     Run Blueprints on the host and return the sizes it demands.
     """
-    actions = HostActions(
+    actions = MemberActions(
         np.asarray(axial), np.asarray(end_major), np.asarray(end_minor)
     )
-    sized = size_members(actions, host)
+    sized = size_members(actions, coefficients)
 
     return np.asarray(sized.diameter), np.asarray(sized.utilization)
 
 
-def build_sized_call(host: HostCatalog) -> Callable:
+def build_sized_call(coefficients: SectionCoefficients) -> Callable:
     """
     A traceable sizing map over one host catalog, differentiated by hand.
 
     Parameters
     ----------
-    host :
+    coefficients :
         The wall proportion, grade and floor the check is read at.
 
     Returns
@@ -296,7 +296,7 @@ def build_sized_call(host: HostCatalog) -> Callable:
             jax.ShapeDtypeStruct(axial.shape, axial.dtype),
             jax.ShapeDtypeStruct(axial.shape, axial.dtype),
         )
-        call = partial(call_host_sizer, host)
+        call = partial(call_host_sizer, coefficients)
 
         return jax.pure_callback(call, shapes, axial, end_major, end_minor)
 
@@ -306,10 +306,10 @@ def build_sized_call(host: HostCatalog) -> Callable:
     def backward(residual, cotangent):
         axial, end_major, end_minor = residual
         seeded = SizeCotangents(np.asarray(cotangent[0]), np.asarray(cotangent[1]))
-        actions = HostActions(
+        actions = MemberActions(
             np.asarray(axial), np.asarray(end_major), np.asarray(end_minor)
         )
-        pulled = size_cotangents(actions, host, seeded)
+        pulled = size_cotangents(actions, coefficients, seeded)
 
         return (
             jnp.asarray(pulled.axial),
@@ -322,26 +322,26 @@ def build_sized_call(host: HostCatalog) -> Callable:
     return sized
 
 
-def call_host_check(host, diameters, axial, end_major, end_minor):
+def call_host_check(coefficients, diameters, axial, end_major, end_minor):
     """
     Run Blueprints' held check on the host and return the utilization.
     """
     axial = np.asarray(axial)
-    actions = HostActions(axial, np.asarray(end_major), np.asarray(end_minor))
+    actions = MemberActions(axial, np.asarray(end_major), np.asarray(end_minor))
     # One size per member is checked in every case, so the held sizes carry the
     # load case axis the check reports against.
     held = np.broadcast_to(np.asarray(diameters), axial.shape)
 
-    return np.asarray(check_members(held, actions, host))
+    return np.asarray(check_members(held, actions, coefficients))
 
 
-def build_held_call(host: HostCatalog) -> Callable:
+def build_held_call(coefficients: SectionCoefficients) -> Callable:
     """
     A traceable held check over one host catalog, differentiated by hand.
 
     Parameters
     ----------
-    host :
+    coefficients :
         The wall proportion, grade and floor the check is read at.
 
     Returns
@@ -356,7 +356,7 @@ def build_held_call(host: HostCatalog) -> Callable:
 
     def primal(diameters, axial, end_major, end_minor):
         shape = jax.ShapeDtypeStruct(axial.shape, axial.dtype)
-        call = partial(call_host_check, host)
+        call = partial(call_host_check, coefficients)
 
         return jax.pure_callback(call, shape, diameters, axial, end_major, end_minor)
 
@@ -367,12 +367,12 @@ def build_held_call(host: HostCatalog) -> Callable:
 
     def backward(residual, cotangent):
         diameters, axial, end_major, end_minor = residual
-        actions = HostActions(
+        actions = MemberActions(
             np.asarray(axial), np.asarray(end_major), np.asarray(end_minor)
         )
         axial_host = np.asarray(axial)
         held = np.broadcast_to(np.asarray(diameters), axial_host.shape)
-        pulled = check_cotangents(held, actions, host, np.asarray(cotangent))
+        pulled = check_cotangents(held, actions, coefficients, np.asarray(cotangent))
         by_size = jnp.asarray(pulled.diameter_held)
         if by_size.ndim > jnp.ndim(diameters):
             by_size = jnp.sum(by_size, axis=0)
@@ -408,7 +408,7 @@ class CallbackSizer(AbstractMemberSizer):
 
     structure: Structure
     catalog: TubeCatalog
-    host: HostCatalog = eqx.field(static=True)
+    coefficients: SectionCoefficients = eqx.field(static=True)
     sized: Callable = eqx.field(static=True)
     held: Callable = eqx.field(static=True)
 
@@ -418,9 +418,11 @@ class CallbackSizer(AbstractMemberSizer):
         """
         self.structure = structure
         self.catalog = catalog
-        self.host = coerce_section_catalog(float(catalog.ratio), catalog.material.f_y)
-        self.sized = build_sized_call(self.host)
-        self.held = build_held_call(self.host)
+        self.coefficients = coerce_section_coefficients(
+            float(catalog.ratio), catalog.material.f_y
+        )
+        self.sized = build_sized_call(self.coefficients)
+        self.held = build_held_call(self.coefficients)
 
     def __call__(self, forces, buckling_length) -> MemberSizes:
         """
@@ -442,12 +444,12 @@ class CallbackSizer(AbstractMemberSizer):
         )
 
 
-def call_host_partials(host, diameter, axial, moment):
+def call_host_partials(coefficients, diameter, axial, moment):
     """
     The check's closed-form partials at one solved size, on the host.
     """
     partials = _check_partials(
-        np.asarray(diameter), np.asarray(axial), np.asarray(moment), host
+        np.asarray(diameter), np.asarray(axial), np.asarray(moment), coefficients
     )
 
     return (
@@ -457,13 +459,13 @@ def call_host_partials(host, diameter, axial, moment):
     )
 
 
-def build_member_call(host: HostCatalog) -> Callable:
+def build_member_call(coefficients: SectionCoefficients) -> Callable:
     """
     One member's fully-stressed diameter, with a forward tangent rule.
 
     Parameters
     ----------
-    host :
+    coefficients :
         The wall proportion, grade and floor the check is read at.
 
     Returns
@@ -484,7 +486,7 @@ def build_member_call(host: HostCatalog) -> Callable:
         shape = jax.ShapeDtypeStruct(jnp.shape(axial), jnp.result_type(float))
         ends = jnp.stack([moment, moment], axis=-1)
         zeros = jnp.zeros_like(ends)
-        call = partial(call_host_sizer, host)
+        call = partial(call_host_sizer, coefficients)
         diameter, _ = jax.pure_callback(call, (shape, shape), axial, ends, zeros)
 
         return diameter
@@ -496,7 +498,7 @@ def build_member_call(host: HostCatalog) -> Callable:
         diameter = size_one(axial, moment)
 
         shape = jax.ShapeDtypeStruct(jnp.shape(axial), jnp.result_type(float))
-        call = partial(call_host_partials, host)
+        call = partial(call_host_partials, coefficients)
         slope, by_axial, by_moment = jax.pure_callback(
             call, (shape, shape, shape), diameter, axial, moment
         )
@@ -508,7 +510,7 @@ def build_member_call(host: HostCatalog) -> Callable:
 
 
 # The check the single-member claims are read through, on the host.
-HOST_CATALOG = coerce_section_catalog(RATIO, YIELD_STRENGTH)
+HOST_CATALOG = coerce_section_coefficients(RATIO, YIELD_STRENGTH)
 
 # The same check, traceable: the single-member claims differentiate through it.
 SIZED_CALL = build_member_call(HOST_CATALOG)
@@ -540,7 +542,7 @@ def closed_derivatives(case: MemberCase) -> tuple[float, float]:
     `dd/db = 1 / (3 d^2 - a)` — a derivation that never states the check's
     utilization, and so shares no algebra with the implicit rule it judges.
     """
-    catalog = coerce_section_catalog(RATIO, YIELD_STRENGTH)
+    catalog = coerce_section_coefficients(RATIO, YIELD_STRENGTH)
     demand_axial = (
         abs(case.axial_force) * GAMMA_M0 / (catalog.area_coefficient * catalog.f_y)
     )

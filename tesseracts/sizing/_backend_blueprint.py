@@ -14,22 +14,22 @@ from typing import Any
 import numpy as np
 
 from normax.sizing.blueprint import ActionCotangents
-from normax.sizing.blueprint import HostActions
-from normax.sizing.blueprint import HostCatalog
+from normax.sizing.blueprint import MemberActions
+from normax.sizing.blueprint import SectionCoefficients
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
 from normax.sizing.blueprint import coerce_member_actions
-from normax.sizing.blueprint import coerce_section_catalog
+from normax.sizing.blueprint import coerce_section_coefficients
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 
 
-def _read_catalog(inputs: dict[str, Any]) -> HostCatalog:
+def _read_catalog(inputs: dict[str, Any]) -> SectionCoefficients:
     """
     The section catalog the flat schema scalars describe.
     """
-    return coerce_section_catalog(
+    return coerce_section_coefficients(
         float(inputs["ratio"]),
         float(inputs["f_y"]),
         float(inputs["gamma_m0"]),
@@ -37,7 +37,7 @@ def _read_catalog(inputs: dict[str, Any]) -> HostCatalog:
     )
 
 
-def _read_actions(inputs: dict[str, Any]) -> HostActions:
+def _read_actions(inputs: dict[str, Any]) -> MemberActions:
     """
     The member actions the schema arrays describe.
     """

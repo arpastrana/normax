@@ -33,7 +33,7 @@ from normax.optimization import ConstrainedMaps
 from normax.optimization import OptimizationBudget
 from normax.optimization import OptimizationSolution
 from normax.optimization import compute_penalty
-from normax.optimization import descend_augmented_lagrangian
+from normax.optimization import optimize_augmented_lagrangian
 from normax.sections import MemberSections
 from normax.sections import TubeCatalog
 from normax.sizing import AbstractMemberSizer
@@ -361,7 +361,7 @@ class DesignConstraints(NamedTuple):
     bounds: tuple[float, float] | None
 
 
-def weigh_design(
+def compute_mass_problem(
     problem: "DesignProblem",
     params: DesignParameters,
 ) -> Float[Array, ""]:
@@ -422,7 +422,7 @@ def build_compliance_objective(
     compliance search either freezes them or bounds the mass itself.
     """
 
-    def strain_design(
+    def compute_compliance_problem(
         problem: "DesignProblem",
         params: DesignParameters,
     ) -> Float[Array, ""]:
@@ -457,7 +457,7 @@ def build_compliance_objective(
 
         return compute_member_compliance(sections, forces, shape.lengths)
 
-    return strain_design
+    return compute_compliance_problem
 
 
 class DesignProblem(NamedTuple):
@@ -479,7 +479,7 @@ class DesignProblem(NamedTuple):
         None to size every member on its own.
     objective :
         What the descent minimizes, called with this problem and a set of
-        parameters. `weigh_design` is the mass the package ships and the
+        parameters. `compute_mass_problem` is the mass the package ships and the
         default; `build_compliance_objective` returns the compliance a pipeline
         cut after its analysis answers instead.
 
@@ -501,7 +501,7 @@ class DesignProblem(NamedTuple):
     constraints: DesignConstraints
     section_groups: Float[np.ndarray, "members groups"] | None = None
     objective: Callable[["DesignProblem", DesignParameters], Float[Array, ""]] = (
-        weigh_design
+        compute_mass_problem
     )
 
 
@@ -796,18 +796,18 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
     return maps
 
 
-def optimize_design(
+def solve_problem(
     problem: DesignProblem,
     start: Float[np.ndarray, "variables"],
     budget: OptimizationBudget,
 ) -> OptimizationSolution:
     """
-    Descend the mass under the check and the constraints, from a start.
+    Descend the problem's objective under the check and the constraints.
 
     Parameters
     ----------
     problem :
-        The problem to descend.
+        The problem to descend, read for its objective and its constraints.
     start :
         The variable vector to leave from.
     budget :
@@ -816,12 +816,18 @@ def optimize_design(
     Returns
     -------
     solution :
-        The parameters, the mass and violation of every round, and how it ended.
+        The parameters it stopped on, the objective and violation of every
+        round, and how it ended.
+
+    Notes
+    -----
+    The parameters come back rather than a design: `create_design` is what
+    turns them into one, at the start and at the answer alike.
     """
     maps = design_maps(problem)
     boxes = bound_variables(problem)
 
-    return descend_augmented_lagrangian(maps, start, boxes, budget)
+    return optimize_augmented_lagrangian(maps, start, boxes, budget)
 
 
 def envelope_diameters(

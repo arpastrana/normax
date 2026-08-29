@@ -2,6 +2,104 @@
 
 ## Unreleased
 
+### The search and its objectives are named for the problem they take
+
+Renamed 2026-08-29. `optimize_design` took no `Design` and returned none: it
+takes a problem, a variable vector and a budget, and hands back an
+`OptimizationSolution`. In all four examples it sat between two `create_design`
+calls and returned neither of them, so the name promised the line below it. The
+objective slot's two callables carried the same mismatch -- both are
+`(problem, params)` and neither has ever seen a `Design` -- and they fill one
+slot, so renaming either without the other would have split it.
+
+| was | is |
+|---|---|
+| `optimize_design` | `solve_problem` |
+| `weigh_design` | `compute_mass_problem` |
+| `strain_design` | `compute_compliance_problem` |
+| `descend_augmented_lagrangian` | `optimize_augmented_lagrangian` |
+
+**`_problem` is now the marker for a function called with a `DesignProblem`
+and a set of parameters**, which closes two columns that read the same way at
+all three levels:
+
+| level | mass | energy |
+|---|---|---|
+| core arithmetic | `compute_member_mass` | `compute_member_compliance` |
+| on a built `Design` | `compute_mass` | `compute_compliance` |
+| on a problem | `compute_mass_problem` | `compute_compliance_problem` |
+
+The energy column says "compliance" rather than "strain energy" because that is
+already the word in `build_compliance_objective`, in the `compliance [N mm]`
+heading and in every docstring: the builder and the thing it builds sit 26
+lines apart and would otherwise disagree about what they compute.
+
+**The two verbs now sit at different levels instead of repeating.**
+`solve_problem` says what is wanted and `optimize_augmented_lagrangian` says
+how it is got, where the design layer and the method layer previously both said
+`optimize` or both said `descend`. The examples read as one straight line --
+`initialize_optimization_parameters`, `solve_problem`, `create_design` at each
+end -- and "design" appears only where a `Design` is made.
+
+**The trap was a string, not an identifier.** `reporting.py:268` picks the
+objective column's heading by comparing `problem.objective.__name__` against a
+literal, the compliance objective being a closure with no importable identity
+to compare against. An identifier-only rename leaves that literal behind and a
+compliance search then prints its number under `objective` instead of
+`compliance [N mm]` -- a wrong heading, not a crash, on a path no test covers.
+Verified by hand after each pass: the closure's `__name__` and the literal
+agree.
+
+**One stale summary went with it.** `solve_problem` opened with "Descend the
+mass under the check and the constraints", which stopped being true when the
+objective became a slot -- a compliance search descends strain energy. It now
+names the problem's objective, and says that parameters come back rather than a
+design.
+
+### The host prefix goes, and the containers say what they hold
+
+Renamed 2026-08-29. `Host` was a contrast prefix: it separated the concrete
+mirror of a container from a traced sibling living in the same module, back
+when `sizing/blueprint.py` still wrapped Blueprints in `jax.pure_callback`.
+That sibling has been gone since the condensation -- the module is host NumPy
+with nothing traced in it -- so the prefix marked a distinction the file no
+longer draws. Each container is now named for what it holds.
+
+| was | is |
+|---|---|
+| `HostCatalog` | `SectionCoefficients` |
+| `HostActions` | `MemberActions` |
+| `HeldCotangents` | `CheckCotangents` |
+| `coerce_section_catalog` | `coerce_section_coefficients` |
+
+`SectionCoefficients` still has to be told apart from `TubeCatalog`, whose
+ratio and material can both hold tracers. It is told apart by content instead
+of by location: the container is a catalog collapsed to two proportionality
+constants beside three scalars, which is what its own Returns section already
+said. `CheckCotangents` pairs with `CheckPartials` and names the rule it
+belongs to, the held check, against `size_cotangents`' implicit one.
+`coerce_member_actions` needed no change once its container matched it, and
+both converters now name what they return.
+
+**`Concrete*` was considered and rejected** -- it is the exact JAX antonym of
+traced, and in a steel repo it reads as a material.
+
+**The word stays where it means the boundary.** The module docstring's "the
+host half of the boundary" and "one host loop", the in-process route label in
+`validation/strut_gradients.py`, and the bit-for-bit test names in
+`test_tesseract_sizer.py` all describe where code runs rather than what a
+container holds. What went with the rename is the repeated parameter line "the
+section catalog reduced to its host coefficients", nine times, where the word
+was doing nothing.
+
+Two judgment calls. The parameter is still spelled `catalog` across the
+module's fifteen signatures, because `coefficients.area_coefficient` stutters
+and "the catalog, reduced" still reads true. And after this,
+`validation/strut_gradients.py` uses `host` in exactly one sense -- the
+in-process route, against the crossed one -- where before its
+`build_host_actions` meant the other thing three lines from a `host` that did
+not.
+
 ### The record and the optimizer's solution are renamed, and the examples share one shape
 
 Renamed 2026-08-29, five names, mechanically across 20 files but checked site by

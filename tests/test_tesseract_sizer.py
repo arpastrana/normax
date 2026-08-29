@@ -24,7 +24,7 @@ from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import check_cotangents
 from normax.sizing.blueprint import check_members
 from normax.sizing.blueprint import coerce_member_actions
-from normax.sizing.blueprint import coerce_section_catalog
+from normax.sizing.blueprint import coerce_section_coefficients
 from normax.sizing.blueprint import size_cotangents
 from normax.sizing.blueprint import size_members
 from normax.structures import build_arch_2d
@@ -90,8 +90,8 @@ def catalog():
 
 
 @pytest.fixture(scope="module")
-def host():
-    return coerce_section_catalog(RATIO, YIELD_SAMPLE)
+def coefficients():
+    return coerce_section_coefficients(RATIO, YIELD_SAMPLE)
 
 
 @pytest.fixture(scope="module")
@@ -222,9 +222,9 @@ def test_central_differences_are_the_oracle(remote):
             )
 
 
-def test_the_cubic_root_agrees_with_the_bisection(host, actions):
+def test_the_cubic_root_agrees_with_the_bisection(coefficients, actions):
     # U(d) = 1 is the depressed cubic d^3 - a d - b = 0 with one positive root.
-    diameter = size_members(actions, host).diameter
+    diameter = size_members(actions, coefficients).diameter
     # The demand is the larger end moment's magnitude, per eq. (6.42) read on a
     # section that bends the same way about every axis.
     per_end = jnp.sqrt(END_MAJOR**2 + END_MINOR**2)
@@ -232,10 +232,10 @@ def test_the_cubic_root_agrees_with_the_bisection(host, actions):
     for load_case in range(2):
         for member in range(NUM_EDGES):
             demand_axial = float(jnp.abs(AXIAL[load_case, member])) / (
-                host.area_coefficient * YIELD_SAMPLE
+                coefficients.area_coefficient * YIELD_SAMPLE
             )
             demand_moment = float(moment[load_case, member]) / (
-                host.modulus_coefficient * YIELD_SAMPLE
+                coefficients.modulus_coefficient * YIELD_SAMPLE
             )
             cubic = np.roots([1.0, 0.0, -demand_axial, -demand_moment])
             positive = cubic[np.isreal(cubic) & (cubic.real > 0.0)].real
@@ -250,15 +250,15 @@ def test_the_cubic_root_agrees_with_the_bisection(host, actions):
             )
 
 
-def test_tension_and_compression_size_alike(host):
+def test_tension_and_compression_size_alike(coefficients):
     magnitude = np.abs(np.asarray(AXIAL))
     ends_major = np.asarray(END_MAJOR)
     ends_minor = np.asarray(END_MINOR)
     pulled = size_members(
-        coerce_member_actions(magnitude, ends_major, ends_minor), host
+        coerce_member_actions(magnitude, ends_major, ends_minor), coefficients
     )
     pushed = size_members(
-        coerce_member_actions(-magnitude, ends_major, ends_minor), host
+        coerce_member_actions(-magnitude, ends_major, ends_minor), coefficients
     )
 
     assert np.array_equal(pulled.diameter, pushed.diameter)
@@ -302,24 +302,28 @@ def test_the_gradient_survives_jit(remote, forces):
     assert np.array_equal(np.asarray(eager), np.asarray(compiled))
 
 
-def test_the_crossed_sizes_are_the_host_ones_bit_for_bit(host, actions, remote, forces):
-    hosted = size_members(actions, host)
+def test_the_crossed_sizes_are_the_host_ones_bit_for_bit(
+    coefficients, actions, remote, forces
+):
+    hosted = size_members(actions, coefficients)
     crossed = remote(forces, LENGTHS)
 
     assert np.array_equal(np.asarray(crossed.sections.diameter), hosted.diameter)
     assert np.array_equal(np.asarray(crossed.utilization), hosted.utilization)
 
 
-def test_the_crossed_check_is_the_host_one_bit_for_bit(host, actions, remote, forces):
+def test_the_crossed_check_is_the_host_one_bit_for_bit(
+    coefficients, actions, remote, forces
+):
     spread = np.broadcast_to(np.asarray(HELD), np.shape(actions.axial))
-    hosted = check_members(spread, actions, host)
+    hosted = check_members(spread, actions, coefficients)
     crossed = remote.compute_utilization(HELD, forces, LENGTHS)
 
     assert np.array_equal(np.asarray(crossed), hosted)
 
 
 def test_the_crossed_gradients_are_the_host_ones_bit_for_bit(
-    host, actions, remote, forces
+    coefficients, actions, remote, forces
 ):
     # The crossed pullback delegates to the host cotangent functions, so the
     # boundary changes nothing about the derivative, not even its last bit.
@@ -333,9 +337,9 @@ def test_the_crossed_gradients_are_the_host_ones_bit_for_bit(
         return jnp.sum(weights * remote(carried, LENGTHS).sections.diameter)
 
     spread = np.broadcast_to(np.asarray(HELD), np.shape(actions.axial))
-    hosted_held = check_cotangents(spread, actions, host, seeds)
+    hosted_held = check_cotangents(spread, actions, coefficients, seeds)
     sized_seed = SizeCotangents(seeds, np.zeros_like(seeds))
-    hosted_sized = size_cotangents(actions, host, sized_seed)
+    hosted_sized = size_cotangents(actions, coefficients, sized_seed)
 
     crossed_held = jax.grad(held_total)(HELD)
     crossed_sized = jax.grad(sized_total)(forces)
@@ -446,20 +450,20 @@ def test_a_second_ec3_route_agrees_when_buckling_is_silenced(remote):
     )
 
 
-def test_the_host_coefficients_match_the_sections(catalog):
+def test_the_coefficients_match_the_sections(catalog):
     unit = catalog(1.0)
-    host = coerce_section_catalog(RATIO, YIELD_SAMPLE)
+    coefficients = coerce_section_coefficients(RATIO, YIELD_SAMPLE)
 
-    assert float(unit.area) == host.area_coefficient
+    assert float(unit.area) == coefficients.area_coefficient
     assert float(2.0 * unit.second_moment) == pytest.approx(
-        host.modulus_coefficient, rel=1e-15
+        coefficients.modulus_coefficient, rel=1e-15
     )
 
 
 def test_the_private_evaluator_is_the_public_clause():
     # The bisection runs through Blueprints' `_evaluate`; if a release moves
     # it, this fails here rather than silently changing every size.
-    host = coerce_section_catalog(RATIO, YIELD_SAMPLE)
+    coefficients = coerce_section_coefficients(RATIO, YIELD_SAMPLE)
     generator = np.random.default_rng(20260825)
 
     assert blueprint_module.EVALUATOR_REACHED
@@ -467,7 +471,11 @@ def test_the_private_evaluator_is_the_public_clause():
         diameter = float(generator.uniform(30.0, 900.0))
         axial = float(generator.uniform(-6.0e5, 6.0e5))
         moment = float(generator.uniform(0.0, 3.0e7))
-        through_class = blueprint_module._check_scalar(diameter, axial, moment, host)
-        through_evaluate = blueprint_module._probe_scalar(diameter, axial, moment, host)
+        through_class = blueprint_module._check_scalar(
+            diameter, axial, moment, coefficients
+        )
+        through_evaluate = blueprint_module._probe_scalar(
+            diameter, axial, moment, coefficients
+        )
 
         assert through_evaluate == pytest.approx(through_class, rel=1e-15, abs=0.0)

@@ -51,10 +51,10 @@ from normax.sections import build_section_catalog
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.sizing.blueprint import GAMMA_M0
 from normax.sizing.blueprint import ActionCotangents
-from normax.sizing.blueprint import HostActions
+from normax.sizing.blueprint import MemberActions
 from normax.sizing.blueprint import SizeCotangents
 from normax.sizing.blueprint import coerce_member_actions
-from normax.sizing.blueprint import coerce_section_catalog
+from normax.sizing.blueprint import coerce_section_coefficients
 from normax.sizing.blueprint import size_cotangents
 from normax.structures import Structure
 from normax.tesseract import TesseractSizer
@@ -65,7 +65,7 @@ SECTION_CLASS = 3
 CATALOG = build_section_catalog(Steel355(), SECTION_CLASS)
 RATIO = float(CATALOG.ratio)
 YIELD_STRENGTH = float(CATALOG.material.f_y)
-HOST = coerce_section_catalog(RATIO, YIELD_STRENGTH)
+HOST = coerce_section_coefficients(RATIO, YIELD_STRENGTH)
 
 # The CHS properties of the project notes, written out rather than read off HOST.
 AREA_COEFFICIENT = math.pi * (RATIO - 1.0) / RATIO**2
@@ -270,7 +270,7 @@ def build_strut_forces(
     return MemberForces(axial, major, minor)
 
 
-def build_host_actions(case: StrutCase) -> HostActions:
+def build_member_actions(case: StrutCase) -> MemberActions:
     """
     The same actions as the host check reads them, contiguous float64.
     """
@@ -325,7 +325,7 @@ def pull_host(case: StrutCase, on_utilization: bool) -> ActionCotangents:
     pulled :
         Cotangent on the axial force and on both end-moment arrays.
     """
-    actions = build_host_actions(case)
+    actions = build_member_actions(case)
     live = np.ones((1, 1))
     quiet = np.zeros((1, 1))
     if on_utilization:

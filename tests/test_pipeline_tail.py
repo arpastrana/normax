@@ -15,10 +15,10 @@ from normax.design import StructuralDesignPipeline
 from normax.design import build_compliance_objective
 from normax.design import compute_compliance
 from normax.design import compute_mass
+from normax.design import compute_mass_problem
 from normax.design import design_maps
 from normax.design import evaluate_constraints
 from normax.design import expand_variables
-from normax.design import weigh_design
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import create_load_uniform
@@ -172,10 +172,10 @@ def build_problem(structure, catalog, loads, blocks, objective=None):
 def test_the_objective_slot_defaults_to_the_mass(structure, catalog, loads, params):
     problem = build_problem(structure, catalog, loads, 3)
 
-    assert problem.objective is weigh_design
+    assert problem.objective is compute_mass_problem
 
     design = problem.pipeline(params, loads)
-    weighed = float(weigh_design(problem, params))
+    weighed = float(compute_mass_problem(problem, params))
     assert weighed == pytest.approx(float(compute_mass(design)), rel=1e-12)
 
 
@@ -228,7 +228,7 @@ def test_the_mass_objective_refuses_a_pipeline_with_no_check(
     problem = build_problem(structure, catalog, loads, 2)
 
     with pytest.raises(ValueError, match="no check"):
-        weigh_design(problem, params)
+        compute_mass_problem(problem, params)
 
 
 def test_the_compliance_gradient_survives_a_finite_difference_check(

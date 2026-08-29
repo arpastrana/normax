@@ -113,7 +113,7 @@ planar solver for the space-frame one is a different word in the config and
 nothing else. The design that comes back also carries
 `design.sizes.utilization`, how hard EN 1993-1-1 works every member under every
 load case, which is exactly a constraint function —
-the augmented Lagrangian in `normax.design.optimize_design` holds
+the augmented Lagrangian in `normax.design.solve_problem` holds
 `utilization <= 1` with it while shape and sections move together.
 `examples/arch.py` is the whole project in one file; the other three examples
 share its shape and add a held-plan subspace, symmetry folding and sign

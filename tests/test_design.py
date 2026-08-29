@@ -21,8 +21,8 @@ from normax.design import expand_shape_coefficients
 from normax.design import expand_variables
 from normax.design import fold_variables
 from normax.design import initialize_optimization_parameters
-from normax.design import optimize_design
 from normax.design import read_shape_coefficients
+from normax.design import solve_problem
 from normax.design import unfold_diameters
 from normax.form_finding import FdmFormFinder
 from normax.form_finding import build_equilibrium_graph
@@ -522,7 +522,7 @@ def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_den
         violation_tol=1e-3,
         objective_rtol=1e-8,
     )
-    answer = optimize_design(problem, start, budget)
+    answer = solve_problem(problem, start, budget)
     landed = compute_mass(create_design(problem, answer.parameters))
 
     assert answer.objectives.shape == answer.violations.shape

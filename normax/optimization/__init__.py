@@ -12,8 +12,8 @@ from normax.optimization.auglag import ConstrainedMaps
 from normax.optimization.auglag import OptimizationBudget
 from normax.optimization.auglag import OptimizationSolution
 from normax.optimization.auglag import compute_penalty
-from normax.optimization.auglag import descend_augmented_lagrangian
 from normax.optimization.auglag import measure_violation
+from normax.optimization.auglag import optimize_augmented_lagrangian
 from normax.optimization.auglag import recoil_point_to_last_good
 from normax.optimization.auglag import update_multipliers
 
@@ -22,8 +22,8 @@ __all__ = [
     "OptimizationSolution",
     "OptimizationBudget",
     "compute_penalty",
-    "descend_augmented_lagrangian",
     "measure_violation",
+    "optimize_augmented_lagrangian",
     "recoil_point_to_last_good",
     "update_multipliers",
 ]

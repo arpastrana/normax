@@ -54,9 +54,9 @@ PROBE_YIELD = 355.0
 PROBE_FACTOR = 1.0
 
 
-class HostCatalog(NamedTuple):
+class SectionCoefficients(NamedTuple):
     """
-    A section catalog as the host check reads it: concrete numbers only.
+    A section catalog as the check reads it: two coefficients and three constants.
 
     Attributes
     ----------
@@ -79,12 +79,12 @@ class HostCatalog(NamedTuple):
     diameter_min: float
 
 
-def coerce_section_catalog(
+def coerce_section_coefficients(
     ratio: float,
     f_y: float,
     gamma_m0: float = GAMMA_M0,
     diameter_min: float = DIAMETER_MINIMUM,
-) -> HostCatalog:
+) -> SectionCoefficients:
     """
     Reduce a section catalog to the coefficients the scalar check reads.
 
@@ -126,7 +126,7 @@ def coerce_section_catalog(
     second_moment = (math.pi / 64.0) * (1.0 - bore**4)
     modulus_coefficient = 2.0 * second_moment
 
-    return HostCatalog(
+    return SectionCoefficients(
         area_coefficient,
         modulus_coefficient,
         float(f_y),
@@ -164,7 +164,7 @@ def snapshot_catalog(catalog: TubeCatalog) -> tuple[float, float]:
     """
     ratio = float(catalog.ratio)
     f_y = float(catalog.material.f_y)
-    coerce_section_catalog(ratio, f_y)
+    coerce_section_coefficients(ratio, f_y)
 
     return ratio, f_y
 
@@ -173,7 +173,7 @@ def _check_scalar(
     diameter: float,
     axial: float,
     moment: float,
-    catalog: HostCatalog,
+    catalog: SectionCoefficients,
 ) -> float:
     """
     One member's utilization at one diameter, through Blueprints' classes.
@@ -187,7 +187,7 @@ def _check_scalar(
     moment :
         Demand moment the member carries, non-negative.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
 
     Returns
     -------
@@ -257,7 +257,7 @@ def _probe_scalar(
     diameter: float,
     axial: float,
     moment: float,
-    catalog: HostCatalog,
+    catalog: SectionCoefficients,
 ) -> float:
     """
     The same utilization, evaluated without building the clause objects.
@@ -271,7 +271,7 @@ def _probe_scalar(
     moment :
         Demand moment the member carries, non-negative.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
 
     Returns
     -------
@@ -296,7 +296,7 @@ def _probe_scalar(
     return abs(axial) / squashing + moment / bending
 
 
-def _demand_scales(catalog: HostCatalog) -> tuple[float, float]:
+def _demand_scales(catalog: SectionCoefficients) -> tuple[float, float]:
     """
     The factors turning a force and a moment into diameter-unit demands.
     """
@@ -306,7 +306,7 @@ def _demand_scales(catalog: HostCatalog) -> tuple[float, float]:
     return scale_axial, scale_moment
 
 
-def _solve_scalar(axial: float, moment: float, catalog: HostCatalog) -> float:
+def _solve_scalar(axial: float, moment: float, catalog: SectionCoefficients) -> float:
     """
     The diameter one member's check is exactly satisfied at.
 
@@ -317,7 +317,7 @@ def _solve_scalar(axial: float, moment: float, catalog: HostCatalog) -> float:
     moment :
         Demand moment the member carries, non-negative.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
 
     Returns
     -------
@@ -358,7 +358,7 @@ def _solve_scalar(axial: float, moment: float, catalog: HostCatalog) -> float:
 def _solve_batch(
     axial: Float[np.ndarray, "*load_cases members"],
     moment: Float[np.ndarray, "*load_cases members"],
-    catalog: HostCatalog,
+    catalog: SectionCoefficients,
 ) -> Float[np.ndarray, "*load_cases members"]:
     """
     Every member's exactly-satisfied diameter, one host loop.
@@ -373,7 +373,7 @@ def _check_batch(
     diameter: Float[np.ndarray, "*load_cases members"],
     axial: Float[np.ndarray, "*load_cases members"],
     moment: Float[np.ndarray, "*load_cases members"],
-    catalog: HostCatalog,
+    catalog: SectionCoefficients,
 ) -> Float[np.ndarray, "*load_cases members"]:
     """
     Every member's utilization at a given diameter, one host loop.
@@ -384,9 +384,9 @@ def _check_batch(
     return np.asarray(used, dtype=np.float64).reshape(diameter.shape)
 
 
-class HostActions(NamedTuple):
+class MemberActions(NamedTuple):
     """
-    What every member carries under one or more load cases, on the host.
+    What every member carries under one or more load cases, as plain arrays.
 
     Attributes
     ----------
@@ -407,11 +407,11 @@ def coerce_member_actions(
     axial: Float[np.ndarray, "*load_cases members"],
     end_major: Float[np.ndarray, "*load_cases members ends"],
     end_minor: Float[np.ndarray, "*load_cases members ends"],
-) -> HostActions:
+) -> MemberActions:
     """
     Bring three arrays of any provenance to the host as contiguous float64.
     """
-    return HostActions(
+    return MemberActions(
         np.ascontiguousarray(axial, dtype=np.float64),
         np.ascontiguousarray(end_major, dtype=np.float64),
         np.ascontiguousarray(end_minor, dtype=np.float64),
@@ -483,7 +483,7 @@ class DemandMoment(NamedTuple):
     worse: WinningEnd
 
 
-def reduce_moments(actions: HostActions) -> DemandMoment:
+def reduce_moments(actions: MemberActions) -> DemandMoment:
     """
     Reduce two end moments per axis to the one moment this check reads.
 
@@ -531,7 +531,7 @@ class SolvedState(NamedTuple):
     Attributes
     ----------
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
     axial :
         Axial force every member carries, negative in compression.
     demand :
@@ -542,7 +542,7 @@ class SolvedState(NamedTuple):
         The root with the catalog minimum applied.
     """
 
-    catalog: HostCatalog
+    catalog: SectionCoefficients
     axial: Float[np.ndarray, "*load_cases members"]
     demand: DemandMoment
     unclamped: Float[np.ndarray, "*load_cases members"]
@@ -553,7 +553,7 @@ class SolvedState(NamedTuple):
 _SOLVED: dict[bytes, SolvedState] = {}
 
 
-def _solve_fingerprint(actions: HostActions, catalog: HostCatalog) -> bytes:
+def _solve_fingerprint(actions: MemberActions, catalog: SectionCoefficients) -> bytes:
     """
     A digest of everything the bisection reads, by content.
     """
@@ -566,7 +566,7 @@ def _solve_fingerprint(actions: HostActions, catalog: HostCatalog) -> bytes:
     return digest.digest()
 
 
-def solve_state(actions: HostActions, catalog: HostCatalog) -> SolvedState:
+def solve_state(actions: MemberActions, catalog: SectionCoefficients) -> SolvedState:
     """
     The solved state these actions describe, searched for only once.
 
@@ -575,7 +575,7 @@ def solve_state(actions: HostActions, catalog: HostCatalog) -> SolvedState:
     actions :
         What every member carries.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
 
     Returns
     -------
@@ -624,7 +624,7 @@ class SizedMembers(NamedTuple):
     clamped: Bool[np.ndarray, "*load_cases members"]
 
 
-def size_members(actions: HostActions, catalog: HostCatalog) -> SizedMembers:
+def size_members(actions: MemberActions, catalog: SectionCoefficients) -> SizedMembers:
     """
     Size every member to the check, entirely on the host.
 
@@ -633,7 +633,7 @@ def size_members(actions: HostActions, catalog: HostCatalog) -> SizedMembers:
     actions :
         What every member carries.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
 
     Returns
     -------
@@ -650,8 +650,8 @@ def size_members(actions: HostActions, catalog: HostCatalog) -> SizedMembers:
 
 def check_members(
     diameter_held: Float[np.ndarray, "*load_cases members"],
-    actions: HostActions,
-    catalog: HostCatalog,
+    actions: MemberActions,
+    catalog: SectionCoefficients,
 ) -> Float[np.ndarray, "*load_cases members"]:
     """
     Check sizes the caller owns, entirely on the host.
@@ -663,7 +663,7 @@ def check_members(
     actions :
         What every member carries.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
 
     Returns
     -------
@@ -699,7 +699,7 @@ def _check_partials(
     size: Float[np.ndarray, "*load_cases members"],
     axial: Float[np.ndarray, "*load_cases members"],
     moment: Float[np.ndarray, "*load_cases members"],
-    catalog: HostCatalog,
+    catalog: SectionCoefficients,
 ) -> CheckPartials:
     """
     The three partials of `U = a/d^2 + b/d^3`, evaluated at a given size.
@@ -788,8 +788,8 @@ class SizeCotangents(NamedTuple):
 
 
 def size_cotangents(
-    actions: HostActions,
-    catalog: HostCatalog,
+    actions: MemberActions,
+    catalog: SectionCoefficients,
     cotangents: SizeCotangents,
 ) -> ActionCotangents:
     """
@@ -800,7 +800,7 @@ def size_cotangents(
     actions :
         What every member carries.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
     cotangents :
         Cotangent on the diameter and on the utilization.
 
@@ -836,7 +836,7 @@ def size_cotangents(
     return _action_cotangents(axial, moment, demand)
 
 
-class HeldCotangents(NamedTuple):
+class CheckCotangents(NamedTuple):
     """
     A cotangent on the held check pulled back to everything it reads.
 
@@ -854,10 +854,10 @@ class HeldCotangents(NamedTuple):
 
 def check_cotangents(
     diameter_held: Float[np.ndarray, "*load_cases members"],
-    actions: HostActions,
-    catalog: HostCatalog,
+    actions: MemberActions,
+    catalog: SectionCoefficients,
     cotangent: Float[np.ndarray, "*load_cases members"],
-) -> HeldCotangents:
+) -> CheckCotangents:
     """
     Pull a cotangent on the held check back to the size and the actions.
 
@@ -868,7 +868,7 @@ def check_cotangents(
     actions :
         What every member carries.
     catalog :
-        The section catalog reduced to its host coefficients.
+        The section catalog reduced to its coefficients.
     cotangent :
         Cotangent on the held utilization.
 
@@ -890,4 +890,4 @@ def check_cotangents(
         partials.axial * pulled, partials.moment * pulled, demand
     )
 
-    return HeldCotangents(partials.slope * pulled, on_actions)
+    return CheckCotangents(partials.slope * pulled, on_actions)

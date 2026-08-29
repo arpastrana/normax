@@ -32,7 +32,7 @@ from normax.design import assign_signs
 from normax.design import build_design_constraints
 from normax.design import create_design
 from normax.design import initialize_optimization_parameters
-from normax.design import optimize_design
+from normax.design import solve_problem
 from normax.exporting import ExportTarget
 from normax.exporting import export_design
 from normax.form_finding import LensShapeInitializer
@@ -121,7 +121,7 @@ def main(arguments: RunArguments) -> None:
     design = create_design(problem, params)
 
     # Search, baby, search...
-    solution = optimize_design(problem, params, config.optimization)
+    solution = solve_problem(problem, params, config.optimization)
     design_found = create_design(problem, solution.parameters)
 
     # Is every member cross-section compliant with the structural engineering standard?

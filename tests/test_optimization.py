@@ -7,7 +7,7 @@ import pytest
 from normax.optimization import ConstrainedMaps
 from normax.optimization import OptimizationBudget
 from normax.optimization import compute_penalty
-from normax.optimization import descend_augmented_lagrangian
+from normax.optimization import optimize_augmented_lagrangian
 from normax.optimization import recoil_point_to_last_good
 from normax.optimization import update_multipliers
 
@@ -123,7 +123,7 @@ def test_the_gradient_outside_the_domain_points_back_inside():
 
 def test_the_descent_lands_on_the_constraint_surface():
     maps = constrained_maps(summed, hyperbola)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -134,7 +134,7 @@ def test_the_descent_lands_on_the_constraint_surface():
 def test_the_landing_sits_at_the_row_rather_than_inside_it():
     # A plain penalty stops short of the surface; the shift is what does not.
     maps = constrained_maps(summed, hyperbola)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
     rows = np.asarray(maps.slack(jnp.asarray(answer.parameters)))
@@ -144,7 +144,7 @@ def test_the_landing_sits_at_the_row_rather_than_inside_it():
 
 def test_the_descent_reports_the_violation_of_every_round():
     maps = constrained_maps(summed, hyperbola)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -154,7 +154,7 @@ def test_the_descent_reports_the_violation_of_every_round():
 
 def test_the_descent_says_so_when_it_stopped_because_it_was_done():
     maps = constrained_maps(summed, hyperbola)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -168,7 +168,7 @@ def test_a_row_the_answer_does_not_need_costs_nothing():
         return jnp.sum((x - jnp.asarray([4.0, 4.0])) ** 2)
 
     maps = constrained_maps(bowled, hyperbola)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -177,10 +177,10 @@ def test_a_row_the_answer_does_not_need_costs_nothing():
 
 def test_the_descent_is_repeatable():
     maps = constrained_maps(summed, hyperbola)
-    first = descend_augmented_lagrangian(
+    first = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
-    again = descend_augmented_lagrangian(
+    again = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -204,7 +204,7 @@ def test_a_trial_point_outside_the_model_is_walked_back_in():
         return inside.augmented_lagrangian(x, multipliers, penalty, reference)
 
     maps = inside._replace(augmented_lagrangian=walled)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -229,7 +229,7 @@ def test_a_runtime_error_from_a_compiled_solver_is_caught_too():
         return inside.augmented_lagrangian(x, multipliers, penalty, reference)
 
     maps = inside._replace(augmented_lagrangian=failing)
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -252,7 +252,7 @@ def test_a_non_finite_objective_is_treated_as_outside_the_model():
         jax.jit(jax.value_and_grad(summed)),
         jax.jit(hyperbola),
     )
-    answer = descend_augmented_lagrangian(
+    answer = optimize_augmented_lagrangian(
         maps, CORNER_START, CORNER_BOXES, CORNER_BUDGET
     )
 
@@ -276,4 +276,4 @@ def test_the_descent_refuses_a_budget_it_cannot_use(spoiled):
     budget = CORNER_BUDGET._replace(**spoiled)
 
     with pytest.raises(ValueError):
-        descend_augmented_lagrangian(maps, CORNER_START, CORNER_BOXES, budget)
+        optimize_augmented_lagrangian(maps, CORNER_START, CORNER_BOXES, budget)
