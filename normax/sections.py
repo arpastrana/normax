@@ -18,9 +18,10 @@ every property is derived on access. Two geometric leaves rather than eight is
 what keeps the derivative honest: a diameter and a wall cannot drift apart,
 and there is one place where a wall is chosen for a diameter.
 
-The arithmetic below is stated identically in `ec3x.section`, deliberately:
-the two libraries must agree about what a tube is bit for bit, and
-`tests/test_sections.py` is the drift alarm.
+The arithmetic below is the annulus algebra and nothing else, so
+`tests/test_sections.py` holds it to that algebra rather than to a second
+implementation of it. Two implementations can inherit one shared mistake; a
+closed form cannot.
 """
 
 import abc

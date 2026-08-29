@@ -1,27 +1,35 @@
 # SPDX-License-Identifier: Apache-2.0
+"""
+The handoff form finding makes, and what a frame solve makes of it.
+
+A form finder hands over a geometry alone, so the axial forces that come back
+are the analysis's own product. That they reproduce the funicular force density
+times the length, with bending demonstrably secondary, is a prediction about the
+handoff rather than a restatement of it — and it does not care which solver
+reports the forces, so the crossed frame analysis reports them here.
+"""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from smax import PinnedSupport
-from smax import Structure as Frame
-from smax import compile_structure
-from smax import diagnose_mechanisms
-from smax import element_forces
-from smax import solve
 
+from normax.analysis import DOF_PER_NODE
 from normax.analysis import find_normal_axis
 from normax.analysis import restrain_supports
-from normax.analysis.smax import assemble_frame_model
-from normax.analysis.smax import compute_member_forces
-from normax.analysis.smax import prepare_model
+from normax.analysis.element import SectionRigidity
+from normax.analysis.element import assemble_stiffness_global
+from normax.analysis.pynite import POISSONS_RATIO
+from normax.analysis.pynite import TORSION_FACTOR
 from normax.form_finding import build_equilibrium_graph
 from normax.form_finding import solve_equilibrium
 from normax.loads import create_load_uniform
+from normax.loads import select_load_case
 from normax.materials import Steel355
 from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 from normax.structures import build_gridshell_3d
+from normax.tesseract import TesseractAnalyzer
 
 # A 10 m arch of ten members, rising about a third of its span under a force
 # density of 75 N/mm and a 20 kN load at every free node. Units are mm and N.
@@ -41,6 +49,10 @@ DIAMETER = 100.0
 # force times the length.
 TOLERANCE_AXIAL = 2.5e-4
 TOLERANCE_BENDING = 1.0e-3
+
+# How small an eigenvalue counts as no stiffness at all. The arch's own smallest
+# restrained mode sits eight orders above this.
+TOLERANCE_SLACK = 1.0e-10
 
 
 @pytest.fixture(scope="module")
@@ -66,13 +78,13 @@ def catalog(steel):
 
 
 @pytest.fixture(scope="module")
-def section(catalog):
-    return catalog(DIAMETER)
+def sections(catalog):
+    return catalog(jnp.full(NUM_EDGES, DIAMETER))
 
 
 @pytest.fixture(scope="module")
-def model(structure, section):
-    return prepare_model(structure, section)
+def analyzer(structure, catalog):
+    return TesseractAnalyzer(structure, catalog, "pynite")
 
 
 @pytest.fixture(scope="module")
@@ -90,67 +102,87 @@ def state(q, structure):
 
 
 @pytest.fixture(scope="module")
-def member(model, state, section, structure):
-    return compute_member_forces(
-        model, state.xyz, jnp.full(NUM_EDGES, DIAMETER), section, funicular(structure)
-    )
+def member(analyzer, state, structure):
+    diameters = jnp.full(NUM_EDGES, DIAMETER)
+    stacked = funicular(structure)[None, ...]
+    forces = analyzer(state.xyz, diameters, stacked)
+
+    return select_load_case(forces, 0)
 
 
-def deviation(diameter, steel, catalog, load=LOAD, force_density=FORCE_DENSITY):
+@pytest.fixture(scope="module")
+def stiffness(structure, state, sections):
+    return assemble_frame_stiffness(structure, state.xyz, sections)
+
+
+def assemble_frame_stiffness(structure, xyz, sections):
     """
-    Largest relative gap between the analyzed and the funicular axial force.
+    The whole frame's elastic stiffness, from the element every backend shares.
     """
-    structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
-    applied = funicular(structure, load)
-    q = jnp.full(NUM_EDGES, force_density)
-    graph = build_equilibrium_graph(structure)
-    state = solve_equilibrium(q, structure.nodes[graph.indices_fixed], graph, applied)
+    steel = sections.material
+    elasticity = float(steel.e_mod)
+    shear = elasticity / (2.0 * (1.0 + POISSONS_RATIO))
+    positions = np.asarray(xyz)
+    edges = np.asarray(structure.edges)
+    within = np.arange(DOF_PER_NODE)
 
-    section = catalog._replace(material=steel)(diameter)
-    expected = q * state.lengths[:, 0]
-    sizes = jnp.full(NUM_EDGES, diameter)
-    member = compute_member_forces(
-        prepare_model(structure, section), state.xyz, sizes, section, applied
-    )
+    size = positions.shape[0] * DOF_PER_NODE
+    assembled = np.zeros((size, size))
+    for member in range(edges.shape[0]):
+        inertia = float(sections.second_moment[member])
+        rigidity = SectionRigidity(
+            axial=jnp.asarray(elasticity * float(sections.area[member])),
+            bending=jnp.asarray(elasticity * inertia),
+            torsional=jnp.asarray(shear * TORSION_FACTOR * inertia),
+        )
+        start = jnp.asarray(positions[edges[member, 0]])
+        end = jnp.asarray(positions[edges[member, 1]])
+        spanned = np.asarray(assemble_stiffness_global(start, end, rigidity))
 
-    return float(jnp.max(jnp.abs(member.axial_force - expected) / jnp.abs(expected)))
+        first = edges[member, 0] * DOF_PER_NODE + within
+        second = edges[member, 1] * DOF_PER_NODE + within
+        indexed = np.concatenate([first, second])
+        block = np.ix_(indexed, indexed)
+        assembled[block] += spanned
+
+    return assembled
 
 
-def span_field(structure, xyz, section):
+def count_slack_modes(stiffness, flags):
     """
-    The whole span field, to check the assumptions `compute_member_forces` collapses it under.
+    How many zero-energy modes one set of restraints leaves behind.
     """
-    compiled = compile_structure(assemble_frame_model(structure, xyz, section))
-    response = solve(compiled, funicular(structure))
+    held = np.asarray(flags).ravel()
+    free = np.flatnonzero(~held)
+    block = np.ix_(free, free)
+    spectrum = np.linalg.eigvalsh(stiffness[block])
+    slack = spectrum < TOLERANCE_SLACK * float(spectrum.max())
 
-    return element_forces(compiled, response, num_samples=2)
+    return int(np.count_nonzero(slack))
+
+
+def restrain_translation(structure):
+    """
+    Support flags holding translation and nothing else, the pinned base alone.
+    """
+    nodes = np.asarray(structure.nodes).shape[0]
+    flags = np.zeros((nodes, DOF_PER_NODE), dtype=bool)
+    flags[np.asarray(structure.supports), :3] = True
+
+    return flags
 
 
 # --------------------------------------------------------------------------- #
 # The model the analysis runs on
 # --------------------------------------------------------------------------- #
-def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(
-    structure, state, section
-):
-    assert (
-        diagnose_mechanisms(
-            assemble_frame_model(structure, state.xyz, section)
-        ).num_mechanisms
-        == 0
-    )
+def test_the_arch_is_not_a_mechanism_once_the_plane_is_restrained(stiffness, structure):
+    assert count_slack_modes(stiffness, restrain_supports(structure)) == 0
 
 
-def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(
-    structure, state, section
-):
+def test_a_planar_arch_on_pinned_supports_alone_is_a_mechanism(stiffness, structure):
     # Rotating the whole arch about the line joining its supports strains no
-    # member and moves no support; without the normal restraint the solve is nan.
-    model = assemble_frame_model(structure, state.xyz, section)
-    unrestrained = Frame(
-        model.nodes, model.elements, [PinnedSupport(0), PinnedSupport(NUM_EDGES)]
-    )
-
-    assert diagnose_mechanisms(unrestrained).num_mechanisms == 1
+    # member and moves no support, so one mode of the frame carries no stiffness.
+    assert count_slack_modes(stiffness, restrain_translation(structure)) == 1
 
 
 def test_the_plane_of_the_arch_is_measured_rather_than_declared(structure):
@@ -232,15 +264,6 @@ def test_bending_is_secondary_to_axial_action(q, state, member):
     assert float(jnp.max(ratio)) < TOLERANCE_BENDING
 
 
-def test_the_reported_axial_force_is_the_constant_one_the_solver_recovered(
-    structure, state, section, member
-):
-    field = span_field(structure, state.xyz, section)
-
-    assert np.allclose(field.nx[:, 0], field.nx[:, 1], rtol=1e-12)
-    assert np.allclose(member.axial_force, field.nx[:, 0], rtol=1e-15)
-
-
 def test_an_arch_in_a_plane_carries_no_minor_axis_moment(member):
     assert float(jnp.max(jnp.abs(member.moment_minor))) == 0.0
 
@@ -260,6 +283,27 @@ def test_the_arch_carries_no_moment_at_a_pinned_base(member):
 # --------------------------------------------------------------------------- #
 # Why the gap is what it is
 # --------------------------------------------------------------------------- #
+def deviation(diameter, steel, catalog, load=LOAD, force_density=FORCE_DENSITY):
+    """
+    Largest relative gap between the analyzed and the funicular axial force.
+    """
+    structure = build_arch_2d(num_edges=NUM_EDGES, span=SPAN, rise=SPAN / 3.0)
+    applied = funicular(structure, load)
+    q = jnp.full(NUM_EDGES, force_density)
+    graph = build_equilibrium_graph(structure)
+    state = solve_equilibrium(q, structure.nodes[graph.indices_fixed], graph, applied)
+
+    graded = catalog._replace(material=steel)
+    analyzer = TesseractAnalyzer(structure, graded, "pynite")
+    sizes = jnp.full(NUM_EDGES, diameter)
+    stacked = applied[None, ...]
+    analyzed = select_load_case(analyzer(state.xyz, sizes, stacked), 0)
+    expected = q * state.lengths[:, 0]
+    gap = jnp.abs(analyzed.axial_force - expected) / jnp.abs(expected)
+
+    return float(jnp.max(gap))
+
+
 @pytest.mark.parametrize("diameter", [50.0, 100.0, 200.0])
 def test_the_gap_is_quadratic_in_the_diameter(diameter, steel, catalog):
     # A beam chain through a funicular polygon cannot turn a kink on axial force
@@ -295,16 +339,19 @@ def test_the_gap_does_not_depend_on_the_scale_of_the_loading(scale, steel, catal
 # The gradient crosses both stages
 # --------------------------------------------------------------------------- #
 def test_the_gradient_through_both_stages_matches_central_differences(
-    q, structure, model, section
+    q, structure, analyzer
 ):
+    # Reverse mode only: the analysis stage serves no forward rule, so the
+    # crossed derivative is checked against a difference quotient instead.
     fdm = build_equilibrium_graph(structure)
     diameters = jnp.full(NUM_EDGES, DIAMETER)
     applied = funicular(structure)
+    stacked = applied[None, ...]
 
     def objective(q):
         state = solve_equilibrium(q, structure.nodes[fdm.indices_fixed], fdm, applied)
-        member = compute_member_forces(model, state.xyz, diameters, section, applied)
-        return jnp.sum(member.axial_force**2)
+        forces = analyzer(state.xyz, diameters, stacked)
+        return jnp.sum(forces.axial_force**2)
 
     gradient = jax.grad(objective)(q)
 
