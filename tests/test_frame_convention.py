@@ -157,15 +157,54 @@ def test_the_worse_end_is_the_moment_the_check_reads():
     demand = reduce_moments(actions)
 
     assert np.allclose(demand.moment, 1.0e6)
-    assert np.all(demand.major.winner == 0)
-    assert np.all(demand.major.sign == 1.0)
+    assert np.all(demand.worse.winner == 0)
+    assert np.all(demand.worse.cosine_major == 1.0)
+    assert np.all(demand.worse.cosine_minor == 0.0)
 
-    # And the two axes superpose linearly per eq. (6.2), never as a resultant.
+    # The two components at ONE end combine as the vector's magnitude, eq.
+    # (6.42) read on a section that bends the same way about every axis.
+    together = coerce_member_actions(
+        np.zeros(1), np.array([[1.0e6, 0.0]]), np.array([[6.0e5, 0.0]])
+    )
+
+    assert np.allclose(reduce_moments(together).moment, np.hypot(1.0e6, 6.0e5))
+
+    # Components at DIFFERENT ends are not combined at all: no fibre carries a
+    # peak from one end and a peak from the other. The worse end is 1.0e6, and
+    # the linear superposition this reduction used until 2026-08-28 read 1.6e6.
     split = coerce_member_actions(
         np.zeros(1), np.array([[1.0e6, 0.0]]), np.array([[0.0, 6.0e5]])
     )
 
-    assert np.allclose(reduce_moments(split).moment, 1.6e6)
+    assert np.allclose(reduce_moments(split).moment, 1.0e6)
+
+
+def test_rolling_the_local_frame_leaves_the_demand_alone():
+    # What the shipped reduction could not say before 2026-08-28. The transverse
+    # pair is a convention, so a demand that moved with it would make a size
+    # depend on an arbitrary axis choice.
+    major = np.array([[7.0e5, -3.0e5], [1.0e6, 2.0e5]])
+    minor = np.array([[4.0e5, 5.0e5], [-8.0e5, 1.0e5]])
+    upright = reduce_moments(coerce_member_actions(np.zeros(2), major, minor))
+
+    for angle in (0.1, 0.7, np.pi / 4.0, 1.9, 3.0):
+        turned_major = major * np.cos(angle) + minor * np.sin(angle)
+        turned_minor = -major * np.sin(angle) + minor * np.cos(angle)
+        turned = reduce_moments(
+            coerce_member_actions(np.zeros(2), turned_major, turned_minor)
+        )
+
+        assert np.allclose(turned.moment, upright.moment, rtol=1e-15, atol=0.0)
+        assert np.all(turned.worse.winner == upright.worse.winner)
+
+
+def test_a_member_carrying_no_moment_routes_nothing():
+    quiet = coerce_member_actions(np.zeros(1), np.zeros((1, 2)), np.zeros((1, 2)))
+    demand = reduce_moments(quiet)
+
+    assert demand.moment[0] == 0.0
+    assert demand.worse.cosine_major[0] == 0.0
+    assert demand.worse.cosine_minor[0] == 0.0
 
 
 def test_two_routes_demand_the_same_design_actions(

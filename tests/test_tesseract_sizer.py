@@ -173,7 +173,10 @@ def test_the_check_matches_check_grads(remote):
         END_MAJOR / scale_moment,
         END_MINOR / scale_moment,
     )
-    check_grads(scaled, arguments, order=1, modes=("rev",))
+    # The demand is the moment's magnitude, whose curvature goes as 1/|M|, and
+    # the lightest member here carries 1e-3 of the scale; the default 1e-4 step
+    # straddles it and the difference, not the rule, is what loses accuracy.
+    check_grads(scaled, arguments, order=1, modes=("rev",), eps=1e-7)
 
 
 def test_the_sizing_map_matches_check_grads(remote):
@@ -222,7 +225,10 @@ def test_central_differences_are_the_oracle(remote):
 def test_the_cubic_root_agrees_with_the_bisection(host, actions):
     # U(d) = 1 is the depressed cubic d^3 - a d - b = 0 with one positive root.
     diameter = size_members(actions, host).diameter
-    moment = jnp.max(jnp.abs(END_MAJOR), axis=-1) + jnp.max(jnp.abs(END_MINOR), axis=-1)
+    # The demand is the larger end moment's magnitude, per eq. (6.42) read on a
+    # section that bends the same way about every axis.
+    per_end = jnp.sqrt(END_MAJOR**2 + END_MINOR**2)
+    moment = jnp.max(per_end, axis=-1)
     for load_case in range(2):
         for member in range(NUM_EDGES):
             demand_axial = float(jnp.abs(AXIAL[load_case, member])) / (
