@@ -20,9 +20,13 @@ A penalty is the stated fallback (`normax.optimization.penalized_mass`
 through `minimize_bounded`), not the primary: the fully-stressed claim is an
 equality to machine precision, and a penalty holds it only in a limit.
 
+Both foreign blocks cross the boundary — PyNite answers the analysis and
+Blueprints the check — so the formulations are compared over the stack that
+ships rather than over an in-process stand-in for it.
+
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
 
-Run with `uv run --group pipeline python validation/sizing_formulations.py`.
+Run with `uv run python validation/sizing_formulations.py`.
 """
 
 import time
@@ -35,7 +39,6 @@ import numpy as np
 from jaxtyping import Float
 from scipy.optimize import minimize
 
-from normax.analysis.smax import SmaxAnalyzer
 from normax.config import SizingConfig
 from normax.design import Design
 from normax.design import DesignParameters
@@ -57,6 +60,7 @@ from normax.reporting import verify_checks
 from normax.sections import TubeCatalog
 from normax.sizing.blueprint import DIAMETER_MINIMUM
 from normax.structures import build_arch_2d
+from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import build_sizer
 
 TITLE = "Sizes as a solver's answer, and sizes as an optimizer's variables."
@@ -66,8 +70,7 @@ RISE = 3_000.0
 TOTAL_LOAD = 180_000.0
 NUM_EDGES = 10
 
-# The cross-section check, across the boundary: the in-process sizer this
-# experiment used was dissolved into the Tesseract backend.
+# The cross-section check, across the boundary, beside the crossed analysis.
 SIZING = SizingConfig(3, "blueprint", False, False)
 
 SEED = 100.0
@@ -181,7 +184,7 @@ def arch_problem() -> ArchProblem:
     catalog = TubeCatalog(RATIO, grade)
     pipeline = StructuralDesignPipeline(
         FdmFormFinder(structure),
-        SmaxAnalyzer(structure, catalog(SEED)),
+        TesseractAnalyzer(structure, catalog, "pynite"),
         build_sizer(structure, catalog, SIZING),
     )
 

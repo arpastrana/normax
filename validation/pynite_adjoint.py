@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-A solver with no derivative, given one, and held to a solver that has its own.
+A solver with no derivative, given one, and held to differences of itself.
 
 PyNite is a space frame analysis in plain Python. It has no tape, no tangent and
 no sensitivity command, and no amount of configuration will produce one — which
@@ -12,19 +12,31 @@ order, each one a precondition for the next:
 
 1. **The element differentiated is the element assembled.** A derivative of a
    lookalike would be a plausible number about a different structure. The
-   replica is held against PyNite's own matrices.
+   replica is held against PyNite's own matrices, which the foreign solver
+   assembles itself and no other library is asked about.
 2. **The stiffness does not depend on the frame.** An axisymmetric section
    cannot tell one roll of its transverse axes from another, which is what
-   licenses reading bending invariants rather than components, and what lets the
-   two solvers disagree about axes while agreeing about a design.
-3. **The gradient is right.** Not against a finer finite difference — against
-   `smax`, a frame solver JAX differentiates end to end. Two exact answers, one
-   of them obtained by a rule this repository wrote for a library that has none.
+   licenses reading bending invariants rather than components, and what lets two
+   solvers disagree about axes while agreeing about a design.
+3. **The gradient is right.** Against central differences of the very forward
+   solve the rule differentiates, over a sweep of step sizes: the agreement
+   traces a V, best in the middle and worse in both directions, which is what an
+   exact rule looks like and what a wrong one cannot fake. A second reference
+   would only prove two implementations share a habit; its own primal cannot be
+   wrong in the same way its adjoint is.
+
+Two rows sit beside that one. The same rule reached across the analysis schema
+is held to the differences too, and then to the in-process rule directly, which
+is round-off rather than approximation. Only reverse mode crosses: the schema
+serves a vector-Jacobian product and no tangent, which is everything a gradient
+of an aggregated scalar asks for. The block norms of a traced JAX solver, taken
+once and frozen, keep the older claim that an independent exact answer agreed.
 
 Then the cost, which is the reason any of it matters: the same gradient by
 central differences of the forward solve, priced.
 
-Run it as `python validation/pynite_adjoint.py`.
+Run it as `uv run python validation/pynite_adjoint.py`, or `--quiet` for the
+verdict alone.
 """
 
 import sys
@@ -44,7 +56,6 @@ from normax.analysis.element import SectionRigidity
 from normax.analysis.element import assemble_stiffness_global
 from normax.analysis.element import assemble_stiffness_local
 from normax.analysis.element import compute_direction_cosines
-from normax.analysis.smax import SmaxAnalyzer
 from normax.config import AnalysisConfig
 from normax.materials import Steel355
 from normax.reporting import Report
@@ -74,8 +85,21 @@ SHELL_PRESSURE = 1.5e3
 # Two constructions of one matrix, so only the last bits of a double may differ.
 TOLERANCE_ELEMENT = 1.0e-13
 
-# Two exact gradients of one structure, so likewise.
+# One exact rule, fetched twice, so likewise; and a norm frozen from an oracle.
 TOLERANCE_GRADIENT = 1.0e-11
+
+# What a central difference can referee: its own truncation, not the rule's error.
+TOLERANCE_DIFFERENCE = 1.0e-8
+
+# Steps the reference is swept over, in millimeters, to show the agreement's V.
+DIFFERENCE_STEPS = (1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1)
+
+# The sweep's floor, which is the step the reported gaps are read at.
+DIFFERENCE_STEP = 1.0e-3
+
+# Recorded from smax at tag local-dev; see docs/oracle_removal.md.
+FROZEN_NODE_NORM = 7.90769880190019154587e-03
+FROZEN_DIAMETER_NORM = 3.56475439539378179121e-03
 
 # Scales that bring both reported quantities to unit order before summing them.
 SCALE_FORCE = 1.0e5
@@ -99,6 +123,31 @@ class FrameSample(NamedTuple):
     structure: Structure
     diameters: Float[np.ndarray, "members"]
     loads: Float[np.ndarray, "nodes 3"]
+
+
+class GradientGaps(NamedTuple):
+    """
+    What each route's gradient disagreed with the reference it is held to by.
+
+    Attributes
+    ----------
+    by_node :
+        The in-process rule against central differences, over the coordinates.
+    by_member :
+        The in-process rule against central differences, over the diameters.
+    crossed :
+        The same rule reached across the schema, against those differences.
+    boundary :
+        The crossed rule against the in-process one that serves it.
+    frozen :
+        The rule's block norms against a traced solver's, recorded once.
+    """
+
+    by_node: float
+    by_member: float
+    crossed: float
+    boundary: float
+    frozen: float
 
 
 def relative(actual: Float[Array, "..."], expected: Float[Array, "..."]) -> float:
@@ -313,8 +362,8 @@ def roll_claim(report: Report) -> float:
     report.write_note(
         "Turning a member's transverse axes about its own axis, at fixed "
         "geometry and section. An axisymmetric tube has equal second moments, "
-        "so the global matrix cannot change; a section with two different ones "
-        "would, and the last row shows by how much."
+        "so the global matrix cannot change, and this element carries one "
+        "bending rigidity because of it — the rows are round-off."
     )
 
     rigidity = SectionRigidity(
@@ -357,9 +406,202 @@ def roll_claim(report: Report) -> float:
     return worst
 
 
-def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, float]:
+def compute_scalar(forces: MemberForces) -> Float[Array, ""]:
     """
-    Measure the adjoint against a solver JAX differentiates end to end.
+    One number off every quantity the schema calls differentiable.
+
+    Parameters
+    ----------
+    forces :
+        What every member carries, under one load case or several.
+
+    Returns
+    -------
+    total :
+        Sum of squares of the axial force and both end moments, each scaled to
+        unit order first.
+
+    Notes
+    -----
+    The scalar is arbitrary and stands in for a check. It reads every reported
+    quantity, so no block of the Jacobian goes untested by a gradient of it.
+    """
+    axial = jnp.sum((forces.axial_force / SCALE_FORCE) ** 2)
+    major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
+    minor = jnp.sum((forces.moment_minor / SCALE_MOMENT) ** 2)
+    total = axial + major + minor
+
+    return total
+
+
+def compute_forward(
+    problem: pynite.FrameProblem,
+    nodes: Float[np.ndarray, "nodes 3"],
+    diameters: Float[np.ndarray, "members"],
+    loads: Float[np.ndarray, "nodes 3"],
+) -> float:
+    """
+    The scalar, from the foreign solver alone and with no derivative taken.
+
+    Parameters
+    ----------
+    problem :
+        The frame and its section catalog.
+    nodes :
+        Position of every node.
+    diameters :
+        Outer diameter of every member.
+    loads :
+        Force applied at every node.
+
+    Returns
+    -------
+    value :
+        The scalar the gradients are of.
+    """
+    forces = pynite.compute_member_forces(problem, nodes, diameters, loads)
+    value = float(compute_scalar(forces))
+
+    return value
+
+
+def compute_differences(
+    problem: pynite.FrameProblem,
+    sample: FrameSample,
+    step: float,
+) -> pynite.Cotangents:
+    """
+    Central differences of the forward solve, one parameter at a time.
+
+    Parameters
+    ----------
+    problem :
+        The frame and its section catalog.
+    sample :
+        The frame the gradient is taken on.
+    step :
+        Half-width of the difference, in millimeters for either parameter.
+
+    Returns
+    -------
+    differenced :
+        The approximate gradient, by node coordinate and by diameter.
+
+    Notes
+    -----
+    Two solves per parameter, which is the price the exact rule is measured
+    against later. Both parameters carry length units, so one step serves both.
+    """
+    nodes = np.asarray(sample.structure.nodes, dtype=float)
+    diameters = np.asarray(sample.diameters, dtype=float)
+    loads = sample.loads
+    by_node = np.zeros_like(nodes)
+    by_member = np.zeros_like(diameters)
+
+    for node in range(nodes.shape[0]):
+        for axis in range(3):
+            raised = nodes.copy()
+            raised[node, axis] += step
+            lowered = nodes.copy()
+            lowered[node, axis] -= step
+            above = compute_forward(problem, raised, diameters, loads)
+            below = compute_forward(problem, lowered, diameters, loads)
+            by_node[node, axis] = (above - below) / (2.0 * step)
+
+    for member in range(diameters.shape[0]):
+        raised = diameters.copy()
+        raised[member] += step
+        lowered = diameters.copy()
+        lowered[member] -= step
+        above = compute_forward(problem, nodes, raised, loads)
+        below = compute_forward(problem, nodes, lowered, loads)
+        by_member[member] = (above - below) / (2.0 * step)
+
+    differenced = pynite.Cotangents(xyz=by_node, diameter=by_member)
+
+    return differenced
+
+
+def pull_gradient(
+    problem: pynite.FrameProblem,
+    sample: FrameSample,
+) -> pynite.Cotangents:
+    """
+    The exact gradient of the scalar, in process, by the hand-written rule.
+
+    Parameters
+    ----------
+    problem :
+        The frame and its section catalog.
+    sample :
+        The frame the gradient is taken on.
+
+    Returns
+    -------
+    pulled :
+        Cotangent on every node coordinate and every diameter.
+
+    Notes
+    -----
+    The scalar is a sum of squares, so its cotangent on each reported force is
+    twice that force over the square of its scale — the same left factor a
+    Jacobian contraction would carry, handed to the rule instead.
+    """
+    nodes = np.asarray(sample.structure.nodes, dtype=float)
+    diameters = sample.diameters
+    forces = pynite.compute_member_forces(problem, nodes, diameters, sample.loads)
+    seeded = MemberForces(
+        2.0 * np.asarray(forces.axial_force) / SCALE_FORCE**2,
+        2.0 * np.asarray(forces.moment_major) / SCALE_MOMENT**2,
+        2.0 * np.asarray(forces.moment_minor) / SCALE_MOMENT**2,
+    )
+    pulled = pynite.pull_back_cotangents(problem, nodes, diameters, seeded)
+
+    return pulled
+
+
+def report_sweep(
+    report: Report,
+    swept: dict[float, pynite.Cotangents],
+    pulled: pynite.Cotangents,
+) -> None:
+    """
+    The reference against the rule at every step, so the V can be seen.
+
+    Parameters
+    ----------
+    report :
+        Where the tables are written.
+    swept :
+        The differenced gradient at each step tried.
+    pulled :
+        The exact gradient those steps approach.
+    """
+    columns = (
+        ReportColumn("step [mm]", ".0e"),
+        ReportColumn("by node", ".3e"),
+        ReportColumn("by diameter", ".3e"),
+    )
+    rows = [
+        [
+            step,
+            relative(pulled.xyz, swept[step].xyz),
+            relative(pulled.diameter, swept[step].diameter),
+        ]
+        for step in DIFFERENCE_STEPS
+    ]
+    report.write_table(columns, rows)
+    report.write_note(
+        "Truncation falls as the step falls and round-off rises, so an exact "
+        "rule is approached from both sides while a wrong one would flatten "
+        "onto its own error. The floor is where the gaps below are read."
+    )
+    report.write_line()
+
+
+def gradient_claim(report: Report, sample: FrameSample) -> GradientGaps:
+    """
+    Measure the adjoint against central differences of its own forward solve.
 
     Parameters
     ----------
@@ -370,90 +612,83 @@ def gradient_claim(report: Report, sample: FrameSample) -> tuple[float, float, f
 
     Returns
     -------
-    worst :
-        Worst relative gap in process by node, in process by member, and across
-        the schema.
+    gaps :
+        Every route's worst relative disagreement with what it is held to.
 
     Notes
     -----
-    The scalar is arbitrary and stands in for a check: it reads every quantity
-    the schema calls differentiable, so no block of the Jacobian goes untested.
-    `smax` is the reference because it is exact, not because it is finer — this
-    is two exact answers meeting, and a finite difference could not decide
-    between them at this tolerance.
+    Differencing the rule's own primal is the stronger reference, because an
+    error the adjoint makes cannot also be made by the forward solve it is the
+    derivative of. Only reverse mode crosses the schema — a vector-Jacobian
+    product is served and no tangent is — which is all a gradient of one
+    aggregated scalar ever asks for.
     """
     report.write_heading("The gradient is right")
     report.write_note(
         "One scalar over one frame, differentiated three ways: by this "
         "repository's adjoint of a solver that has none, by the same adjoint "
-        "reached across the analysis schema, and by autodiff of a solver that "
-        "is traced. The reference is exact, so these gaps are round-off."
+        "reached across the analysis schema, and by central differences of the "
+        "forward solve that adjoint differentiates."
     )
 
     structure = sample.structure
     catalog = build_section_catalog(Steel355(), SECTION_CLASS)
     diameters = jnp.asarray(sample.diameters)
     stacked = jnp.asarray(sample.loads)[None, ...]
-
-    def loss(analyzer, xyz, sizes):
-        forces = analyzer(xyz, sizes, stacked)
-        axial = jnp.sum((forces.axial_force / SCALE_FORCE) ** 2)
-        major = jnp.sum((forces.moment_major / SCALE_MOMENT) ** 2)
-        minor = jnp.sum((forces.moment_minor / SCALE_MOMENT) ** 2)
-
-        return axial + major + minor
-
-    traced = SmaxAnalyzer(structure, catalog(SEED_DIAMETER))
-    reference = jax.grad(lambda x, d: loss(traced, x, d), argnums=(0, 1))(
-        structure.nodes, diameters
-    )
-
     problem = pynite.FrameProblem(
         structure=structure, catalog=catalog, loads=sample.loads
     )
-    forces = pynite.compute_member_forces(
-        problem, np.asarray(structure.nodes), sample.diameters, sample.loads
-    )
-    # The loss is a sum of squares, so its cotangent on each reported force is
-    # twice that force over the square of its scale — the same left factor the
-    # Jacobian contraction used to carry, handed to the rule instead.
-    seeded = MemberForces(
-        2.0 * np.asarray(forces.axial_force) / SCALE_FORCE**2,
-        2.0 * np.asarray(forces.moment_major) / SCALE_MOMENT**2,
-        2.0 * np.asarray(forces.moment_minor) / SCALE_MOMENT**2,
-    )
-    pulled = pynite.pull_back_cotangents(
-        problem, np.asarray(structure.nodes), sample.diameters, seeded
-    )
-    by_node = pulled.xyz
-    by_member = pulled.diameter
+
+    pulled = pull_gradient(problem, sample)
+    swept = {
+        step: compute_differences(problem, sample, step) for step in DIFFERENCE_STEPS
+    }
+    report_sweep(report, swept, pulled)
 
     analysis = AnalysisConfig({"diameter": SEED_DIAMETER}, "pynite")
     crossed = build_analyzer(structure, catalog, analysis)
-    served = jax.grad(lambda x, d: loss(crossed, x, d), argnums=(0, 1))(
-        structure.nodes, diameters
-    )
 
-    node_gap = relative(by_node, reference[0])
-    member_gap = relative(by_member, reference[1])
+    def loss(xyz, sizes):
+        forces = crossed(xyz, sizes, stacked)
+
+        return compute_scalar(forces)
+
+    served = jax.grad(loss, argnums=(0, 1))(structure.nodes, diameters)
+    referenced = swept[DIFFERENCE_STEP]
+    node_norm = float(np.linalg.norm(np.asarray(pulled.xyz)))
+    member_norm = float(np.linalg.norm(np.asarray(pulled.diameter)))
+
+    node_gap = relative(pulled.xyz, referenced.xyz)
+    member_gap = relative(pulled.diameter, referenced.diameter)
     crossed_gap = max(
-        relative(served[0], reference[0]), relative(served[1], reference[1])
+        relative(served[0], referenced.xyz), relative(served[1], referenced.diameter)
+    )
+    boundary_gap = max(
+        relative(served[0], pulled.xyz), relative(served[1], pulled.diameter)
+    )
+    frozen_gap = max(
+        relative(node_norm, FROZEN_NODE_NORM),
+        relative(member_norm, FROZEN_DIAMETER_NORM),
     )
 
     columns = (
         ReportColumn("route", align="<"),
-        ReportColumn("with respect to", align="<"),
+        ReportColumn("held against", align="<"),
         ReportColumn("worst relative gap", ".3e"),
     )
     rows = [
-        ["adjoint, in process", "every node coordinate", node_gap],
-        ["adjoint, in process", "every diameter", member_gap],
-        ["adjoint, across the schema", "both together", crossed_gap],
+        ["adjoint, in process", "central differences, by node", node_gap],
+        ["adjoint, in process", "central differences, by diameter", member_gap],
+        ["adjoint, across the schema", "central differences, both", crossed_gap],
+        ["adjoint, across the schema", "the same rule in process", boundary_gap],
+        ["adjoint, in process", "frozen norms of a traced solver", frozen_gap],
     ]
     report.write_table(columns, rows)
     report.write_line()
 
-    return node_gap, member_gap, crossed_gap
+    gaps = GradientGaps(node_gap, member_gap, crossed_gap, boundary_gap, frozen_gap)
+
+    return gaps
 
 
 def cost_claim(report: Report, sample: FrameSample) -> None:
@@ -558,7 +793,7 @@ def main(verbose: bool = True) -> None:
 
     worst_local, worst_global = element_claim(report)
     worst_roll = roll_claim(report)
-    node_gap, member_gap, crossed_gap = gradient_claim(report, canopy_sample())
+    gaps = gradient_claim(report, canopy_sample())
     cost_claim(report, shell_sample())
 
     checks = (
@@ -572,13 +807,23 @@ def main(verbose: bool = True) -> None:
             "global stiffness is roll invariant", worst_roll, TOLERANCE_ELEMENT
         ),
         ToleranceCheck(
-            "adjoint by node matches autodiff", node_gap, TOLERANCE_GRADIENT
+            "adjoint by node matches differences", gaps.by_node, TOLERANCE_DIFFERENCE
         ),
         ToleranceCheck(
-            "adjoint by member matches autodiff", member_gap, TOLERANCE_GRADIENT
+            "adjoint by member matches differences",
+            gaps.by_member,
+            TOLERANCE_DIFFERENCE,
         ),
         ToleranceCheck(
-            "crossed gradient matches autodiff", crossed_gap, TOLERANCE_GRADIENT
+            "crossed gradient matches differences", gaps.crossed, TOLERANCE_DIFFERENCE
+        ),
+        ToleranceCheck(
+            "crossed gradient matches the rule in process",
+            gaps.boundary,
+            TOLERANCE_GRADIENT,
+        ),
+        ToleranceCheck(
+            "gradient norms match the frozen reference", gaps.frozen, TOLERANCE_GRADIENT
         ),
     )
     report.write_checks(checks)

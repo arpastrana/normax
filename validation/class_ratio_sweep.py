@@ -1,18 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Which wall proportion is lighter: the Class 2 limit or the Class 3 limit.
+What a thinner wall buys, priced by the check the package actually ships.
 
-ec3x's docs/clauses.md records the trade and declines to call it. A thinner wall buys
-more area for the same weight of steel, which is what the Class 3 limit offers;
-but Class 3 forfeits the shape factor of 1.326 in bending and reads the weaker
-column of Table B.1. Which wins depends on how much of the demand is bending,
-and that is a number rather than an argument.
+The wall proportion `d/t` is the one section parameter this project holds fixed,
+and it holds it at the Class 3 limit of EN 1993-1-1 Table 5.2. This sweep prices
+that choice: it builds the section catalog at the Class 2 limit and at the Class
+3 limit, hands each to the crossed Blueprints check, and sizes the same demand
+mix on both. A thinner wall reaches a given elastic modulus with less area, so it
+should be lighter wherever bending is live and exactly a tie in pure compression.
+Whether it is, and by how much, is a number rather than an argument.
 
-The sweep also bounds the shear the excluded clause would have seen, which open
-item 0d of ec3x's docs/clauses.md asks after: the exclusion of 6.2.6 is only honest
-while the design shear stays under half the plastic shear resistance. A bound is
-all a sweep over demand mixes can give, and `normax.analysis.MemberForces` now
-carries the analyzed shear so that a converged design can be read instead.
+Nothing here reads a plastic section modulus, because the shipped check does not:
+Blueprints' eq. (6.14) is elastic at every class, so the shape factor a Class 2
+section would have earned is outside what the crossed sizer implements. The sweep
+prices the wall proportion alone, which is the parameter the project chooses.
+
+The sweep also bounds the shear the declined clause 6.2.6 would have seen, which
+is what licenses declining it: EN 1993-1-1 6.2.10 permits ignoring shear below
+half the plastic shear resistance, and `docs/shear_design.md` records the
+measurement on converged designs. Here the demand is a bound rather than a
+reading, this sweep having no frame to read one off — the analyzed shear of a
+real design is what settles it.
 
 Run with `uv run python validation/class_ratio_sweep.py`.
 """
@@ -21,22 +29,27 @@ from collections.abc import Sequence
 from typing import NamedTuple
 
 import jax.numpy as jnp
-from ec3x.actions import MemberActions
-from ec3x.classification import is_plastic
-from ec3x.material import Steel
-from ec3x.resistance import SHEAR_THRESHOLD
-from ec3x.resistance import area_shear
-from ec3x.resistance import resistance_shear
-from ec3x.section import TubeCatalogue as Ec3Catalogue
-from ec3x.sizing import diameter_required
-from ec3x.sizing import mass_of_tubes
+from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.formula_6_18 import (  # noqa: E501
+    Form6Dot18DesignPlasticShearResistance,
+)
+from blueprints.codes.eurocode.en_1993_1_1_2005.chapter_6_ultimate_limit_state.formula_6_18_sub_av import (  # noqa: E501
+    Form6Dot18SubGCircularHollowSection,
+)
 from jaxtyping import Array
 from jaxtyping import Float
 
+from normax.analysis import MemberForces
+from normax.materials import Steel355
 from normax.reporting import Report
 from normax.reporting import ReportColumn
+from normax.sections import CLASS_LIMITS
+from normax.sections import TubeCatalog
+from normax.sections import build_section_catalog
+from normax.sizing.blueprint import GAMMA_M0
+from normax.structures import build_arch_2d
+from normax.tesseract import TesseractSizer
 
-STEEL = Steel()
+STEEL = Steel355()
 LENGTH = 6000.0
 
 # A demand mix swept from pure compression to pure bending, holding the axial
@@ -44,41 +57,43 @@ LENGTH = 6000.0
 MOMENTS = (0.0, 1e7, 2e7, 4e7, 8e7, 1.6e8)
 FORCE = -6e5
 
-# Moment factors of a member bent in single curvature, as Table B.3 reads them.
-MOMENT_FACTOR = 0.9
-
 CLASSES = (2, 3)
 
 # Samples the crossover is looked for over, and the range they span.
 CROSSOVER_SAMPLES = 321
 CROSSOVER_MOMENT_MAX = 1.6e8
 
+# A gap this small a fraction of the heavier mass is a tie, not a crossing.
+CROSSOVER_TOLERANCE = 1e-9
+
 # Nodal loading makes the shear exactly the end-moment difference over the
 # length, so a moment bounded either way is worst antisymmetric, at twice it.
 SHEAR_FACTOR = 2.0
 
+# EN 1993-1-1 6.2.10(1): shear is ignorable below half the plastic resistance.
+SHEAR_THRESHOLD = 0.5
 
-def behavior_of(catalog: Ec3Catalogue) -> str:
+
+class ClassSweep(NamedTuple):
     """
-    Whether a catalog's class takes plastic or elastic section properties.
+    One class branch's answer over a whole array of demand mixes.
 
-    Parameters
+    Attributes
     ----------
+    section_class :
+        The Table 5.2 class whose limit fixed the wall proportion.
     catalog :
-        Tube catalog whose ratio holds the section at a class limit.
-
-    Returns
-    -------
-    behavior :
-        "plastic" for Classes 1 and 2, "elastic" for Class 3.
-
-    Notes
-    -----
-    A function rather than a container's property, because there is nothing left
-    to pair the class with: a catalog carries the class its ratio sits at, so the
-    branch this sweep compares *is* a catalog.
+        The catalog sitting on that class's limit.
+    diameters :
+        Fully-stressed diameter at every demand mix.
+    masses :
+        Mass of the member at every demand mix, in kilograms.
     """
-    return "plastic" if is_plastic(catalog.section_class) else "elastic"
+
+    section_class: int
+    catalog: TubeCatalog
+    diameters: Float[Array, "members"]
+    masses: Float[Array, "members"]
 
 
 class MassComparison(NamedTuple):
@@ -125,16 +140,17 @@ class CrossoverResult(NamedTuple):
     moment :
         Moment the two masses cross at, or None where they never do.
     lighter :
-        Section class that is lighter below that moment.
+        Section class that is lighter below that moment, or None where the two
+        branches weigh the same at every sample.
     """
 
     moment: float | None
-    lighter: int
+    lighter: int | None
 
 
 class ShearCheck(NamedTuple):
     """
-    The shear the excluded clause 6.2.6 would have seen at one demand mix.
+    The shear the declined clause 6.2.6 would have seen at one demand mix.
 
     Attributes
     ----------
@@ -150,8 +166,8 @@ class ShearCheck(NamedTuple):
     Notes
     -----
     The demand is a bound rather than a measurement, this sweep having no frame
-    to measure on. It is exact as a bound: `normax.analysis.MemberForces` now
-    carries the analyzed shear, and auditing a real design means reading that.
+    to measure on. It is exact as a bound: an analysis reports the shear every
+    member carries, and auditing a real design means reading that.
     """
 
     moment: float
@@ -169,14 +185,14 @@ class ShearCheck(NamedTuple):
     @property
     def flag(self) -> str:
         """
-        Whether the exclusion of 6.2.6 stops being honest at this mix.
+        Whether declining 6.2.6 stops being honest at this mix.
         """
         return "" if self.ratio < SHEAR_THRESHOLD else "EXCEEDS HALF"
 
 
 class ReadingPair(NamedTuple):
     """
-    Eq. 6.42 read as a resultant stress, and read as a linear sum.
+    Biaxial bending read as a resultant, and read as the linear sum it ships as.
 
     Attributes
     ----------
@@ -207,118 +223,334 @@ class ReadingPair(NamedTuple):
         return (self.linear / self.resultant) ** 2 - 1.0
 
 
-def diameter_for(
-    catalog: Ec3Catalogue,
-    moment_major: float,
-    moment_minor: float = 0.0,
-) -> Float[Array, ""]:
+def build_sizer(catalog: TubeCatalog) -> TesseractSizer:
     """
-    Fully-stressed diameter on one class branch.
+    The crossed Blueprints check, over one catalog.
+
+    Parameters
+    ----------
+    catalog :
+        The catalog whose ratio sits on a class limit.
+
+    Returns
+    -------
+    sizer :
+        The check, reached across the sizing Tesseract's boundary.
+
+    Notes
+    -----
+    A sizer is built from a structure it reads for nothing, a cross-section
+    check having nothing to settle from a connectivity, so any structure does.
     """
-    moments = (moment_major, moment_minor)
-    actions = MemberActions(FORCE, *moments, MOMENT_FACTOR, MOMENT_FACTOR)
-    diameter = diameter_required(actions, LENGTH, catalog)
+    structure = build_arch_2d()
 
-    return diameter
+    return TesseractSizer(structure, catalog, "blueprint")
 
 
-def mass_for(catalog: Ec3Catalogue, moment_major: float) -> float:
+def build_member_forces(
+    moment_major: Float[Array, "members"],
+    moment_minor: Float[Array, "members"],
+) -> MemberForces:
     """
-    Mass in kilograms of one member on one class branch.
-    """
-    diameter = diameter_for(catalog, moment_major)
-    tube = catalog(diameter)
+    One load case of demands: the held axial force beside the swept moments.
 
-    return float(mass_of_tubes(tube, LENGTH)) * 1e3
+    Parameters
+    ----------
+    moment_major :
+        Major-axis moment at the worse end of every member.
+    moment_minor :
+        Minor-axis moment at the worse end of every member.
+
+    Returns
+    -------
+    forces :
+        What every member carries, with a load case axis of one.
+
+    Notes
+    -----
+    The far end carries nothing, so the check's reduction to the worse end of
+    each axis returns the moment as it was written here.
+    """
+    axial = jnp.full_like(moment_major, FORCE)
+    quiet = jnp.zeros_like(moment_major)
+    ends_major = jnp.stack([moment_major, quiet], axis=-1)
+    ends_minor = jnp.stack([moment_minor, quiet], axis=-1)
+
+    return MemberForces(axial[None], ends_major[None], ends_minor[None])
 
 
-def compare_masses(
-    catalogs: Sequence[Ec3Catalogue],
-    moment: float,
-) -> MassComparison:
+def size_demands(
+    sizer: TesseractSizer,
+    moment_major: Float[Array, "members"],
+    moment_minor: Float[Array, "members"],
+) -> Float[Array, "members"]:
     """
-    Diameter and mass on every branch at one demand mix.
+    The fully-stressed diameter of every demand mix, in one crossing.
+
+    Parameters
+    ----------
+    sizer :
+        The crossed check the sizes are solved against.
+    moment_major :
+        Major-axis moment at the worse end of every member.
+    moment_minor :
+        Minor-axis moment at the worse end of every member.
+
+    Returns
+    -------
+    diameters :
+        Outer diameter each demand mix is worked to exactly one at.
+
+    Notes
+    -----
+    Every demand mix rides the members axis of a single load case, so the whole
+    sweep is one crossing rather than one per mix.
     """
-    diameters = tuple(float(diameter_for(catalog, moment)) for catalog in catalogs)
-    masses = tuple(mass_for(catalog, moment) for catalog in catalogs)
-    compared = MassComparison(moment, diameters, masses)
+    forces = build_member_forces(moment_major, moment_minor)
+    buckling_length = jnp.full(moment_major.shape, LENGTH)
+    sizes = sizer(forces, buckling_length)
+
+    return sizes.sections.diameter[0]
+
+
+def weigh_members(
+    catalog: TubeCatalog,
+    diameters: Float[Array, "members"],
+) -> Float[Array, "members"]:
+    """
+    Mass in kilograms of one member of the swept length at every diameter.
+
+    Parameters
+    ----------
+    catalog :
+        The catalog the diameters are walled by.
+    diameters :
+        Outer diameter of every member.
+
+    Returns
+    -------
+    masses :
+        Mass of every member, in kilograms.
+
+    Notes
+    -----
+    The per-member half of `normax.design.compute_member_mass`, which sums; a
+    sweep compares mix by mix and so must not sum. Tonnes to kilograms because
+    the package works in newtons and millimeters throughout.
+    """
+    sections = catalog(diameters)
+    tonnes = sections.material.density * sections.area * LENGTH
+
+    return tonnes * 1e3
+
+
+def sweep_class(
+    section_class: int,
+    moments: Float[Array, "members"],
+) -> ClassSweep:
+    """
+    Every demand mix sized on one class branch.
+
+    Parameters
+    ----------
+    section_class :
+        The Table 5.2 class whose limit fixes the wall proportion.
+    moments :
+        Major-axis moment of every demand mix.
+
+    Returns
+    -------
+    sweep :
+        The branch's diameters and masses over the whole mix.
+    """
+    catalog = build_section_catalog(STEEL, section_class)
+    sizer = build_sizer(catalog)
+    quiet = jnp.zeros_like(moments)
+    diameters = size_demands(sizer, moments, quiet)
+    masses = weigh_members(catalog, diameters)
+
+    return ClassSweep(section_class, catalog, diameters, masses)
+
+
+def compare_sweeps(
+    sweeps: Sequence[ClassSweep],
+    moments: Float[Array, "members"],
+) -> list[MassComparison]:
+    """
+    Pair the branches up, demand mix by demand mix.
+
+    Parameters
+    ----------
+    sweeps :
+        One sweep per class branch, over the same moments.
+    moments :
+        Major-axis moment of every demand mix.
+
+    Returns
+    -------
+    compared :
+        One comparison per demand mix.
+    """
+    compared = []
+    for index in range(int(moments.shape[0])):
+        diameters = tuple(float(sweep.diameters[index]) for sweep in sweeps)
+        masses = tuple(float(sweep.masses[index]) for sweep in sweeps)
+        compared.append(MassComparison(float(moments[index]), diameters, masses))
 
     return compared
 
 
-def crossover_moment(catalogs: Sequence[Ec3Catalogue]) -> CrossoverResult:
+def find_crossover(classes: Sequence[int]) -> CrossoverResult:
     """
     The moment at which the two branches weigh the same, if there is one.
-    """
-    sampled = jnp.linspace(0.0, CROSSOVER_MOMENT_MAX, CROSSOVER_SAMPLES)
-    gaps = [
-        mass_for(catalogs[0], moment) - mass_for(catalogs[1], moment)
-        for moment in sampled
-    ]
-    difference = jnp.asarray(gaps)
-    changes = jnp.where(jnp.diff(jnp.sign(difference)) != 0)[0]
-    below = catalogs[0] if float(difference[0]) < 0.0 else catalogs[1]
 
+    Parameters
+    ----------
+    classes :
+        The two Table 5.2 classes whose limits are compared.
+
+    Returns
+    -------
+    crossing :
+        The moment the masses cross at and which class is lighter below it.
+
+    Notes
+    -----
+    Pure compression is a tie by construction — a squashing resistance is
+    proportional to area, so both branches ask for the same area and differ
+    only in the diameter they reach it at — so samples closer than a tolerance
+    are read as ties rather than as sign changes.
+    """
+    moments = jnp.linspace(0.0, CROSSOVER_MOMENT_MAX, CROSSOVER_SAMPLES)
+    sweeps = [sweep_class(section_class, moments) for section_class in classes]
+    gaps = sweeps[0].masses - sweeps[1].masses
+    heavier = jnp.maximum(sweeps[0].masses, sweeps[1].masses)
+    parted = jnp.abs(gaps) > CROSSOVER_TOLERANCE * heavier
+    if not bool(jnp.any(parted)):
+        return CrossoverResult(None, None)
+
+    signs = jnp.sign(gaps[parted])
+    separated = moments[parted]
+    changes = jnp.where(jnp.diff(signs) != 0)[0]
+    below = sweeps[0] if float(signs[0]) < 0.0 else sweeps[1]
     if changes.size == 0:
-        crossing = CrossoverResult(None, below.section_class)
-    else:
-        moment = float(sampled[int(changes[0])])
-        crossing = CrossoverResult(moment, below.section_class)
+        return CrossoverResult(None, below.section_class)
 
-    return crossing
+    crossing = float(separated[int(changes[0])])
+
+    return CrossoverResult(crossing, below.section_class)
 
 
-def shear_check(catalog: Ec3Catalogue, moment: float) -> ShearCheck:
+def check_shear(catalog: TubeCatalog, diameter: float, moment: float) -> ShearCheck:
     """
-    What clause 6.2.6 would have seen at one demand mix.
+    What the declined clause 6.2.6 would have seen at one demand mix.
+
+    Parameters
+    ----------
+    catalog :
+        The catalog the diameter is walled by.
+    diameter :
+        Outer diameter the member was sized to.
+    moment :
+        Major-axis moment the member was sized against.
+
+    Returns
+    -------
+    checked :
+        The plastic shear resistance beside the largest shear the mix admits.
+
+    Notes
+    -----
+    Blueprints' eq. (6.18subg) supplies the shear area of a circular hollow
+    section and eq. (6.18) the plastic shear resistance, so the diagnostic
+    reads the same library the shipped check does.
     """
-    diameter = diameter_for(catalog, moment)
-    area = area_shear(catalog(diameter).area)
-    steel = Steel(f_y=STEEL.f_y, gamma_m0=STEEL.gamma_m0)
-    resistance = resistance_shear(area, steel)
+    section = catalog(jnp.asarray(diameter))
+    area = float(section.area)
+    shear_area = Form6Dot18SubGCircularHollowSection(a=area)
+    resistance = Form6Dot18DesignPlasticShearResistance(
+        a_v=float(shear_area), f_y=float(catalog.material.f_y), gamma_m0=GAMMA_M0
+    )
     demand = SHEAR_FACTOR * moment / LENGTH
-    checked = ShearCheck(moment, float(diameter), float(resistance), demand)
 
-    return checked
+    return ShearCheck(moment, diameter, float(resistance), demand)
 
 
-def reading_pair(catalog: Ec3Catalogue, moment: float) -> ReadingPair:
+def compare_readings(
+    sizer: TesseractSizer,
+    moments: Float[Array, "members"],
+) -> list[ReadingPair]:
     """
-    The two readings of Eq. 6.42, under equal moments about both axes.
-    """
-    actions = MemberActions(FORCE, moment, moment, MOMENT_FACTOR, MOMENT_FACTOR)
-    diameters = []
-    for choice in (True, False):
-        diameter = diameter_required(actions, LENGTH, catalog, resultant=choice)
-        diameters.append(float(diameter))
+    Biaxial bending read as a resultant against the linear sum that ships.
 
-    readings = ReadingPair(moment, diameters[0], diameters[1])
+    Parameters
+    ----------
+    sizer :
+        The crossed check both readings are solved against.
+    moments :
+        Moment applied about both axes at once, per demand mix.
+
+    Returns
+    -------
+    readings :
+        The diameter each reading asks for, per demand mix.
+
+    Notes
+    -----
+    Both readings go through the shipped check, the resultant one as the
+    equivalent uniaxial moment `sqrt(M_y^2 + M_z^2)`. The check itself sums the
+    two axes linearly, which is the conservative reading of EN 1993-1-1 eq.
+    (6.2); a resultant stress is what an elastic stress analysis would report.
+    """
+    quiet = jnp.zeros_like(moments)
+    resultants = jnp.sqrt(2.0) * moments
+    sized_resultant = size_demands(sizer, resultants, quiet)
+    sized_linear = size_demands(sizer, moments, moments)
+    readings = []
+    for index in range(int(moments.shape[0])):
+        moment = float(moments[index])
+        pair = ReadingPair(
+            moment, float(sized_resultant[index]), float(sized_linear[index])
+        )
+        readings.append(pair)
 
     return readings
 
 
-def report_catalogs(report: Report, catalogs: Sequence[Ec3Catalogue]) -> None:
+def report_catalogs(report: Report, sweeps: Sequence[ClassSweep]) -> None:
     """
     The wall proportion each class limit stands for.
     """
     entries = []
-    for catalog in catalogs:
-        ratio = float(catalog.ratio)
-        label = f"Class {catalog.section_class}"
-        proportion = f"d/t = {ratio:.3f} ({behavior_of(catalog)})"
+    for sweep in sweeps:
+        ratio = float(sweep.catalog.ratio)
+        limit = f"Table 5.2 {CLASS_LIMITS[sweep.section_class]:.0f} eps^2"
+        label = f"Class {sweep.section_class}"
+        proportion = f"d/t = {ratio:.3f} ({limit}, t/d = {1.0 / ratio:.4f})"
         entries.append((label, proportion))
 
     title = "Class 2 limit against Class 3 limit, S355, 6 m member, 600 kN compression"
 
     report.write_line(title)
     report.write_entries(entries)
+    report.write_note(
+        """
+        Both branches are checked by the crossed Blueprints sizer, which reads
+        the elastic modulus of eq. (6.14) at either class, so what separates
+        them here is the wall proportion and nothing else.
+        """
+    )
 
 
-def report_masses(report: Report, catalogs: Sequence[Ec3Catalogue]) -> None:
+def report_masses(
+    report: Report,
+    sweeps: Sequence[ClassSweep],
+    moments: Float[Array, "members"],
+) -> None:
     """
     Which class limit is lighter, over the whole demand mix.
     """
-    compared = [compare_masses(catalogs, moment) for moment in MOMENTS]
+    compared = compare_sweeps(sweeps, moments)
 
     columns = (
         ReportColumn("M_y [kNm]", ".0f"),
@@ -331,20 +563,26 @@ def report_masses(report: Report, catalogs: Sequence[Ec3Catalogue]) -> None:
     )
     rows = []
     for found in compared:
-        lighter = f"Class {catalogs[found.lighter].section_class}"
+        lighter = f"Class {sweeps[found.lighter].section_class}"
         sizes = (*found.diameters, *found.masses)
         rows.append((found.moment / 1e6, *sizes, lighter, found.saving))
 
     report.write_heading("What each demand mix costs on either branch")
     report.write_table(columns, rows)
 
-    crossing = crossover_moment(catalogs)
+    crossing = find_crossover(CLASSES)
     report.write_heading("Where the crossover sits")
-    if crossing.moment is None:
+    if crossing.lighter is None:
+        report.write_note(
+            """
+            The two branches weigh the same at every sample in the swept range.
+            """
+        )
+    elif crossing.moment is None:
         report.write_note(
             f"""
             No crossover in the swept range; Class {crossing.lighter} is lighter
-            throughout.
+            throughout, the pure-compression tie aside.
             """
         )
     else:
@@ -356,15 +594,19 @@ def report_masses(report: Report, catalogs: Sequence[Ec3Catalogue]) -> None:
         )
 
 
-def report_shear(report: Report, catalog: Ec3Catalogue) -> None:
+def report_shear(report: Report, sweep: ClassSweep) -> None:
     """
-    The shear the excluded clause would have seen, open item 0d.
+    The shear the declined clause would have seen, on one branch.
 
     A bound over the demand mix, not a reading off a structure. What the ratio
-    does on a converged design is what open item 0d actually asks for, and the
-    analyzed shear a backend now reports is what answers it.
+    does on a converged design is what licenses declining 6.2.6, and the
+    analyzed shear a backend reports is what answers it.
     """
-    checked = [shear_check(catalog, moment) for moment in MOMENTS[1:]]
+    checked = []
+    for index in range(1, int(sweep.diameters.shape[0])):
+        diameter = float(sweep.diameters[index])
+        checked.append(check_shear(sweep.catalog, diameter, MOMENTS[index]))
+
     columns = (
         ReportColumn("M_y [kNm]", ".0f"),
         ReportColumn("d [mm]", ".2f"),
@@ -387,34 +629,37 @@ def report_shear(report: Report, catalog: Ec3Catalogue) -> None:
         )
         rows.append(row)
 
-    heading = "Shear the excluded clause would have seen (clauses.md open item 0d)"
+    worst = max(found.ratio for found in checked)
+    heading = f"Shear the declined clause would have seen, Class {sweep.section_class}"
 
     report.write_heading(heading)
     report.write_table(columns, rows)
     report.write_note(
         f"""
-        The exclusion of 6.2.6 stays honest while every ratio is under
-        {SHEAR_THRESHOLD}. Every demand here is the largest a member carrying
-        this moment over {LENGTH:.0f} mm can see, the shear under nodal loading
-        being the end-moment difference over the length and the moment bounded
-        both ways. A shorter member at the same moment sees more, in inverse
-        proportion. Read the analyzed shear off the converged design rather than
-        quoting this.
+        Declining 6.2.6 stays honest while every ratio is under
+        {SHEAR_THRESHOLD}, and the worst here is {worst:.3f}. Every demand is
+        the largest a member carrying this moment over {LENGTH:.0f} mm can see,
+        the shear under nodal loading being the end-moment difference over the
+        length and the moment bounded both ways. A shorter member at the same
+        moment sees more, in inverse proportion. Read the analyzed shear off a
+        converged design rather than quoting this.
         """
     )
 
 
-def report_readings(report: Report, catalog: Ec3Catalogue) -> None:
+def report_readings(report: Report, sweep: ClassSweep) -> None:
     """
-    The two readings of Eq. 6.42, and what choosing between them costs.
+    The two readings of biaxial bending, and what choosing between them costs.
     """
-    report.write_heading("The two readings of Eq. 6.42, on the Class 3 branch")
+    report.write_heading("A resultant reading against the linear sum, Class 3 branch")
     report.write_note(
         """
-        The guide says 6.2.9.2 permits only a linear interaction of stresses;
-        the ECCS says the stress is evaluated by an elastic stress analysis.
-        Blueprints implements 6.42 with the stress as an input and so does not
-        settle it; Karamba implements no 6.2.9 at all. See ec3x's docs/clauses.md.
+        The shipped check sums the two axes' moments linearly at the worse end,
+        which is the conservative reading of eq. (6.2); 6.2.9.2 read as an
+        elastic stress analysis would combine them as a resultant instead.
+        Blueprints implements eq. (6.42) with the stress as an input and so does
+        not settle it, and the crossed check does not offer the choice, so the
+        resultant reading is priced here as an equivalent uniaxial moment.
         """
     )
     columns = (
@@ -424,7 +669,9 @@ def report_readings(report: Report, catalog: Ec3Catalogue) -> None:
         ReportColumn("diameter", ".2%"),
         ReportColumn("area", ".2%"),
     )
-    readings = [reading_pair(catalog, moment) for moment in MOMENTS[1:]]
+    sizer = build_sizer(sweep.catalog)
+    moments = jnp.asarray(MOMENTS[1:])
+    readings = compare_readings(sizer, moments)
     rows = [
         (
             found.moment / 1e6,
@@ -439,25 +686,24 @@ def report_readings(report: Report, catalog: Ec3Catalogue) -> None:
     report.write_table(columns, rows)
     report.write_note(
         """
-        The gap closes wherever Eq. 6.61 governs, since that equation already
-        sums the two moments linearly, and vanishes under uniaxial bending.
+        The gap is widest where bending governs and vanishes under uniaxial
+        bending, where the two readings are the same equation.
         """
     )
 
 
 def main(verbose: bool = True) -> None:
     """
-    Sweep the demand mix and report which class limit is lighter.
+    Sweep the demand mix and report what the thinner wall buys.
     """
     report = Report(verbose)
-    catalogs = [
-        Ec3Catalogue.at_class_limit(STEEL, section_class) for section_class in CLASSES
-    ]
+    moments = jnp.asarray(MOMENTS)
+    sweeps = [sweep_class(section_class, moments) for section_class in CLASSES]
 
-    report_catalogs(report, catalogs)
-    report_masses(report, catalogs)
-    report_shear(report, catalogs[1])
-    report_readings(report, catalogs[1])
+    report_catalogs(report, sweeps)
+    report_masses(report, sweeps, moments)
+    report_shear(report, sweeps[1])
+    report_readings(report, sweeps[1])
 
 
 if __name__ == "__main__":
