@@ -8,6 +8,8 @@ exactly that point. Nothing is smoothed, interpolated or resampled, so a frame
 is a design the search really evaluated.
 """
 
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -17,7 +19,7 @@ import numpy as np
 from jaxtyping import Array
 from jaxtyping import Float
 from jaxtyping import Int
-from matplotlib.animation import FFMpegWriter
+from matplotlib.animation import FFMpegFileWriter
 from matplotlib.animation import FuncAnimation
 
 from normax.design import DesignProblem
@@ -26,7 +28,10 @@ from normax.optimization import DescentHistory
 from normax.visualization.plots import FAINT
 from normax.visualization.plots import GREY
 from normax.visualization.plots import INK
+from normax.visualization.plots import LEGEND_PLACE
+from normax.visualization.plots import LEGEND_RIM
 from normax.visualization.plots import SHADES
+from normax.visualization.plots import SIZE_LABEL
 from normax.visualization.plots import UTILIZATION_CAP
 from normax.visualization.plots import UTILIZATION_FLOOR
 from normax.visualization.plots import UTILIZATION_TICKS
@@ -35,6 +40,8 @@ from normax.visualization.plots import DescentPanel
 from normax.visualization.plots import DiameterRange
 from normax.visualization.plots import DrawnLimits
 from normax.visualization.plots import DrawnStructure
+from normax.visualization.plots import capitalize_label
+from normax.visualization.plots import clear_for_legend
 from normax.visualization.plots import draw_members
 from normax.visualization.plots import draw_outline
 from normax.visualization.plots import draw_round_starts
@@ -57,12 +64,18 @@ SECONDS_HELD = 1.5
 FRAMES_PLAYED = int(round(FRAMES_RATE * SECONDS_PLAYED))
 FRAMES_HELD = int(round(FRAMES_RATE * SECONDS_HELD))
 
-# What a GIF is reduced to. A GIF is written for a reader that cannot play a
-# video and is embedded rather than inspected, so it is narrowed and slowed
-# until it is worth its bytes: at full size and rate the same walk costs
-# fifteen times the video.
-GIF_WIDTH = 600
-GIF_RATE = 10
+# Pixels an inch every frame is rendered at, stated rather than inherited. A
+# backend reporting a device pixel ratio doubles the figure's own dpi, so the
+# same call wrote 1280 across on a Retina screen and 640 on a headless machine:
+# the film's resolution depended on where it was made. Matches the dpi the
+# still figures are written at, so a frame and a figure carry the same detail.
+ANIMATION_DPI = 200
+
+# A GIF carries the film unchanged: every frame, at the video's own rate and
+# resolution. Neither is reduced, so nothing can drift out of step with the
+# video and nothing has to be traded against reading the axis labels. What that
+# costs is bytes, and a GIF costs them by construction: one frame per file, a
+# palette per frame, and no prediction between them.
 
 # Color the curves are drawn in, matching the single trace of a still figure.
 SHADE_DRAWN = SHADES[0]
@@ -387,6 +400,7 @@ def animate_descent(
     across, upward = read_drawn_bounds(walked)
     if limits is not None:
         across, upward = limits.across, limits.upward
+    upward = clear_for_legend(upward)
 
     values = np.asarray(history.objectives)
     gaps = np.asarray(history.violations)
@@ -411,7 +425,7 @@ def animate_descent(
     violated.tick_params(labelbottom=False)
 
     outline = draw_outline(drawing, started, edges)
-    outline.set_label("starting shape")
+    outline.set_label("Starting shape")
     supports = problem.structure.supports
     blank = DrawnStructure(
         started, edges, np.zeros(len(edges)), walked.width_scale, supports
@@ -424,23 +438,33 @@ def animate_descent(
     dotted, seated = drawing.lines[-2], drawing.lines[-1]
     drawing.set_xlim(*across)
     drawing.set_ylim(*upward)
-    drawing.legend(loc="lower center", fontsize=8, frameon=False)
+    entries = len(drawing.get_legend_handles_labels()[0])
+    legend = drawing.legend(
+        loc=LEGEND_PLACE,
+        fontsize=8,
+        frameon=True,
+        framealpha=0.9,
+        ncol=max(entries, 1),
+    )
+    legend.get_frame().set_linewidth(LEGEND_RIM)
+    legend.get_frame().set_edgecolor(FAINT)
 
     # Above rather than beside, so the drawing keeps the width of the curves
     # under it and one iteration sits at one place down the whole page.
     bar = figure.colorbar(
         members, ax=drawing, location="top", fraction=0.09, pad=0.03, aspect=44
     )
-    bar.set_ticks(list(UTILIZATION_TICKS))
-    bar.set_label("utilization", fontsize=9)
+    bar.set_ticks(
+        list(UTILIZATION_TICKS),
+        labels=[f"{tick:.1f}" for tick in UTILIZATION_TICKS],
+    )
+    bar.set_label("Utilization", fontsize=SIZE_LABEL)
     bar.outline.set_edgecolor(FAINT)
     bar.outline.set_linewidth(0.6)
     named = drawing.text(
         0.015, 0.93, "", transform=drawing.transAxes, fontsize=10, va="top", color=INK
     )
 
-    violated.axhspan(floor, trace.tolerance, color=GREY, alpha=0.15, lw=0.0)
-    violated.axhline(trace.tolerance, color=GREY, ls="--", lw=1.0, label="tolerance")
     (walking,) = violated.plot([], [], "-", color=SHADE_DRAWN, lw=1.4)
     entered = draw_round_starts(violated, [], [], SHADE_DRAWN, None)
     (standing,) = violated.plot([], [], "o", color=SHADE_DRAWN, ms=4.5)
@@ -450,19 +474,30 @@ def animate_descent(
         violated.set_ylim(floor, float(placed.max()) * 2.0)
     else:
         violated.set_ylim(*limits.violation)
-    violated.set_ylabel("constraints violation")
+
+    # Shaded off the axis's own floor rather than this walk's, and after the
+    # limits are set: where several films share an axis its floor is the least
+    # of theirs, and a band drawn to a higher one leaves the satisfied region
+    # looking open at the bottom.
+    violated.axhspan(
+        violated.get_ylim()[0], trace.tolerance, color=GREY, alpha=0.15, lw=0.0
+    )
+    violated.axhline(trace.tolerance, color=GREY, ls="--", lw=1.0, label="Tolerance")
+    violated.set_ylabel("Constraints violation", fontsize=SIZE_LABEL)
     violated.legend(frameon=False, fontsize=9)
     violated.grid(alpha=0.3, which="both")
 
-    (reading,) = descent.plot([], [], "-", color=SHADE_DRAWN, lw=1.6, label=trace.title)
-    started_round = "round start" if crossings.size > 0 else None
+    (reading,) = descent.plot(
+        [], [], "-", color=SHADE_DRAWN, lw=1.6, label=capitalize_label(trace.title)
+    )
+    started_round = "Round start" if crossings.size > 0 else None
     rounding = draw_round_starts(descent, [], [], SHADE_DRAWN, started_round)
     (sitting,) = descent.plot([], [], "o", color=SHADE_DRAWN, ms=4.5)
     descent.set_ylim(
         *(read_objective_bounds(values) if limits is None else limits.objective)
     )
-    descent.set_xlabel(panel.axis)
-    descent.set_ylabel(panel.heading)
+    descent.set_xlabel(capitalize_label(panel.axis), fontsize=SIZE_LABEL)
+    descent.set_ylabel(capitalize_label(panel.heading), fontsize=SIZE_LABEL)
     descent.legend(frameon=False, fontsize=9, loc="upper right")
     descent.grid(alpha=0.3)
     paint_figure(figure)
@@ -483,7 +518,7 @@ def animate_descent(
         members.set_array(walked.envelopes[held])
         dotted.set_data(nodes[:, 0], nodes[:, 2])
         seated.set_data(nodes[supports, 0], nodes[supports, 2])
-        named.set_text(name_frame(panel, history, reached))
+        named.set_text(capitalize_label(name_frame(panel, history, reached)))
 
         shown = slice(0, reached + 1)
         entries = crossings[crossings <= reached]
@@ -526,47 +561,98 @@ def save_animation(played: FuncAnimation, path: Path) -> None:
     without banding, and a video is what a writeup embeds. The encoder is the
     binary `imageio-ffmpeg` ships as a wheel rather than one the machine is
     asked to have, so a run still writes its animation on every install.
+
+    Frames go to disk as images and are encoded from there, rather than piped as
+    raw bytes. A pipe carries no dimensions, so the writer states them as
+    `int(size * dpi)` while the rasterizer rounds up, and a drawing sized from
+    its own aspect ratio makes that product fractional: the two then disagree by
+    a row, every frame is read one row out of step with the last, and the
+    picture creeps down the screen. H.264 encodes that as a translation and
+    hides it; a GIF does not.
     """
     plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
     # H.264 refuses an odd pixel dimension, which a figure sized in inches reaches.
     evened = "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white"
     settings = ["-vf", evened, "-pix_fmt", "yuv420p"]
-    writer = FFMpegWriter(fps=FRAMES_RATE, extra_args=settings)
+    writer = FFMpegFileWriter(fps=FRAMES_RATE, extra_args=settings)
 
-    played.save(path, writer=writer)
+    played.save(path, writer=writer, dpi=ANIMATION_DPI)
+
+
+def convert_to_gif(video: Path, path: Path) -> None:
+    """
+    A GIF of a video already written, narrowed and slowed to be worth its bytes.
+
+    Parameters
+    ----------
+    video :
+        The MP4 to read.
+    path :
+        Where the GIF goes.
+
+    Raises
+    ------
+    RuntimeError
+        If the encoder refuses the conversion, carrying what it reported.
+
+    Notes
+    -----
+    Every frame at the video's own rate and resolution, so the two play in
+    step and the axis labels read as they do in the film. A GIF pays for that
+    in bytes -- one frame per file, a palette per frame, no prediction between
+    them -- and lands many times the size of the video it came from.
+
+    A GIF states its delays in hundredths of a second, so a rate that does not
+    divide a hundred cannot be written exactly. The nearest representable delay
+    is used, which shifts the total slightly; the frames themselves are all
+    there. The palette is generated from the walk rather than taken from a
+    default that never saw it, which is the most that can be done about a
+    256-color ramp.
+
+    Converted from the written video rather than rendered again, because the
+    frames cost a pipeline pass each and the transcode costs seconds: a GIF of
+    a run already filmed asks for no part of the search to be repeated.
+    """
+    palette = "split[a][b];[a]palettegen[p];[b][p]paletteuse"
+    asked = [
+        imageio_ffmpeg.get_ffmpeg_exe(),
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video),
+        "-vf",
+        palette,
+        "-loop",
+        "0",
+        str(path),
+    ]
+    finished = subprocess.run(asked, capture_output=True)
+    if finished.returncode != 0:
+        reported = finished.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"the encoder refused a GIF of {video}: {reported}")
 
 
 def save_gif(played: FuncAnimation, path: Path) -> None:
     """
-    Write an animation to disk as a GIF, narrowed and slowed to be worth it.
+    Write an animation to disk as a GIF, by way of the video it comes from.
 
     Parameters
     ----------
     played :
         The animation to write.
     path :
-        Where the file goes.
+        Where the GIF goes.
 
     Notes
     -----
     Not what a run writes: `save_animation` is, and this is for a reader that
     renders an image and not a video -- a README on a forge that strips the
-    video tag, most often. The cost of that is real and is why it is asked for
-    rather than produced. A GIF carries a 256-color palette, which bands a
-    continuous utilization ramp, and one frame per file, which at full size and
-    rate lands the same walk at fifteen times the video. So it is narrowed to
-    `GIF_WIDTH` and decimated to `GIF_RATE` first, which brings it to roughly
-    twice the video instead.
-
-    The palette is generated from the walk itself and then applied, in one
-    filter graph, rather than taken from the web-safe default: a design colored
-    by a continuous map has no business being quantized against a palette that
-    never saw it.
+    video tag, most often. Asked for rather than produced, since the bytes are
+    real; `convert_to_gif` carries the reasoning and the reduction. Where the
+    video is already on disk, call that instead and nothing is rendered twice.
     """
-    plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
-    reduced = f"fps={GIF_RATE},scale={GIF_WIDTH}:-1:flags=lanczos"
-    palette = "split[a][b];[a]palettegen[p];[b][p]paletteuse"
-    settings = ["-vf", f"{reduced},{palette}", "-loop", "0"]
-    writer = FFMpegWriter(fps=FRAMES_RATE, codec="gif", extra_args=settings)
-
-    played.save(path, writer=writer)
+    with tempfile.TemporaryDirectory() as room:
+        video = Path(room) / "walk.mp4"
+        save_animation(played, video)
+        convert_to_gif(video, path)

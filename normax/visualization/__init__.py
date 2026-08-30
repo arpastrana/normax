@@ -10,6 +10,7 @@ with the oracles it drew with.
 """
 
 from normax.visualization.animations import animate_descent
+from normax.visualization.animations import convert_to_gif
 from normax.visualization.animations import save_animation
 from normax.visualization.animations import save_gif
 from normax.visualization.plots import DescentPanel
@@ -30,6 +31,7 @@ __all__ = [
     "DrawnLimits",
     "DrawnFigures",
     "animate_descent",
+    "convert_to_gif",
     "draw_design_figures",
     "draw_code_validation",
     "draw_pipeline_validation",
