@@ -11,6 +11,16 @@
 & Shape Optimization.** It turns structural form finding, frame analysis, and
 Eurocode cross-section checks into one differentiable design program.
 
+```text
+[jax-fdm form finding] → [OpenSees / PyNite analysis] → [Blueprints code check]
+          ↑                                                    │
+          └──────── mass + code gradients flow back ───────────┘
+```
+
+Geometry and member actions move to the right. Gradients of steel mass and code
+utilization move back to the left, so all three stages participate in one
+design decision.
+
 Safety is not negotiable; excess material is. Structural codes distill hard-won
 experience into rules that bridges, roofs, and buildings must satisfy across
 decades of uncertain loading. At the same time, construction is a global
@@ -98,87 +108,6 @@ $\mathcal C_{\mathrm{EC3}}$ is Blueprints. The objective is steel mass; the
 constraints are the actual crossed code utilizations plus geometric, sign, and
 box bounds. Normax optimizes this composition—not three independent proxies for
 it—and backpropagates the augmented Lagrangian through all three maps.
-
-## One program, three kinds of differentiation
-
-Normax presents each stage as a function, even though the implementations
-disagree about languages, data models, and differentiation strategies.
-
-```text
-Forward pass
-
- force densities / shape parameters q       section diameters d
-                  │                                  │
-                  ▼                                  │
-       JAX force-density form finding                │
-       equilibrium solve + held-plan basis           │
-                  │ geometry x, lengths L            │
-                  └────────────────┬─────────────────┘
-                                   ▼
-                     Tesseract: frame analysis
-                       OpenSees (2D) / PyNite (3D)
-                                   │ member actions
-                                   ▼
-                     Tesseract: section check
-                       Blueprints / EN 1993-1-1
-                                   │ utilization U
-                  ┌────────────────┴─────────────────┐
-                  │                                  │
-          mass m(x, L, d)                   constraints U ≤ 1
-                  └────────────────┬─────────────────┘
-                                   ▼
-                     augmented-Lagrangian optimizer
-```
-
-The optimizer sees one composition. Its reverse pass follows the same route in
-the other direction:
-
-```text
-Backward pass
-
- objective m                         constraints U ≤ 1
-      │ direct cotangents                     │
-      │ on geometry and d                     ▼
-      │                    Blueprints check VJP — hand adjoint
-      │                                       │ actions, d
-      │                                       ▼
-      │                    frame-analysis VJP
-      │                      OpenSees: solver sensitivities
-      │                      PyNite: implicit frame adjoint
-      │                                       │ geometry, d
-      └───────────────────┬───────────────────┘
-                          ▼
-        JAX / implicit form-finding pullback + accumulation
-                          │
-                          ▼
-                  gradients ∂L/∂q and ∂L/∂d
-```
-
-This is not a differentiable surrogate for the engineering pipeline. The
-optimizer evaluates the crossed OpenSees or PyNite analysis and the crossed
-Blueprints check on every design evaluation, then calls their derivative
-endpoints during backpropagation.
-
-## Why Tesseract is load-bearing
-
-No single autodiff system owns this calculation:
-
-- Force-density form finding is native JAX and differentiates through a linear
-  equilibrium solve.
-- OpenSees is a compiled structural solver with forward sensitivities; its
-  planar backend exposes those through the analysis Tesseract.
-- PyNite is a Python space-frame solver with no native derivative API; Normax
-  supplies an implicit, element-level reverse rule behind the same schema.
-- Blueprints evaluates the EN 1993-1-1 cross-section formulas as scalar Python;
-  Normax gives the check a hand-derived pullback behind a sizing Tesseract.
-
-Tesseract makes the two crossed stages ordinary JAX-callable blocks with
-explicit schemas and vector-Jacobian products. Replacing OpenSees with PyNite
-changes the selected backend, not the design pipeline or optimizer. Without
-those boundaries and derivative contracts, Normax would need a parallel
-reimplementation of each solver and check in one autodiff-native stack; the
-experiment would no longer be optimizing through the software it claims to
-compose.
 
 ## Results
 
@@ -382,6 +311,87 @@ Selected technical notes:
 - [Results and experiment protocol](docs/results.md)
 - [Reproducibility guide](docs/reproducibility.md)
 - [Building a fast backward pass](docs/fast_backward_pass.md)
+
+## One program, three kinds of differentiation
+
+Normax presents each stage as a function, even though the implementations
+disagree about languages, data models, and differentiation strategies.
+
+```text
+Forward pass
+
+ force densities / shape parameters q       section diameters d
+                  │                                  │
+                  ▼                                  │
+       JAX force-density form finding                │
+       equilibrium solve + held-plan basis           │
+                  │ geometry x, lengths L            │
+                  └────────────────┬─────────────────┘
+                                   ▼
+                     Tesseract: frame analysis
+                       OpenSees (2D) / PyNite (3D)
+                                   │ member actions
+                                   ▼
+                     Tesseract: section check
+                       Blueprints / EN 1993-1-1
+                                   │ utilization U
+                  ┌────────────────┴─────────────────┐
+                  │                                  │
+          mass m(x, L, d)                   constraints U ≤ 1
+                  └────────────────┬─────────────────┘
+                                   ▼
+                     augmented-Lagrangian optimizer
+```
+
+The optimizer sees one composition. Its reverse pass follows the same route in
+the other direction:
+
+```text
+Backward pass
+
+ objective m                         constraints U ≤ 1
+      │ direct cotangents                     │
+      │ on geometry and d                     ▼
+      │                    Blueprints check VJP — hand adjoint
+      │                                       │ actions, d
+      │                                       ▼
+      │                    frame-analysis VJP
+      │                      OpenSees: solver sensitivities
+      │                      PyNite: implicit frame adjoint
+      │                                       │ geometry, d
+      └───────────────────┬───────────────────┘
+                          ▼
+        JAX / implicit form-finding pullback + accumulation
+                          │
+                          ▼
+                  gradients ∂L/∂q and ∂L/∂d
+```
+
+This is not a differentiable surrogate for the engineering pipeline. The
+optimizer evaluates the crossed OpenSees or PyNite analysis and the crossed
+Blueprints check on every design evaluation, then calls their derivative
+endpoints during backpropagation.
+
+## Why Tesseract is load-bearing
+
+No single autodiff system owns this calculation:
+
+- Force-density form finding is native JAX and differentiates through a linear
+  equilibrium solve.
+- OpenSees is a compiled structural solver with forward sensitivities; its
+  planar backend exposes those through the analysis Tesseract.
+- PyNite is a Python space-frame solver with no native derivative API; Normax
+  supplies an implicit, element-level reverse rule behind the same schema.
+- Blueprints evaluates the EN 1993-1-1 cross-section formulas as scalar Python;
+  Normax gives the check a hand-derived pullback behind a sizing Tesseract.
+
+Tesseract makes the two crossed stages ordinary JAX-callable blocks with
+explicit schemas and vector-Jacobian products. Replacing OpenSees with PyNite
+changes the selected backend, not the design pipeline or optimizer. Without
+those boundaries and derivative contracts, Normax would need a parallel
+reimplementation of each solver and check in one autodiff-native stack; the
+experiment would no longer be optimizing through the software it claims to
+compose.
 
 ## License
 
