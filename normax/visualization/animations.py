@@ -23,6 +23,7 @@ from matplotlib.animation import FFMpegFileWriter
 from matplotlib.animation import FuncAnimation
 
 from normax.design import DesignProblem
+from normax.design import compute_mass
 from normax.design import create_design
 from normax.optimization import DescentHistory
 from normax.visualization.plots import FAINT
@@ -41,6 +42,7 @@ from normax.visualization.plots import DiameterRange
 from normax.visualization.plots import DrawnLimits
 from normax.visualization.plots import DrawnStructure
 from normax.visualization.plots import capitalize_label
+from normax.visualization.plots import clear_for_caption
 from normax.visualization.plots import clear_for_legend
 from normax.visualization.plots import draw_members
 from normax.visualization.plots import draw_outline
@@ -86,6 +88,15 @@ HEIGHT_VIOLATION = 1.3
 HEIGHT_OBJECTIVE = 1.8
 HEIGHT_MARGINS = 1.6
 
+# Points the two captions over the drawing are set at, and where they sit in
+# the drawing's own coordinates. Two-fifths larger than the ten they were drawn
+# at, which is what a caption read from across a room asks for: these are the
+# only numbers on the page that say which design is on screen.
+SIZE_CAPTION = 14.0
+CAPTION_LEFT = 0.015
+CAPTION_RIGHT = 0.985
+CAPTION_LEVEL = 0.93
+
 
 class WalkedDesigns(NamedTuple):
     """
@@ -99,6 +110,8 @@ class WalkedDesigns(NamedTuple):
         Outer diameter of every member at every point.
     envelopes :
         Worst utilization over the load cases of every member at every point.
+    masses :
+        Total mass of the design at every point.
     width_scale :
         Least and largest diameter over the whole walk, which set the widths
         the members are drawn at.
@@ -115,6 +128,7 @@ class WalkedDesigns(NamedTuple):
     shapes: tuple[Float[Array, "nodes 3"], ...]
     diameters: tuple[Float[Array, "members"], ...]
     envelopes: tuple[Float[Array, "members"], ...]
+    masses: tuple[float, ...]
     width_scale: DiameterRange
 
 
@@ -155,6 +169,7 @@ def rebuild_walk(problem: DesignProblem, history: DescentHistory) -> WalkedDesig
     shapes = []
     diameters = []
     envelopes = []
+    masses = []
     for step in history.iterates:
         design = create_design(problem, step)
         sizes = design.sizes
@@ -163,11 +178,16 @@ def rebuild_walk(problem: DesignProblem, history: DescentHistory) -> WalkedDesig
         shapes.append(np.asarray(design.shape.xyz))
         diameters.append(np.asarray(sizes.sections.diameter))
         envelopes.append(np.asarray(sizes.utilization).max(axis=0))
+        # Read off the design rather than off the recorded objective, which is
+        # the mass only where mass is what the search minimized.
+        masses.append(float(compute_mass(design)))
 
     widest = max(float(column.max()) for column in diameters)
     thinnest = min(float(column.min()) for column in diameters)
     scale = DiameterRange(thinnest, widest)
-    walked = WalkedDesigns(tuple(shapes), tuple(diameters), tuple(envelopes), scale)
+    walked = WalkedDesigns(
+        tuple(shapes), tuple(diameters), tuple(envelopes), tuple(masses), scale
+    )
 
     return walked
 
@@ -320,13 +340,20 @@ def name_frame(panel: DescentPanel, history: DescentHistory, frame: int) -> str:
     title :
         The point and the round it came out of, or the point alone where the
         walk was recorded a round at a time and the two would say one thing.
+
+    Notes
+    -----
+    Returned ready to draw, both words capitalized and split by a slash rather
+    than a comma, so the caption reads as two counters and not as a sentence.
+    A caller adds nothing to it.
     """
+    counted = capitalize_label(panel.axis)
     if panel.axis == "round":
-        return f"round {frame}"
+        return f"{counted} {frame}"
 
     numbered = np.asarray(history.round_index)
 
-    return f"{panel.axis} {frame}, round {int(numbered[frame])}"
+    return f"{counted} {frame} / Round {int(numbered[frame])}"
 
 
 def animate_descent(
@@ -400,7 +427,7 @@ def animate_descent(
     across, upward = read_drawn_bounds(walked)
     if limits is not None:
         across, upward = limits.across, limits.upward
-    upward = clear_for_legend(upward)
+    upward = clear_for_caption(clear_for_legend(upward))
 
     values = np.asarray(history.objectives)
     gaps = np.asarray(history.violations)
@@ -461,8 +488,27 @@ def animate_descent(
     bar.set_label("Utilization", fontsize=SIZE_LABEL)
     bar.outline.set_edgecolor(FAINT)
     bar.outline.set_linewidth(0.6)
+    # What frame this is, and what the design on it weighs. Two captions rather
+    # than one long line: the left is where the search stands and the right is
+    # what it has bought, and neither grows into the other as the counts climb.
     named = drawing.text(
-        0.015, 0.93, "", transform=drawing.transAxes, fontsize=10, va="top", color=INK
+        CAPTION_LEFT,
+        CAPTION_LEVEL,
+        "",
+        transform=drawing.transAxes,
+        fontsize=SIZE_CAPTION,
+        va="top",
+        color=INK,
+    )
+    weighed = drawing.text(
+        CAPTION_RIGHT,
+        CAPTION_LEVEL,
+        "",
+        transform=drawing.transAxes,
+        fontsize=SIZE_CAPTION,
+        va="top",
+        ha="right",
+        color=INK,
     )
 
     (walking,) = violated.plot([], [], "-", color=SHADE_DRAWN, lw=1.4)
@@ -518,7 +564,9 @@ def animate_descent(
         members.set_array(walked.envelopes[held])
         dotted.set_data(nodes[:, 0], nodes[:, 2])
         seated.set_data(nodes[supports, 0], nodes[supports, 2])
-        named.set_text(capitalize_label(name_frame(panel, history, reached)))
+        named.set_text(name_frame(panel, history, reached))
+        worked = float(np.mean(walked.envelopes[held]))
+        weighed.set_text(f"Mass {walked.masses[held]:.3f} t / Utilization {worked:.3f}")
 
         shown = slice(0, reached + 1)
         entries = crossings[crossings <= reached]

@@ -8,11 +8,22 @@ one command over `data/` rather than a descent per route. Nothing is optimized:
 the answers cannot move, which on a landscape with more than one basin is the
 point rather than a convenience.
 
+The planar structures share one drawing box on top of that, so an arch and a
+truss can be set beside each other on a slide and their ground lines agree.
+The box is the union over the whole group whichever of its members is named,
+which costs a limits pass per member and is what keeps a figure from depending
+on what was asked for.
+
+Stills only unless a film is asked for: redrawing the drawings takes seconds
+and redrawing the animations takes minutes, so the cheap pass is the default
+whatever `output.animate` says in the run description.
+
 Run from the repository root:
 
     uv run python redraw_designs.py                     # every structure
     uv run python redraw_designs.py arch vierendeel     # some of them
-    uv run python redraw_designs.py arch --gif          # and write GIFs too
+    uv run python redraw_designs.py arch --film         # animations as well
+    uv run python redraw_designs.py arch --film --gif   # and a GIF of each
 """
 
 import sys
@@ -72,6 +83,11 @@ from normax.visualization.plots import read_violation_floor
 DATA = Path("data")
 FIGURES = Path("figures")
 ROUTES = ("fdm", "heights", "fixed")
+
+# Examples drawn to one box. The three planar ones span the same 10000 mm and
+# stand on the same ground, so a shared box makes them comparable rather than
+# merely equal in size; the shell shares its own with nothing.
+FRAMINGS = (("arch", "warren", "vierendeel"), ("gridshell",))
 MATERIAL = Steel355()
 
 
@@ -198,6 +214,15 @@ def build_problem(example: str, route: str) -> tuple[DesignProblem, RunConfig[An
     return problem, config
 
 
+def count_archives(example: str) -> int:
+    """
+    How many of one example's baselines left an archive to redraw.
+    """
+    written = [read_archive_name(example, route).exists() for route in ROUTES]
+
+    return sum(written)
+
+
 def read_shared_limits(example: str) -> DrawnLimits:
     """
     Limits wide enough for every baseline of one example.
@@ -212,7 +237,23 @@ def read_shared_limits(example: str) -> DrawnLimits:
     limits :
         The union of what each baseline would have set on its own: the drawing
         extents, the longest walk, and the two curve axes.
+
+    Raises
+    ------
+    ValueError
+        If no baseline of the example wrote an archive, so there is nothing to
+        read a limit off.
+
+    Notes
+    -----
+    The drawing extents this returns are the example's own. A caller drawing
+    several examples to one box widens them afterwards; the curve axes are
+    never widened, since an objective is in the example's own tonnes and a
+    walk is as long as that example's descent ran.
     """
+    if count_archives(example) == 0:
+        raise ValueError(f"no baseline of {example} wrote an archive under {DATA}")
+
     extents = []
     counts = []
     objectives = []
@@ -251,11 +292,71 @@ def read_shared_limits(example: str) -> DrawnLimits:
     return DrawnLimits(across, upward, max(counts), objective, violation)
 
 
-def redraw_example(example: str, gifs: bool) -> None:
+def read_framing_limits(group: tuple[str, ...]) -> dict[str, DrawnLimits]:
+    """
+    Every example of one group, framed alike and curved on its own axes.
+
+    Parameters
+    ----------
+    group :
+        Examples sharing a drawing box, an entry of `FRAMINGS`.
+
+    Returns
+    -------
+    framed :
+        The limits to draw each example of the group under, keyed by example.
+        Examples that wrote no archive are absent.
+
+    Notes
+    -----
+    Only the drawing box is shared. Holding the curve axes across examples
+    would flatten the lighter structure's descent into a line, since the masses
+    differ severalfold, and would draw every walk out to the longest of them.
+    What a slide needs is the shapes at one scale, which is the box alone.
+    """
+    limits = {}
+    for example in group:
+        if count_archives(example) == 0:
+            continue
+        limits[example] = read_shared_limits(example)
+    if not limits:
+        return limits
+
+    across = (
+        min(limit.across[0] for limit in limits.values()),
+        max(limit.across[1] for limit in limits.values()),
+    )
+    upward = (
+        min(limit.upward[0] for limit in limits.values()),
+        max(limit.upward[1] for limit in limits.values()),
+    )
+
+    return {
+        example: limit._replace(across=across, upward=upward)
+        for example, limit in limits.items()
+    }
+
+
+def redraw_example(
+    example: str,
+    limits: DrawnLimits,
+    films: bool,
+    gifs: bool,
+) -> None:
     """
     Redraw every baseline of one example, reporting what each archive wrote.
+
+    Parameters
+    ----------
+    example :
+        Which example to redraw, a key of `KINDS`.
+    limits :
+        The limits every baseline is held to, from `read_framing_limits`.
+    films :
+        Whether to write the animation as well as the drawings.
+    gifs :
+        Whether to convert each film written earlier to a GIF.
     """
-    limits = read_shared_limits(example)
     print(f"\n{example}")
     print(
         f"  framing across {limits.across[0]:.1f}..{limits.across[1]:.1f}"
@@ -272,6 +373,11 @@ def redraw_example(example: str, gifs: bool) -> None:
             print(f"  {route}: no archive at {archive}, skipped")
             continue
         problem, config = build_problem(example, route)
+        # Overridden rather than passed on: `redraw_run` reads the run
+        # description for what to write, and a sixth argument to say otherwise
+        # is a worse answer than describing the run that is actually being made.
+        if not films:
+            config = config._replace(output=config.output._replace(animate=False))
         written = redraw_run(problem, config, archive, FIGURES, limits)
         names = ", ".join(path.name for path in written)
         print(f"  {route}: {archive.name} -> {names}")
@@ -283,15 +389,32 @@ def redraw_example(example: str, gifs: bool) -> None:
                 print(f"          + {gif.name}")
 
 
-def main(asked: tuple[str, ...], gifs: bool) -> None:
+def main(asked: tuple[str, ...], films: bool, gifs: bool) -> None:
     """
-    Redraw every named example.
+    Redraw every named example, a framing group at a time.
+
+    Parameters
+    ----------
+    asked :
+        Examples to redraw, keys of `KINDS`.
+    films :
+        Whether to write each descent's animation as well as its drawings.
+    gifs :
+        Whether to convert each film to a GIF.
     """
-    for example in asked:
-        redraw_example(example, gifs)
+    for group in FRAMINGS:
+        wanted = [example for example in group if example in asked]
+        if not wanted:
+            continue
+        framed = read_framing_limits(group)
+        for example in wanted:
+            if example not in framed:
+                print(f"\n{example}: no archive under {DATA}, skipped")
+                continue
+            redraw_example(example, framed[example], films, gifs)
 
 
-FLAGS = ("--gif",)
+FLAGS = ("--film", "--gif")
 
 if __name__ == "__main__":
     asked_flags = [word for word in sys.argv[1:] if word.startswith("-")]
@@ -301,11 +424,11 @@ if __name__ == "__main__":
     if strange:
         raise SystemExit(
             f"unknown option {strange}, known: {list(FLAGS)}\n"
-            f"usage: redraw_designs.py [{'|'.join(KINDS)}] ... [--gif]"
+            f"usage: redraw_designs.py [{'|'.join(KINDS)}] ... [--film] [--gif]"
         )
     given = [word for word in sys.argv[1:] if not word.startswith("-")]
     wanted = tuple(given) or tuple(KINDS)
     unknown = [word for word in wanted if word not in KINDS]
     if unknown:
         raise SystemExit(f"unknown example {unknown}, known: {list(KINDS)}")
-    main(wanted, "--gif" in asked_flags)
+    main(wanted, "--film" in asked_flags, "--gif" in asked_flags)

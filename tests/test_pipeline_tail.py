@@ -408,9 +408,10 @@ def test_a_frame_is_named_for_its_round_at_either_resolution():
     fine = DescentPanel("mass [t]", "iteration", (DescentTrace("a", walked, 1e-6),))
     coarse = DescentPanel("mass [t]", "round", (DescentTrace("a", walked, 1e-6),))
 
-    assert name_frame(fine, walked, 2) == "iteration 2, round 1"
+    # Drawn as it comes back: both counters capitalized, split by a slash.
+    assert name_frame(fine, walked, 2) == "Iteration 2 / Round 1"
     # A round at a time, the two numbers are one, so only one is printed.
-    assert name_frame(coarse, walked, 2) == "round 2"
+    assert name_frame(coarse, walked, 2) == "Round 2"
 
 
 def test_a_long_walk_is_thinned_to_a_watchable_number_of_frames():

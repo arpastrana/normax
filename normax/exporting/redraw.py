@@ -14,6 +14,7 @@ frame with the answer held fixed.
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from normax.config import RunConfig
@@ -131,6 +132,9 @@ def redraw_run(
 
     Notes
     -----
+    Every figure is closed once written, so redrawing many runs in one process
+    does not accumulate them.
+
     The start and the answer are the walk's first and last iterates rather than
     anything recomputed, so a redrawn figure shows the design the search really
     reached. The load cases and the tolerance come from the run description,
@@ -164,6 +168,12 @@ def redraw_run(
     path = figures / f"{stem}_optimization.png"
     drawn.optimization.savefig(path, dpi=FIGURE_DPI)
     written.append(path)
+
+    # Closed once saved: pyplot holds every figure it made, and a caller
+    # redrawing a dozen runs in one process otherwise carries all of them.
+    for figure in (drawn.designs, drawn.load_cases, drawn.optimization):
+        if figure is not None:
+            plt.close(figure)
 
     if config.output.animate:
         path = figures / f"{stem}_optimization.mp4"

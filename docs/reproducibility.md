@@ -115,12 +115,16 @@ range, and animation pace across its baselines, without rerunning any
 optimization:
 
 ```bash
-uv run python redraw_designs.py                     # every example
-uv run python redraw_designs.py gridshell --gif     # one of them, with a GIF
+uv run python redraw_designs.py                     # every example, drawings only
+uv run python redraw_designs.py gridshell --film    # one of them, animation too
+uv run python redraw_designs.py gridshell --film --gif   # and a GIF of it
 ```
 
-Name `arch`, `warren`, `vierendeel`, or `gridshell` to redraw a subset, and add
-`--gif` to write GIFs beside the videos. Each example is rebuilt exactly as its
+Name `arch`, `warren`, `vierendeel`, or `gridshell` to redraw a subset. Add
+`--film` for the animations, which cost minutes rather than seconds, and `--gif`
+to convert each film written. The three planar examples are drawn to one shared
+box, so an arch and a truss can be set side by side at one scale; the shell is
+framed on its own. Each example is rebuilt exactly as its
 own script builds it -- verified against every archive's recorded objective to
 4.1e-16 -- and the recorded parameters and objective histories are never
 changed. The accepted masses and matching log names are recorded in

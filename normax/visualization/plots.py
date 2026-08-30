@@ -91,6 +91,35 @@ def clear_for_legend(upward: tuple[float, float]) -> tuple[float, float]:
     return dropped, high
 
 
+def clear_for_caption(upward: tuple[float, float]) -> tuple[float, float]:
+    """
+    Vertical limits with room kept over the design for a film's counters.
+
+    Parameters
+    ----------
+    upward :
+        Least and greatest coordinate the design reaches, legend room included.
+
+    Returns
+    -------
+    cleared :
+        The same pair, its upper bound raised by `CAPTION_CLEARANCE` of the
+        span.
+
+    Notes
+    -----
+    The mirror of `clear_for_legend` at the other end, and a fraction for the
+    same reason: it means one thing at any scale, and runs sharing a framing
+    share the clearance, so the aspect ratio stays equal across them. Without
+    it a shape reaching the top of its own box is written over -- which the
+    shell, whose walk climbs to its rise cap, does.
+    """
+    low, high = upward
+    raised = high + CAPTION_CLEARANCE * (high - low)
+
+    return low, raised
+
+
 def capitalize_label(text: str) -> str:
     """
     A label with its first letter capitalized and the rest left alone.
@@ -178,6 +207,12 @@ LEGEND_RIM = 0.5
 # is the thing a reader looks for first.
 LEGEND_CLEARANCE = 0.12
 
+# Share of a drawing's height kept clear above the design, so a film's counters
+# sit over the page rather than over the structure. Only a film carries them,
+# so only a film reserves the room; a drawing with no caption would be spending
+# a tenth of its height on nothing.
+CAPTION_CLEARANCE = 0.10
+
 # Points of line width the shape a search left from is outlined at. Two fifths
 # lighter than the 0.8 it was drawn at, so a start reads as the ghost behind a
 # design rather than as a second result.
@@ -217,6 +252,20 @@ HEIGHT_DESIGN = 1.3
 
 # Shortest a drawing is allowed to be, whatever the shape's proportions.
 HEIGHT_DRAWING = 1.3
+
+# Inches the curve figure measures, and the margins its two panels are pinned
+# inside. Pinned rather than negotiated: a layout engine reserves whatever the
+# widest tick label of the run needs, so a structure whose masses read to four
+# characters has its axes pushed right and two runs set side by side no longer
+# line up. Reserved space, so a label wider than the margin overhangs the page
+# rather than moving the axes -- the trade `WIDTH_LABELS` already makes.
+WIDTH_CURVE = 6.0
+HEIGHT_CURVE = 5.6
+CURVE_LABELS = 0.68
+CURVE_EDGE = 0.05
+CURVE_CAPTION = 0.47
+CURVE_HEADING = 0.27
+CURVE_GAP = 0.14
 
 # Points across the open marker sitting on the first point of a round.
 ROUND_MARK = 3.0
@@ -1447,6 +1496,44 @@ def read_violation_floor(traces: Sequence[DescentTrace]) -> float:
     return min(reached, tightest) * VIOLATION_DECADE
 
 
+def place_curve_axes(
+    violated: Axes,
+    descent: Axes,
+    proportions: tuple[float, float],
+) -> None:
+    """
+    Pin the two curve panels to one rectangle, whatever their labels ask for.
+
+    Parameters
+    ----------
+    violated :
+        The upper panel, carrying the violation on its log scale.
+    descent :
+        The lower panel, carrying the objective.
+    proportions :
+        Heights the two panels are given, upper first, in the same shares the
+        gridspec was built with.
+
+    Notes
+    -----
+    The panels keep the shares they were built with; only the rectangle they
+    divide is fixed. Every margin is in inches against the figure's own size,
+    so the rectangle is the same fraction of every curve figure this module
+    draws and two of them scale onto a page identically.
+    """
+    left = CURVE_LABELS / WIDTH_CURVE
+    width = (WIDTH_CURVE - CURVE_LABELS - CURVE_EDGE) / WIDTH_CURVE
+    bottom = CURVE_CAPTION / HEIGHT_CURVE
+    spanned = HEIGHT_CURVE - CURVE_CAPTION - CURVE_HEADING - CURVE_GAP
+    shares = proportions[0] + proportions[1]
+    lower = spanned * proportions[1] / shares
+    upper = spanned * proportions[0] / shares
+
+    descent.set_position((left, bottom, width, lower / HEIGHT_CURVE))
+    raised = (CURVE_CAPTION + lower + CURVE_GAP) / HEIGHT_CURVE
+    violated.set_position((left, raised, width, upper / HEIGHT_CURVE))
+
+
 def draw_objective_descent(
     panel: DescentPanel,
     limits: DrawnLimits | None = None,
@@ -1482,10 +1569,9 @@ def draw_objective_descent(
     figure, axes = plt.subplots(
         2,
         1,
-        figsize=(6.0, 5.6),
+        figsize=(WIDTH_CURVE, HEIGHT_CURVE),
         sharex=True,
         height_ratios=proportions,
-        layout="constrained",
     )
     violated, descent = axes
     shades = SHADES
@@ -1551,6 +1637,7 @@ def draw_objective_descent(
         descent.set_ylim(*limits.objective)
     descent.legend(frameon=False, fontsize=9)
     descent.grid(alpha=0.3)
+    place_curve_axes(violated, descent, proportions)
     paint_figure(figure)
 
     return figure
