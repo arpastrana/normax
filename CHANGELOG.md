@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### The three runs are retuned, and a vierendeel stall is diagnosed
+
+Changed 2026-08-30. Every structure now opens its three parametrizations on one
+geometry, and the settings that geometry needs came with it.
+
+**The arch opens at 50 mm.** A funicular chain reaches `250000/|q|` mm here, so
+`density_start` is `-5000.0` rather than `-100.0` and the search leaves from the
+same shallow parabola the written route was already using. The density box floor
+widens `-200.0` to `-6000.0`, without which that start is clipped on the first
+iteration; the optimum sits at `|q|` 179 and is nowhere near either wall.
+`rounds_max` goes 10 to 12 because the violation was still falling monotonically
+-- 2.71 down to 1.05e-06 -- when the budget ran out one round short of the
+tolerance.
+
+**Both trusses open on a lens 500 deep and 1500 high.** The Warren truss also
+drops `sign_margin_fraction` to 0.02. On the vierendeel that margin was pinning
+a chord density to eight digits, so it was setting the answer rather than
+guarding it; on the Warren truss it was never binding and the change moves
+nothing, which is the state a guard should be in.
+
+**The vierendeel's opening penalty is 1.0.** Its verticals join two nodes at the
+same plan position, so the plan balance says nothing about them: four of six
+search directions move vertical densities alone, a vertical's length is purely
+`z_top - z_bottom`, and collapsing them cuts total length by 29%, which the mass
+objective pays for. The only obstacle is `length_min`, and as an augmented
+Lagrangian row it is a penalty the descent can buy through. At `penalty_start`
+0.1 round zero is objective-dominated and does exactly that, taking the midspan
+vertical from 1218.75 mm to 70.78 mm; every later round then dies in its line
+search with no progress at all, while the loop keeps raising the penalty into a
+barrier it is already stuck against. The Warren truss cannot reach this state --
+its shortest plan projection is 625 mm against a 500 mm floor, so the floor is
+satisfied by geometry alone and can never bind.
+
+**What that search finds is basin-dependent, and the spread is not small.**
+Three converged answers of the identical vierendeel problem -- same constraints,
+same load cases, worst utilization 1.0000 in each -- sit at 0.105628, 0.108284
+and 0.119635 t, differing only in where the search left from and how the penalty
+opened. For the form-found route the lens is a start and nothing else, so lens
+depth moves the answer without moving the problem. Masses reported here are
+single-start local optima and should be read as such.
+
 ### One set of load cases for the arch and both trusses
 
 Changed 2026-08-29. The arch was loaded in one vocabulary and the trusses in
@@ -21,7 +62,7 @@ load_cases:
   - name: deck_half
     magnitude: 90000.0
   - name: deck_point
-    magnitude: 45000.0
+    magnitude: 90000.0
 ```
 
 **The deck vocabulary is the one that transfers, and only one way.** On the
@@ -43,23 +84,53 @@ utilization per folded section group over three cases matched the same over two
 to 1.7e-14. It cost a third of the analysis and the check per iteration and
 bought nothing.
 
-**Every reported mass moves.** Under the new cases, at the shipped budgets:
+**The point load is half the uniform total, not a quarter**, revised 2026-08-29
+after a run at each. A quarter was tried first and rejected on the evidence: at
+45 kN the case governs **no member of the vierendeel at all**, worst utilization
+0.504, and three of thirty-one on the Warren truss. A case that governs nothing
+on a headline structure is not a load case. At 90 kN every case does work
+everywhere -- governance per case, read off the converged designs:
 
-| structure | `fdm` | `fixed` | geometry buys |
-|---|---|---|---|
-| arch | 0.151592 t | 0.491156 t | 69.14% |
-| warren | 0.046243 t | 0.095423 t | 51.54% |
-| vierendeel | 0.111340 t | 0.363392 t | 69.36% |
+| structure | LC1 | LC2 | LC3 | of |
+|---|---|---|---|---|
+| arch | 0 | 8 | 2 | 10 |
+| warren | 12 | 2 | 17 | 31 |
+| vierendeel | 17 | 5 | 1 | 23 |
 
-The point load was set at a quarter of the uniform total rather than a half,
-decided 2026-08-29. **It is worth knowing what that costs:** at 45 kN the case
-governs no member of the vierendeel at all (worst utilization 0.504) and three
-of thirty-one on the Warren truss, against two of ten on the arch. At 90 kN it
-governs on all three but takes over the Warren truss, seventeen of thirty-one,
-which would read as a truss designed by its point load rather than by its form.
-The quarter was chosen to keep the form-finding story dominant; the case is
-close to decorative on the vierendeel, and the writeup should not claim three
-governing cases there.
+The cost is that LC3 takes over the Warren truss, seventeen of thirty-one, so
+that structure reads as designed by its point load as much as by its form. That
+is the lesser defect.
+
+**Every reported mass moves.** All nine runs converge, worst utilization 1.0000:
+
+| structure | `fdm` | `heights` | `fixed` | shape freedom buys |
+|---|---|---|---|---|
+| arch | 0.171684 t | 0.154561 t | 0.491026 t | 65.0% / 68.5% |
+| warren | 0.050850 t | 0.052493 t | 0.100180 t | 49.2% / 47.6% |
+| vierendeel | 0.105628 t | 0.197246 t | 0.379850 t | 72.2% / 48.1% |
+
+**No parametrization wins everywhere, and the reason is a dimension count.**
+`heights` takes the arch by 11.08%, `fdm` takes the Warren truss by 3.13% and
+the vierendeel by 46.45%. Both beat a drawn geometry by 48 to 72% on every
+structure, which is the claim with no exceptions in it. The held plan leaves the
+arch's `fdm` route **exactly one** shape coefficient -- at every mesh from four
+edges to forty, under either basis convention, folded or not -- so it can only
+scale the rise of one curve, and a midspan point load wants a kinked one that
+five written heights can express. Against that it is far cheaper: six variables
+to ten, seventy-eight inner iterations to three hundred seventy-eight. The
+vierendeel inverts it, six coefficients against eight heights, and there `fdm`
+reaches a funicular basin the written route never finds.
+
+**A floor at `sag_min: 0` was tried and rejected.** It makes `fdm` infeasible on
+the vierendeel from both the lens start and from a start that already satisfies
+it, stalling at a violation of 2.25e-01 and 9.98e-01 respectively. The asymmetry
+is the one this package already documents: a height limit is a plain box where
+the coefficients are heights, so that route never leaves the feasible set, and a
+penalty row where they are densities, so the other must buy it -- and a
+sign-guarded bottom chord in tension has to hang. On the Warren truss the same
+floor left `fdm` unmoved and knocked `heights` into a better basin, shrinking the
+margin rather than widening it. Both trusses keep `sag_min: -1000.0`; the arch
+already shipped `0.0` and lands there unprompted.
 
 Worth recording separately: **the uniform case governs no member of the arch**
 (worst utilization 0.382). The arch is form-found for it, so it is free, and the
