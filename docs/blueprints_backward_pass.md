@@ -8,8 +8,10 @@ still gets a reply.
 
 This note describes the exact slice implemented in
 [`normax/sizing/blueprint.py`](../normax/sizing/blueprint.py). It is a research
-model of EN 1993-1-1 cross-section resistance, not a general Eurocode 3 or
-certification implementation.
+model of cross-section resistance from
+[Eurocode 3, Part 1-1: general rules and rules for
+buildings](https://eurocodes.jrc.ec.europa.eu/EN-Eurocodes/eurocode-3-design-steel-structures),
+not a general Eurocode 3 or certification implementation.
 
 ## The tractable slice
 
