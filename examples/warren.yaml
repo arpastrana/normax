@@ -9,7 +9,7 @@ structure:
 # The held plan: an orthonormal basis folded by the midspan mirror; a lens fit.
 form_finding:
   # fdm finds the shape by equilibrium in the force densities; heights
-  # writes the free nodes' height; fixed never moves the drawn geometry.
+  # writes the free nodes' height; fixed never moves the common lens start.
   shape_parametrization: fdm
   basis: svd
   mirror: x

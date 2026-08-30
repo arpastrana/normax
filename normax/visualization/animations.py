@@ -33,27 +33,36 @@ from normax.visualization.plots import UTILIZATION_TICKS
 from normax.visualization.plots import ColorRange
 from normax.visualization.plots import DescentPanel
 from normax.visualization.plots import DiameterRange
+from normax.visualization.plots import DrawnLimits
 from normax.visualization.plots import DrawnStructure
 from normax.visualization.plots import draw_members
 from normax.visualization.plots import draw_outline
 from normax.visualization.plots import draw_round_starts
 from normax.visualization.plots import paint_figure
+from normax.visualization.plots import project_view
 from normax.visualization.plots import read_drawing_height
 from normax.visualization.plots import read_member_widths
 from normax.visualization.plots import read_round_bounds
 from normax.visualization.plots import read_violation_floor
 
-# Frames a second the walk is played back at.
-FRAMES_RATE = 8
+# Frames a second the walk is played back at, and how long it plays for. The
+# duration is prescribed and the frame count derived, not the other way round:
+# a walk's length then sets the resolution a film is drawn at and never how
+# long it lasts, so two runs of different lengths still play for the same time.
+FRAMES_RATE = 24
+SECONDS_PLAYED = 15.0
+SECONDS_HELD = 1.5
 
-# Frames the answer is held on at the end, so the last design can be read.
-FRAMES_HELD = 12
+# Both derived, so a change of rate keeps the seconds it was chosen for.
+FRAMES_PLAYED = int(round(FRAMES_RATE * SECONDS_PLAYED))
+FRAMES_HELD = int(round(FRAMES_RATE * SECONDS_HELD))
 
-# Most frames a walk is drawn at, whatever its length. A descent of two
-# thousand iterations is a real record and an unwatchable film, so a long walk
-# is sampled at an even stride rather than drawn point by point. The curves
-# still carry every point; it is the design and the head that jump.
-FRAMES_MOST = 240
+# What a GIF is reduced to. A GIF is written for a reader that cannot play a
+# video and is embedded rather than inspected, so it is narrowed and slowed
+# until it is worth its bytes: at full size and rate the same walk costs
+# fifteen times the video.
+GIF_WIDTH = 600
+GIF_RATE = 10
 
 # Color the curves are drawn in, matching the single trace of a still figure.
 SHADE_DRAWN = SHADES[0]
@@ -150,9 +159,72 @@ def rebuild_walk(problem: DesignProblem, history: DescentHistory) -> WalkedDesig
     return walked
 
 
+def count_played_frames(reach: int) -> int:
+    """
+    How many frames a walk of a given length is played over.
+
+    Parameters
+    ----------
+    reach :
+        Points the walk holds, or the longest walk it is drawn beside.
+
+    Returns
+    -------
+    frames :
+        The prescribed count, or the walk's own length where it is shorter.
+
+    Notes
+    -----
+    Capped at the walk's length because a frame beyond it repeats a design
+    already drawn: past that point a longer film carries no more of the search,
+    only more bytes. A short walk therefore plays for less than the prescribed
+    time rather than standing still through it.
+    """
+    return max(min(FRAMES_PLAYED, reach), 1)
+
+
+def pace_frames(count: int, span: int) -> Int[np.ndarray, "frames"]:
+    """
+    Which points of a walk are drawn, paced against the longest beside it.
+
+    Parameters
+    ----------
+    count :
+        How many points this walk holds.
+    span :
+        How many points the longest walk drawn beside it holds. Its own count
+        where it is drawn alone.
+
+    Returns
+    -------
+    picked :
+        Indices into this walk, one per frame, in order, the last point always
+        among them.
+
+    Notes
+    -----
+    Evenly spaced over the span rather than taken at an integer stride, which
+    is what lets an exact frame count be hit and therefore an exact duration be
+    prescribed. Every walk drawn against one span gets the same number of
+    frames and frame `k` stands at the same iteration in all of them, so two
+    films of one structure are read against each other frame for frame. A walk
+    shorter than the span holds its answer for the rest of the schedule, which
+    is what makes a short descent read as one that finished sooner rather than
+    one that was cut off.
+    """
+    reach = max(span, count)
+    frames = count_played_frames(reach)
+    if frames <= 1:
+        return np.zeros(1, dtype=int)
+
+    reached = np.rint(np.arange(frames) * (reach - 1) / (frames - 1))
+
+    return np.minimum(reached, count - 1).astype(int)
+
+
 def pick_frames(count: int) -> Int[np.ndarray, "frames"]:
     """
-    Which points of a walk are drawn, thinned to a watchable number.
+    Which points of a walk drawn on its own are drawn.
 
     Parameters
     ----------
@@ -163,23 +235,8 @@ def pick_frames(count: int) -> Int[np.ndarray, "frames"]:
     -------
     picked :
         Indices into the walk, in order, the last point always among them.
-
-    Notes
-    -----
-    An even stride rather than a truncation, so the whole descent is seen and
-    only its resolution drops. The answer is kept whatever the stride leaves,
-    since a film of a search that stops short of what it found is a lie about
-    the search.
     """
-    if count <= FRAMES_MOST:
-        return np.arange(count)
-
-    stride = int(np.ceil(count / FRAMES_MOST))
-    picked = np.arange(0, count, stride)
-    if int(picked[-1]) != count - 1:
-        picked = np.append(picked, count - 1)
-
-    return picked
+    return pace_frames(count, count)
 
 
 def read_drawn_bounds(
@@ -259,7 +316,11 @@ def name_frame(panel: DescentPanel, history: DescentHistory, frame: int) -> str:
     return f"{panel.axis} {frame}, round {int(numbered[frame])}"
 
 
-def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimation:
+def animate_descent(
+    problem: DesignProblem,
+    panel: DescentPanel,
+    limits: DrawnLimits | None = None,
+) -> FuncAnimation:
     """
     The design at every point of a descent, beside the curve that scored it.
 
@@ -270,6 +331,10 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
     panel :
         The descent to animate, and what its two axes are called. Exactly one
         trace, an animation having one design to draw at a time.
+    limits :
+        Limits to hold every panel to, or None to read them off this walk
+        alone. Held, so several films of one structure share a framing, a pace
+        and a set of ticks.
 
     Returns
     -------
@@ -303,7 +368,12 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
     history = trace.history
     # The curves carry every point; only the designs are rebuilt and drawn at
     # the picked ones, which is where the cost and the running time both sit.
-    picked = pick_frames(int(np.size(history.objectives)))
+    counted = int(np.size(history.objectives))
+    span = None if limits is None else limits.steps
+    walk_span = counted if span is None else max(int(span), counted)
+    # One schedule for every walk drawn together, so frame k is iteration k in
+    # each of them and a shorter descent holds its answer rather than ending.
+    picked = pick_frames(counted) if span is None else pace_frames(counted, walk_span)
     drawn_walk = DescentHistory(
         history.iterates[picked],
         history.objectives[picked],
@@ -311,7 +381,12 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
         history.round_index[picked],
     )
     walked = rebuild_walk(problem, drawn_walk)
+    # Turned before anything reads a limit or a segment off it, so the frames,
+    # the outline and the axis limits all speak one set of coordinates.
+    walked = walked._replace(shapes=[project_view(shape) for shape in walked.shapes])
     across, upward = read_drawn_bounds(walked)
+    if limits is not None:
+        across, upward = limits.across, limits.upward
 
     values = np.asarray(history.objectives)
     gaps = np.asarray(history.violations)
@@ -369,9 +444,12 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
     (walking,) = violated.plot([], [], "-", color=SHADE_DRAWN, lw=1.4)
     entered = draw_round_starts(violated, [], [], SHADE_DRAWN, None)
     (standing,) = violated.plot([], [], "o", color=SHADE_DRAWN, ms=4.5)
-    violated.set_xlim(0, max(values.size - 1, 1))
+    violated.set_xlim(0, max(walk_span - 1, 1))
     violated.set_yscale("log")
-    violated.set_ylim(floor, float(placed.max()) * 2.0)
+    if limits is None:
+        violated.set_ylim(floor, float(placed.max()) * 2.0)
+    else:
+        violated.set_ylim(*limits.violation)
     violated.set_ylabel("constraints violation")
     violated.legend(frameon=False, fontsize=9)
     violated.grid(alpha=0.3, which="both")
@@ -380,7 +458,9 @@ def animate_descent(problem: DesignProblem, panel: DescentPanel) -> FuncAnimatio
     started_round = "round start" if crossings.size > 0 else None
     rounding = draw_round_starts(descent, [], [], SHADE_DRAWN, started_round)
     (sitting,) = descent.plot([], [], "o", color=SHADE_DRAWN, ms=4.5)
-    descent.set_ylim(*read_objective_bounds(values))
+    descent.set_ylim(
+        *(read_objective_bounds(values) if limits is None else limits.objective)
+    )
     descent.set_xlabel(panel.axis)
     descent.set_ylabel(panel.heading)
     descent.legend(frameon=False, fontsize=9, loc="upper right")
@@ -452,5 +532,41 @@ def save_animation(played: FuncAnimation, path: Path) -> None:
     evened = "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=white"
     settings = ["-vf", evened, "-pix_fmt", "yuv420p"]
     writer = FFMpegWriter(fps=FRAMES_RATE, extra_args=settings)
+
+    played.save(path, writer=writer)
+
+
+def save_gif(played: FuncAnimation, path: Path) -> None:
+    """
+    Write an animation to disk as a GIF, narrowed and slowed to be worth it.
+
+    Parameters
+    ----------
+    played :
+        The animation to write.
+    path :
+        Where the file goes.
+
+    Notes
+    -----
+    Not what a run writes: `save_animation` is, and this is for a reader that
+    renders an image and not a video -- a README on a forge that strips the
+    video tag, most often. The cost of that is real and is why it is asked for
+    rather than produced. A GIF carries a 256-color palette, which bands a
+    continuous utilization ramp, and one frame per file, which at full size and
+    rate lands the same walk at fifteen times the video. So it is narrowed to
+    `GIF_WIDTH` and decimated to `GIF_RATE` first, which brings it to roughly
+    twice the video instead.
+
+    The palette is generated from the walk itself and then applied, in one
+    filter graph, rather than taken from the web-safe default: a design colored
+    by a continuous map has no business being quantized against a palette that
+    never saw it.
+    """
+    plt.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
+    reduced = f"fps={GIF_RATE},scale={GIF_WIDTH}:-1:flags=lanczos"
+    palette = "split[a][b];[a]palettegen[p];[b][p]paletteuse"
+    settings = ["-vf", f"{reduced},{palette}", "-loop", "0"]
+    writer = FFMpegWriter(fps=FRAMES_RATE, codec="gif", extra_args=settings)
 
     played.save(path, writer=writer)

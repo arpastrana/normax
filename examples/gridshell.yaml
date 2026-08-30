@@ -9,7 +9,7 @@ structure:
   oculus: false
   braced: false
 
-# The held plan, thirteen wide, folded by the mirror through spoke zero.
+# The held plan, twenty-three wide, folded by the mirror through spoke zero.
 form_finding:
   # fdm finds the shape by equilibrium in the force densities; heights
   # writes the free nodes' height; fixed never moves the drawn geometry.
@@ -21,16 +21,19 @@ form_finding:
 
 # The load is a pressure on the plan, spread by tributary area, so the boundary
 # ring's share goes straight to ground. The two drifts are mirror images, each
-# rescaled to the uniform total so no case wins by carrying less.
+# rescaled to the uniform total so no case wins by carrying less. Spokes 4 and
+# 12 lie on the y axis, so reflecting either drift in the xz plane the shape
+# fold uses lands exactly on the other: neither is symmetric in itself, the
+# PAIR is closed, and that is what lets the fold throw none of the loading away.
 load_cases:
   - name: tributary
     magnitude: 1.0e-3
   - name: sector
     magnitude: 1.0e-3
-    options: {center: 3, spokes: 3, factor: 0.5}
+    options: {center: 4, spokes: 3, factor: 0.5}
   - name: sector
     magnitude: 1.0e-3
-    options: {center: 13, spokes: 3, factor: 0.5}
+    options: {center: 12, spokes: 3, factor: 0.5}
 
 analysis:
   # UniformDiameterInitializer: one outer diameter in every member.
@@ -51,7 +54,14 @@ constraints:
   diameter_min: 21.3
   # A held plan bounds every member length by its plan projection.
   length_min: 0.0
-  rise_max: 5000.0
+  # Rows on the free nodes' height where the coefficients are densities, since a
+  # density does not say what height it reaches without a solve, and a plain box
+  # where they are the heights themselves. A number the shape approaches rather
+  # than one it never reaches: measured across 2200/2300/2311.7 the mass moves
+  # 0.85% and the corrugation not at all, and this cap steers the opening rounds
+  # toward a shallower cap. The answer settles 12 mm under it rather than on it,
+  # so what it buys is a basin and not an active constraint.
+  rise_max: 2300.0
   sag_min: 0.0
   # Holds every guarded density in compression through the descent.
   sign_margin_fraction: 0.01
@@ -71,10 +81,10 @@ optimization:
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-6        # relative objective change per round counting as none
-  trace_iterations: false       # record every inner iteration, not only every round
+  trace_iterations: true        # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
-  animate: false                # write an animation of the descent, frame by frame
+  animate: true                 # write an animation of the descent, frame by frame

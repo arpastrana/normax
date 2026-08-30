@@ -98,8 +98,9 @@ figures/<name>_fixed_*.png
 figures/<name>_fixed_optimization.mp4
 ```
 
-`<name>` is `arch`, `warren`, `vierendeel`, or `gridshell`. The checked-in
-gridshell config disables MP4 output. Repeating a route replaces its files.
+`<name>` is `arch`, `warren`, `vierendeel`, or `gridshell`. The gridshell config
+records inner iterations and enables MP4 output; animation begins only after
+the accepted answer has printed. Repeating a route replaces its files.
 
 Generated data, images, and video are ignored by default. Curated submission
 assets need narrow `.gitignore` exceptions or an explicit forced add. Tests do
@@ -108,6 +109,20 @@ not depend on generated files.
 Each `.npz` stores `parameters`, `iterates`, `objectives`, `violations`, and
 `round_index`. With `trace_iterations` enabled, the path contains inner
 iterations. Otherwise it contains augmented-Lagrangian rounds.
+
+The gridshell's three accepted archives can be redrawn with one shared
+isometric framing, curve range, and animation pace without rerunning any
+optimization:
+
+```bash
+uv run python redraw_gridshell.py
+```
+
+Pass `fdm`, `heights`, or `fixed` to redraw only one route. The command reads
+`data/gridshell.npz`, `data/gridshell_heights.npz`, and
+`data/gridshell_fixed.npz`; it never changes their recorded parameters or
+objective histories. The accepted masses and matching log names are recorded
+in [results.md](results.md#gridshell-result-record).
 
 ## Focused gradient validation
 

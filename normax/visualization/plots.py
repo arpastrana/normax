@@ -117,6 +117,39 @@ sampled = mpl.colormaps["plasma"](np.linspace(STRESS_LOW, STRESS_HIGH, 256))
 UTILIZATION_MAP = ListedColormap(sampled, name="normax_utilization")
 
 
+class DrawnLimits(NamedTuple):
+    """
+    Every limit a set of runs is drawn to rather than reading off its own walk.
+
+    Attributes
+    ----------
+    across :
+        Least and greatest coordinate across the drawing.
+    upward :
+        Least and greatest coordinate up the drawing.
+    steps :
+        Points in the longest walk, which the curves are drawn across and which
+        paces an animation's frames.
+    objective :
+        Least and greatest value the objective axis spans.
+    violation :
+        Least and greatest value the violation axis spans, on its log scale.
+
+    Notes
+    -----
+    A figure left to its own extents frames each run differently, so two runs
+    of one structure come out at different aspect ratios and with different
+    ticks, and neither the shapes nor the curves can be read side by side. A
+    caller drawing several runs computes the union once and hands it to each.
+    """
+
+    across: tuple[float, float]
+    upward: tuple[float, float]
+    steps: int
+    objective: tuple[float, float]
+    violation: tuple[float, float]
+
+
 class DiameterRange(NamedTuple):
     """
     The diameters the thinnest and the thickest drawn line stand for.
@@ -186,6 +219,61 @@ class ColorRange(NamedTuple):
     vmin: float | None = None
     vmax: float | None = None
     cmap: Colormap | str = UTILIZATION_MAP
+
+
+ISOMETRIC_AZIMUTH = 45.0
+ISOMETRIC_ELEVATION = 35.264389682754654
+
+
+def project_view(
+    xyz: Float[Array, "nodes 3"],
+) -> Float[np.ndarray, "nodes 3"]:
+    """
+    The coordinates a drawing reads its two axes off, planar or solid.
+
+    Parameters
+    ----------
+    xyz :
+        Node positions as the pipeline computed them.
+
+    Returns
+    -------
+    turned :
+        Positions whose first column runs across the page and whose third runs
+        up it, which is the pair every drawing here slices. The second carries
+        depth into the page, which nothing draws.
+
+    Notes
+    -----
+    A structure lying in one plane is drawn as it stands, so a planar run is
+    unchanged to the last bit. A solid one is turned isometric instead: a side
+    view of a cap shows one silhouette and hides the whole of the surface,
+    where an isometric view shows the plan and the rise at once. Planar is read
+    off the geometry rather than declared, since a held plan keeps a planar
+    structure exactly planar and the test is therefore exact.
+    """
+    points = np.asarray(xyz, dtype=float)
+    if float(np.ptp(points[:, 1])) == 0.0:
+        return points
+
+    azimuth = np.radians(ISOMETRIC_AZIMUTH)
+    elevation = np.radians(ISOMETRIC_ELEVATION)
+    across = np.array([-np.sin(azimuth), np.cos(azimuth), 0.0])
+    upward = np.array(
+        [
+            -np.sin(elevation) * np.cos(azimuth),
+            -np.sin(elevation) * np.sin(azimuth),
+            np.cos(elevation),
+        ]
+    )
+    into = np.cross(across, upward)
+
+    turned = np.empty_like(points)
+    turned[:, 0] = points @ across
+    turned[:, 1] = points @ into
+    turned[:, 2] = points @ upward
+
+    return turned
 
 
 def read_member_widths(
@@ -853,6 +941,7 @@ def draw_utilization(
     structure: Structure,
     forms: Sequence[UtilizationForm],
     reference: Float[Array, "nodes 3"] | None = None,
+    limits: DrawnLimits | None = None,
 ) -> Figure:
     """
     The designs themselves, drawn down the page and colored by utilization.
@@ -866,6 +955,8 @@ def draw_utilization(
     reference :
         Shape to outline behind the designs read against it, or None to draw
         none. The form it is the shape of is left without one.
+    limits :
+        Limits to hold the drawing to, or None to read them off the designs.
 
     Returns
     -------
@@ -904,6 +995,8 @@ def draw_utilization(
     margin = 0.05 * float(np.ptp(both[:, 0]))
     across = (float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
     upward = (float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
+    if limits is not None:
+        across, upward = limits.across, limits.upward
 
     spread = WIDTH_DRAWING - WIDTH_LABELS
     tall = read_drawing_height(across, upward, spread)
@@ -1216,7 +1309,10 @@ def read_violation_floor(traces: Sequence[DescentTrace]) -> float:
     return min(reached, tightest) * VIOLATION_DECADE
 
 
-def draw_objective_descent(panel: DescentPanel) -> Figure:
+def draw_objective_descent(
+    panel: DescentPanel,
+    limits: DrawnLimits | None = None,
+) -> Figure:
     """
     A constrained descent as the two curves that explain each other.
 
@@ -1285,9 +1381,14 @@ def draw_objective_descent(panel: DescentPanel) -> Figure:
         violated.axhline(level, color=GREY, ls="--", lw=1.0, label=titled)
 
     spent = max(np.size(trace.history.objectives) for trace in panel.traces) - 1
+    if limits is not None:
+        spent = limits.steps - 1
     violated.set_xlim(0, max(spent, 1))
     violated.set_yscale("log")
-    violated.set_ylim(bottom=floor)
+    if limits is None:
+        violated.set_ylim(bottom=floor)
+    else:
+        violated.set_ylim(*limits.violation)
     minimized = panel.heading.split(" [")[0]
     headline = f"Constrained {minimized} minimization"
     violated.set_ylabel("constraints violation")
@@ -1297,6 +1398,9 @@ def draw_objective_descent(panel: DescentPanel) -> Figure:
 
     descent.set_xlabel(panel.axis)
     descent.set_ylabel(panel.heading)
+    if limits is not None:
+        descent.set_xlim(0, max(spent, 1))
+        descent.set_ylim(*limits.objective)
     descent.legend(frameon=False, fontsize=9)
     descent.grid(alpha=0.3)
     paint_figure(figure)
@@ -1328,6 +1432,7 @@ def draw_design_figures(
     designs: dict[str, Design],
     case_names: tuple[str, ...],
     panel: DescentPanel,
+    limits: DrawnLimits | None = None,
 ) -> DrawnFigures:
     """
     The three figures a run draws: its designs, who governs them, the descent.
@@ -1350,9 +1455,10 @@ def draw_design_figures(
 
     Notes
     -----
-    The designs are drawn in the order they are given and the last of them is
-    outlined behind the rest, so a run naming its answer first and its start
-    last gets the start dashed in behind the answer.
+    The designs are drawn in the order they are given and the first of them is
+    outlined behind the rest, so a run naming its start first gets the start
+    dashed in behind the answer and the figure reads in the order the search
+    went.
 
     A design whose pipeline carried no check is left out, and where that leaves
     nothing to draw both design figures are None rather than empty —
@@ -1366,17 +1472,18 @@ def draw_design_figures(
             continue
         form = UtilizationForm(
             title,
-            design.shape.xyz,
+            project_view(design.shape.xyz),
             design.sizes.sections.diameter,
             design.sizes.utilization,
         )
         forms.append(form)
 
-    # The last design given is the one the others are read against, and the
-    # run names its start last.
-    started = forms[-1].xyz if len(forms) > 1 else None
-    drawn = draw_utilization(structure, forms, started) if forms else None
+    # The first design given is the one the others are read against, and the
+    # run names its start first, so a figure reads left to right and top to
+    # bottom in the order the search went.
+    started = forms[0].xyz if len(forms) > 1 else None
+    drawn = draw_utilization(structure, forms, started, limits) if forms else None
     governed = draw_governing_cases(forms, case_names) if forms else None
-    descended = draw_objective_descent(panel)
+    descended = draw_objective_descent(panel, limits)
 
     return DrawnFigures(drawn, governed, descended)

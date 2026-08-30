@@ -223,6 +223,17 @@ class ReversalRow(NamedTuple):
     central: float
 
 
+class EnvelopeMeasurement(NamedTuple):
+    """Structured values behind the load-envelope validation and its figure."""
+
+    sizes: MemberSizes
+    exact_mass: float
+    annealed: tuple[AnnealStep, ...]
+    live: tuple[LiveCases, ...]
+    reversal: tuple[ReversalRow, ...]
+    checks: tuple[ToleranceCheck, ...]
+
+
 def read_member_forces(
     axial: Float[Array, "load_cases members"],
 ) -> MemberForces:
@@ -442,13 +453,48 @@ def read_reversal(
     return row
 
 
-def report_sizes(report: Report, sizes: MemberSizes) -> float:
+def measure_envelope() -> EnvelopeMeasurement:
+    """Measure smoothing, gradient participation, and the force-sign branch."""
+    sizes = size_load_cases(FORCES)
+    exact_mass = float(weigh_envelope(FORCES, None)) * KILOGRAMS
+    annealed = tuple(anneal_step(exact_mass, beta) for beta in SHARPNESSES)
+    smooth = jax.grad(weigh_envelope)(FORCES, SHARPNESS)
+    hard = jax.grad(weigh_envelope)(FORCES, None)
+    counted = tuple(live_cases(member, smooth, hard) for member in range(NUM_MEMBERS))
+    reversal = tuple(
+        read_reversal(load_case, sizes, smooth) for load_case in range(NUM_CASES)
+    )
+
+    standing = sizes.sections.diameter[:, REVERSING]
+    negated = flip_reversing()
+    even_gap = float(jnp.max(jnp.abs(negated - standing) / standing))
+    branched = jnp.asarray([row.slope for row in reversal])
+    signs = jnp.sign(branched) - jnp.sign(FORCES[:, REVERSING])
+    mismatched = float(jnp.sum(jnp.abs(signs) > 0.0))
+    slopes = [(row.adjoint, row.central) for row in reversal]
+    scale = max(abs(numeric) for _, numeric in slopes)
+    gaps = [abs(pulled - numeric) / scale for pulled, numeric in slopes]
+    off_unity = float(jnp.max(jnp.abs(sizes.utilization - 1.0)))
+    checks = (
+        ToleranceCheck("utilization off unity", off_unity, TOLERANCE_UNITY),
+        ToleranceCheck("diameter under a negated force", even_gap, TOLERANCE_EVEN),
+        ToleranceCheck("dd/dN sign vs sign(N_Ed)", mismatched, TOLERANCE_SIGN),
+        ToleranceCheck(
+            "adjoint vs a central difference, scaled",
+            max(gaps),
+            TOLERANCE_DERIVATIVE,
+        ),
+    )
+
+    return EnvelopeMeasurement(sizes, exact_mass, annealed, counted, reversal, checks)
+
+
+def report_sizes(report: Report, measured: EnvelopeMeasurement) -> None:
     """
     What each load case asks of each member, and the exact largest of them.
     """
-    demanded = sizes.sections.diameter
+    demanded = measured.sizes.sections.diameter
     exact = jnp.max(demanded, axis=0)
-    exact_mass = float(weigh_envelope(FORCES, None)) * KILOGRAMS
 
     per_case_columns = [
         ReportColumn(f"case {case + 1} [mm]", ".2f") for case in range(NUM_CASES)
@@ -463,16 +509,14 @@ def report_sizes(report: Report, sizes: MemberSizes) -> float:
         sized = [float(demanded[case, member]) for case in range(NUM_CASES)]
         rows.append((member, *sized, float(exact[member])))
 
-    entries = (("exact mass", f"{exact_mass:.2f} kg"),)
+    entries = (("exact mass", f"{measured.exact_mass:.2f} kg"),)
 
     report.write_line("Three load cases over four members, S355 at the Class 3 limit")
     report.write_table(columns, rows)
     report.write_entries(entries)
 
-    return exact_mass
 
-
-def report_annealing(report: Report, exact_mass: float) -> None:
+def report_annealing(report: Report, measured: EnvelopeMeasurement) -> None:
     """
     What the smoothing costs at each sharpness, and what bounds it.
     """
@@ -483,10 +527,9 @@ def report_annealing(report: Report, exact_mass: float) -> None:
         ReportColumn("bound log(cases)/beta", ".3%"),
         ReportColumn("gradient finite"),
     )
-    annealed = [anneal_step(exact_mass, beta) for beta in SHARPNESSES]
     rows = [
         (step.beta, step.mass, step.excess, step.bound, str(step.finite))
-        for step in annealed
+        for step in measured.annealed
     ]
 
     report.write_heading("Annealing the sharpness")
@@ -499,34 +542,25 @@ def report_annealing(report: Report, exact_mass: float) -> None:
     )
 
 
-def report_live_cases(report: Report) -> None:
+def report_live_cases(report: Report, measured: EnvelopeMeasurement) -> None:
     """
     That every case sees a gradient, which a hard maximum would not give.
     """
-    smooth = jax.grad(weigh_envelope)(FORCES, SHARPNESS)
-    hard = jax.grad(weigh_envelope)(FORCES, None)
-
     columns = (
         ReportColumn("member"),
         ReportColumn("smooth, cases with a gradient"),
         ReportColumn("hard maximum"),
     )
-    counted = [live_cases(member, smooth, hard) for member in range(NUM_MEMBERS)]
-    rows = [(found.member, found.smooth, found.hard) for found in counted]
+    rows = [(found.member, found.smooth, found.hard) for found in measured.live]
 
     report.write_heading("Every case sees a gradient, which a hard maximum would not")
     report.write_table(columns, rows)
 
 
-def report_reversal(report: Report, sizes: MemberSizes) -> list[ToleranceCheck]:
+def report_reversal(report: Report, measured: EnvelopeMeasurement) -> None:
     """
     The sign branch: an even size, an odd adjoint, and both measured.
     """
-    adjoint = jax.grad(weigh_envelope)(FORCES, SHARPNESS)
-    reversal = [
-        read_reversal(load_case, sizes, adjoint) for load_case in range(NUM_CASES)
-    ]
-
     columns = (
         ReportColumn("case"),
         ReportColumn("axial [kN]", ".0f"),
@@ -536,21 +570,10 @@ def report_reversal(report: Report, sizes: MemberSizes) -> list[ToleranceCheck]:
         ReportColumn("adjoint [kg/kN]", ".4e"),
         ReportColumn("central [kg/kN]", ".4e"),
     )
-    rows = [tuple(row) for row in reversal]
+    rows = [tuple(row) for row in measured.reversal]
 
     report.write_heading(f"Member {REVERSING}, whose axial force changes sign")
     report.write_table(columns, rows)
-
-    standing = sizes.sections.diameter[:, REVERSING]
-    negated = flip_reversing()
-    even_gap = float(jnp.max(jnp.abs(negated - standing) / standing))
-    branched = jnp.asarray([row.slope for row in reversal])
-    signs = jnp.sign(branched) - jnp.sign(FORCES[:, REVERSING])
-    mismatched = float(jnp.sum(jnp.abs(signs) > 0.0))
-    slopes = [(row.adjoint, row.central) for row in reversal]
-    scale = max(abs(numeric) for _, numeric in slopes)
-    gaps = [abs(pulled - numeric) / scale for pulled, numeric in slopes]
-    off_unity = float(jnp.max(jnp.abs(sizes.utilization - 1.0)))
 
     report.write_note(
         """
@@ -561,32 +584,22 @@ def report_reversal(report: Report, sizes: MemberSizes) -> list[ToleranceCheck]:
         """
     )
 
-    unity = ToleranceCheck("utilization off unity", off_unity, TOLERANCE_UNITY)
-    even = ToleranceCheck("diameter under a negated force", even_gap, TOLERANCE_EVEN)
-    signed = ToleranceCheck("dd/dN sign vs sign(N_Ed)", mismatched, TOLERANCE_SIGN)
-    differenced = ToleranceCheck(
-        "adjoint vs a central difference, scaled", max(gaps), TOLERANCE_DERIVATIVE
-    )
-    checks = [unity, even, signed, differenced]
-
-    return checks
-
 
 def main(verbose: bool = True) -> None:
     """
     Price the envelope, and report the sign branch it has to carry.
     """
     report = Report(verbose)
-    sizes = size_load_cases(FORCES)
+    measured = measure_envelope()
 
-    exact_mass = report_sizes(report, sizes)
-    report_annealing(report, exact_mass)
-    report_live_cases(report)
-    checks = report_reversal(report, sizes)
+    report_sizes(report, measured)
+    report_annealing(report, measured)
+    report_live_cases(report, measured)
+    report_reversal(report, measured)
 
     report.write_heading("Measured against its bound")
-    report.write_checks(checks)
-    report.write_verdict(verify_checks(checks))
+    report.write_checks(measured.checks)
+    report.write_verdict(verify_checks(measured.checks))
 
 
 if __name__ == "__main__":
