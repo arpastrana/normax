@@ -221,3 +221,39 @@ def test_two_routes_demand_the_same_design_actions(
     )
 
     assert_same_actions(read_design_actions(forces), canopy_actions)
+
+
+def test_two_ends_agreeing_to_the_solve_carry_no_moment():
+    # The exact pair that stalled the vierendeel: both ends at 1.2e-07 of the
+    # case's largest moment and equal to eight digits, so which of them wins is
+    # the solve's rounding rather than a demand. Read as one, the check traces a
+    # V through that point and a penalty scales the kink by its multiplier until
+    # no line search can cross it.
+    ends = np.array([[-0.21729917, -0.21729919], [1.8312e6, 1.0e5]])
+    actions = coerce_member_actions(np.zeros(2), ends, np.zeros((2, 2)))
+    demand = reduce_moments(actions)
+
+    assert demand.moment[0] == 0.0
+    assert demand.moment[1] == pytest.approx(1.8312e6)
+    assert demand.worse.cosine_major[0] == 0.0
+
+
+def test_the_reduced_moment_is_smooth_where_two_rounding_ends_cross():
+    # Sweeping one end past the other put a corner exactly at the crossing.
+    # Inside the deadband the reduced moment must not move at all.
+    read = []
+    for step in (-3.0e-9, -1.0e-9, 0.0, 1.0e-9, 3.0e-9):
+        ends = np.array([[-0.21729918 + step, -0.21729918 - step], [1.0e6, 1.0e5]])
+        actions = coerce_member_actions(np.zeros(2), ends, np.zeros((2, 2)))
+        read.append(float(reduce_moments(actions).moment[0]))
+
+    assert read == [0.0] * 5
+
+
+def test_a_real_moment_survives_the_deadband():
+    # The floor must not swallow a demand: a hundredth of the case scale is a
+    # real moment however small the largest one is.
+    ends = np.array([[1.0e4, 0.0], [1.0e6, 0.0]])
+    actions = coerce_member_actions(np.zeros(2), ends, np.zeros((2, 2)))
+
+    assert reduce_moments(actions).moment[0] == pytest.approx(1.0e4)

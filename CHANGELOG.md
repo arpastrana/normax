@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### A moment below its load case's scale is read as none
+
+Fixed 2026-08-30. `_read_worse_end` picks the larger of a member's two end
+moments with an `argmax`, and guarded the division that follows with
+`moment > 0.0`. That comparison is a deadband set where floating-point residue
+always clears it: a linear solve returns moments of the order of 1e-07 of a load
+case's largest, and they are not demands, they are rounding.
+
+When both ends of a member sit at that level the `argmax` flips on the last
+digits. Observed on the vierendeel: two ends at `-0.21729917` and `-0.21729919`
+N mm against a case maximum of 1.83e+06, equal to eight digits. The reduced
+moment then traces a V through that point, the check differentiates it, and an
+augmented Lagrangian scales the corner by its multiplier -- a wiggle worth 1e-06
+in utilization became a gradient discontinuity of 3.8e+10. The reported gradient
+is then a subgradient across a kink, the objective rises along it in both
+directions, and every line search fails without moving.
+
+The comparison is now against the case's own moment scale, and the moment is
+zeroed below it rather than only its direction cosines, since the returned
+magnitude is what the check reads. Three tests hold it: the literal pair that
+stalled, a sweep of one end past the other that must stay flat through the
+crossing, and a moment at a hundredth of the case scale that must survive.
+
+**It did not cure the stall it was found in.** The same run with the deadband in
+place still ends on its round budget at 179.5 mm against a 1000 mm floor, within
+a rounding of where it ended without it. What fixes that run is the opening
+penalty; this is a defect worth removing on its own terms, not the cause of that
+failure, and the kink remains a hazard for any run where two ends tie.
+
 ### Every parametrization opens on one geometry
 
 Added 2026-08-30. A form-found search read its loads off the structure as drawn
