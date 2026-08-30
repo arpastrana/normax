@@ -21,34 +21,57 @@ Geometry and member actions move to the right. Gradients of steel mass and code
 utilization move back to the left, so all three stages participate in one
 design decision.
 
-## Motivation
+## Motivation: design segregation in structural engineering
 
-Safety is not negotiable. Waste is. Structural codes turn hard-won experience
-into rules for buildings, roofs, and bridges. Construction also produces about
-37% of global CO₂ emissions and consumes nearly half of extracted materials,
-according to the
+Laws are paramount for safety. Yet structural design remains segregated in
+research and industry. Form finding, structural analysis, and code compliance
+are treated as distinct problems, built by different communities in different
+eras. Information moves forward, but design feedback rarely travels back. A
+late code check can enlarge a section. It cannot readily reshape the structure
+that created the demand.
+
+This disconnect also carries an environmental cost. Construction produces
+about 37% of global CO₂ emissions and consumes nearly half of extracted
+materials, according to the
 [UN Environment Programme's 2025–2026 global status
 report](https://www.unep.org/resources/report/global-status-report-buildings-and-construction-2025-2026).
-The goal is not to trade safety for sustainability. It is to remove material
-while keeping safety inside the optimization.
+The choice is not safety or sustainability. Safety is not negotiable. The
+question is whether mechanical efficiency and code compliance can become the
+same design problem.
 
-Practice splits the work. Form finding chooses geometry. Structural analysis
-computes its response. A code check judges the result. Data moves forward, but
-useful feedback rarely returns. Late compliance can enlarge a section. It
-cannot easily revise the shape that created the demand.
+Normax composes the three traditionally separate stages into one differentiable
+program for meter-scale structures made of beam members. First, jax-fdm maps
+force densities to a funicular geometry. Next, OpenSees or PyNite transforms
+that geometry and its load cases into member actions. Finally, Blueprints
+applies
+[Eurocode 3](https://eurocodes.jrc.ec.europa.eu/EN-Eurocodes/eurocode-3-design-steel-structures)
+to evaluate or size member sections that comply with the implemented slice of
+the law. The composition is one function that can be optimized end to end with
+exact gradients inside that declared continuous slice.
 
-Normax makes the handoff differentiable. It joins jax-fdm, OpenSees or PyNite,
-and Blueprints' check from
-[Eurocode 3, Part 1-1](https://eurocodes.jrc.ec.europa.eu/EN-Eurocodes/eurocode-3-design-steel-structures).
-Code utilization can then shape geometry, not merely reject it. This is the key
-step. Codes contain branches, envelopes, classes, and discrete choices. Their
-full design spaces are not smooth. Normax differentiates a stated continuous
-slice: S355 circular hollow sections at a fixed cross-section class.
+The interesting part is that none of these components was designed to be
+differentiated in the same way. Form finding is differentiated natively and
+implicitly through JAX. Planar structural analysis uses sensitivities compiled
+into the C++ core of OpenSees years before this pipeline existed. Spatial
+analysis through PyNite and the Eurocode 3 check use hand-derived adjoints.
+Eurocode 3 is especially instructive. A building code is a normative
+specification, not a numerical solver, so it has no natural notion of a
+derivative. Giving the check a differentiable computational representation lets
+the law participate in the same optimization loop as an autodiff-native form
+finder.
 
-**Only the joined program lets geometry and sections respond together to the
-same loads and code constraints.** The experiments compare that search with
-fixed-geometry sizing and free nodal heights. Final reruns are in progress, so
-the table below keeps earlier values out of the submission record.
+To a gradient-based optimizer, these distinctions disappear. Tesseract glues
+together software from different eras, languages, and differentiation schemes.
+That glue is a two-way street. Values flow forward through the design stages.
+Gradients flow backward as useful search directions through a high-dimensional
+design space.
+
+Backpropagating later-stage law into early-stage shape decisions is where the
+magic happens. **Only the joined program lets geometry and sections respond
+together to the same loads and code constraints.** The experiments compare
+that search with fixed-geometry sizing and free nodal heights. Final reruns are
+in progress, so the table below keeps earlier values out of the submission
+record.
 
 <!-- FINAL: HERO_ANIMATION: add figures/hero.gif, then uncomment the line below. -->
 <!-- ![A Normax optimization morphing a structure while member utilization changes](figures/hero.gif) -->
