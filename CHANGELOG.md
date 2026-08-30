@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Every parametrization opens on one geometry
+
+Added 2026-08-30. A form-found search read its loads off the structure as drawn
+and then applied them to whatever geometry it found; a sizing-only search took
+the drawing for both at once. That made the baseline every other route is
+measured against whatever line the structure happened to be drawn along -- for
+the arch a dead-flat beam, for the trusses a rectangular truss no one would
+build. The comparison was against a straw baseline, and it flattered every route
+that could move.
+
+`FixedFormFinder` and `HeightsFormFinder` now take a `start_shape`, threaded
+through `build_form_finder`: the first sizes that geometry instead of the
+drawing, the second opens on its heights ahead of both a named rise and the
+drawing. `read_lens_shape` builds it for a truss from the same `sag` and `rise`
+the density fit is taken against, and `read_parabolic_shape` builds the chain's
+counterpart from the rise the written route already names. **Where the loads are
+read stays with the structure as drawn**, which is what keeps a deck on the nodes
+it was put on: redrawing the structure instead collapses `mask_deck_nodes` from
+seven nodes to one, since a sagging chord has a single lowest point, and the
+whole load lands there.
+
+Measured on the Warren truss: sizing the lens rather than the flat drawing takes
+the drawn baseline from 0.100180 t to 0.086850 t, so what shape freedom buys
+falls from 49.2% to 41.6%. The straw baseline was overstating it by a quarter of
+its own mass.
+
+**The start was a real confound, and correcting it went the other way.** Given
+the form-found route's own opening geometry, the written route lands *heavier*
+-- 0.052493 t to 0.053264 t on the Warren truss -- so the shared start widens the
+form-found margin rather than explaining it away. Fitting the opposite direction
+is not available: a density fit to the flat Warren truss puts a guarded chord in
+compression and is refused, because a flat truss under downward load cannot
+carry a tensioned bottom chord.
+
 ### The three runs are retuned, and a vierendeel stall is diagnosed
 
 Changed 2026-08-30. Every structure now opens its three parametrizations on one

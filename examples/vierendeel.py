@@ -38,6 +38,7 @@ from normax.exporting import export_design
 from normax.form_finding import LensShapeInitializer
 from normax.form_finding import build_form_finder
 from normax.form_finding import build_plan_basis
+from normax.form_finding import read_lens_shape
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
@@ -97,9 +98,13 @@ def main(arguments: RunArguments) -> None:
     lifted = mirror if config.form_finding.fold_heights else None
     height_groups = build_height_groups(structure, (lifted,))
 
+    # The lens all three parametrizations open on, so a baseline is a shaped
+    # truss rather than the flat line the truss happens to be drawn along
+    start_shape = read_lens_shape(structure, config.form_finding.density_start)
+
     # The three main computation blocks of the structural design pipeline
     form_finder = build_form_finder(
-        structure, basis, config.form_finding, height_groups
+        structure, basis, config.form_finding, height_groups, start_shape
     )
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
