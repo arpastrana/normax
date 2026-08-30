@@ -11,12 +11,13 @@ Normax requires Python 3.12 and uses
 ```bash
 git clone https://github.com/arpastrana/normax.git
 cd normax
-uv sync
+uv sync --frozen
 uv run python -V
 ```
 
-The repository has no lockfile. Record the commit and resolved packages with
-every published result:
+The committed `uv.lock` freezes the submission environment. Record the commit
+with every published result. Capture the installed package list when reporting
+outside that lock:
 
 ```bash
 git rev-parse HEAD

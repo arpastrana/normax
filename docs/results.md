@@ -143,7 +143,7 @@ the nested `∂d/∂q` path. Staggered re-sectioning repairs the returned forwar
 design, not the inner derivative. Do not use this route for a headline gradient
 claim.
 
-### EC3 scope
+### Eurocode 3 scope
 
 Blueprints evaluates Eurocode 3 cross-section resistance under axial force and
 biaxial bending for circular hollow sections. Every headline configuration
