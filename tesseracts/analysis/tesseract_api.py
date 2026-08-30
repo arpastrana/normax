@@ -98,7 +98,7 @@ class OutputSchema(BaseModel):
     """Minor-axis moment at each end of every member, in newton-millimeters.
 
     Both ends rather than a peak, because nodal loads leave the moment linear
-    in between, which makes the first row of EN 1993-1-1 Table B.3 exact.
+    in between, which makes the first row of Eurocode 3 Table B.3 exact.
     """
 
 

@@ -22,7 +22,7 @@ The headline studies make four choices before optimization:
 - Every CHS is fixed at the Class 3 diameter-to-thickness limit.
 - Outer diameter $d$ is the only section variable.
 
-For EN 1993-1-1 Table 5.2, the Class 3 limit used by Normax is
+For Eurocode 3 Table 5.2, the Class 3 limit used by Normax is
 
 $$
 r = \frac{d}{t} = 90\epsilon^2,

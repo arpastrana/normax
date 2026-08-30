@@ -139,7 +139,7 @@ PyNite adjoint and records its timings.
   changes can select another basin in a non-convex search.
 - Treat results as local optima with continuous diameters, not global proofs or
   catalog-ready designs.
-- The Blueprints backend checks EN 1993-1-1 cross-section resistance for axial
+- The Blueprints backend checks Eurocode 3 cross-section resistance for axial
   force with biaxial bending on the fixed Class 3 CHS family. See
   [results.md](results.md#scope-and-limitations) for omitted checks.
 - Local solver dispatch is serialized. See

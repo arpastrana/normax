@@ -27,7 +27,7 @@ RATIO = 59.5934
 
 DIAMETERS = jnp.asarray([21.3, 100.0, 244.5, 508.0])
 
-# EN 1993-1-1 Table 5.2, the class 3 limit for S355: 90 * 235 / 355.
+# Eurocode 3 Table 5.2, the class 3 limit for S355: 90 * 235 / 355.
 RATIO_CLASS_3_S355 = 59.57746478873239
 
 # The same algebra arranged differently, so a few ulps rather than bit for bit.
@@ -131,7 +131,7 @@ def test_the_class_3_catalog_sits_on_the_table_limit():
 
 
 def test_the_class_limits_are_the_table_5_2_limits():
-    # EN 1993-1-1 Table 5.2 sheet 3: d/t <= k epsilon^2, with epsilon^2 = 235 / f_y.
+    # Eurocode 3 Table 5.2 sheet 3: d/t <= k epsilon^2, with epsilon^2 = 235 / f_y.
     epsilon_squared = 235.0 / Steel355().f_y
     limits = {1: 50.0, 2: 70.0, 3: 90.0}
 

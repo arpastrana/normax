@@ -175,7 +175,7 @@ Suppose a pedestrian bridge must cross a ten-metre ravine in the Rocky
 Mountains. The terrain fixes two rocky abutments. The deck supplies a load. The
 steel arch that will serve as its backbone is still negotiable. We want one
 function that finds its equilibrium geometry, runs structural analysis, checks
-EN 1993-1-1, and tells us how mass changes with the force densities.
+Eurocode 3, and tells us how mass changes with the force densities.
 
 Normax keeps that function compact and legible. Tesseract makes the analysis and
 code implementations look like ordinary JAX calls:
@@ -232,7 +232,7 @@ def compute_lawful_mass(force_densities):
 compute_mass_and_gradient = jax.value_and_grad(compute_lawful_mass, has_aux=True)
 (mass, design), gradient = compute_mass_and_gradient(force_densities)
 
-# Is every member within what EN 1993-1-1 allows?
+# Is every member within what Eurocode 3 allows?
 is_design_safe = jnp.all(design.sizes.utilization <= 1.0)
 
 print(mass)  # tonnes of steel
@@ -350,7 +350,7 @@ Forward pass
                                    │ member actions
                                    ▼
                      Tesseract: section check
-                       Blueprints / EN 1993-1-1
+                       Blueprints / Eurocode 3
                                    │ utilization U
                   ┌────────────────┴─────────────────┐
                   │                                  │
@@ -396,7 +396,7 @@ No single autodiff system owns this calculation:
   Tesseract.
 - PyNite has no derivative API. Normax supplies an implicit element-level
   reverse rule.
-- Blueprints evaluates EN 1993-1-1 in scalar Python. Normax supplies its
+- Blueprints evaluates Eurocode 3 in scalar Python. Normax supplies its
   hand-derived pullback.
 
 Tesseract makes the crossed stages JAX-callable blocks with explicit schemas and
@@ -431,7 +431,7 @@ law may change independently while the gradient remains one continuous path.
 Normax is a research prototype, not a certification tool. Its claims apply only
 to the stated models and loads.
 
-- Member checks cover EN 1993-1-1 cross-section resistance under axial force
+- Member checks cover Eurocode 3 cross-section resistance under axial force
   with biaxial bending for S355 CHS pipes. Class 3 and its limiting
   diameter-to-thickness ratio are fixed before optimization. The shipped check
   does not implement member flexural buckling under §6.3.1, shear, or torsion.

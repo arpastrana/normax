@@ -2,7 +2,7 @@
 """
 The shipped sizing adjoint, differentiated four ways and tabulated.
 
-Blueprints is scalar Python: its EN 1993-1-1 formula classes subclass `float`
+Blueprints is scalar Python: its Eurocode 3 formula classes subclass `float`
 and cannot be traced. What is validated here is the hand-written adjoint of
 `normax.sizing.blueprint`, the host half of the sizing Tesseract and a shipped
 component. The same check is differentiated twice over — in process behind
@@ -33,7 +33,7 @@ where the rule is a `custom_jvp` that never leaves the process.
 
 The last section prices the philosophy gap: Blueprints implements no member
 buckling, so its cross-section check sizes a compressed arch thinner than
-EN 1993-1-1 6.3.1 does. The buckling size beside it is written out here from
+Eurocode 3 6.3.1 does. The buckling size beside it is written out here from
 the standard's own equations. That gap is the point, not an error.
 
 Blueprints is LGPL-2.1, experiment-only, waived 2026-08-15.
@@ -102,10 +102,10 @@ RATIO = 50.0
 
 YIELD_STRENGTH = 355.0
 
-# EN 1993-1-1 Table 6.1, curve a, which Table 6.2 gives hot-finished tubes.
+# Eurocode 3 Table 6.1, curve a, which Table 6.2 gives hot-finished tubes.
 IMPERFECTION = 0.21
 
-# EN 1993-1-1 6.1, the recommended value for member buckling.
+# Eurocode 3 6.1, the recommended value for member buckling.
 GAMMA_M1 = 1.0
 
 # The smallest diameter the buckling bracket starts from, in millimeters.
@@ -822,7 +822,7 @@ def report_gradients(
     return max(route), max(against)
 
 
-# EN 1993-1-1 6.3.1, the member check Blueprints does not implement.
+# Eurocode 3 6.3.1, the member check Blueprints does not implement.
 
 
 def compute_slenderness(diameter: float, length: float) -> float:
@@ -839,7 +839,7 @@ def compute_slenderness(diameter: float, length: float) -> float:
     Returns
     -------
     slenderness :
-        The bar-lambda of EN 1993-1-1 6.3.1.3, Eq. 6.50.
+        The bar-lambda of Eurocode 3 6.3.1.3, Eq. 6.50.
 
     Notes
     -----
@@ -865,7 +865,7 @@ def compute_reduction(slenderness: float) -> float:
     Returns
     -------
     reduction :
-        The chi of EN 1993-1-1 6.3.1.2, Eq. 6.49, never above one.
+        The chi of Eurocode 3 6.3.1.2, Eq. 6.49, never above one.
     """
     shifted = IMPERFECTION * (slenderness - 0.2)
     factor = 0.5 * (1.0 + shifted + slenderness**2)
@@ -911,7 +911,7 @@ def solve_residual(residual: Callable[[float], float]) -> float:
 
 def size_for_buckling(axial_force: float, length: float) -> float:
     """
-    The diameter EN 1993-1-1 6.3.1 works to exactly one, floored.
+    The diameter Eurocode 3 6.3.1 works to exactly one, floored.
 
     Parameters
     ----------
@@ -973,7 +973,7 @@ def report_philosophy(report: Report, design: Design) -> None:
     measured = zip(naive, strict)
     rows = [(f"{index}", a, b, b / a) for index, (a, b) in enumerate(measured)]
 
-    report.write_heading("The philosophy gap: no buckling against EN 1993-1-1")
+    report.write_heading("The philosophy gap: no buckling against Eurocode 3")
     report.write_table(GAP_COLUMNS, rows)
     report.write_note(
         "Same arch, same forces: the ratio prices the member check. On the "
