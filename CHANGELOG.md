@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### The bridge problem the three examples share, drawn once
+
+Added 2026-08-30. The arch, the Warren and the Vierendeel are three structural
+systems answering one bridge problem: the same flat supported deck, the same
+three load patterns. That shared statement had no drawing of its own, so it was
+implicit in three topology figures and stated nowhere.
+
+`draw_problem_setup` in `normax/visualization/plots.py` draws it -- the deck, its
+pinned supports, a span dimension, a figure for scale, and one panel per load
+case -- and `examples/problem_setup.py` writes it as PNG, SVG and PDF in a
+portrait and a three-column landscape layout. It reads the three run
+descriptions for their load cases and nothing else, so it needs no search and
+no analysis: the deck is an idealized ten-segment span, deliberately independent
+of how any one system happens to be discretized, with an even segment count so a
+node lands exactly at midspan.
+
+Three tests hold it, on the drawn artists rather than on an image: that every
+load case gets a complete panel, that a name is required per case, and that the
+landscape layout is offered.
+
 ### The trusses arch upward
 
 Changed 2026-08-30. Both truss runs open on an arched sketch, and the Vierendeel

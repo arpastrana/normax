@@ -132,6 +132,15 @@ the export and the viewer on and off. Adding `--shape-parametrization heights`
 or `fixed` races the same structure, loads, analysis and check against a
 geometry that is written down rather than found.
 
+The arch and both trusses are three structural systems for one bridge problem.
+Their shared supported deck and its uniform, asymmetric, and midspan point-load
+cases are drawn without running a search, as PNG, SVG, and PDF in portrait and
+three-column landscape layouts:
+
+```bash
+uv run python examples/problem_setup.py
+```
+
 ## What the gradient buys
 
 `normax/structures.py` generates the structures the claims are measured on — a

@@ -8,6 +8,7 @@ tube one percent of the span wide would show nothing drawn truthfully.
 """
 
 from collections.abc import Sequence
+from typing import Literal
 from typing import NamedTuple
 
 import matplotlib as mpl
@@ -22,6 +23,9 @@ from matplotlib.colors import Colormap
 from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.patches import PathPatch
+from matplotlib.patches import Polygon
+from matplotlib.path import Path
 
 from normax.design import Design
 from normax.optimization import DescentHistory
@@ -99,6 +103,15 @@ HEIGHT_DRAWING = 1.3
 
 # Points across the open marker sitting on the first point of a round.
 ROUND_MARK = 3.0
+
+# The technical drawing of the shared bridge problem: load arrows and support
+# glyphs are sized against the span, so all three rows use one visual scale.
+SETUP_LOAD_COLOR = "#00960a"
+SETUP_LOAD_LENGTH = 0.10
+SETUP_LOAD_GAP = 0.012
+SETUP_SUPPORT_SIZE = 0.0385
+SETUP_MEMBER_WIDTH = 2.0
+SETUP_PERSON_COLOR = "#bfbfbf"
 
 sampled = mpl.colormaps["plasma"](np.linspace(STRESS_LOW, STRESS_HIGH, 256))
 UTILIZATION_MAP = ListedColormap(sampled, name="normax_utilization")
@@ -331,6 +344,380 @@ def paint_figure(figure: Figure) -> None:
             continue
         for written in legend.get_texts():
             written.set_color(INK)
+
+
+def _draw_setup_structure(ax: Axes, structure: Structure) -> None:
+    """Draw the members and nodes of one problem-setup row."""
+    nodes = np.asarray(structure.nodes)
+    pairs = np.asarray(structure.edges)
+    supports = np.asarray(structure.supports)
+    points = nodes[:, [0, 2]]
+    segments = points[pairs]
+
+    members = LineCollection(
+        segments,
+        colors=MUTED,
+        linewidths=SETUP_MEMBER_WIDTH,
+        capstyle="round",
+        zorder=2,
+    )
+    ax.add_collection(members)
+    ax.plot(
+        points[:, 0],
+        points[:, 1],
+        "o",
+        ls="none",
+        mfc=NODE_FILL,
+        mec=NODE_EDGE,
+        mew=NODE_RIM,
+        ms=NODE_SIZE,
+        zorder=4,
+    )
+    ax.plot(
+        points[supports, 0],
+        points[supports, 1],
+        "o",
+        ls="none",
+        mfc=NODE_EDGE,
+        mec=NODE_EDGE,
+        mew=NODE_RIM,
+        ms=NODE_SIZE,
+        zorder=5,
+    )
+
+
+def _draw_pinned_support(ax: Axes, point: np.ndarray, size: float) -> None:
+    """Draw one outlined pin on hatched ground, after the Vix 2D glyph."""
+    x, z = point
+    base = z - 0.82 * size
+    half = 0.48 * size
+    triangle = Polygon(
+        ((x, z), (x - half, base), (x + half, base)),
+        closed=True,
+        facecolor="none",
+        edgecolor=INK,
+        linewidth=1.1,
+        joinstyle="round",
+        zorder=3,
+    )
+    ax.add_patch(triangle)
+
+    ground_half = 0.68 * size
+    ax.plot(
+        (x - ground_half, x + ground_half),
+        (base, base),
+        color=INK,
+        linewidth=1.1,
+        solid_capstyle="round",
+        zorder=3,
+    )
+    roots = np.linspace(x - 0.56 * size, x + 0.56 * size, 6)
+    hatch = 0.18 * size
+    hatches = [((root, base), (root - hatch, base - hatch)) for root in roots]
+    ax.add_collection(LineCollection(hatches, colors=INK, linewidths=0.8, zorder=3))
+
+
+def _draw_setup_loads(
+    ax: Axes,
+    xyz: Float[Array, "nodes 3"],
+    loads: Float[Array, "nodes 3"],
+    longest: float,
+) -> None:
+    """Draw proportional force arrows stopping just clear of their nodes."""
+    points = np.asarray(xyz)[:, [0, 2]]
+    forces = np.asarray(loads)[:, [0, 2]]
+    magnitudes = np.linalg.norm(forces, axis=1)
+    peak = float(magnitudes.max())
+    if peak <= 0.0:
+        return
+    gap = SETUP_LOAD_GAP * longest / SETUP_LOAD_LENGTH
+
+    for point, force, magnitude in zip(points, forces, magnitudes):
+        if magnitude <= 0.0:
+            continue
+        length = longest * float(magnitude / peak)
+        direction = force / magnitude
+        tip = point - direction * gap
+        start = tip - direction * length
+        delta = tip - start
+        ax.arrow(
+            start[0],
+            start[1],
+            delta[0],
+            delta[1],
+            width=0.024 * length,
+            head_width=0.10 * length,
+            head_length=0.22 * length,
+            length_includes_head=True,
+            fc=SETUP_LOAD_COLOR,
+            ec=SETUP_LOAD_COLOR,
+            lw=0.0,
+            zorder=5,
+        )
+
+
+def _draw_span_dimension(
+    ax: Axes,
+    left: float,
+    right: float,
+    height: float,
+    label: str,
+    span: float,
+) -> None:
+    """Draw one understated dimension beneath the last setup row."""
+    dimension = ax.annotate(
+        "",
+        xy=(right, height),
+        xytext=(left, height),
+        arrowprops={
+            "arrowstyle": "<->",
+            "color": FAINT,
+            "linewidth": 0.8,
+            "shrinkA": 0.0,
+            "shrinkB": 0.0,
+        },
+        zorder=1,
+    )
+    dimension.set_gid("problem-span")
+    ax.text(
+        0.5 * (left + right),
+        height - 0.008 * span,
+        label,
+        ha="center",
+        va="top",
+        color=MUTED,
+        fontsize=8,
+        bbox={"facecolor": GROUND, "edgecolor": "none", "pad": 0.8},
+        zorder=2,
+    )
+
+
+def _draw_person(ax: Axes, center: float, level: float, height: float) -> None:
+    """Draw a subtle side-view walking silhouette at its true model height."""
+    body_outline = np.array(
+        [
+            (-0.025, 0.865),
+            (-0.070, 0.815),
+            (-0.115, 0.700),
+            (-0.190, 0.565),
+            (-0.185, 0.520),
+            (-0.150, 0.545),
+            (-0.075, 0.650),
+            (-0.055, 0.610),
+            (-0.075, 0.525),
+            (-0.055, 0.465),
+            (-0.115, 0.285),
+            (-0.205, 0.055),
+            (-0.255, 0.015),
+            (-0.245, 0.000),
+            (-0.155, 0.000),
+            (-0.105, 0.045),
+            (-0.015, 0.260),
+            (0.020, 0.390),
+            (0.070, 0.275),
+            (0.160, 0.080),
+            (0.205, 0.025),
+            (0.285, 0.010),
+            (0.300, 0.000),
+            (0.205, 0.000),
+            (0.145, 0.035),
+            (0.030, 0.215),
+            (0.060, 0.445),
+            (0.080, 0.525),
+            (0.055, 0.615),
+            (0.070, 0.700),
+            (0.145, 0.625),
+            (0.220, 0.535),
+            (0.255, 0.515),
+            (0.250, 0.555),
+            (0.175, 0.655),
+            (0.095, 0.780),
+            (0.045, 0.825),
+            (0.025, 0.865),
+        ]
+    )
+    head_outline = np.array(
+        [
+            (-0.030, 0.855),
+            (-0.065, 0.875),
+            (-0.105, 0.900),
+            (-0.135, 0.885),
+            (-0.115, 0.925),
+            (-0.075, 0.970),
+            (-0.020, 1.000),
+            (0.035, 0.990),
+            (0.075, 0.955),
+            (0.080, 0.930),
+            (0.115, 0.915),
+            (0.080, 0.900),
+            (0.060, 0.870),
+            (0.025, 0.850),
+        ]
+    )
+
+    def patch_outline(outline: np.ndarray) -> PathPatch:
+        scaled = outline.copy()
+        scaled[:, 0] = center + height * scaled[:, 0]
+        scaled[:, 1] = level + height * scaled[:, 1]
+        vertices = np.vstack([scaled, scaled[0]])
+        codes = [
+            Path.MOVETO,
+            *([Path.LINETO] * (len(scaled) - 1)),
+            Path.CLOSEPOLY,
+        ]
+
+        return PathPatch(
+            Path(vertices, codes),
+            facecolor=SETUP_PERSON_COLOR,
+            edgecolor="none",
+            alpha=0.48,
+            zorder=1,
+        )
+
+    body = patch_outline(body_outline)
+    head = patch_outline(head_outline)
+    body.set_gid("problem-person")
+    ax.add_patch(body)
+    head.set_gid("problem-person")
+    ax.add_patch(head)
+
+
+def draw_problem_setup(
+    structure: Structure,
+    load_cases: Float[Array, "load_cases nodes 3"],
+    names: Sequence[str],
+    span_label: str | None = None,
+    layout: Literal["vertical", "horizontal"] = "vertical",
+    person_height: float | None = None,
+) -> Figure:
+    """
+    The shared bridge problem, one supported and loaded span per panel.
+
+    Parameters
+    ----------
+    structure :
+        The idealized deck supplying its nodes, span, and end supports.
+    load_cases :
+        Force applied at every node under each case to draw.
+    names :
+        Title of every load case, in row order.
+    span_label :
+        Text written beneath the final portrait panel or center landscape
+        panel, or None to draw no dimension.
+    layout :
+        Whether cases run down one column for a paper or across one row for a
+        slide.
+    person_height :
+        Height of a scale figure standing on the right half of the deck, in
+        the structure's units, or None to draw no person.
+
+    Returns
+    -------
+    figure :
+        The load cases in the requested layout, each repeating the boundary
+        conditions so every panel reads as a complete problem statement.
+
+    Notes
+    -----
+    This is deliberately a drawing of the common bridge deck rather than any
+    one structural topology. The arch, Warren, and Vierendeel examples span
+    the same deck under the same three patterns, so one figure serves all of
+    them without implying that their optimized forms are identical.
+
+    Loads follow Vix's 2D convention: arrows scale to the largest nodal force
+    within their row and stop just clear of the loaded node. Supports use its
+    crisp outlined pin over hatched ground, while the page, ink, nodes, and
+    titles use the rest of Normax's figure palette.
+    """
+    applied = np.asarray(load_cases)
+    if applied.ndim != 3 or applied.shape[1:] != (structure.num_nodes, 3):
+        expected = ("load_cases", structure.num_nodes, 3)
+        raise ValueError(f"load_cases must have shape {expected}, got {applied.shape}")
+    if len(names) != applied.shape[0]:
+        raise ValueError(
+            f"names must have one entry per load case, got {len(names)} for "
+            f"{applied.shape[0]} cases"
+        )
+    if layout not in ("vertical", "horizontal"):
+        raise ValueError(f"layout must be 'vertical' or 'horizontal', got {layout!r}")
+    if person_height is not None and person_height <= 0.0:
+        raise ValueError(f"person_height must be positive, got {person_height}")
+
+    nodes = np.asarray(structure.nodes)
+    span = float(np.ptp(nodes[:, 0]))
+    if span <= 0.0:
+        raise ValueError("a problem setup needs a positive horizontal span")
+
+    cases = applied.shape[0]
+    x_margin = 0.105 * span
+    lower = float(nodes[:, 2].min()) - 0.11 * span
+    upper = float(nodes[:, 2].max()) + 0.13 * span
+    if person_height is not None:
+        upper = max(upper, float(nodes[:, 2].min()) + person_height + 0.015 * span)
+    across = (float(nodes[:, 0].min()) - x_margin, float(nodes[:, 0].max()) + x_margin)
+    upward = (lower, upper)
+    if layout == "vertical":
+        grid = (cases, 1)
+        width = WIDTH_DRAWING
+        height = cases * read_drawing_height(across, upward, width)
+    else:
+        grid = (1, cases)
+        width = 4.4 * cases
+        height = 2.15
+    figure, axes = plt.subplots(
+        *grid,
+        figsize=(width, height),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        layout="constrained",
+    )
+    drawings = axes.ravel()
+
+    supports = np.asarray(structure.supports)
+    support_size = SETUP_SUPPORT_SIZE * span
+    load_length = SETUP_LOAD_LENGTH * span
+    middle = 0.5 * (across[0] + across[1])
+    person_center = float(nodes[:, 0].min()) + 0.75 * span
+    deck_level = float(nodes[:, 2].min())
+    for order, (ax, loads, name) in enumerate(zip(drawings, applied, names), start=1):
+        centerline = ax.axvline(
+            middle,
+            color=FAINT,
+            linewidth=0.7,
+            linestyle=(0, (2, 3)),
+            alpha=0.32,
+            zorder=0,
+        )
+        centerline.set_gid("problem-midspan")
+        if person_height is not None:
+            _draw_person(ax, person_center, deck_level, person_height)
+        _draw_setup_structure(ax, structure)
+        for support in supports:
+            _draw_pinned_support(ax, nodes[support, [0, 2]], support_size)
+        _draw_setup_loads(ax, nodes, loads, load_length)
+        ax.set_xlim(*across)
+        ax.set_ylim(*upward)
+        ax.set_aspect("equal")
+        ax.set_title(f"({order})  {name}", loc="left", fontsize=10)
+        ax.set_frame_on(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    if span_label is not None:
+        left = float(nodes[:, 0].min())
+        right = float(nodes[:, 0].max())
+        height = float(nodes[:, 2].min()) - 0.078 * span
+        dimensioned = drawings[-1] if layout == "vertical" else drawings[cases // 2]
+        _draw_span_dimension(dimensioned, left, right, height, span_label, span)
+
+    engine = figure.get_layout_engine()
+    if engine is not None:
+        engine.set(h_pad=0.02, hspace=0.0, w_pad=0.03, wspace=0.01)
+
+    paint_figure(figure)
+
+    return figure
 
 
 def draw_outline(
