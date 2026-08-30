@@ -12,7 +12,7 @@
 and Eurocode cross-section checks into one differentiable design program.
 
 ```text
-[jax-fdm form finding] → [OpenSees / PyNite structural analysis] → [Blueprints code check]
+[JAX FDM form finding] → [OpenSees / PyNite structural analysis] → [Blueprints code check]
           ↑                                                               │
           └─────────── mass + code gradients flow back ────────────────────┘
 ```
@@ -40,7 +40,7 @@ question is whether mechanical efficiency and code compliance can become the
 same design problem.
 
 Normax composes the three traditionally separate stages into one differentiable
-program for meter-scale structures made of beam members. First, jax-fdm maps
+program for meter-scale structures made of beam members. First, JAX FDM maps
 force densities to a funicular geometry. Next, OpenSees or PyNite transforms
 that geometry and its load cases into member actions. Finally, Blueprints
 applies
@@ -124,7 +124,7 @@ Every symbol has a concrete role:
 | $\mathbf d$, $\mathcal D$ | member diameters and their admissible box |
 | $\mathcal L$, $k$ | prescribed load cases and one load-case index |
 | $e$, $n$ | one member index and the number of members |
-| $\mathcal F$ | jax-fdm form-finding map |
+| $\mathcal F$ | JAX FDM form-finding map |
 | $\mathbf x$, $\boldsymbol\ell$, $\ell_e$ | nodal coordinates, all member lengths, and the length of member $e$ |
 | $\mathcal A$, $\mathbf s$ | OpenSees or PyNite structural-analysis map and its member actions |
 | $\mathcal C_{\mathrm{Eurocode\,3}}$, $\mathbf u$, $u_{k,e}$ | Blueprints code-check map, its utilization matrix, and one load-case/member utilization |
@@ -160,7 +160,7 @@ numerical stage keeps its own implementation and derivative strategy:
 
 | Stage | Software | Language | Differentiation used by Normax |
 |---|---|---|---|
-| Form finding | [jax-fdm](https://github.com/arpastrana/jax_fdm) ([method paper](https://doi.org/10.1016/j.cma.2026.118783)) | Python and JAX | native JAX reverse mode through the equilibrium solve |
+| Form finding | [JAX FDM](https://github.com/arpastrana/jax_fdm) ([method paper](https://doi.org/10.1016/j.cma.2026.118783)) | Python and JAX | native JAX reverse mode through the equilibrium solve |
 | Structural analysis (2D) | [OpenSees](https://opensees.berkeley.edu/) ([framework paper](https://doi.org/10.1109/MCSE.2011.66)) | C++ core with a Python interface | native Direct Differentiation Method forward sensitivities assembled into a VJP |
 | Structural analysis (3D) | [PyNite](https://github.com/JWock82/Pynite) | Python | no native derivatives, so Normax supplies an implicit structural adjoint |
 | Code compliance | [Blueprints](https://github.com/Blueprints-org/blueprints) | Python | no native derivatives, so Normax supplies a hand-derived VJP for the fixed Class 3 CHS slice |
@@ -441,7 +441,7 @@ directions:
   stability, geometric nonlinearity, and self-weight feedback.
 - **Swap the form-finding prior.** Put
   [JAX-CEM](https://github.com/arpastrana/jax_cem) and other differentiable
-  form-finding solvers behind the same stage contract as jax-fdm.
+  form-finding solvers behind the same stage contract as JAX FDM.
 - **Reach commercial software.** Host established FEA and code-compliance tools
   behind Tesseract services called through Web APIs, with explicit derivative
   contracts for sensitivities, adjoints, or numerical pullbacks.

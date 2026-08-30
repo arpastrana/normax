@@ -1,4 +1,4 @@
-# The Warren truss, composed across two Tesseract boundaries: jax-fdm in
+# The Warren truss, composed across two Tesseract boundaries: JAX FDM in
 # process, OpenSees across the analysis schema, Blueprints across the check.
 # Millimeters and newtons throughout.
 structure:

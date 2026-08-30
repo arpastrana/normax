@@ -62,7 +62,7 @@ FAINT = "#8c8c8c"
 # The colors a result is drawn in, in the order several are drawn.
 SHADES = ("#31688e", "#35b779", "#c0392b")
 
-# A node is a white disk with a dark rim, the way the plotters of jax-fdm and
+# A node is a white disk with a dark rim, the way the plotters of JAX FDM and
 # compas draw one: points across it, the rim's width, and its color.
 NODE_SIZE = 4.5
 NODE_RIM = 0.9
@@ -236,7 +236,7 @@ def draw_members(
     Notes
     -----
     A node is drawn as a white disk with a dark rim over the members, which is
-    how the plotters of jax-fdm and compas draw one: the rim reads against a
+    how the plotters of JAX FDM and compas draw one: the rim reads against a
     member of any color, and the fill hides the joint where two members of
     different widths meet. A support is the same disk filled in, so what is
     held reads without a legend. The disk is sized in points rather than in the
