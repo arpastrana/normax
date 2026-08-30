@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Blueprints' EN 1993-1-1 cross-section check, the host half of the boundary.
+Blueprints' Eurocode 3 cross-section check, the host half of the boundary.
 
 Blueprints is a scalar Python library whose formula classes subclass `float`
 and carry no derivatives. Everything here is plain NumPy on the host: the
@@ -35,7 +35,7 @@ from jaxtyping import Int
 
 from normax.sections import TubeCatalog
 
-# EN 1993-1-1 §6.1, the recommended value.
+# Eurocode 3 §6.1, the recommended value.
 GAMMA_M0 = 1.0
 
 # The smallest tube the section catalog offers, the catalog minimum.
@@ -192,7 +192,7 @@ def _check_scalar(
     Returns
     -------
     utilization :
-        Demand over resistance, the linear sum of EN 1993-1-1 eq. (6.2), with
+        Demand over resistance, the linear sum of Eurocode 3 eq. (6.2), with
         eq. (6.10) and eq. (6.14) supplying the resistances.
 
     Raises
@@ -522,7 +522,7 @@ def reduce_moments(actions: MemberActions) -> DemandMoment:
     combined as the **magnitude of the moment vector** rather than summed.
 
     For a circular hollow section that is the standard's own combination, not
-    a relaxation of it. EN 1993-1-1 6.2.9.2 eq. (6.42) limits the maximum
+    a relaxation of it. Eurocode 3 6.2.9.2 eq. (6.42) limits the maximum
     longitudinal fibre stress; a moment vector on an axisymmetric section
     bends about the axis perpendicular to itself, so that maximum is set by
     its magnitude. Summing the two components instead adds a peak stress

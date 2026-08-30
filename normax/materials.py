@@ -16,7 +16,7 @@ from typing import NamedTuple
 from jaxtyping import Array
 from jaxtyping import Float
 
-# EN 1993-1-1 3.2.6, and every other steel standard's value too.
+# Eurocode 3 3.2.6, and every other steel standard's value too.
 E_MODULUS = 210000.0
 
 # Density of structural steel, in tonnes per cubic millimeter, so that a mass

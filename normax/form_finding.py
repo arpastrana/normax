@@ -3,7 +3,7 @@
 Form finding by the force density method, and the density subspaces it moves in.
 
 The equilibrium is linear in the coordinates once the force densities are fixed,
-so `jax-fdm` differentiates it by tracing the solve. Connectivity is topology,
+so JAX FDM differentiates it by tracing the solve. Connectivity is topology,
 known before any force density is chosen, and is built once on the host.
 """
 

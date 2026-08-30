@@ -48,7 +48,7 @@ from normax.units import MEGAPASCAL
 from normax.units import MILLIMETER
 from normax.units import NEWTON_MILLIMETER
 
-# EN 1993-1-1 3.2.6, as the traced oracle reads it, so both solve one steel.
+# Eurocode 3 3.2.6, as the traced oracle reads it, so both solve one steel.
 POISSONS_RATIO = 0.3
 
 # What the one load pattern and the one combination are called.

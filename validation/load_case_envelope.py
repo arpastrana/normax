@@ -8,7 +8,7 @@ sees one case per step and stalls. `design_envelope` replaces it with a smooth
 maximum, taken in the logarithm of the diameter so the sharpness is
 dimensionless.
 
-The envelope is normax's own and no clause's. EN 1993-1-1 checks one member
+The envelope is normax's own and no clause's. Eurocode 3 checks one member
 under one combination and has no opinion about how several combinations are
 reconciled into one section, so this is the piece of the pipeline the standard
 does not govern and the only place its cost can be priced. The sizes it

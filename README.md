@@ -1,43 +1,216 @@
 # normax
 
 [![Tests](https://github.com/arpastrana/normax/actions/workflows/test.yml/badge.svg)](https://github.com/arpastrana/normax/actions/workflows/test.yml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/arpastrana/normax/blob/main/LICENSE)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Tesseract Hackathon 2026](https://img.shields.io/badge/Tesseract_Hackathon_2026-Track_01-6f42c1.svg)](https://pasteurlabs.ai/tesseract-hackathon-2026/)
 
-> Backpropagating through structural engineering norms.
+> Backpropagating through structural engineering codes.
 
-This project composes three traditionally separate stages of structural design into a single differentiable program for meter-scale structures composed of beam members.
-In the first stage, a form-finding solver maps force densities to a funicular geometry.
-Next, a structural analysis solver then transforms that geometry into member forces, and the Eurocode 3 (EN 1993-1-1) finally converts forces into law-compliant member sections that are safe for construction.
-The result of this composition is one function that can be optimized end-to-end with exact gradients.
+**Normax is a Tesseract Hackathon 2026 submission for Track 01: Inverse Design
+& Shape Optimization.** It turns structural form finding, structural analysis,
+and Eurocode cross-section checks into one differentiable design program.
 
-The interesting part is that none of these components was designed to be differentiated in the same way.
-The form-finding solve is differentiated natively and implicitly through JAX.
-Meanwhile, the structural analysis solver for planar systems uses sensitivities compiled into its C++ implementation years before this pipeline existed, and the its 3D version in addition to the code checks both use hand-derived adjoints.
-Eurocode 3 is especially instructive: a building code is a normative specification, not a numerical solver, so it has no natural notion of a derivative.
-Giving the code check a differentiable computational representation is what allows it to participate in the same optimization loop as an autodiff-native form-finder.
+```text
+[JAX FDM form finding] → [OpenSees / PyNite structural analysis] → [Blueprints code check]
+          ↑                                                               │
+          └─────────── mass + code gradients flow back ────────────────────┘
+```
 
-To a gradient-based optimizer, however, these distinctions disappear as Tesseract provides convenient interfaces to glue together these seemingly disparate pieces of software across eras, programming languages, and differentiation schemes.
-This glue is a two-way street.
-Not only it allows to feed information across structural design stages through forward computation, but it critically empowers them to backpropagate gradients (very useful serach directions in high dimensional search spaces, if you ask me) through the entire pipeline end-to-end.
-That is where the magic happens, as derivatives promise to unify currently disjoint engineering stages into a streamlined process that aims to accelerate design optimization cycles toward building safe yet material-efficient bridges, roofs, and buildings.
+Geometry and member actions move to the right. Gradients of steel mass and code
+utilization move back to the left, so all three stages participate in one
+design decision.
+
+## Motivation: design segregation in structural engineering
+
+Laws are paramount for safety. Yet structural design remains segregated in
+research and industry. Form finding, structural analysis, and code compliance
+are treated as distinct problems, built by different communities in different
+eras. Information moves forward, but design feedback rarely travels back. A
+late code check can enlarge a section. It cannot readily reshape the structure
+that created the demand.
+
+This disconnect also carries an environmental cost. Construction produces
+about 37% of global CO₂ emissions and consumes nearly half of extracted
+materials, according to the
+[UN Environment Programme's 2025–2026 global status
+report](https://www.unep.org/resources/report/global-status-report-buildings-and-construction-2025-2026).
+The choice is not safety or sustainability. Safety is not negotiable. The
+question is whether mechanical efficiency and code compliance can become the
+same design problem.
+
+Normax composes the three traditionally separate stages into one differentiable
+program for meter-scale structures made of beam members. First, JAX FDM maps
+force densities to a funicular geometry. Next, OpenSees or PyNite transforms
+that geometry and its load cases into member actions. Finally, Blueprints
+applies
+[Eurocode 3](https://eurocodes.jrc.ec.europa.eu/EN-Eurocodes/eurocode-3-design-steel-structures)
+to evaluate or size member sections that comply with the implemented slice of
+the law. The composition is one function that can be optimized end to end with
+exact gradients inside that declared continuous slice.
+
+The interesting part is that none of these components was designed to be
+differentiated in the same way. Form finding is differentiated natively and
+implicitly through JAX. Planar structural analysis uses sensitivities compiled
+into the C++ core of OpenSees years before this pipeline existed. Spatial
+analysis through PyNite and the Eurocode 3 check use hand-derived adjoints.
+Eurocode 3 is especially instructive. A building code is a normative
+specification, not a numerical solver, so it has no natural notion of a
+derivative. Giving the check a differentiable computational representation lets
+the law participate in the same optimization loop as an autodiff-native form
+finder.
+
+To a gradient-based optimizer, these distinctions disappear. Tesseract glues
+together software from different eras, languages, and differentiation schemes.
+That glue is a two-way street. Values flow forward through the design stages.
+Gradients flow backward as useful search directions through a high-dimensional
+design space.
+
+Backpropagating later-stage law into early-stage shape decisions is where the
+magic happens. **Only the joined program lets geometry and sections respond
+together to the same loads and code constraints.** The experiments compare
+that search with fixed-geometry sizing and free nodal heights. Final reruns are
+in progress, so the table below keeps earlier values out of the submission
+record.
+
+<!-- FINAL: HERO_ANIMATION: add figures/hero.gif, then uncomment the line below. -->
+<!-- ![A Normax optimization morphing a structure while member utilization changes](figures/hero.gif) -->
+
+## Contributions
+
+| Contribution | Evidence |
+|---|---|
+| One differentiable form-finding, structural-analysis, and code-compliance program | [executable Quickstart](#quickstart) and [forward/backward diagrams](#one-program-three-kinds-of-differentiation) |
+| Swappable OpenSees and PyNite analysis backends | one-line [backend change](#quickstart) behind one Tesseract schema |
+| Backpropagation through the implemented Eurocode 3 check | [derivation](docs/blueprints_backward_pass.md) and [four-way gradient validation](validation/blueprint_adjoint.py) |
+| Matched end-to-end, free-height, and sizing-only study | [comparison and acceptance protocol](docs/results.md) across four structural systems |
+
+## The optimization problem
+
+For force densities $\mathbf q$, diameters $\mathbf d$, and load cases
+$\mathcal L$, Normax composes three maps:
+
+$$
+\begin{aligned}
+(\mathbf x,\boldsymbol\ell) &= \mathcal F(\mathbf q)
+&& \text{form finding: geometry and member lengths}, \\
+\mathbf s &= \mathcal A(\mathbf x,\mathbf d,\mathcal L)
+&& \text{structural analysis: member actions}, \\
+\mathbf u &= \mathcal C_{\mathrm{Eurocode\,3}}(\mathbf s,\mathbf d,\boldsymbol\ell)
+&& \text{code check: utilization}.
+\end{aligned}
+$$
+
+The simultaneous design problem is
+
+$$
+\begin{aligned}
+\min_{\mathbf q,\mathbf d}\quad
+& m(\mathbf q,\mathbf d)
+= \rho\sum_{e=1}^{n} A_{\mathrm{CHS}}(d_e)\,\ell_e(\mathbf q) \\
+\text{subject to}\quad
+& u_{k,e}(\mathbf q,\mathbf d) \le 1
+&& \forall\ \text{load cases } k\ \text{and members } e, \\
+& \mathbf g_{\mathrm{geometry}}(\mathbf x) \le \mathbf 0,
+\qquad \mathbf q\in\mathcal Q,\quad \mathbf d\in\mathcal D.
+\end{aligned}
+$$
+
+Every symbol has a concrete role:
+
+| Symbol | Meaning |
+|---|---|
+| $\mathbf q$, $\mathcal Q$ | member force densities and their admissible set |
+| $\mathbf d$, $\mathcal D$ | member diameters and their admissible box |
+| $\mathcal L$, $k$ | prescribed load cases and one load-case index |
+| $e$, $n$ | one member index and the number of members |
+| $\mathcal F$ | JAX FDM form-finding map |
+| $\mathbf x$, $\boldsymbol\ell$, $\ell_e$ | nodal coordinates, all member lengths, and the length of member $e$ |
+| $\mathcal A$, $\mathbf s$ | OpenSees or PyNite structural-analysis map and its member actions |
+| $\mathcal C_{\mathrm{Eurocode\,3}}$, $\mathbf u$, $u_{k,e}$ | Blueprints code-check map, its utilization matrix, and one load-case/member utilization |
+| $\rho$, $A_{\mathrm{CHS}}(d_e)$ | steel density and circular-hollow-section area at diameter $d_e$ |
+| $m$ | total steel mass |
+| $\mathbf g_{\mathrm{geometry}}$, $\mathbf 0$ | geometric inequality vector and its feasible upper bound |
+
+The section space is deliberately narrow. Every headline member is an S355
+circular hollow section (CHS) fixed at the Class 3 slenderness limit
+
+$$
+\frac{d}{t}=90\frac{235}{f_y} \approx 59.58,
+\qquad
+t=\frac{d}{59.58},
+\qquad
+d_i=d-2t.
+$$
+
+Only the outer diameter $d$ moves. Wall thickness $t$ and inner diameter $d_i$
+follow from the precomputed ratio. This keeps classification fixed by
+construction and removes a discrete class switch from the differentiated
+problem. It is a tractability choice, not a general catalog model. The
+[Blueprints backward-rule guide](docs/blueprints_backward_pass.md) gives the
+derivation.
+
+Normax differentiates this actual composition. Code utilization, geometry,
+signs, and box bounds constrain the mass objective.
+
+## Software stack
+
+Tesseract and Tesseract-JAX provide the shared schema and JAX boundary. Each
+numerical stage keeps its own implementation and derivative strategy:
+
+| Stage | Software | Language | Differentiation used by Normax |
+|---|---|---|---|
+| Form finding | [JAX FDM](https://github.com/arpastrana/jax_fdm) ([method paper](https://doi.org/10.1016/j.cma.2026.118783)) | Python and JAX | native JAX reverse mode through the equilibrium solve |
+| Structural analysis (2D) | [OpenSees](https://opensees.berkeley.edu/) ([framework paper](https://doi.org/10.1109/MCSE.2011.66)) | C++ core with a Python interface | native Direct Differentiation Method forward sensitivities assembled into a VJP |
+| Structural analysis (3D) | [PyNite](https://github.com/JWock82/Pynite) | Python | no native derivatives, so Normax supplies an implicit structural adjoint |
+| Code compliance | [Blueprints](https://github.com/Blueprints-org/blueprints) | Python | no native derivatives, so Normax supplies a hand-derived VJP for the fixed Class 3 CHS slice |
+
+## Results
+
+Final reruns will populate this table. Masses are tonnes of steel. Every result
+must meet the same utilization tolerance, loads, and section model as its
+baseline.
+
+| Structure | Analysis | Fixed geometry | Form + sizing | Material reduction |
+|---|---|---:|---:|---:|
+| Arch | OpenSees | TBD <!-- FINAL: ARCH_FIXED_MASS_T --> | TBD <!-- FINAL: ARCH_FDM_MASS_T --> | TBD <!-- FINAL: ARCH_SAVINGS_PCT --> |
+| Warren truss | OpenSees | TBD <!-- FINAL: WARREN_FIXED_MASS_T --> | TBD <!-- FINAL: WARREN_FDM_MASS_T --> | TBD <!-- FINAL: WARREN_SAVINGS_PCT --> |
+| Vierendeel truss | OpenSees | TBD <!-- FINAL: VIERENDEEL_FIXED_MASS_T --> | TBD <!-- FINAL: VIERENDEEL_FDM_MASS_T --> | TBD <!-- FINAL: VIERENDEEL_SAVINGS_PCT --> |
+| Gridshell | PyNite | TBD <!-- FINAL: GRIDSHELL_FIXED_MASS_T --> | TBD <!-- FINAL: GRIDSHELL_FDM_MASS_T --> | TBD <!-- FINAL: GRIDSHELL_SAVINGS_PCT --> |
+
+<!-- FINAL: ARCH_DESIGNS: add figures/arch_designs.png, then uncomment below. -->
+<!-- ![Initial and optimized arch designs](figures/arch_designs.png) -->
+
+<!-- FINAL: WARREN_DESIGNS: add figures/warren_designs.png, then uncomment below. -->
+<!-- ![Initial and optimized Warren truss designs](figures/warren_designs.png) -->
+
+<!-- FINAL: ARCH_OPTIMIZATION: add figures/arch_optimization.png, then uncomment below. -->
+<!-- ![Arch objective and constraint history](figures/arch_optimization.png) -->
+
+See [the results record](docs/results.md) for the protocol, tolerances, final
+tables, and figure provenance.
 
 ## Installation
 
-Clone the repository and install with [uv](https://docs.astral.sh/uv/):
+Normax requires Python 3.12. Clone the repository and let
+[`uv`](https://docs.astral.sh/uv/) create the project environment:
 
 ```bash
-git clone https://github.com/arpastrana/normax
+git clone https://github.com/arpastrana/normax.git
 cd normax
-uv sync
+uv sync --frozen
 ```
 
-The form-finding solver, the structural analysis backends, and the structural
-engineering norm verifier are all installed as regular dependencies. Nothing
-else is needed: `uv sync` followed by `uv run pytest` runs the whole suite, and
-no step of it requires Docker — the Tesseract stages are imported into the test
-process.
+## Quickstart
 
-## An example
+Suppose a pedestrian bridge must cross a ten-metre ravine in the Rocky
+Mountains. The terrain fixes two rocky abutments. The deck supplies a load. The
+steel arch that will serve as its backbone is still negotiable. We want one
+function that finds its equilibrium geometry, runs structural analysis, checks
+Eurocode 3, and tells us how mass changes with the force densities.
+
+Normax keeps that function compact and legible. Tesseract makes the analysis and
+code implementations look like ordinary JAX calls:
 
 ```python
 import jax
@@ -91,164 +264,247 @@ def compute_lawful_mass(force_densities):
 compute_mass_and_gradient = jax.value_and_grad(compute_lawful_mass, has_aux=True)
 (mass, design), gradient = compute_mass_and_gradient(force_densities)
 
-# Is every member within what EN 1993-1-1 allows?
-is_design_safe = jnp.all(design.sizes.utilization <= 1.0)
+# Does every member pass the implemented Eurocode 3 cross-section check?
+passes_implemented_check = jnp.all(design.sizes.utilization <= 1.0)
 
 print(mass)  # tonnes of steel
 print(gradient)  # the mass' gradient
-print(is_design_safe)  # True, the norm check passes on every member
+print(passes_implemented_check)  # True when the implemented check passes
 ```
 
-The pipeline is three swappable blocks, each built from a structure on the
-host and then called; what is left is a function of design parameters and load
-cases, and that is what an optimizer differentiates. Form finding traces a
-linear solve in this process. The frame analysis and the code check each cross
-a Tesseract boundary to a host that does not differentiate itself — OpenSees
-for a planar frame, PyNite for a space frame, Blueprints for the check — and
-come back with a hand-written adjoint. The blocks are constructed one by one
-above to show what a pipeline is made of, and the four examples do the same,
-naming the held-plan basis and the symmetry folding they build a form finder
-with rather than settling them behind a call. Swapping the
-planar solver for the space-frame one is a different word in the config and
-nothing else. The design that comes back also carries
-`design.sizes.utilization`, how hard EN 1993-1-1 works every member under every
-load case, which is exactly a constraint function —
-the augmented Lagrangian in `normax.design.solve_problem` holds
-`utilization <= 1` with it while shape and sections move together.
-`examples/arch.py` is the whole project in one file; the other three examples
-share its shape and add a held-plan subspace, symmetry folding and sign
-guards:
+Run the same snippet from the repository:
+
+```bash
+uv run python examples/readme.py
+```
+
+[`examples/readme.py`](examples/readme.py) evaluates mass and utilization, then
+differentiates through both Tesseract boundaries.
+
+To use the other analysis backend, replace one line:
+
+```python
+analyzer = TesseractAnalyzer(structure, section_catalog, backend="pynite")
+```
+
+The pipeline, schema, and JAX-facing API stay fixed. The solvers come from
+different eras. [OpenSees](https://opensees.berkeley.edu/) is a long-established
+C++ research framework with solver sensitivities.
+[PyNite](https://github.com/JWock82/Pynite) is a structural analysis solver in
+plain Python with no derivative API. Normax gives each backend its own
+derivative rule behind the same call.
+
+The snippet evaluates one design and its gradient. Let the optimizer move force
+densities and diameters with:
 
 ```bash
 uv run python examples/arch.py
+```
+
+## More examples
+
+Once the arch runs, three more vignettes exercise the same pipeline on different
+structural systems. Each reads the YAML beside it and exports the configured
+data and figures:
+
+```bash
 uv run python examples/warren.py
 uv run python examples/vierendeel.py
 uv run python examples/gridshell.py
 ```
 
-Each reads the YAML beside it, prints what the descent bought, and writes its
-figures and a `data/*.npz` record; the file's `output` block turns the report,
-the export and the viewer on and off. Adding `--shape-parametrization heights`
-or `fixed` races the same structure, loads, analysis and check against a
-geometry that is written down rather than found.
-
-The arch and both trusses are three structural systems for one bridge problem.
-Their shared supported deck and its uniform, asymmetric, and midspan point-load
-cases are drawn without running a search, as PNG, SVG, and PDF in portrait and
-three-column landscape layouts:
+The three planar systems answer one bridge problem, and its statement — the
+shared supported deck, its supports, and the three load cases — is drawn on its
+own, without running a search:
 
 ```bash
 uv run python examples/problem_setup.py
 ```
 
-## What the gradient buys
-
-`normax/structures.py` generates the structures the claims are measured on — a
-funicular arch, a Warren truss, a Vierendeel truss, and a gridshell cap — and
-each claim was measured by racing parametrizations against each other on them,
-so what the gradient buys is a comparison rather than a demo. A form finder
-acts as a shape prior: descending one force density through it is start-proof
-where descending every free node height stalls in bending. On a truss, holding the
-plan leaves a null space of force densities to search, and
-`normax.form_finding.build_plan_basis` makes its basis coordinates the design
-variables. The rival routes — free heights without the form finder, and sizing
-alone at the drawn geometry — are form finders too, implemented against the
-same interface in `normax/form_finding.py` and reached from the same example by
-a word on the command line, so racing them swaps one block and nothing else:
+For the planar examples, use the same model and switch only the shape
+parametrization to reproduce the baselines:
 
 ```bash
-uv run python examples/arch.py                                  # 0.150150 t
-uv run python examples/arch.py --shape-parametrization heights  # 0.144128 t
-uv run python examples/arch.py --shape-parametrization fixed    # 0.157469 t
+uv run python examples/arch.py --shape-parametrization fixed
+uv run python examples/arch.py --shape-parametrization heights
 ```
 
-All three open on the same 2500 mm parabola at 0.291664 t, so what separates
-them is the search and not the start, and the mass falls monotonically with the
-shape freedom each is given: none, one force density, nine node heights.
+The options mean:
 
-Moving the geometry buys the larger share of the mass on both trusses, and the
-arch says what that freedom is worth at the margin. Its held plan leaves **one**
-independent density, so free heights searches nine degrees of freedom against
-the form finder's one — and buys 4% for them, landing at much the same rise
-(1467 mm against 1397 mm) by a search costing an order of magnitude more
-iterations. A shape prior is not free, but on this structure it is nearly free.
-Numbers, tolerances and the full protocol are in the accompanying paper and in
-`CHANGELOG.md`; `validation/` keeps the checks that still run against the
-shipped API, and `docs/retired_experiments.md` says where the rest went and how
-to get them back.
+- `fdm`: optimize reduced force-density coordinates and recover equilibrium.
+- `heights`: optimize free node heights directly.
+- `fixed`: hold geometry fixed and optimize sections.
 
-## Limitations
+## Technical notes and guides
 
-- **Displacement utilization is future work:** code-defined serviceability
-  limits should constrain designs alongside the present strength utilization.
+These six notes preserve the derivations, verification protocol, and
+engineering work behind the small public API:
 
-**The nested fully-stressed route, kept in `normax/optimization/nested.py`,
-omits `∂d/∂q`.**
-The shipped search is simultaneous — diameters are variables beside the force
-densities, so the design is self-consistent by construction and the gradient
-is complete. In the nested add-on the diameters the analysis runs at stay at
-their seed while the densities move, and that feedback path is one the reverse
-pass never enters; its cost is measured, and staggered re-sectioning closes it.
+- [Results and experiment protocol](docs/results.md)
+- [Reproducibility guide](docs/reproducibility.md)
+- [Backpropagating through Eurocode 3 with Blueprints](docs/blueprints_backward_pass.md)
+- [Building the PyNite backward pass](docs/fast_backward_pass.md)
+- [Finding and mitigating a Tesseract concurrency race](docs/tesseract_stdio_race.md)
+- [Which way the truss bulges](docs/shape_sign.md)
 
-**Shear and torsion are not designed for, and the exclusion is measured rather
-than assumed.** The check covers axial force with bending and leaves out
-EN 1993-1-1 §6.2.6–6.2.8, as clause 6.2.10 permits while the design shear
-stays under half the plastic shear resistance. That fraction was read off every
-converged design rather than bounded, and no structure here approaches the
-threshold; `docs/shear_design.md` records the measurement and what designing
-for shear would take.
+## Verification
 
-**No lateral-torsional buckling check, by construction.** Every member is a
-circular hollow section, which is doubly symmetric, so lateral-torsional
-buckling does not occur and §6.3.2 is not implemented.
-
-**Self-weight does not feed back into the loads.** The load cases are stated
-once and never re-assembled from the sections a design chose.
-
-**No buildability constraint.** Diameters are continuous and per member; the
-continuous optimum is a lower bound on any catalog design.
-
-**Global stability is not checked.** Every member is verified over its own
-buckling length; nothing computes a critical load factor of the whole frame
-per §5.2. Frame-stability checks are future work.
-
-**Commercial engineering software integration is future work.** Products such
-as SkyCiv or Dlubal could provide valuable independent analysis and design
-checks, first as validators of a finished design and eventually as pipeline
-backends. The present bottlenecks are common to black-box commercial systems:
-their APIs expose less calculation state and implementation detail than an
-exact adjoint needs, generally return forward results without sensitivities,
-and may restrict section parametrization to the software's own catalogs. API
-keys, licensing, usage limits, network latency and service availability also
-make an inner optimization loop harder to reproduce and test offline. A final
-batched validation is therefore the practical first integration; an in-loop
-backend can follow when a product exposes enough information to define and
-verify its derivative contract.
-
-**Every adjoint is verified against finite differences of its own forward pass,
-rather than against a second implementation.** During development the crossed
-stack was checked against two in-process JAX implementations — a frame solver
-and an EN 1993-1-1 check written independently of it — and they agreed to
-1.3e-14 on gradients and 6.7e-16 on every field crossing the boundary. Neither
-could ship, so both were deleted before submission; `docs/oracle_removal.md`
-records the reasoning and the tag `local-dev` marks the tree where that
-agreement reproduces. What ships is held to central differences of the crossed
-primal, to closed-form section algebra, and to references frozen at that tag.
-That is weaker in one respect — a second implementation can disagree in a way a
-difference cannot — and stronger in another, since a difference of a function's
-own primal cannot inherit a mistake two implementations share.
-
-## Development
+Tests run the Tesseract APIs in process. They need neither Docker nor a network
+service.
 
 ```bash
-uv sync
 uv run pytest
+uv run ruff check .
+uv run ruff format --check .
 ```
 
-Add dependencies with `uv add` or `uv add --dev` rather than by editing
-`pyproject.toml`. Install the formatting hooks before the first commit; their
-pinned ruff is what CI uses:
+Focused scripts compare each reverse rule with solver identities, element
+formulas, closed forms, and central differences:
 
 ```bash
-uv run pre-commit install
+uv run python validation/opensees_ddm.py
+uv run python validation/pynite_adjoint.py
+uv run python validation/blueprint_adjoint.py
 ```
+
+Exact commands, expected outputs, platform notes, and environment-capture
+instructions are collected in [the reproducibility guide](docs/reproducibility.md).
+
+## One program, three kinds of differentiation
+
+Each stage appears as one function despite different languages, data models,
+and differentiation strategies.
+
+```text
+Forward pass
+
+            force densities q               section diameters d
+                  │                                  │
+                  ▼                                  │
+       JAX force-density form finding                │
+       equilibrium solve + held-plan basis           │
+                  │ geometry x, lengths L            │
+                  └────────────────┬─────────────────┘
+                                   ▼
+                     Tesseract: structural analysis
+                       OpenSees (2D) / PyNite (3D)
+                                   │ member actions
+                                   ▼
+                     Tesseract: section check
+                       Blueprints / Eurocode 3
+                                   │ utilization U
+                  ┌────────────────┴─────────────────┐
+                  │                                  │
+          mass m(x, L, d)                   constraints U ≤ 1
+                  └────────────────┬─────────────────┘
+                                   ▼
+                     augmented-Lagrangian optimizer
+```
+
+The optimizer sees one composition. Its reverse pass follows the same route in
+the other direction:
+
+```text
+Backward pass
+
+ objective m                         constraints U ≤ 1
+      │ direct cotangents                     │
+      │ on geometry and d                     ▼
+      │                    Blueprints check VJP: hand adjoint
+      │                                       │ actions, d
+      │                                       ▼
+      │                    structural-analysis VJP
+      │                      OpenSees: solver sensitivities
+      │                      PyNite: implicit structural adjoint
+      │                                       │ geometry, d
+      └───────────────────┬───────────────────┘
+                          ▼
+        JAX / implicit form-finding pullback + accumulation
+                          │
+                          ▼
+                  gradients ∂L/∂q and ∂L/∂d
+```
+
+This is not a surrogate. Every design evaluation calls the crossed analysis and
+Blueprints check. Backpropagation calls their derivative endpoints.
+
+## The advantages of Tesseract for structural engineering
+
+Tesseract's advantage is not autodiff by another name. It lets each stage use
+the strongest derivative it can supply. One stage traces, another exposes
+compiled sensitivities, and two answer with hand-derived adjoints. The optimizer
+sees the same JAX-callable schema and vector-Jacobian product in every case.
+
+This separation preserves the software the project intends to optimize through.
+Switching OpenSees for PyNite changes one backend input, not the pipeline.
+
+## Outlook
+
+The hackathon was the trigger, not the terminus. Normax opens several useful
+directions:
+
+- **Differentiate more of the norm.** Extend the current Class 3 CHS slice
+  across every Eurocode section class, other section families, and discrete
+  catalogs with branch-aware relaxations and exact final checks.
+- **Broaden the safety model.** Add member buckling, shear, torsion, global
+  stability, geometric nonlinearity, and self-weight feedback.
+- **Swap the form-finding prior.** Put
+  [JAX-CEM](https://github.com/arpastrana/jax_cem) and other differentiable
+  form-finding solvers behind the same stage contract as JAX FDM.
+- **Reach commercial software.** Host established FEA and code-compliance tools
+  behind Tesseract services called through Web APIs, with explicit derivative
+  contracts for sensitivities, adjoints, or numerical pullbacks.
+- **Design for uncertainty.** Treat load uncertainty, multiple starts, and
+  fabrication constraints as first-class parts of the optimization protocol.
+
+The architecture is already the thesis: form finding, structural analysis, and
+law may change independently while the gradient remains one continuous path.
+
+## Scope and limitations
+
+Normax is a research prototype, not a certification tool. Its claims apply only
+to the stated models and loads.
+
+- Member checks cover Eurocode 3 cross-section resistance under axial force
+  with biaxial bending for S355 CHS pipes. Class 3 and its limiting
+  diameter-to-thickness ratio are fixed before optimization. The shipped check
+  does not implement member flexural buckling under §6.3.1, shear, or torsion.
+- Circular hollow sections avoid lateral-torsional buckling by construction.
+  Other section families, global frame stability, and critical load factors are
+  not supported.
+- Loads are prescribed. Changed section sizes do not feed self-weight back into
+  the load cases.
+- Outer diameters are continuous and member-wise. Wall thickness follows the
+  fixed Class 3 ratio. Catalog rounding, other section families, class changes,
+  connection design, fabrication, and other buildability constraints are absent.
+- The nested fully-stressed experimental route omits the `∂d/∂q` coupling. The
+  headline route instead optimizes shape variables and diameters simultaneously
+  so that path is present.
+- Commercial engineering software is not integrated. Batched validation is the
+  practical first step because most commercial APIs do not expose the solver
+  state or sensitivities needed by an in-loop differentiable backend.
+- Only strength is constrained. Serviceability limits are code-defined too, and
+  displacement utilization should bound a design beside the present check.
+- Local Tesseract dispatch is serialized because the hosted solvers and runtime
+  redirection have mutable, thread-sensitive state.
+
+These exclusions define the experiment. They are not safety claims.
+
+## Repository map
+
+| Path | Purpose |
+|---|---|
+| [`normax/design.py`](normax/design.py) | pipeline, objectives, constraints, and optimization problem |
+| [`normax/form_finding.py`](normax/form_finding.py) | force-density, free-height, and fixed-geometry parametrizations |
+| [`normax/tesseract.py`](normax/tesseract.py) | JAX-facing structural-analysis and sizing blocks |
+| [`tesseracts/analysis`](tesseracts/analysis) | OpenSees and PyNite Tesseract API and backends |
+| [`tesseracts/sizing`](tesseracts/sizing) | Blueprints check Tesseract API and adjoint |
+| [`examples`](examples) | four reproducible design studies and their YAML configurations |
+| [`validation`](validation) | focused numerical and derivative checks |
+| [`tests`](tests) | unit, composition, parity, and regression tests |
+
+## License
+
+Normax is released under the [Apache License 2.0](LICENSE). Third-party solvers,
+libraries, and standards retain their own terms. Citation metadata is in
+[`CITATION.cff`](CITATION.cff).
