@@ -1,4 +1,4 @@
-# The 16x16 gridshell, composed across two Tesseract boundaries: jax-fdm in
+# The 16x16 gridshell, composed across two Tesseract boundaries: JAX FDM in
 # process, PyNite across the analysis schema, Blueprints across the check.
 # Millimeters and newtons throughout.
 structure:
