@@ -11,6 +11,11 @@
 & Shape Optimization.** It turns structural form finding, structural analysis,
 and Eurocode cross-section checks into one differentiable design program.
 
+**Normax makes a downstream safety check reshape the upstream structure.** The
+optimizer does not stop at differentiating a form finder or a finite-element
+solver: a utilization constraint evaluated by engineering-code software sends
+its gradient back through analysis and into both geometry and member sizes.
+
 ```text
 [JAX FDM form finding] → [OpenSees / PyNite structural analysis] → [Blueprints code check]
           ↑                                                               │
@@ -20,6 +25,34 @@ and Eurocode cross-section checks into one differentiable design program.
 Geometry and member actions move to the right. Gradients of steel mass and code
 utilization move back to the left, so all three stages participate in one
 design decision.
+
+## Evidence at a glance
+
+Three accepted planar studies now compare the joined form-and-sizing search
+with sizing the same topology at its fixed starting geometry. Every route opens
+on that same geometry and the same diameters. Loads, material, section model,
+code check, optimizer, and acceptance tolerance stay fixed; only shape freedom
+changes.
+
+| Structure | Fixed geometry + sizing [t] | Form + sizing [t] | Less steel vs fixed | Worst utilization |
+|---|---:|---:|---:|---:|
+| Arch | 0.517654 | 0.171684 | **66.83%** | 1.000000 |
+| Warren truss | 0.071797 | 0.050743 | **29.32%** | 1.000001 |
+| Vierendeel truss | 0.277435 | 0.120819 | **56.45%** | 1.000001 |
+
+Every row is a converged local landing within the configured $10^{-6}$
+constraint tolerance. These are continuous-section research results under the
+implemented Eurocode 3 cross-section check, not code-complete or globally
+optimal designs. The [matched protocol and the wider free-height
+diagnostic](docs/results.md) keep the comparison reproducible and its claim
+narrow.
+
+The derivative evidence is numerical too. In the focused Blueprints validation,
+forward mode, reverse mode, closed-form differentiation, and central differences
+agree to a worst relative error of $6.70\times10^{-9}$. The crossed and
+in-process sizing routes return identical sizes and gradients, and the
+validation arch's mass gradient agrees with central differences to
+$6.91\times10^{-10}$.
 
 ## Motivation: design segregation in structural engineering
 
@@ -69,9 +102,9 @@ design space.
 Backpropagating later-stage law into early-stage shape decisions is where the
 magic happens. **Only the joined program lets geometry and sections respond
 together to the same loads and code constraints.** The experiments compare
-that search with fixed-geometry sizing and free nodal heights. Final reruns are
-in progress, so the table below keeps earlier values out of the submission
-record.
+that search with fixed-geometry sizing and free nodal heights. Across the three
+completed planar systems, form and sizing together use 29.32% to 66.83% less
+steel than sizing the fixed starting geometry alone.
 
 <!-- FINAL: HERO_ANIMATION: add figures/hero.gif, then uncomment the line below. -->
 <!-- ![A Normax optimization morphing a structure while member utilization changes](figures/hero.gif) -->
@@ -82,8 +115,8 @@ record.
 |---|---|
 | One differentiable form-finding, structural-analysis, and code-compliance program | [executable Quickstart](#quickstart) and [forward/backward diagrams](#one-program-three-kinds-of-differentiation) |
 | Swappable OpenSees and PyNite analysis backends | one-line [backend change](#quickstart) behind one Tesseract schema |
-| Backpropagation through the implemented Eurocode 3 check | [derivation](docs/blueprints_backward_pass.md) and [four-way gradient validation](validation/blueprint_adjoint.py) |
-| Matched end-to-end, free-height, and sizing-only study | [comparison and acceptance protocol](docs/results.md) across four structural systems |
+| Backpropagation through the implemented Eurocode 3 check | [derivation](docs/blueprints_backward_pass.md) and [four-way gradient agreement to $6.70\times10^{-9}$](validation/blueprint_adjoint.py) |
+| Matched end-to-end, free-height, and sizing-only study | [accepted results and comparison protocol](docs/results.md) across three completed planar systems, with the gridshell in progress |
 
 ## The optimization problem
 
@@ -167,16 +200,25 @@ numerical stage keeps its own implementation and derivative strategy:
 
 ## Results
 
-Final reruns will populate this table. Masses are tonnes of steel. Every result
-must meet the same utilization tolerance, loads, and section model as its
-baseline.
+Masses are tonnes of steel. Every route in a row keeps the topology, loads,
+material, section model, code check, and optimizer fixed. `Fixed` changes only
+diameters. `Free heights` changes permitted nodal heights and diameters.
+`Form + sizing` changes force densities and diameters through the joined
+program.
 
-| Structure | Analysis | Fixed geometry | Form + sizing | Material reduction |
-|---|---|---:|---:|---:|
-| Arch | OpenSees | TBD <!-- FINAL: ARCH_FIXED_MASS_T --> | TBD <!-- FINAL: ARCH_FDM_MASS_T --> | TBD <!-- FINAL: ARCH_SAVINGS_PCT --> |
-| Warren truss | OpenSees | TBD <!-- FINAL: WARREN_FIXED_MASS_T --> | TBD <!-- FINAL: WARREN_FDM_MASS_T --> | TBD <!-- FINAL: WARREN_SAVINGS_PCT --> |
-| Vierendeel truss | OpenSees | TBD <!-- FINAL: VIERENDEEL_FIXED_MASS_T --> | TBD <!-- FINAL: VIERENDEEL_FDM_MASS_T --> | TBD <!-- FINAL: VIERENDEEL_SAVINGS_PCT --> |
-| Gridshell | PyNite | TBD <!-- FINAL: GRIDSHELL_FIXED_MASS_T --> | TBD <!-- FINAL: GRIDSHELL_FDM_MASS_T --> | TBD <!-- FINAL: GRIDSHELL_SAVINGS_PCT --> |
+| Structure | Analysis | Fixed | Free heights | Form + sizing | Form vs fixed | Worst form utilization |
+|---|---|---:|---:|---:|---:|---:|
+| Arch | OpenSees | 0.517654 | **0.154561** | 0.171684 | **66.83% less** | 1.000000 |
+| Warren truss | OpenSees | 0.071797 | 0.051188 | **0.050743** | **29.32% less** | 1.000001 |
+| Vierendeel truss | OpenSees | 0.277435 | 0.136498 | **0.120819** | **56.45% less** | 1.000001 |
+| Gridshell | PyNite | In progress | In progress | In progress | In progress | In progress |
+
+The fixed route is the headline baseline: it isolates the value of allowing
+the common starting geometry to move. Free heights is a separate, larger design
+space used to interrogate the force-density shape prior. It is 9.97% lighter than
+form finding on the arch; form finding is 0.87% lighter on the Warren and
+11.49% lighter on the Vierendeel. Normax therefore claims neither that the
+prior must always win nor that these local optima are global certificates.
 
 <!-- FINAL: ARCH_DESIGNS: add figures/arch_designs.png, then uncomment below. -->
 <!-- ![Initial and optimized arch designs](figures/arch_designs.png) -->
@@ -313,6 +355,14 @@ uv run python examples/vierendeel.py
 uv run python examples/gridshell.py
 ```
 
+The three planar systems answer one bridge problem, and its statement — the
+shared supported deck, its supports, and the three load cases — is drawn on its
+own, without running a search:
+
+```bash
+uv run python examples/problem_setup.py
+```
+
 For the planar examples, use the same model and switch only the shape
 parametrization to reproduce the baselines:
 
@@ -329,7 +379,7 @@ The options mean:
 
 ## Technical notes and guides
 
-These five notes preserve the derivations, verification protocol, and
+These six notes preserve the derivations, verification protocol, and
 engineering work behind the small public API:
 
 - [Results and experiment protocol](docs/results.md)
@@ -337,6 +387,7 @@ engineering work behind the small public API:
 - [Backpropagating through Eurocode 3 with Blueprints](docs/blueprints_backward_pass.md)
 - [Building the PyNite backward pass](docs/fast_backward_pass.md)
 - [Finding and mitigating a Tesseract concurrency race](docs/tesseract_stdio_race.md)
+- [Which way the truss bulges](docs/shape_sign.md)
 
 ## Verification
 
@@ -474,6 +525,8 @@ to the stated models and loads.
 - Commercial engineering software is not integrated. Batched validation is the
   practical first step because most commercial APIs do not expose the solver
   state or sensitivities needed by an in-loop differentiable backend.
+- Only strength is constrained. Serviceability limits are code-defined too, and
+  displacement utilization should bound a design beside the present check.
 - Local Tesseract dispatch is serialized because the hosted solvers and runtime
   redirection have mutable, thread-sensitive state.
 

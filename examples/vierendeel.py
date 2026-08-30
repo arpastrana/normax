@@ -7,9 +7,10 @@ the frame analysis models every member as a rigid-jointed beam and the panels
 carry load through joint bending: no shape makes it momentless under the
 asymmetric cases, and the check's interaction of axial force and bending governs
 rather than the axial resistance alone. The held-plan subspace is nine wide and
-is searched in the members' own densities, and the chord signs are guarded
-descent: a chord density crossing zero hands the form finder a singular
-stiffness, so the guard keeps every trial point on the signed sheet.
+is searched in the members' own densities, and every member family's sign is
+guarded through the descent: a chord density crossing zero hands the form finder
+a singular stiffness, and slack verticals let the panels turn inside out, so the
+guard keeps every trial point on the signed sheet.
 
 Run with `uv run python examples/vierendeel.py [vierendeel.yaml]`. Add
 `--shape-parametrization heights` or `fixed` to race the same structure,
@@ -38,6 +39,7 @@ from normax.exporting import export_design
 from normax.form_finding import LensShapeInitializer
 from normax.form_finding import build_form_finder
 from normax.form_finding import build_plan_basis
+from normax.form_finding import read_lens_shape
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
@@ -97,9 +99,13 @@ def main(arguments: RunArguments) -> None:
     lifted = mirror if config.form_finding.fold_heights else None
     height_groups = build_height_groups(structure, (lifted,))
 
+    # The lens all three parametrizations open on, so a baseline is a shaped
+    # truss rather than the flat line the truss happens to be drawn along
+    start_shape = read_lens_shape(structure, config.form_finding.density_start)
+
     # The three main computation blocks of the structural design pipeline
     form_finder = build_form_finder(
-        structure, basis, config.form_finding, height_groups
+        structure, basis, config.form_finding, height_groups, start_shape
     )
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)

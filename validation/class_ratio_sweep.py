@@ -17,10 +17,10 @@ prices the wall proportion alone, which is the parameter the project chooses.
 
 The sweep also bounds the shear the declined clause 6.2.6 would have seen, which
 is what licenses declining it: Eurocode 3 6.2.10 permits ignoring shear below
-    half the plastic shear resistance. `docs/results.md#scope-and-limitations`
-    states exactly what that check can license. Here the demand is a bound rather
-    than a reading, this sweep having no frame to read one off — the analyzed
-    shear of a real design is what settles it.
+half the plastic shear resistance. `docs/results.md#scope-and-limitations`
+states exactly what that check can license. Here the demand is a bound rather
+than a reading, this sweep having no frame to read one off — the analyzed shear
+of a real design is what settles it.
 
 Run with `uv run python validation/class_ratio_sweep.py`.
 """

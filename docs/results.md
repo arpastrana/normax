@@ -1,8 +1,9 @@
 # Results and experiment protocol
 
-This file defines every headline comparison. Placeholders remain until the code,
-configs, dependencies, and reruns are frozen. A table containing
-`<!-- FINAL: ... -->` is not citable.
+This file defines every headline comparison. The arch, Warren, and Vierendeel
+tables contain accepted planar runs from the frozen configurations on commit
+`cb1c074`. The PyNite gridshell study remains in progress and is not yet a
+result.
 
 ## Research question
 
@@ -28,20 +29,23 @@ Each driver and YAML pair exposes three shape parametrizations:
 |---|---|---|---|
 | end to end | `fdm` | held-plan force-density coordinates and diameters | all three stages share one gradient |
 | free heights | `heights` | permitted node heights and diameters | larger shape space without the funicular prior |
-| sizing only | `fixed` | diameters | drawn geometry stays fixed |
+| sizing only | `fixed` | diameters | common starting geometry stays fixed |
 
 Within a three-way comparison, topology, loads, material, section class,
-backends, section groups, and optimizer are fixed. The final YAML and CLI form
-the executable protocol.
+backends, section groups, optimizer, starting geometry, and starting diameters
+are fixed. The end-to-end route reproduces that geometry through force
+densities, the free-height route writes it as nodal heights, and sizing only
+holds it. The final YAML and CLI form the executable protocol.
 
 The planar cases use 180 kN over the full deck, 90 kN over the near half, and
-45 kN at midspan. Midspan symmetry makes the far-half case a reindexing of the
+90 kN at midspan. Midspan symmetry makes the far-half case a reindexing of the
 near half. The gridshell uses its own pressure loads.
 
 The design spaces are intentionally unequal. Free heights usually contains the
 force-density shapes and adds variables. Sizing only measures the value of
-moving one stated drawing. It is a baseline, not a competing shape method.
-Initial geometries can differ, so every report must state them.
+moving the common starting geometry. It is a baseline, not a competing shape
+method. Every report states the start so that equality can be checked rather
+than assumed.
 
 ## Acceptance protocol
 
@@ -61,35 +65,36 @@ optima. They are not global certificates.
 
 ## Final headline table
 
-Fill mass in tonnes, worst utilization, and objective evaluations from the
-frozen report. Compute savings only after the source masses are fixed.
+Mass is reported in tonnes. Worst utilization and objective evaluations come
+from each accepted report. The remaining placeholders belong only to the
+in-progress gridshell study.
 
 | structure | route | final mass [t] | worst utilization | evaluations |
 |---|---|---:|---:|---:|
-| arch | end to end | <!-- FINAL: ARCH_FDM_MASS_T --> | <!-- FINAL: ARCH_FDM_WORST_U --> | <!-- FINAL: ARCH_FDM_EVALUATIONS --> |
-| arch | free heights | <!-- FINAL: ARCH_HEIGHTS_MASS_T --> | <!-- FINAL: ARCH_HEIGHTS_WORST_U --> | <!-- FINAL: ARCH_HEIGHTS_EVALUATIONS --> |
-| arch | sizing only | <!-- FINAL: ARCH_FIXED_MASS_T --> | <!-- FINAL: ARCH_FIXED_WORST_U --> | <!-- FINAL: ARCH_FIXED_EVALUATIONS --> |
-| Warren | end to end | <!-- FINAL: WARREN_FDM_MASS_T --> | <!-- FINAL: WARREN_FDM_WORST_U --> | <!-- FINAL: WARREN_FDM_EVALUATIONS --> |
-| Warren | free heights | <!-- FINAL: WARREN_HEIGHTS_MASS_T --> | <!-- FINAL: WARREN_HEIGHTS_WORST_U --> | <!-- FINAL: WARREN_HEIGHTS_EVALUATIONS --> |
-| Warren | sizing only | <!-- FINAL: WARREN_FIXED_MASS_T --> | <!-- FINAL: WARREN_FIXED_WORST_U --> | <!-- FINAL: WARREN_FIXED_EVALUATIONS --> |
-| Vierendeel | end to end | <!-- FINAL: VIERENDEEL_FDM_MASS_T --> | <!-- FINAL: VIERENDEEL_FDM_WORST_U --> | <!-- FINAL: VIERENDEEL_FDM_EVALUATIONS --> |
-| Vierendeel | free heights | <!-- FINAL: VIERENDEEL_HEIGHTS_MASS_T --> | <!-- FINAL: VIERENDEEL_HEIGHTS_WORST_U --> | <!-- FINAL: VIERENDEEL_HEIGHTS_EVALUATIONS --> |
-| Vierendeel | sizing only | <!-- FINAL: VIERENDEEL_FIXED_MASS_T --> | <!-- FINAL: VIERENDEEL_FIXED_WORST_U --> | <!-- FINAL: VIERENDEEL_FIXED_EVALUATIONS --> |
+| arch | end to end | 0.171684 | 1.000000 | 129 |
+| arch | free heights | 0.154561 | 1.000000 | 758 |
+| arch | sizing only | 0.517654 | 1.000000 | 81 |
+| Warren | end to end | 0.050743 | 1.000001 | 2243 |
+| Warren | free heights | 0.051188 | 1.000000 | 1856 |
+| Warren | sizing only | 0.071797 | 1.000000 | 208 |
+| Vierendeel | end to end | 0.120819 | 1.000001 | 3110 |
+| Vierendeel | free heights | 0.136498 | 1.000000 | 2193 |
+| Vierendeel | sizing only | 0.277435 | 1.000000 | 1222 |
 | gridshell | end to end | <!-- FINAL: GRIDSHELL_FDM_MASS_T --> | <!-- FINAL: GRIDSHELL_FDM_WORST_U --> | <!-- FINAL: GRIDSHELL_FDM_EVALUATIONS --> |
 | gridshell | free heights | <!-- FINAL: GRIDSHELL_HEIGHTS_MASS_T --> | <!-- FINAL: GRIDSHELL_HEIGHTS_WORST_U --> | <!-- FINAL: GRIDSHELL_HEIGHTS_EVALUATIONS --> |
 | gridshell | sizing only | <!-- FINAL: GRIDSHELL_FIXED_MASS_T --> | <!-- FINAL: GRIDSHELL_FIXED_WORST_U --> | <!-- FINAL: GRIDSHELL_FIXED_EVALUATIONS --> |
 
 | derived comparison | value |
 |---|---:|
-| arch: end to end vs sizing only | <!-- FINAL: ARCH_SAVINGS_PCT --> |
-| Warren: end to end vs sizing only | <!-- FINAL: WARREN_SAVINGS_PCT --> |
-| Vierendeel: end to end vs sizing only | <!-- FINAL: VIERENDEEL_SAVINGS_PCT --> |
+| arch: end to end vs sizing only | 66.83% less mass |
+| Warren: end to end vs sizing only | 29.32% less mass |
+| Vierendeel: end to end vs sizing only | 56.45% less mass |
 | gridshell: end to end vs sizing only | <!-- FINAL: GRIDSHELL_SAVINGS_PCT --> |
 
 | geometry descriptor | value |
 |---|---:|
-| arch end-to-end rise [mm] | <!-- FINAL: ARCH_FDM_RISE_MM --> |
-| arch free-heights rise [mm] | <!-- FINAL: ARCH_HEIGHTS_RISE_MM --> |
+| arch end-to-end rise [mm] | 1397.6 |
+| arch free-heights rise [mm] | 1632.2 |
 | gridshell end-to-end rise [mm] | <!-- FINAL: GRIDSHELL_FDM_RISE_MM --> |
 
 ## Permitted claims
@@ -100,8 +105,8 @@ Tesseract sits inside the optimization path.
 
 Numeric claims must stay narrower:
 
-- Compare end to end with sizing only to measure the value of moving the stated
-  geometry.
+- Compare end to end with sizing only to measure the value of moving the common
+  starting geometry.
 - Compare end to end with free heights to study the shape prior, dimension,
   feasibility, and evaluation count. Do not assume the prior must be lighter.
 - Claim robustness only after a declared multi-start study.

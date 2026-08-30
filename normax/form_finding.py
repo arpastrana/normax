@@ -502,6 +502,9 @@ class HeightsFormFinder(AbstractFormFinder):
     height_groups :
         The orbit columns folding the free nodes' heights, or None to move
         every height on its own.
+    opened :
+        Geometry the search leaves from, or None to leave from the named rise
+        or from the drawing.
 
     Notes
     -----
@@ -531,12 +534,14 @@ class HeightsFormFinder(AbstractFormFinder):
     rise_start: float | None = eqx.field(static=True)
     basis: PlanBasis | None
     height_groups: Float[np.ndarray, "nodes_free groups"] | None
+    opened: Float[Array, "nodes 3"] | None
 
     def __init__(
         self,
         structure: Structure,
         start: dict[str, float] | None = None,
         height_groups: Float[np.ndarray, "nodes_free groups"] | None = None,
+        start_shape: DesignShape | None = None,
     ) -> None:
         """
         Build a heights finder on a drawn structure.
@@ -551,6 +556,9 @@ class HeightsFormFinder(AbstractFormFinder):
         height_groups :
             The orbit columns the heights are folded by, from
             `build_height_groups`, or None to move every height on its own.
+        start_shape :
+            Geometry to open on, outranking both the named rise and the
+            drawing, or None to leave from one of those.
         """
         if start is not None:
             check_start_fields(start, ("rise",))
@@ -565,6 +573,7 @@ class HeightsFormFinder(AbstractFormFinder):
         self.rise_start = None if start is None else float(start["rise"])
         self.basis = None
         self.height_groups = folded
+        self.opened = None if start_shape is None else jnp.asarray(start_shape.xyz)
 
     def count_shape_coefficients(self) -> int:
         """
@@ -614,7 +623,9 @@ class HeightsFormFinder(AbstractFormFinder):
             rise where the file names one and read off the drawing where it
             does not.
         """
-        if self.rise_start is None:
+        if self.opened is not None:
+            started = np.asarray(self.opened)[self.nodes_free, 2]
+        elif self.rise_start is None:
             started = np.asarray(self.xyz)[self.nodes_free, 2]
         else:
             started = build_parabolic_heights(
@@ -717,12 +728,24 @@ class FixedFormFinder(AbstractFormFinder):
     The shape it hands on is a real geometry that never moves, not a stand-in
     for one -- which is what makes neutralizing this slot safe where a null
     analysis returning zero forces would not be.
+
+    **The geometry it holds need not be the drawn one.** The other two
+    parametrizations read their loads off the structure as drawn and then apply
+    them to whatever geometry they find, so a load case is settled before a
+    shape is; this finder took the drawing for both at once, which made a
+    sizing-only baseline a flat structure whenever the drawing was flat. Handed
+    a shape, it sizes that instead, and the drawing goes on saying where the
+    load sits.
     """
 
     shape: DesignShape
     basis: PlanBasis | None
 
-    def __init__(self, structure: Structure) -> None:
+    def __init__(
+        self,
+        structure: Structure,
+        start_shape: DesignShape | None = None,
+    ) -> None:
         """
         Build a fixed finder on a structure.
 
@@ -730,8 +753,11 @@ class FixedFormFinder(AbstractFormFinder):
         ----------
         structure :
             The structure supplying the geometry and the members.
+        start_shape :
+            Geometry to size instead of the drawn one, or None to size the
+            drawing. The structure is still what the load cases are read from.
         """
-        self.shape = read_drawn_shape(structure)
+        self.shape = read_drawn_shape(structure) if start_shape is None else start_shape
         self.basis = None
 
     def count_shape_coefficients(self) -> int:
@@ -814,6 +840,7 @@ def build_form_finder(
     basis: PlanBasis | None,
     config: FormFindingConfig,
     height_groups: Float[np.ndarray, "nodes_free groups"] | None = None,
+    start_shape: DesignShape | None = None,
 ) -> AbstractFormFinder:
     """
     The shape parametrization a run config asks for.
@@ -831,6 +858,9 @@ def build_form_finder(
         The orbit columns the free nodes' heights are folded by, or None to
         move every height on its own. Read by the written-heights
         parametrization alone.
+    start_shape :
+        Geometry the drawn parametrization sizes instead of the drawing, or
+        None to size the drawing. Read by that parametrization alone.
 
     Returns
     -------
@@ -852,9 +882,11 @@ def build_form_finder(
     if named == "fdm":
         return FdmFormFinder(structure, basis)
     if named == "heights":
-        return HeightsFormFinder(structure, config.height_start, height_groups)
+        return HeightsFormFinder(
+            structure, config.height_start, height_groups, start_shape
+        )
     if named == "fixed":
-        return FixedFormFinder(structure)
+        return FixedFormFinder(structure, start_shape)
 
     known = ", ".join(SHAPE_PARAMETRIZATIONS)
     raise ValueError(f"shape parametrization must be one of {known}, got {named!r}")
@@ -1243,6 +1275,81 @@ class UniformDensityInitializer(AbstractDensityInitializer):
         fit = DensityFit(q, no_self_stress, 0.0)
 
         return fit
+
+
+def read_parabolic_shape(
+    structure: Structure,
+    described: dict[str, float] | None,
+) -> DesignShape | None:
+    """
+    The generated parabola a chain opens on, as a geometry every block can take.
+
+    Parameters
+    ----------
+    structure :
+        The structure as drawn, supplying the plan and the supports.
+    described :
+        The start a file wrote, read for its `rise`, or None where it names
+        none and the drawing is what every block opens on.
+
+    Returns
+    -------
+    shape :
+        The lifted geometry and its member lengths, or None.
+
+    Notes
+    -----
+    The chain counterpart of `read_lens_shape`: one opening geometry for all
+    three parametrizations, so a sizing-only baseline is the shape the others
+    leave from rather than the flat line the structure is drawn along. The
+    drawing itself does not move, which is what keeps the load cases where they
+    were read.
+    """
+    if described is None:
+        return None
+    nodes_free = select_free_nodes(structure)
+    lifted = build_parabolic_heights(
+        jnp.asarray(structure.nodes),
+        np.asarray(structure.supports),
+        nodes_free,
+        float(described["rise"]),
+    )
+    xyz = jnp.asarray(structure.nodes).at[nodes_free, 2].set(jnp.asarray(lifted))
+    lengths = compute_member_lengths(xyz, structure.edges)
+
+    return DesignShape(xyz, lengths)
+
+
+def read_lens_shape(
+    structure: Structure,
+    described: dict[str, float | bool],
+) -> DesignShape:
+    """
+    The sketched lens a truss opens on, as a geometry every block can take.
+
+    Parameters
+    ----------
+    structure :
+        The truss as drawn, its bottom chord the lowest nodes.
+    described :
+        The start a file wrote, read for its `sag` and its `rise`.
+
+    Returns
+    -------
+    shape :
+        The sketch, and the member lengths it implies.
+
+    Notes
+    -----
+    The same sketch `LensShapeInitializer` fits its densities against, so a
+    form-found search and a written or drawn one leave from one geometry
+    rather than from three. Where the loads are read stays with the structure
+    as drawn, which is what keeps a deck on the nodes it was put on.
+    """
+    sketched = sketch_lens(structure, float(described["sag"]), float(described["rise"]))
+    lengths = compute_member_lengths(jnp.asarray(sketched), structure.edges)
+
+    return DesignShape(jnp.asarray(sketched), lengths)
 
 
 class LensShapeInitializer(AbstractDensityInitializer):
