@@ -28,17 +28,18 @@ design decision.
 
 ## Evidence at a glance
 
-Three accepted planar studies now compare the joined form-and-sizing search
-with sizing the same topology at its fixed starting geometry. Every route opens
-on that same geometry and the same diameters. Loads, material, section model,
-code check, optimizer, and acceptance tolerance stay fixed; only shape freedom
-changes.
+Four accepted studies now compare the joined form-and-sizing search with sizing
+the same topology at its fixed starting geometry: three planar systems through
+OpenSees and a spatial gridshell through PyNite. Every route opens on that same
+geometry and the same diameters. Loads, material, section model, code check,
+optimizer, and acceptance tolerance stay fixed; only shape freedom changes.
 
 | Structure | Fixed geometry + sizing [t] | Form + sizing [t] | Less steel vs fixed | Worst utilization |
 |---|---:|---:|---:|---:|
 | Arch | 0.517654 | 0.171684 | **66.83%** | 1.000000 |
 | Warren truss | 0.071797 | 0.050743 | **29.32%** | 1.000001 |
 | Vierendeel truss | 0.277435 | 0.120819 | **56.45%** | 1.000001 |
+| Gridshell | 0.138421 | 0.080954 | **41.52%** | 1.000001 |
 
 Every row is a converged local landing within the configured $10^{-6}$
 constraint tolerance. These are continuous-section research results under the
@@ -102,9 +103,9 @@ design space.
 Backpropagating later-stage law into early-stage shape decisions is where the
 magic happens. **Only the joined program lets geometry and sections respond
 together to the same loads and code constraints.** The experiments compare
-that search with fixed-geometry sizing and free nodal heights. Across the three
-completed planar systems, form and sizing together use 29.32% to 66.83% less
-steel than sizing the fixed starting geometry alone.
+that search with fixed-geometry sizing and free nodal heights. Across all four
+completed systems, form and sizing together use 29.32% to 66.83% less steel
+than sizing the fixed starting geometry alone.
 
 <!-- FINAL: HERO_ANIMATION: add figures/hero.gif, then uncomment the line below. -->
 <!-- ![A Normax optimization morphing a structure while member utilization changes](figures/hero.gif) -->
@@ -116,7 +117,7 @@ steel than sizing the fixed starting geometry alone.
 | One differentiable form-finding, structural-analysis, and code-compliance program | [executable Quickstart](#quickstart) and [forward/backward diagrams](#one-program-three-kinds-of-differentiation) |
 | Swappable OpenSees and PyNite analysis backends | one-line [backend change](#quickstart) behind one Tesseract schema |
 | Backpropagation through the implemented Eurocode 3 check | [derivation](docs/blueprints_backward_pass.md) and [four-way gradient agreement to $6.70\times10^{-9}$](validation/blueprint_adjoint.py) |
-| Matched end-to-end, free-height, and sizing-only study | [accepted results and comparison protocol](docs/results.md) across three completed planar systems, with the gridshell in progress |
+| Matched end-to-end, free-height, and sizing-only study | [accepted results and comparison protocol](docs/results.md) across four completed systems, including a 3D gridshell |
 
 ## The optimization problem
 
@@ -211,14 +212,15 @@ program.
 | Arch | OpenSees | 0.517654 | **0.154561** | 0.171684 | **66.83% less** | 1.000000 |
 | Warren truss | OpenSees | 0.071797 | 0.051188 | **0.050743** | **29.32% less** | 1.000001 |
 | Vierendeel truss | OpenSees | 0.277435 | 0.136498 | **0.120819** | **56.45% less** | 1.000001 |
-| Gridshell | PyNite | In progress | In progress | In progress | In progress | In progress |
+| Gridshell | PyNite | 0.138421 | 0.091303 | **0.080954** | **41.52% less** | 1.000001 |
 
 The fixed route is the headline baseline: it isolates the value of allowing
 the common starting geometry to move. Free heights is a separate, larger design
 space used to interrogate the force-density shape prior. It is 9.97% lighter than
-form finding on the arch; form finding is 0.87% lighter on the Warren and
-11.49% lighter on the Vierendeel. Normax therefore claims neither that the
-prior must always win nor that these local optima are global certificates.
+form finding on the arch. Form finding is 0.87% lighter on the Warren, 11.49%
+lighter on the Vierendeel, and 11.33% lighter on the gridshell. Normax
+therefore claims neither that the prior must always win nor that these local
+optima are global certificates.
 
 <!-- FINAL: ARCH_DESIGNS: add figures/arch_designs.png, then uncomment below. -->
 <!-- ![Initial and optimized arch designs](figures/arch_designs.png) -->

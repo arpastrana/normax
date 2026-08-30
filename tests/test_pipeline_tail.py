@@ -36,7 +36,7 @@ from normax.visualization import DescentTrace
 from normax.visualization import animate_descent
 from normax.visualization import draw_design_figures
 from normax.visualization.animations import FRAMES_HELD
-from normax.visualization.animations import FRAMES_MOST
+from normax.visualization.animations import FRAMES_PLAYED
 from normax.visualization.animations import WIDTH_FIGURE
 from normax.visualization.animations import name_frame
 from normax.visualization.animations import pick_frames
@@ -414,11 +414,11 @@ def test_a_frame_is_named_for_its_round_at_either_resolution():
 
 
 def test_a_long_walk_is_thinned_to_a_watchable_number_of_frames():
-    # An even stride, the whole descent seen at lower resolution rather than
-    # truncated, and the answer kept whatever the stride would have left.
-    for count in (69, FRAMES_MOST, FRAMES_MOST + 1, 617, 1243):
+    # Evenly spaced, the whole descent seen at lower resolution rather than
+    # truncated, and the answer kept whatever the spacing would have left.
+    for count in (69, FRAMES_PLAYED, FRAMES_PLAYED + 1, 617, 1243):
         picked = pick_frames(count)
-        assert picked.size <= FRAMES_MOST
+        assert picked.size <= FRAMES_PLAYED
         assert int(picked[0]) == 0
         assert int(picked[-1]) == count - 1
         assert np.all(np.diff(picked) > 0)

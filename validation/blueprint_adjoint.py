@@ -193,6 +193,23 @@ class DerivativeSet(NamedTuple):
         return "ok" if self.worst < TARGET else "FAIL"
 
 
+class BlueprintMeasurement(NamedTuple):
+    """The four-way derivatives and crossed-route evidence behind the report."""
+
+    by_force: tuple[tuple[str, DerivativeSet], ...]
+    by_moment: tuple[tuple[str, DerivativeSet], ...]
+    local_design: Design
+    crossed_design: Design
+    local_gradient: Float[Array, "edges"]
+    crossed_gradient: Float[Array, "edges"]
+    numeric_gradient: Float[np.ndarray, "edges"]
+    worst_derivative: float
+    worst_parity: float
+    worst_gradient: float
+    worst_numeric: float
+    worst_unity: float
+
+
 LOADED = (
     MemberCase(-5.0e5, 1.0e6),
     MemberCase(-3.0e5, 0.0),
@@ -987,6 +1004,60 @@ def report_philosophy(report: Report, design: Design) -> None:
     )
 
 
+def measure_blueprint() -> BlueprintMeasurement:
+    """Run every derivative route once and return its raw numerical evidence."""
+    by_force = tuple((case.label, derivatives_force(case)) for case in LOADED)
+    by_moment = tuple((case.label, derivatives_moment(case)) for case in LOADED)
+
+    local_pipeline, crossed_pipeline = build_arch_problem()
+    params = read_arch_parameters(local_pipeline)
+    structure = local_pipeline.sizer.structure
+    loads = assemble_load_cases(
+        [create_load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
+    )
+    local_design = sized_design(local_pipeline, params, loads)
+    crossed_design = sized_design(crossed_pipeline, params, loads)
+
+    local_mass = build_mass_objective(local_pipeline, params, loads)
+    crossed_mass = build_mass_objective(crossed_pipeline, params, loads)
+    local_gradient = jax.grad(local_mass)(params.shape_parameters)
+    crossed_gradient = jax.grad(crossed_mass)(params.shape_parameters)
+    numeric_gradient = compute_differences(crossed_mass, params.shape_parameters)
+
+    local_sizes = np.asarray(local_design.sizes.sections.diameter)
+    crossed_sizes = np.asarray(crossed_design.sizes.sections.diameter)
+    worst_parity = max(
+        relative_gap(crossed, local)
+        for local, crossed in zip(local_sizes, crossed_sizes)
+    )
+    local_host = np.asarray(local_gradient)
+    crossed_host = np.asarray(crossed_gradient)
+    scale = float(np.max(np.abs(local_host)))
+    worst_gradient = float(np.max(np.abs(crossed_host - local_host))) / scale
+    worst_numeric = float(np.max(np.abs(numeric_gradient - crossed_host))) / scale
+
+    used = np.asarray(local_design.sizes.utilization)
+    sized = local_sizes > DIAMETER_MINIMUM
+    free = np.broadcast_to(sized, used.shape)
+    worst_unity = float(np.max(np.abs(used[free] - 1.0)))
+    worst_derivative = max(found.worst for _, found in (*by_force, *by_moment))
+
+    return BlueprintMeasurement(
+        by_force=by_force,
+        by_moment=by_moment,
+        local_design=local_design,
+        crossed_design=crossed_design,
+        local_gradient=local_gradient,
+        crossed_gradient=crossed_gradient,
+        numeric_gradient=numeric_gradient,
+        worst_derivative=worst_derivative,
+        worst_parity=worst_parity,
+        worst_gradient=worst_gradient,
+        worst_numeric=worst_numeric,
+        worst_unity=worst_unity,
+    )
+
+
 def main(verbose: bool = True) -> None:
     """
     Tabulate the two routes over one member and over the arch.
@@ -1003,53 +1074,34 @@ def main(verbose: bool = True) -> None:
     report.write_heading("S355 tube, Blueprints' cross-section check")
     report.write_entries(entries)
 
-    by_force = [(case.label, derivatives_force(case)) for case in LOADED]
-    by_moment = [(case.label, derivatives_moment(case)) for case in LOADED]
-    worst_force = report_derivatives(report, FORCE_TITLE, by_force)
-    worst_moment = report_derivatives(report, MOMENT_TITLE, by_moment)
-    worst_derivative = max(worst_force, worst_moment)
-
-    local_pipeline, crossed_pipeline = build_arch_problem()
-    params = read_arch_parameters(local_pipeline)
-    structure = local_pipeline.sizer.structure
-    loads = assemble_load_cases(
-        [create_load_uniform(structure, TOTAL_LOAD / (NUM_EDGES - 1))]
+    measured = measure_blueprint()
+    report_derivatives(report, FORCE_TITLE, measured.by_force)
+    report_derivatives(report, MOMENT_TITLE, measured.by_moment)
+    report_parity(report, measured.local_design, measured.crossed_design)
+    report_gradients(
+        report,
+        measured.local_gradient,
+        measured.crossed_gradient,
+        measured.numeric_gradient,
     )
-
-    local_design = sized_design(local_pipeline, params, loads)
-    crossed_design = sized_design(crossed_pipeline, params, loads)
-    worst_parity = report_parity(report, local_design, crossed_design)
-
-    local_mass = build_mass_objective(local_pipeline, params, loads)
-    crossed_mass = build_mass_objective(crossed_pipeline, params, loads)
-    in_process = jax.grad(local_mass)(params.shape_parameters)
-    carried = jax.grad(crossed_mass)(params.shape_parameters)
-    quotients = compute_differences(crossed_mass, params.shape_parameters)
-    worst_gradient, worst_numeric = report_gradients(
-        report, in_process, carried, quotients
-    )
-
-    # Utilization keeps its load case axis; one section per member is checked
-    # in every case, so the floor mask is broadcast across them.
-    used = np.asarray(local_design.sizes.utilization)
-    sized = np.asarray(local_design.sizes.sections.diameter) > DIAMETER_MINIMUM
-    free = np.broadcast_to(sized, used.shape)
-    worst_unity = float(np.max(np.abs(used[free] - 1.0)))
-
-    report_philosophy(report, crossed_design)
+    report_philosophy(report, measured.crossed_design)
 
     gradient_check = ToleranceCheck(
-        "route parity on the gradient", worst_gradient, TOLERANCE_DERIVATIVE
+        "route parity on the gradient",
+        measured.worst_gradient,
+        TOLERANCE_DERIVATIVE,
     )
     numeric_check = ToleranceCheck(
-        "the gradient against differences", worst_numeric, TOLERANCE_NUMERIC
+        "the gradient against differences", measured.worst_numeric, TOLERANCE_NUMERIC
     )
     checks = (
-        ToleranceCheck("derivative disagreement", worst_derivative, TARGET),
-        ToleranceCheck("route parity on the sizes", worst_parity, TOLERANCE_PARITY),
+        ToleranceCheck("derivative disagreement", measured.worst_derivative, TARGET),
+        ToleranceCheck(
+            "route parity on the sizes", measured.worst_parity, TOLERANCE_PARITY
+        ),
         gradient_check,
         numeric_check,
-        ToleranceCheck("departure from unity", worst_unity, TOLERANCE_UNITY),
+        ToleranceCheck("departure from unity", measured.worst_unity, TOLERANCE_UNITY),
     )
     report.write_heading("Summary")
     report.write_checks(checks)
