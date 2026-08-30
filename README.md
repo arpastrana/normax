@@ -136,8 +136,8 @@ baseline.
 <!-- FINAL: ARCH_OPTIMIZATION: add figures/arch_optimization.png, then uncomment below. -->
 <!-- ![Arch objective and constraint history](figures/arch_optimization.png) -->
 
-The final configurations, comparison protocol, tolerances, complete tables, and
-figure provenance will be published with the frozen submission results.
+See [the results record](docs/results.md) for the protocol, tolerances, final
+tables, and figure provenance.
 
 ## Installation
 
@@ -279,20 +279,13 @@ The options mean:
 ## Technical notes and guides
 
 Normax grew through measured decisions, discarded approaches, and explicit
-scope cuts. These notes preserve the derivations and engineering work behind the
-small public API:
+scope cuts. These records preserve the derivations, verification protocol, and
+engineering work behind the small public API:
 
-- [Development roadmap](docs/ROADMAP.md)
-- [Initialization and parametrization](docs/initialization.md)
-- [Gridshell experiments](docs/gridshell_findings.md)
+- [Results and experiment protocol](docs/results.md)
+- [Reproducibility guide](docs/reproducibility.md)
 - [Building the PyNite backward pass](docs/fast_backward_pass.md)
-- [Parallel gradients and backend choice](docs/parallel_gradients.md)
 - [Tesseract stdio concurrency defect](docs/tesseract_stdio_race.md)
-- [Owning materials and sections](docs/sections_extraction.md)
-- [The retired `ec3x` extraction](docs/ec3x_extraction.md)
-- [Removing private validation oracles](docs/oracle_removal.md)
-- [Shear-design scope](docs/shear_design.md)
-- [Retired experiments and recovery](docs/retired_experiments.md)
 - [Development history](CHANGELOG.md)
 
 ## Verification
@@ -315,8 +308,8 @@ uv run python validation/pynite_adjoint.py
 uv run python validation/blueprint_adjoint.py
 ```
 
-These commands are the reproducibility entry points. The frozen submission will
-add expected outputs, platform notes, and environment details.
+Exact commands, expected outputs, platform notes, and environment-capture
+instructions are collected in [the reproducibility guide](docs/reproducibility.md).
 
 ## One program, three kinds of differentiation
 
