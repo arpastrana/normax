@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use Normax, please cite the software using this metadata."
+title: "normax"
+type: software
+authors:
+  - family-names: "Pastrana"
+    given-names: "Rafael"
+version: "0.1"
+repository-code: "https://github.com/arpastrana/normax"
+url: "https://github.com/arpastrana/normax"
+license: "Apache-2.0"
