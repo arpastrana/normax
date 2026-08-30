@@ -4,7 +4,7 @@
 496 members, 1267 differentiable parameters, three load cases — unless it says
 otherwise. Reproduce them with `validation/pynite_adjoint.py`.*
 
-PyNite is a space-frame analysis in plain Python. It has no tape, no tangent and
+PyNite is a structural analysis solver in plain Python. It has no tape, no tangent and
 no sensitivity command, and no configuration produces one. Giving it a gradient
 took six stages. The first made it *correct*; the other five made it fast, and
 each was aimed at something the previous stage's measurement had proved was
