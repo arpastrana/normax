@@ -179,6 +179,9 @@ to get them back.
 
 ## Limitations
 
+- **Displacement utilization is future work:** code-defined serviceability
+  limits should constrain designs alongside the present strength utilization.
+
 **The nested fully-stressed route, kept in `normax/optimization/nested.py`,
 omits `∂d/∂q`.**
 The shipped search is simultaneous — diameters are variables beside the force

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Displacement utilization is named as future work
+
+Added 2026-08-30. The shipped check constrains strength alone. Serviceability
+limits are code-defined too and should constrain a design beside it, so the
+README's Limitations section now says so rather than leaving the omission to be
+inferred from the clause list.
+
 ### The bridge problem the three examples share, drawn once
 
 Added 2026-08-30. The arch, the Warren and the Vierendeel are three structural
