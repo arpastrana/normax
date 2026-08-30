@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### The trusses arch upward
+
+Changed 2026-08-30. Both truss runs open on an arched sketch, and the Vierendeel
+guards its verticals. `docs/shape_sign.md` is the record; the arch is untouched,
+since a chain already arches by its density box.
+
+A sagging answer was seeded by the start sketch and not by the sign guard, which
+is the whole finding. The load sits on the bottom chord, so a lens sketched with
+a positive sag fits that chord as a tension catenary before the first iterate
+exists. Nothing downstream lifts it back out: guarding both chords in
+compression on the sagging sketch only freezes the top chord flat at 1047 mm and
+leaves the bottom on its floor. A negative sag lifts the bottom chord instead,
+the sketch arches at constant depth, and both chords are fitted in compression.
+
+The Vierendeel pays 0.99% for it, 0.119635 t to 0.120819 t, and widens its lead
+over written heights from 12.71% to 13.17%. The Warren comes out 0.13% lighter,
+and its drawn baseline improves a great deal, 0.079787 t to 0.071797 t, because
+an arched sketch is a better truss than a lens. The Warren takes the same start
+with three differences, each forced: its fit stays free, because the held arched
+fit leaves no self-stress to shift along and every guard is then refused; its
+diagonals are not guarded and cannot be, because each reverses sign across
+midspan, which is what a Warren does; and they need no guard, because every
+diagonal has plan projection and no panel of that truss can invert.
+
+**The verticals are guarded because the length row cannot see an inverted
+panel.** The row is built on member length, a norm, so a panel at depth -3000
+satisfies a 1000 mm floor. Guard the chords and leave the verticals free and the
+descent turns five of the nine panels inside out to buy lever arm, reporting a
+violation of 2.8e-07 while doing it. Guarding them stops it here and is not a
+proof: a deeper arched sketch crossed anyway with every vertical density
+positive, since a density sign says tension or compression and not which of a
+member's nodes is higher. A signed depth row is the repair and is not written.
+
+The guard margin is also one number for families that differ by thirty times --
+the Vierendeel's chords carry about 205 against its verticals' 12.8, and the
+margin is scaled off the median of every guarded member. So a vertical guard is
+inadmissible above about 0.11, where no shift along the single self-stress signs
+every family at once, while below 0.1 the verticals are left weak enough that
+the panels invert again. The working value sits at the top edge of its own
+admissible window; a per-family margin would remove the knife edge.
+
 ### A moment below its load case's scale is read as none
 
 Fixed 2026-08-30. `_read_worse_end` picks the larger of a member's two end

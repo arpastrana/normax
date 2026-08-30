@@ -7,9 +7,10 @@ the frame analysis models every member as a rigid-jointed beam and the panels
 carry load through joint bending: no shape makes it momentless under the
 asymmetric cases, and the check's interaction of axial force and bending governs
 rather than the axial resistance alone. The held-plan subspace is nine wide and
-is searched in the members' own densities, and the chord signs are guarded
-descent: a chord density crossing zero hands the form finder a singular
-stiffness, so the guard keeps every trial point on the signed sheet.
+is searched in the members' own densities, and every member family's sign is
+guarded through the descent: a chord density crossing zero hands the form finder
+a singular stiffness, and slack verticals let the panels turn inside out, so the
+guard keeps every trial point on the signed sheet.
 
 Run with `uv run python examples/vierendeel.py [vierendeel.yaml]`. Add
 `--shape-parametrization heights` or `fixed` to race the same structure,

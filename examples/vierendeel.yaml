@@ -15,7 +15,10 @@ form_finding:
   mirror: x
   fold_heights: true            # one height per mirrored pair of free nodes
   # LensShapeInitializer: the densities that make a sketched lens funicular.
-  density_start: {sag: 500.0, rise: 500.0, held_plan: true}
+  # A NEGATIVE sag lifts the bottom chord, so the sketch arches at constant
+  # depth and the loaded chord is fitted in compression. A sagging sketch fits
+  # it as a tension catenary and no guard lifts the answer back out of it.
+  density_start: {sag: -500.0, rise: 500.0, held_plan: true}
 
 # The same three cases on the arch and on both trusses, so the masses compare:
 # the whole load over the deck, half of it on one half of the deck, and half of
@@ -53,9 +56,16 @@ constraints:
   length_min: 1000.0
   rise_max: 2000.0
   sag_min: -1000.0
-  # Signs the chords at the start and guards them through the descent.
+  # Signs the chords and the verticals at the start and guards them through the
+  # descent. The verticals are guarded because `length_min` rows on member
+  # length, a norm, and so cannot tell a collapsed panel from an inverted one:
+  # unguarded, the descent turns five of the nine panels inside out to buy
+  # lever arm. The guard lifts the verticals from the 12.8 the fit gives them
+  # to 20.6, and stiff verticals are what hold the panels the right way up.
+  # 0.1 is the largest fraction the single self-stress can sign every family
+  # at once by; smaller lets the verticals weaken and the panels invert again.
   sign_margin_fraction: 0.1
-  sign_guard: {bottom chord: tension, top chord: compression}
+  sign_guard: {bottom chord: compression, top chord: compression, verticals: tension}
   bounds: null
 
 # The opening penalty decides the answer on this truss: below a value between
