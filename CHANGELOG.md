@@ -43,6 +43,13 @@ every family at once, while below 0.1 the verticals are left weak enough that
 the panels invert again. The working value sits at the top edge of its own
 admissible window; a per-family margin would remove the knife edge.
 
+### Everything an experiment writes stays out of history
+
+Changed 2026-08-30. `figures/` was ignored by extension, which held for the
+images and animations in it and would have let a stray log or table through.
+The directory's contents are now ignored whatever their extension, with the
+placeholder that keeps it in history as the one exception.
+
 ### A moment below its load case's scale is read as none
 
 Fixed 2026-08-30. `_read_worse_end` picks the larger of a member's two end

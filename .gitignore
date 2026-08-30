@@ -28,9 +28,13 @@ CLAUDE.md
 *.pdf
 *.mp4
 
-# Everything a run leaves behind: the answer it descended to, and under
-# trajectories/, the multi-start landings, logs and descent paths behind the
-# reported numbers. Reproducible from the run description that names it.
+# Everything an experiment writes, whatever its extension: figures and
+# animations, the answer a run descended to, and under runlogs/ and
+# trajectories/ the console logs, variant run descriptions and multi-start
+# landings behind the reported numbers. All reproducible from the run
+# description that names them, and the directory is kept so a clone can write.
+figures/*
+!figures/.gitkeep
 data/
 
 # What a local Tesseract writes per run: its captured stdio and its metrics.
