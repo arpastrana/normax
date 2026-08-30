@@ -99,6 +99,24 @@ Every symbol has a concrete role:
 | $m$ | total steel mass |
 | $\mathbf g_{\mathrm{geometry}}$, $\mathbf 0$ | geometric inequality vector and its feasible upper bound |
 
+The section space is deliberately narrow. Every headline member is an S355
+circular hollow section (CHS) fixed at the Class 3 slenderness limit
+
+$$
+\frac{d}{t}=90\frac{235}{f_y} \approx 59.58,
+\qquad
+t=\frac{d}{59.58},
+\qquad
+d_i=d-2t.
+$$
+
+Only the outer diameter $d$ moves. Wall thickness $t$ and inner diameter $d_i$
+follow from the precomputed ratio. This keeps classification fixed by
+construction and removes a discrete class switch from the differentiated
+problem. It is a tractability choice, not a general catalog model. The
+[Blueprints backward-rule guide](docs/blueprints_backward_pass.md) gives the
+derivation.
+
 Normax differentiates this actual composition. Code utilization, geometry,
 signs, and box bounds constrain the mass objective.
 
@@ -112,7 +130,7 @@ numerical stage keeps its own implementation and derivative strategy:
 | Form finding | [jax-fdm](https://github.com/arpastrana/jax_fdm) | Python and JAX | native JAX reverse mode through the equilibrium solve |
 | Structural analysis (2D) | [OpenSees](https://opensees.berkeley.edu/) | C++ core with a Python interface | native Direct Differentiation Method forward sensitivities assembled into a VJP |
 | Structural analysis (3D) | [PyNite](https://github.com/JWock82/Pynite) | Python | no native derivatives, so Normax supplies an implicit structural adjoint |
-| Code compliance | [Blueprints](https://github.com/Blueprints-org/blueprints) | Python | no native derivatives, so Normax supplies a hand-derived VJP |
+| Code compliance | [Blueprints](https://github.com/Blueprints-org/blueprints) | Python | no native derivatives, so Normax supplies a hand-derived VJP for the fixed Class 3 CHS slice |
 
 ## Results
 
@@ -284,6 +302,7 @@ engineering work behind the small public API:
 
 - [Results and experiment protocol](docs/results.md)
 - [Reproducibility guide](docs/reproducibility.md)
+- [Backpropagating through Eurocode 3 with Blueprints](docs/blueprints_backward_pass.md)
 - [Building the PyNite backward pass](docs/fast_backward_pass.md)
 - [Tesseract stdio concurrency defect](docs/tesseract_stdio_race.md)
 - [Development history](CHANGELOG.md)
@@ -392,15 +411,17 @@ Normax is a research prototype, not a certification tool. Its claims apply only
 to the stated models and loads.
 
 - Member checks cover EN 1993-1-1 cross-section resistance under axial force
-  with biaxial bending for S355 circular hollow sections. The shipped check
+  with biaxial bending for S355 CHS pipes. Class 3 and its limiting
+  diameter-to-thickness ratio are fixed before optimization. The shipped check
   does not implement member flexural buckling under §6.3.1, shear, or torsion.
 - Circular hollow sections avoid lateral-torsional buckling by construction.
   Other section families, global frame stability, and critical load factors are
   not supported.
 - Loads are prescribed. Changed section sizes do not feed self-weight back into
   the load cases.
-- Diameters are continuous and member-wise, without catalog rounding,
-  connection design, fabrication, or other buildability constraints.
+- Outer diameters are continuous and member-wise. Wall thickness follows the
+  fixed Class 3 ratio. Catalog rounding, other section families, class changes,
+  connection design, fabrication, and other buildability constraints are absent.
 - The nested fully-stressed experimental route omits the `∂d/∂q` coupling. The
   headline route instead optimizes shape variables and diameters simultaneously
   so that path is present.
