@@ -291,10 +291,21 @@ def main(asked: tuple[str, ...], gifs: bool) -> None:
         redraw_example(example, gifs)
 
 
+FLAGS = ("--gif",)
+
 if __name__ == "__main__":
-    given = [word for word in sys.argv[1:] if not word.startswith("--")]
+    asked_flags = [word for word in sys.argv[1:] if word.startswith("-")]
+    # Refused rather than ignored: a flag read as no flag leaves every example
+    # named, and this redraws all of them by way of answering `--help`.
+    strange = [word for word in asked_flags if word not in FLAGS]
+    if strange:
+        raise SystemExit(
+            f"unknown option {strange}, known: {list(FLAGS)}\n"
+            f"usage: redraw_designs.py [{'|'.join(KINDS)}] ... [--gif]"
+        )
+    given = [word for word in sys.argv[1:] if not word.startswith("-")]
     wanted = tuple(given) or tuple(KINDS)
     unknown = [word for word in wanted if word not in KINDS]
     if unknown:
         raise SystemExit(f"unknown example {unknown}, known: {list(KINDS)}")
-    main(wanted, "--gif" in sys.argv[1:])
+    main(wanted, "--gif" in asked_flags)
