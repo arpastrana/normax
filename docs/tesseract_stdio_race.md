@@ -1,65 +1,50 @@
 # Tesseract Core stdio concurrency defect
 
-Normax exposed a process-wide stdio race while local Tesseract endpoints were
-allowed to overlap. The defect is tracked upstream as
+Normax exposed a process-wide stdio race in overlapping local Tesseract calls.
+The upstream report is
 [tesseract-core #709](https://github.com/pasteurlabs/tesseract-core/issues/709).
-This short note records why it matters to normax; the issue contains the
-standalone public-API reproduction and current upstream discussion.
+That issue contains the standalone reproduction and current discussion.
 
-## The defect
+## Defect
 
-`LocalClient.run_tesseract` enters the runtime's `start_run` path for every
-endpoint call. That path temporarily redirects file descriptors 1 and 2 with
-`os.dup2`, saves their previous targets, and restores them by hand. File
-descriptors are process-global. Two overlapping redirections are safe only if
-their exits happen in strict last-in-first-out order; independent threads do
-not guarantee that ordering.
+Each `LocalClient.run_tesseract` call enters `start_run`. The runtime redirects
+file descriptors 1 and 2 with `os.dup2`, saves their targets, then restores them
+by hand. File descriptors belong to the process. Overlap is safe only when calls
+exit in strict last-in-first-out order. Threads provide no such guarantee.
 
-The minimum reproduction in #709 creates an in-memory Tesseract through the
-public API and calls one shared local client from four ordinary Python threads.
-Against the affected runtime, worker calls can raise `Bad file descriptor` and
-stdout or stderr can be restored to the wrong target. The reproduction does not
-depend on normax, JAX, OpenSees or Blueprints.
+The reproduction creates an in-memory Tesseract through the public API and
+shares one local client across four threads. Affected runtimes can raise
+`Bad file descriptor` or restore stdout and stderr to the wrong targets. Normax,
+JAX, OpenSees, and Blueprints are not required.
 
-The proposed minimal runtime fix is a module-level `threading.RLock` held for
-the entire stdio-redirection lifetime, including restoration and cleanup. It
-must be reentrant because an existing nested-run path can enter `start_run`
-again on one thread. That fix serializes local endpoint bodies; preserving
-concurrency would require a more involved ownership design for process-global
+The proposed minimal fix holds a module-level `threading.RLock` for the full
+redirection lifetime, including cleanup. It must be reentrant because a nested
+run can enter `start_run` twice on one thread. This serializes local endpoint
+bodies. Preserving concurrency needs a deeper ownership model for process-wide
 descriptors.
 
 ## How normax found it
 
-The retired optimization path requested a dense constraint Jacobian, producing
-one reverse crossing per constraint row. During that work normax measured
-overlapping local dispatch while its planar analysis Tesseract hosted OpenSees,
-whose native domain is also process-global and mutable. Native runs could end
-with `exit 139` and no Python traceback.
+A retired dense-Jacobian path made one reverse crossing per constraint row. Its
+calls overlapped while the planar Tesseract hosted OpenSees, which also owns
+mutable process-wide state. Native runs could end with `exit 139` and no Python
+traceback.
 
-These are two distinct hazards exposed by the same overlap:
+The overlap exposed two separate hazards:
 
-- Tesseract Core's save-and-restore protocol could corrupt process stdio.
-- Concurrent calls could mutate OpenSees' single native model while another
-  call was solving or reading sensitivities.
+- Tesseract Core could corrupt process stdio.
+- Concurrent calls could mutate one OpenSees model during a solve.
 
-The dense-Jacobian formulation increased the number of crossings; it did not
-create either unsafe global resource. A later smoke test confirmed the larger
-crossing count but did not reproduce concurrent scheduling, so normax treats
-that formulation as an exposure amplifier rather than the cause.
+The dense Jacobian increased exposure. It caused neither unsafe resource.
 
-## Current mitigation and scope
+## Mitigation
 
-Normax serializes crossed solver dispatch on an owner thread. The current
-augmented-Lagrangian formulation also aggregates constraint rows into one
-scalar before reverse mode, requiring one cotangent crossing per stage instead
-of a dense row-by-row pullback. Together these choices avoid the overlapping
-local calls that exposed the failure in normax's tested execution path.
+Normax dispatches crossed solvers on one owner thread. Its augmented Lagrangian
+also reduces all constraint rows to one scalar before reverse mode. Each stage
+therefore needs one cotangent crossing, not one crossing per row.
 
-This is a mitigation, not a claim that the affected Tesseract runtime is safe
-for arbitrary concurrent local clients. It also does not make a native library
-thread-safe: even with stdio protected upstream, a Tesseract hosting a solver
-with process-global state may still require serialization or thread affinity of
-its own.
+This protects normax's tested path. It does not make arbitrary concurrent local
+clients safe. An upstream stdio lock also cannot make a hosted native library
+thread-safe.
 
-For reproducible normax commands and environment notes, see
-[reproducibility.md](reproducibility.md).
+See [reproducibility.md](reproducibility.md) for commands and environment notes.
