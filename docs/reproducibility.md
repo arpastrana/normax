@@ -125,8 +125,9 @@ uv run python validation/sizing_formulations.py
 
 They compare crossed forward passes and reverse rules with central differences,
 closed forms, implicit derivatives, host calculations, and frozen reference
-norms. [fast_backward_pass.md](fast_backward_pass.md) derives the PyNite adjoint
-and records its timings.
+norms. [blueprints_backward_pass.md](blueprints_backward_pass.md) derives the
+code-check pullback. [fast_backward_pass.md](fast_backward_pass.md) derives the
+PyNite adjoint and records its timings.
 
 ## Reporting rules
 
@@ -139,7 +140,7 @@ and records its timings.
 - Treat results as local optima with continuous diameters, not global proofs or
   catalog-ready designs.
 - The Blueprints backend checks EN 1993-1-1 cross-section resistance for axial
-  force with biaxial bending. See [results.md](results.md#scope-and-limitations)
-  for omitted checks.
+  force with biaxial bending on the fixed Class 3 CHS family. See
+  [results.md](results.md#scope-and-limitations) for omitted checks.
 - Local solver dispatch is serialized. See
   [tesseract_stdio_race.md](tesseract_stdio_race.md) for the upstream defect.
