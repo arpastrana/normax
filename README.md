@@ -38,11 +38,12 @@ useful feedback rarely returns. Late compliance can enlarge a section. It
 cannot easily revise the shape that created the demand.
 
 Normax makes the handoff differentiable. It joins jax-fdm, OpenSees or PyNite,
-and Blueprints' EN 1993-1-1 check. Code utilization can then shape geometry, not
-merely reject it. This is the key step. Codes contain branches, envelopes,
-classes, and discrete choices. Their full design spaces are not smooth. Normax
-differentiates a stated continuous slice: S355 circular hollow sections at a
-fixed cross-section class.
+and Blueprints' check from
+[Eurocode 3, Part 1-1](https://eurocodes.jrc.ec.europa.eu/EN-Eurocodes/eurocode-3-design-steel-structures).
+Code utilization can then shape geometry, not merely reject it. This is the key
+step. Codes contain branches, envelopes, classes, and discrete choices. Their
+full design spaces are not smooth. Normax differentiates a stated continuous
+slice: S355 circular hollow sections at a fixed cross-section class.
 
 **Only the joined program lets geometry and sections respond together to the
 same loads and code constraints.** The experiments compare that search with
