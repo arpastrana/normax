@@ -5,17 +5,14 @@ Unless noted, measurements use the 16×16 gridshell with 257 nodes, 496 members,
 `validation/pynite_adjoint.py`.
 
 PyNite is a structural analysis solver in plain Python with no tape, tangent,
-or sensitivity command. Its reverse rule took six stages. Correctness came
-first. Measurement chose the next five.
+or sensitivity command. Correctness came first. Measurement then guided a
+sequence of changes to the reverse rule.
 
-| stage | change | crossed evaluation |
-|---|---|---:|
-| 1 | exact element, implicit adjoint, dense Jacobian | 0.92 s |
-| 2 | compile element derivatives | 0.71 s |
-| 3 | use a true reverse rule | not isolated |
-| 4 | build the right-hand side and retain the factorization | not isolated |
-| 5 | recover forces from the verified element | not isolated |
-| 6 | cache the assembled frame across endpoint calls | **0.077 s** |
+| implementation | crossed evaluation |
+|---|---:|
+| exact element, implicit adjoint, dense Jacobian | 0.92 s |
+| compiled element derivatives | 0.71 s |
+| final reverse rule with reused factorization, force recovery, and caching | **0.077 s** |
 
 At 0.077 s, 2,408 analysis evaluations account for about three minutes. With
 the code check included, the full crossed descent fell from **37 minutes to
