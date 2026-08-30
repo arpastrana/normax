@@ -1,4 +1,4 @@
-# Tesseract Core stdio concurrency defect
+# Finding and mitigating a Tesseract concurrency race
 
 Normax exposed a process-wide stdio race in overlapping local Tesseract calls.
 The upstream report is

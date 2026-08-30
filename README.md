@@ -76,6 +76,15 @@ record.
 <!-- FINAL: HERO_ANIMATION: add figures/hero.gif, then uncomment the line below. -->
 <!-- ![A Normax optimization morphing a structure while member utilization changes](figures/hero.gif) -->
 
+## Contributions
+
+| Contribution | Evidence |
+|---|---|
+| One differentiable form-finding, structural-analysis, and code-compliance program | [executable Quickstart](#quickstart) and [forward/backward diagrams](#one-program-three-kinds-of-differentiation) |
+| Swappable OpenSees and PyNite analysis backends | one-line [backend change](#quickstart) behind one Tesseract schema |
+| Backpropagation through the implemented Eurocode 3 check | [derivation](docs/blueprints_backward_pass.md) and [four-way gradient validation](validation/blueprint_adjoint.py) |
+| Matched end-to-end, free-height, and sizing-only study | [comparison and acceptance protocol](docs/results.md) across four structural systems |
+
 ## The optimization problem
 
 For force densities $\mathbf q$, diameters $\mathbf d$, and load cases
@@ -87,7 +96,7 @@ $$
 && \text{form finding: geometry and member lengths}, \\
 \mathbf s &= \mathcal A(\mathbf x,\mathbf d,\mathcal L)
 && \text{structural analysis: member actions}, \\
-\mathbf u &= \mathcal C_{\mathrm{EC3}}(\mathbf s,\mathbf d,\boldsymbol\ell)
+\mathbf u &= \mathcal C_{\mathrm{Eurocode\,3}}(\mathbf s,\mathbf d,\boldsymbol\ell)
 && \text{code check: utilization}.
 \end{aligned}
 $$
@@ -118,7 +127,7 @@ Every symbol has a concrete role:
 | $\mathcal F$ | jax-fdm form-finding map |
 | $\mathbf x$, $\boldsymbol\ell$, $\ell_e$ | nodal coordinates, all member lengths, and the length of member $e$ |
 | $\mathcal A$, $\mathbf s$ | OpenSees or PyNite structural-analysis map and its member actions |
-| $\mathcal C_{\mathrm{EC3}}$, $\mathbf u$, $u_{k,e}$ | Blueprints code-check map, its utilization matrix, and one load-case/member utilization |
+| $\mathcal C_{\mathrm{Eurocode\,3}}$, $\mathbf u$, $u_{k,e}$ | Blueprints code-check map, its utilization matrix, and one load-case/member utilization |
 | $\rho$, $A_{\mathrm{CHS}}(d_e)$ | steel density and circular-hollow-section area at diameter $d_e$ |
 | $m$ | total steel mass |
 | $\mathbf g_{\mathrm{geometry}}$, $\mathbf 0$ | geometric inequality vector and its feasible upper bound |
@@ -151,8 +160,8 @@ numerical stage keeps its own implementation and derivative strategy:
 
 | Stage | Software | Language | Differentiation used by Normax |
 |---|---|---|---|
-| Form finding | [jax-fdm](https://github.com/arpastrana/jax_fdm) | Python and JAX | native JAX reverse mode through the equilibrium solve |
-| Structural analysis (2D) | [OpenSees](https://opensees.berkeley.edu/) | C++ core with a Python interface | native Direct Differentiation Method forward sensitivities assembled into a VJP |
+| Form finding | [jax-fdm](https://github.com/arpastrana/jax_fdm) ([method paper](https://doi.org/10.1016/j.cma.2026.118783)) | Python and JAX | native JAX reverse mode through the equilibrium solve |
+| Structural analysis (2D) | [OpenSees](https://opensees.berkeley.edu/) ([framework paper](https://doi.org/10.1109/MCSE.2011.66)) | C++ core with a Python interface | native Direct Differentiation Method forward sensitivities assembled into a VJP |
 | Structural analysis (3D) | [PyNite](https://github.com/JWock82/Pynite) | Python | no native derivatives, so Normax supplies an implicit structural adjoint |
 | Code compliance | [Blueprints](https://github.com/Blueprints-org/blueprints) | Python | no native derivatives, so Normax supplies a hand-derived VJP for the fixed Class 3 CHS slice |
 
@@ -189,7 +198,7 @@ Normax requires Python 3.12. Clone the repository and let
 ```bash
 git clone https://github.com/arpastrana/normax.git
 cd normax
-uv sync
+uv sync --frozen
 ```
 
 ## Quickstart
@@ -255,12 +264,12 @@ def compute_lawful_mass(force_densities):
 compute_mass_and_gradient = jax.value_and_grad(compute_lawful_mass, has_aux=True)
 (mass, design), gradient = compute_mass_and_gradient(force_densities)
 
-# Is every member within what Eurocode 3 allows?
-is_design_safe = jnp.all(design.sizes.utilization <= 1.0)
+# Does every member pass the implemented Eurocode 3 cross-section check?
+passes_implemented_check = jnp.all(design.sizes.utilization <= 1.0)
 
 print(mass)  # tonnes of steel
 print(gradient)  # the mass' gradient
-print(is_design_safe)  # True, the norm check passes on every member
+print(passes_implemented_check)  # True when the implemented check passes
 ```
 
 Run the same snippet from the repository:
@@ -327,7 +336,7 @@ engineering work behind the small public API:
 - [Reproducibility guide](docs/reproducibility.md)
 - [Backpropagating through Eurocode 3 with Blueprints](docs/blueprints_backward_pass.md)
 - [Building the PyNite backward pass](docs/fast_backward_pass.md)
-- [Tesseract stdio concurrency defect](docs/tesseract_stdio_race.md)
+- [Finding and mitigating a Tesseract concurrency race](docs/tesseract_stdio_race.md)
 
 ## Verification
 
@@ -412,20 +421,13 @@ Blueprints check. Backpropagation calls their derivative endpoints.
 
 ## The advantages of Tesseract for structural engineering
 
-No single autodiff system owns this calculation:
+Tesseract's advantage is not autodiff by another name. It lets each stage use
+the strongest derivative it can supply. One stage traces, another exposes
+compiled sensitivities, and two answer with hand-derived adjoints. The optimizer
+sees the same JAX-callable schema and vector-Jacobian product in every case.
 
-- jax-fdm differentiates through its equilibrium solve.
-- OpenSees exposes compiled forward sensitivities through the analysis
-  Tesseract.
-- PyNite has no derivative API. Normax supplies an implicit element-level
-  reverse rule.
-- Blueprints evaluates Eurocode 3 in scalar Python. Normax supplies its
-  hand-derived pullback.
-
-Tesseract makes the crossed stages JAX-callable blocks with explicit schemas and
-vector-Jacobian products. Switching OpenSees for PyNite changes one backend, not
-the pipeline. Without that boundary, Normax would have to replace the software
-it claims to optimize through.
+This separation preserves the software the project intends to optimize through.
+Switching OpenSees for PyNite changes one backend input, not the pipeline.
 
 ## Outlook
 

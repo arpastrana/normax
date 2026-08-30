@@ -14,7 +14,6 @@ venv
 .DS_Store
 dist
 build
-uv.lock
 CLAUDE.md
 
 # Figures, animations and anything else an experiment writes. Every one is
