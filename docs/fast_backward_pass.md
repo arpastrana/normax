@@ -49,11 +49,9 @@ the expected interior minimum:
 | 1e-02 | 4.949e-09 | 1.240e-08 |
 | 1e-01 | 5.065e-07 | 1.242e-06 |
 
-Before removal, an independent JAX frame solver agreed to **2.9e-12** over
-coordinates. The `local-dev` tag preserves that state. The public validation now
-checks the crossed adjoint against the same rule in process at **2.587e-15** and
-against frozen gradient-block norms at **1.168e-14**. See
-[results.md](results.md#validation-evidence) for the change in evidence.
+The crossed adjoint agrees with the same rule in process at **2.587e-15** and
+with frozen gradient-block norms at **1.168e-14**. See
+[results.md](results.md#validation-evidence) for the complete evidence ladder.
 
 ## 1. Compile the element derivatives
 
@@ -158,9 +156,10 @@ about as long as an entire utilization read. Allocation was the cost.
 
 Three changes followed:
 
-1. Call Blueprints' `_evaluate` directly during search. It is five times cheaper
-   and bit-identical. Final reported utilization still uses the public class.
-   Import checks verify the private method and fall back when absent.
+1. Call Blueprints' internal `_evaluate` directly during search. It is five
+   times cheaper and bit-identical. Final reported utilization still uses the
+   public class. Import checks verify the internal evaluator and fall back when
+   absent.
 2. Share solved sizing states between forward and reverse endpoints. Unlike the
    frame cache, this cache needs multiple entries because actions belong to the
    key. One entry produced four misses and no hits.
@@ -213,13 +212,7 @@ The lesson is narrow. A pipeline comparison is only as sound as the search on
 both sides. Match start budgets and report distributions when claiming
 robustness.
 
-## Historical provenance
-
-The 24-start table is a development measurement, not a headline result. Its
-driver and trajectory bundle were retired before submission. Git history keeps
-the implementation record. [results.md](results.md) defines the final protocol.
-Do not mix these masses with the final table.
-
-Two rules remain. Plot violation beside mass and report the accepted feasible
-landing. Also treat a recorded frame as an objective evaluation, not necessarily
-an accepted line-search step. Use the per-round trace for a monotone summary.
+The 24-start table is diagnostic, not a headline result. The final comparison
+protocol lives in [results.md](results.md). Plot violation beside mass, report
+the accepted feasible landing, and treat a recorded frame as an objective
+evaluation rather than necessarily an accepted line-search step.
