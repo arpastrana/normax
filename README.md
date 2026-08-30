@@ -297,8 +297,7 @@ The options mean:
 
 ## Technical notes and guides
 
-Normax grew through measured decisions, discarded approaches, and explicit
-scope cuts. These records preserve the derivations, verification protocol, and
+These five notes preserve the derivations, verification protocol, and
 engineering work behind the small public API:
 
 - [Results and experiment protocol](docs/results.md)
@@ -306,7 +305,6 @@ engineering work behind the small public API:
 - [Backpropagating through Eurocode 3 with Blueprints](docs/blueprints_backward_pass.md)
 - [Building the PyNite backward pass](docs/fast_backward_pass.md)
 - [Tesseract stdio concurrency defect](docs/tesseract_stdio_race.md)
-- [Development history](CHANGELOG.md)
 
 ## Verification
 
@@ -405,6 +403,28 @@ Tesseract makes the crossed stages JAX-callable blocks with explicit schemas and
 vector-Jacobian products. Switching OpenSees for PyNite changes one backend, not
 the pipeline. Without that boundary, Normax would have to replace the software
 it claims to optimize through.
+
+## Outlook
+
+The hackathon was the trigger, not the terminus. Normax opens several useful
+directions:
+
+- **Differentiate more of the norm.** Extend the current Class 3 CHS slice
+  across every Eurocode section class, other section families, and discrete
+  catalogs with branch-aware relaxations and exact final checks.
+- **Broaden the safety model.** Add member buckling, shear, torsion, global
+  stability, geometric nonlinearity, and self-weight feedback.
+- **Swap the form-finding prior.** Put
+  [JAX-CEM](https://github.com/arpastrana/jax_cem) and other differentiable
+  form-finding solvers behind the same stage contract as jax-fdm.
+- **Reach commercial software.** Host established FEA and code-compliance tools
+  behind Tesseract services called through Web APIs, with explicit derivative
+  contracts for sensitivities, adjoints, or numerical pullbacks.
+- **Design for uncertainty.** Treat load uncertainty, multiple starts, and
+  fabrication constraints as first-class parts of the optimization protocol.
+
+The architecture is already the thesis: form finding, structural analysis, and
+law may change independently while the gradient remains one continuous path.
 
 ## Scope and limitations
 

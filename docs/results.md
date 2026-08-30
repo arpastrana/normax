@@ -121,12 +121,10 @@ The shipped evidence has four layers:
 - Full compositions against central differences of the crossed forward pass.
 - Host and Tesseract parity for values and reverse rules.
 
-Before removal, two private JAX implementations agreed with the crossed stack to
-1.3e-14 on gradients and 6.7e-16 on boundary values. The `local-dev` tag records
-that state. The public tree replaces those oracles with finite differences,
-analytic invariants, parity checks, and frozen norms. This evidence is different,
-not equivalent. A finite difference cannot catch every shared modeling error.
-It also cannot inherit an adjoint bug from a second implementation.
+The four layers are deliberately different. Central differences expose local
+derivative errors. Closed forms guard section algebra. Host and Tesseract parity
+guards the boundary. Frozen norms catch drift. None is a universal proof, so
+reported claims remain scoped to the checked configurations.
 
 See [reproducibility.md](reproducibility.md#focused-gradient-validation) for
 commands and [fast_backward_pass.md](fast_backward_pass.md) for the PyNite
