@@ -444,23 +444,41 @@ class WinningEnd(NamedTuple):
     cosine_minor: Float[np.ndarray, "*load_cases members"]
 
 
+# Share of a load case's largest end moment below which a moment is read as
+# none: under it the two ends are the solve's rounding, not a demand.
+MOMENT_DEADBAND = 1.0e-6
+
+
 def _read_worse_end(
     major: Float[np.ndarray, "*load_cases members ends"],
     minor: Float[np.ndarray, "*load_cases members ends"],
 ) -> tuple[Float[np.ndarray, "*load_cases members"], WinningEnd]:
     """
     The larger of the two end moment vectors, and where it points.
+
+    Notes
+    -----
+    A moment below `MOMENT_DEADBAND` of the largest anywhere in its load case
+    is read as none at all. Which end is larger is an `argmax`, and an `argmax`
+    between two ends that agree to the last digits of the solve flips on
+    rounding rather than on a demand: the reduced moment then traces a V
+    through that point, the check differentiates it, and a penalty scales the
+    kink by its multiplier. Comparing against zero is no guard against that --
+    solver residue clears zero -- so the comparison is against the case's own
+    moment scale.
     """
     per_end = np.sqrt(major**2 + minor**2)
     winner = np.argmax(per_end, axis=-1)
     take = winner[..., None]
 
-    moment = np.take_along_axis(per_end, take, axis=-1)[..., 0]
+    found = np.take_along_axis(per_end, take, axis=-1)[..., 0]
     won_major = np.take_along_axis(major, take, axis=-1)[..., 0]
     won_minor = np.take_along_axis(minor, take, axis=-1)[..., 0]
 
-    carried = moment > 0.0
-    divisor = np.where(carried, moment, 1.0)
+    scale = per_end.max(axis=(-2, -1), keepdims=True)[..., 0]
+    carried = found > MOMENT_DEADBAND * scale
+    moment = np.where(carried, found, 0.0)
+    divisor = np.where(carried, found, 1.0)
     cosine_major = np.where(carried, won_major / divisor, 0.0)
     cosine_minor = np.where(carried, won_minor / divisor, 0.0)
 

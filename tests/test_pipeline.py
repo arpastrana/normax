@@ -18,6 +18,7 @@ from normax.loads import create_load_half_span
 from normax.loads import create_load_uniform
 from normax.loads import select_load_case
 from normax.materials import Steel355
+from normax.optimization import DescentHistory
 from normax.optimization import OptimizationSolution
 from normax.sections import build_section_catalog
 from normax.sizing.blueprint import DIAMETER_MINIMUM
@@ -26,6 +27,8 @@ from normax.sizing.blueprint import reduce_moments
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
+from normax.visualization import DescentPanel
+from normax.visualization import DescentTrace
 from normax.visualization import draw_design_figures
 
 matplotlib.use("Agg")
@@ -424,13 +427,17 @@ def test_the_design_figures_build(structure, pipeline, force_densities, three_ca
         [float(compute_mass(design)), 0.9 * float(compute_mass(design))]
     )
     violations = np.asarray([0.1, 0.0])
-    answer = OptimizationSolution(variables, objectives, violations, 12, True)
+    iterates = np.stack([variables, variables])
+    walked = DescentHistory(iterates, objectives, violations, np.arange(2))
+    answer = OptimizationSolution(variables, walked, None, 12, True)
 
     labels = ("LC1", "LC2", "LC3")
     designs = {"start": design, "answer": design}
-    drawn, descended = draw_design_figures(structure, designs, labels, answer)
+    trace = DescentTrace("auglag", answer.rounds, 1e-6)
+    panel = DescentPanel("mass [t]", "round", (trace,))
+    figures = draw_design_figures(structure, designs, labels, panel)
 
-    assert len(drawn.axes) > 0
-    assert len(descended.axes) > 0
-    plt.close(drawn)
-    plt.close(descended)
+    assert len(figures.designs.axes) > 0
+    assert len(figures.load_cases.axes) > 0
+    assert len(figures.optimization.axes) > 0
+    plt.close("all")

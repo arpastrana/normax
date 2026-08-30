@@ -115,6 +115,13 @@ class FormFindingConfig(NamedTuple):
     mirror :
         Axis the mirror plane stands normal to, folding the densities by that
         symmetry, or None for no symmetry.
+    fold_heights :
+        Whether the free nodes' heights are folded by that mirror, one height
+        per mirrored pair. Read by `heights` alone, and refused where the
+        section names no mirror to fold by. Only the mirror folds a height,
+        never a rotation: a mirror that carries the load cases onto each other
+        leaves the answer symmetric rather than constrained, while a rotation
+        no load case respects would hold a shape the loads do not.
     density_start :
         Fields of the density initializer the example builds, by keyword:
         `force_density` for a uniform start, `sag`, `rise` and `held_plan` for
@@ -135,6 +142,7 @@ class FormFindingConfig(NamedTuple):
     shape_parametrization: str
     basis: str | None
     mirror: str | None
+    fold_heights: bool
     density_start: dict[str, float | bool] | None = None
     height_start: dict[str, float] | None = None
 
@@ -199,10 +207,15 @@ class OutputConfig(NamedTuple):
         Whether the run prints its report.
     export :
         Whether the run writes its record and its figures.
+    animate :
+        Whether the run writes an animation of its descent, which needs the
+        finer record `optimization.trace_iterations` keeps and a pipeline that
+        carries a check.
     """
 
     verbose: bool
     export: bool
+    animate: bool
 
 
 class RunConfig(NamedTuple, Generic[StructureT]):
@@ -305,6 +318,8 @@ def parse_config(
     ------
     TypeError
         If a section names a field that does not exist, or omits one that does.
+    ValueError
+        If the heights are to be folded by a mirror the file does not name.
 
     Notes
     -----
@@ -316,6 +331,13 @@ def parse_config(
     the example builds from them, not here.
     """
     document = yaml.safe_load(text)
+
+    described = document["form_finding"]
+    if described.get("fold_heights") and described.get("mirror") is None:
+        raise ValueError(
+            "form_finding.fold_heights asks to fold the heights by a mirror, "
+            "but form_finding.mirror names none"
+        )
 
     held = dict(document["constraints"])
     bounds = held.pop("bounds", None)
@@ -329,9 +351,16 @@ def parse_config(
         "iterations_warmup",
         "iterations_after_warmup",
     )
+    flags = ("trace_iterations",)
     named = document["optimization"]
     budget = {key: int(value) for key, value in named.items() if key in counts}
-    scales = {key: float(value) for key, value in named.items() if key not in counts}
+    switches = {key: bool(value) for key, value in named.items() if key in flags}
+    scales = {
+        key: float(value)
+        for key, value in named.items()
+        if key not in counts and key not in flags
+    }
+    budget.update(switches)
     budget.update(scales)
     load_cases = tuple(LoadCaseConfig(**entry) for entry in document["load_cases"])
 

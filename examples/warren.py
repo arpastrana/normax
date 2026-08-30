@@ -37,6 +37,7 @@ from normax.exporting import export_design
 from normax.form_finding import LensShapeInitializer
 from normax.form_finding import build_form_finder
 from normax.form_finding import build_plan_basis
+from normax.form_finding import read_lens_shape
 from normax.loads import build_load_cases
 from normax.materials import Steel355
 from normax.reporting import report_design
@@ -46,6 +47,7 @@ from normax.structures import Structure
 from normax.structures import TrussDescription
 from normax.structures import build_warren_2d
 from normax.structures import create_groups_warren
+from normax.symmetry import build_height_groups
 from normax.symmetry import build_section_groups
 from normax.symmetry import find_mirror_nodes
 from normax.tesseract import TesseractAnalyzer
@@ -90,9 +92,17 @@ def main(arguments: RunArguments) -> None:
     basis = build_plan_basis(structure, mirror, config.form_finding.basis)
     folded = mirror if config.sizing.fold_mirror else None
     section_groups = build_section_groups(structure, (folded, None))
+    lifted = mirror if config.form_finding.fold_heights else None
+    height_groups = build_height_groups(structure, (lifted,))
+
+    # The lens all three parametrizations open on, so a baseline is a shaped
+    # truss rather than the flat line the truss happens to be drawn along
+    start_shape = read_lens_shape(structure, config.form_finding.density_start)
 
     # The three main computation blocks of the structural design pipeline
-    form_finder = build_form_finder(structure, basis, config.form_finding)
+    form_finder = build_form_finder(
+        structure, basis, config.form_finding, height_groups, start_shape
+    )
     analyzer = TesseractAnalyzer(structure, section_catalog, config.analysis.backend)
     sizer = TesseractSizer(structure, section_catalog, config.sizing.backend)
 
@@ -118,7 +128,9 @@ def main(arguments: RunArguments) -> None:
     design = create_design(problem, params)
 
     # Search, baby, search...
-    solution = solve_problem(problem, params, config.optimization)
+    solution = solve_problem(
+        problem, params, config.optimization, config.output.verbose
+    )
     design_found = create_design(problem, solution.parameters)
 
     # Is every member cross-section compliant with the structural engineering standard?

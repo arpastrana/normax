@@ -371,6 +371,17 @@ def test_a_mirrored_half_span_load_case_is_the_reflection_of_the_unmirrored_one(
     assert np.isclose(near.sum(), far.sum())
 
 
+def test_the_flat_arch_decks_every_free_node():
+    # The three run files name one set of load cases, in the trusses' deck
+    # vocabulary. That reaches the arch only because the arch is drawn flat:
+    # give the drawing a rise and its deck collapses onto the two nodes beside
+    # the supports, silently moving every case off the span.
+    flat = build_arch_2d(num_edges=10, span=10_000.0, rise=0.0)
+
+    assert np.array_equal(mask_deck_nodes(flat), mask_free_nodes(flat))
+    assert mask_deck_nodes(build_arch_2d(10, 10_000.0, 2_500.0)).sum() == 2
+
+
 def test_the_deck_is_the_interior_bottom_chord(truss):
     deck = mask_deck_nodes(truss)
 

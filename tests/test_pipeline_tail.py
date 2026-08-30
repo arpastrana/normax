@@ -4,6 +4,7 @@ A pipeline whose tail is cut, and the objectives each length can answer.
 """
 
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from jax.test_util import check_grads
@@ -19,16 +20,28 @@ from normax.design import compute_mass_problem
 from normax.design import design_maps
 from normax.design import evaluate_constraints
 from normax.design import expand_variables
+from normax.design import fold_variables
 from normax.form_finding import FdmFormFinder
 from normax.loads import assemble_load_cases
 from normax.loads import create_load_uniform
 from normax.materials import Steel355
+from normax.optimization import DescentHistory
 from normax.optimization import OptimizationSolution
 from normax.sections import build_section_catalog
 from normax.structures import build_arch_2d
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
+from normax.visualization import DescentPanel
+from normax.visualization import DescentTrace
+from normax.visualization import animate_descent
 from normax.visualization import draw_design_figures
+from normax.visualization.animations import FRAMES_HELD
+from normax.visualization.animations import FRAMES_MOST
+from normax.visualization.animations import WIDTH_FIGURE
+from normax.visualization.animations import name_frame
+from normax.visualization.animations import pick_frames
+from normax.visualization.plots import HEIGHT_DRAWING
+from normax.visualization.plots import read_drawing_height
 
 SPAN = 4_000.0
 RISE = 1_200.0
@@ -254,18 +267,160 @@ def test_a_checkless_run_draws_a_descent_but_no_utilization_figure(
         "start": build_pipeline(structure, catalog, 2)(params, loads),
         "answer": build_pipeline(structure, catalog, 2)(params, loads),
     }
-    answer = OptimizationSolution(
-        parameters=np.zeros(2 * NUM_EDGES - 1),
+    walked = DescentHistory(
+        iterates=np.zeros((2, 2 * NUM_EDGES - 1)),
         objectives=np.array([2.0, 1.0]),
         violations=np.array([0.0, 0.0]),
+        round_index=np.arange(2),
+    )
+    answer = OptimizationSolution(
+        parameters=np.zeros(2 * NUM_EDGES - 1),
+        rounds=walked,
+        iterations=None,
         evaluations=2,
         converged=True,
     )
 
-    drawn, descended = draw_design_figures(structure, designs, ("LC1",), answer)
+    trace = DescentTrace("auglag", answer.rounds, 1e-6)
+    panel = DescentPanel("objective", "round", (trace,))
+    figures = draw_design_figures(structure, designs, ("LC1",), panel)
 
-    # No design carries a utilization to color by, so there is no first figure
-    # rather than an empty one — draw_utilization reads a widest diameter and a
-    # least-worked member across the designs, and neither exists over none.
-    assert drawn is None
-    assert descended is not None
+    # No design carries a utilization to color by, so the two design figures
+    # are absent rather than empty — draw_utilization reads a widest diameter
+    # and a least-worked member across them, and neither exists over none.
+    assert figures.designs is None
+    assert figures.load_cases is None
+    assert figures.optimization is not None
+
+
+def test_a_descent_recorded_per_iteration_draws_its_round_crossings(
+    structure, catalog, loads, params
+):
+    designs = {"answer": build_pipeline(structure, catalog, 2)(params, loads)}
+    width = 2 * NUM_EDGES - 1
+    walked = DescentHistory(
+        iterates=np.zeros((5, width)),
+        objectives=np.array([3.0, 2.5, 2.2, 2.1, 2.0]),
+        violations=np.array([1.0, 1e-2, 1e-4, 0.0, 0.0]),
+        round_index=np.array([0, 1, 1, 2, 2]),
+    )
+    answer = OptimizationSolution(
+        parameters=np.zeros(width),
+        rounds=DescentHistory(
+            iterates=np.zeros((3, width)),
+            objectives=np.array([3.0, 2.2, 2.0]),
+            violations=np.array([1.0, 1e-4, 0.0]),
+            round_index=np.arange(3),
+        ),
+        iterations=walked,
+        evaluations=9,
+        converged=True,
+    )
+
+    trace = DescentTrace("auglag", answer.iterations, 1e-6)
+    panel = DescentPanel("objective", "iteration", (trace,))
+    descended = draw_design_figures(structure, designs, ("LC1",), panel).optimization
+
+    # Two rounds after the first, so two open marks on each panel's curve, at
+    # the points the walk crossed into a round rather than across the panel.
+    violated, descent = descended.axes[0], descended.axes[1]
+    for panel in (violated, descent):
+        rings = [line for line in panel.lines if line.get_markerfacecolor() == "none"]
+        assert len(rings) == 1
+        assert list(rings[0].get_xdata()) == [1, 3]
+    plt.close(descended)
+
+
+# --------------------------------------------------------------------------- #
+# The animation of a descent
+# --------------------------------------------------------------------------- #
+def traced_walk(problem, params, points):
+    """
+    A walk of the named length, every point the same folded variable vector.
+    """
+    folded = fold_variables(
+        problem,
+        np.asarray(params.shape_parameters),
+        np.asarray(params.diameters),
+    )
+    iterates = np.repeat(np.asarray(folded)[None, :], points, axis=0)
+    objectives = np.linspace(3.0, 2.0, points)
+    violations = np.geomspace(1.0, 1e-8, points)
+
+    return DescentHistory(iterates, objectives, violations, np.arange(points))
+
+
+def test_an_animation_draws_one_frame_per_recorded_point(
+    structure, catalog, loads, params
+):
+    problem = build_problem(structure, catalog, loads, 3)
+    walked = traced_walk(problem, params, 4)
+    panel = DescentPanel(
+        "mass [t]", "iteration", (DescentTrace("auglag", walked, 1e-6),)
+    )
+
+    played = animate_descent(problem, panel)
+
+    # The held frames at the end sit on the answer, so the walk is not extended.
+    frames = len(list(played.new_frame_seq()))
+    assert frames == walked.objectives.size + FRAMES_HELD
+    plt.close("all")
+
+
+def test_an_animation_refuses_a_pipeline_that_carries_no_check(
+    structure, catalog, loads, params
+):
+    problem = build_problem(structure, catalog, loads, 2)
+    walked = traced_walk(problem, params, 3)
+    panel = DescentPanel(
+        "objective", "iteration", (DescentTrace("auglag", walked, 1e-6),)
+    )
+
+    with pytest.raises(ValueError, match="no check"):
+        animate_descent(problem, panel)
+
+
+def test_an_animation_refuses_more_than_one_descent(structure, catalog, loads, params):
+    problem = build_problem(structure, catalog, loads, 3)
+    walked = traced_walk(problem, params, 3)
+    trace = DescentTrace("auglag", walked, 1e-6)
+    panel = DescentPanel("mass [t]", "iteration", (trace, trace))
+
+    with pytest.raises(ValueError, match="one descent"):
+        animate_descent(problem, panel)
+
+
+def test_a_flat_shape_still_gets_a_readable_drawing_panel():
+    # A span a hundred times its own height would otherwise ask for a panel of
+    # a few millimeters and push the curves off the page.
+    tall = read_drawing_height((0.0, 10000.0), (0.0, 100.0), WIDTH_FIGURE)
+
+    assert tall == pytest.approx(HEIGHT_DRAWING)
+
+
+def test_a_frame_is_named_for_its_round_at_either_resolution():
+    walked = DescentHistory(
+        iterates=np.zeros((3, 1)),
+        objectives=np.zeros(3),
+        violations=np.zeros(3),
+        round_index=np.array([0, 1, 1]),
+    )
+    fine = DescentPanel("mass [t]", "iteration", (DescentTrace("a", walked, 1e-6),))
+    coarse = DescentPanel("mass [t]", "round", (DescentTrace("a", walked, 1e-6),))
+
+    assert name_frame(fine, walked, 2) == "iteration 2, round 1"
+    # A round at a time, the two numbers are one, so only one is printed.
+    assert name_frame(coarse, walked, 2) == "round 2"
+
+
+def test_a_long_walk_is_thinned_to_a_watchable_number_of_frames():
+    # An even stride, the whole descent seen at lower resolution rather than
+    # truncated, and the answer kept whatever the stride would have left.
+    for count in (69, FRAMES_MOST, FRAMES_MOST + 1, 617, 1243):
+        picked = pick_frames(count)
+        assert picked.size <= FRAMES_MOST
+        assert int(picked[0]) == 0
+        assert int(picked[-1]) == count - 1
+        assert np.all(np.diff(picked) > 0)
+    # Short walks are drawn point for point.
+    assert np.array_equal(pick_frames(69), np.arange(69))

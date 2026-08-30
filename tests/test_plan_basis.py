@@ -8,6 +8,7 @@ from normax.config import ConstraintsConfig
 from normax.design import build_design_constraints
 from normax.form_finding import DrawnShapeInitializer
 from normax.form_finding import FdmFormFinder
+from normax.form_finding import HeightsFormFinder
 from normax.form_finding import LensShapeInitializer
 from normax.form_finding import SignGuardSpec
 from normax.form_finding import assemble_balance_rows
@@ -21,8 +22,12 @@ from normax.structures import build_gridshell_3d
 from normax.structures import build_structure
 from normax.structures import build_vierendeel_2d
 from normax.structures import build_warren_2d
+from normax.symmetry import build_height_groups
 from normax.symmetry import find_mirror_nodes
 from normax.symmetry import find_rotated_nodes
+from normax.symmetry import fold_heights
+from normax.symmetry import fold_values
+from normax.symmetry import permute_free_nodes
 from normax.symmetry import permute_members
 from normax.symmetry import sketch_lens
 
@@ -471,3 +476,89 @@ def test_a_lens_missing_a_key_is_refused():
 def test_a_drawn_start_that_names_a_field_is_refused():
     with pytest.raises(ValueError, match="nothing"):
         DrawnShapeInitializer({"sag": 0.6})
+
+
+# --------------------------------------------------------------------------- #
+# Folding the written heights by the mirror
+# --------------------------------------------------------------------------- #
+def test_the_mirror_folds_the_free_heights_into_pairs(warren, vierendeel):
+    arch = build_arch_2d(num_edges=10, span=SPAN, rise=0.0)
+
+    for structure, folded in ((arch, 5), (warren, 8), (vierendeel, 8)):
+        mirror = find_mirror_nodes(structure, "x")
+        groups = build_height_groups(structure, (mirror,))
+        free = select_free_nodes(structure).size
+        assert groups.shape == (free, folded)
+        # Every free node belongs to exactly one orbit, and a mirrored pair to
+        # the same one, so the columns partition the free nodes.
+        assert np.array_equal(groups.sum(axis=1), np.ones(free))
+        assert set(np.unique(groups.sum(axis=0))) <= {1.0, 2.0}
+
+
+def test_no_permutation_at_all_folds_nothing(warren):
+    assert build_height_groups(warren, (None,)) is None
+
+
+def test_a_permutation_carrying_a_free_node_onto_a_support_is_refused(warren):
+    # A support and a free node swapped: not a symmetry of the free set, and
+    # its orbits would fold a height onto one the finder never writes.
+    spoiled = np.arange(warren.num_nodes)
+    supported = int(np.asarray(warren.supports)[0])
+    free = int(select_free_nodes(warren)[0])
+    spoiled[free], spoiled[supported] = supported, free
+
+    with pytest.raises(ValueError, match="maps onto support"):
+        permute_free_nodes(spoiled, warren)
+
+
+def test_a_folded_finder_writes_a_mirror_symmetric_shape(warren):
+    # The property the whole fold exists for: whatever the coefficients, the
+    # geometry comes out symmetric, so a mirrored load case is a reindexing of
+    # its partner rather than a case the design can lean away from.
+    mirror = find_mirror_nodes(warren, "x")
+    groups = build_height_groups(warren, (mirror,))
+    finder = HeightsFormFinder(warren, None, groups)
+    seeded = np.random.default_rng(0).standard_normal(finder.count_shape_coefficients())
+
+    heights = np.asarray(finder.expand_shape_coefficients(jnp.asarray(seeded)))
+    shape = finder(jnp.asarray(heights), jnp.zeros((warren.num_nodes, 3)))
+
+    lifted = np.asarray(shape.xyz)[:, 2]
+    assert np.allclose(lifted, lifted[np.asarray(mirror)], atol=1e-12)
+
+
+def test_an_unfolded_finder_does_not(warren):
+    finder = HeightsFormFinder(warren, None, None)
+    mirror = find_mirror_nodes(warren, "x")
+    seeded = np.random.default_rng(0).standard_normal(finder.count_shape_coefficients())
+
+    heights = np.asarray(finder.expand_shape_coefficients(jnp.asarray(seeded)))
+    shape = finder(jnp.asarray(heights), jnp.zeros((warren.num_nodes, 3)))
+
+    lifted = np.asarray(shape.xyz)[:, 2]
+    assert not np.allclose(lifted, lifted[np.asarray(mirror)], atol=1e-12)
+
+
+def test_folding_a_height_is_the_left_inverse_of_expanding_it(warren):
+    mirror = find_mirror_nodes(warren, "x")
+    groups = build_height_groups(warren, (mirror,))
+    finder = HeightsFormFinder(warren, None, groups)
+    seeded = np.random.default_rng(1).standard_normal(finder.count_shape_coefficients())
+
+    heights = np.asarray(finder.expand_shape_coefficients(jnp.asarray(seeded)))
+
+    assert np.allclose(fold_heights(heights, groups), seeded, atol=1e-12)
+
+
+def test_a_folded_height_is_the_mean_of_its_orbit_not_the_largest(warren):
+    # fold_values takes the largest so a diameter covers every member it
+    # sizes; a height folded that way would lift a start off its own mirror.
+    mirror = find_mirror_nodes(warren, "x")
+    groups = build_height_groups(warren, (mirror,))
+    lopsided = np.zeros(select_free_nodes(warren).size)
+    lopsided[0] = 2.0
+
+    folded = fold_heights(lopsided, groups)
+
+    assert folded.max() == pytest.approx(1.0)
+    assert fold_values(lopsided, groups).max() == pytest.approx(2.0)

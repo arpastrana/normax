@@ -14,12 +14,14 @@ form_finding:
   # writes the free nodes' height; fixed never moves the drawn geometry.
   shape_parametrization: fdm
   basis: pivoted
-  # A chain needs no symmetry to fold: its held plan is one-dimensional already.
-  mirror: null
+  # The held plan is one-dimensional already, so the mirror folds nothing there;
+  # it is what folds the sections and the written heights.
+  mirror: x
+  fold_heights: true            # one height per mirrored pair of free nodes
   # UniformDensityInitializer: one force density in every member. The rise a
   # funicular chain reaches is 250000/|q| mm here, so -100 form-finds a 2500 mm
   # parabola from the flat drawing above: the fdm route reads no drawn height.
-  density_start: {force_density: -100.0}
+  density_start: {force_density: -5000.0}
   # Where the written-heights route leaves from: a generated parabolic lift to
   # this crown, since the flat drawing it would otherwise read is a stationary
   # point of both the mass and the utilization. Measured: below about 50 mm the
@@ -27,15 +29,22 @@ form_finding:
   # above it.
   height_start: {rise: 50.0}
 
-# The first case shapes the arch; every case is checked.
+# The same three cases on the arch and on both trusses, so the masses compare:
+# the whole load over the deck, half of it on one half of the deck, and half of
+# it again on the midspan node. The first shapes the structure; every case is
+# checked. At a quarter the point load governed no member of the vierendeel at
+# all -- worst utilization 0.504 -- so it was doubled to where every case does
+# work on every structure. No mirrored case -- the mirror folds the heights and
+# the diameters alike, so a mirrored patch is a reindexing of the near one.
+# Drawn flat, so the arch's deck is every free node; a drawn rise would put the
+# load on the two nodes beside the supports instead.
 load_cases:
-  - name: uniform
+  - name: deck
     magnitude: 180000.0
-  - name: half_span
+  - name: deck_half
     magnitude: 90000.0
-  - name: half_span
+  - name: deck_point
     magnitude: 90000.0
-    options: {mirrored: true}
 
 analysis:
   # UniformDiameterInitializer: one outer diameter in every member.
@@ -49,7 +58,7 @@ sizing:
   # blueprint is Blueprints' cross-section check, across a Tesseract
   # boundary. Blueprints implements no 6.3.1 buckling.
   backend: blueprint
-  fold_mirror: false
+  fold_mirror: true
   fold_polar: false
 
 constraints:
@@ -68,13 +77,13 @@ constraints:
   # The floor is deep enough not to bind -- the chain's optimum sits at |q| 179,
   # and -300 lands on the same answer -- so the shape the search settles on is
   # the funicular optimum rather than the edge of its own box.
-  bounds: {min: -200.0, max: -1.0e-3}
+  bounds: {min: -6000.0, max: -1.0e-3}
 
 # The opening penalty is the one setting that decides the answer rather than
 # the speed; every other entry is a budget. Signed exponents, or YAML reads
 # them as strings.
 optimization:
-  rounds_max: 10                # most multiplier updates, the outer rounds, to spend
+  rounds_max: 12                # most multiplier updates, the outer rounds, to spend
   rounds_warmup: 3              # first rounds given the larger inner budget
   iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
   iterations_after_warmup: 50   # most L-BFGS-B iterations in every later round
@@ -83,8 +92,10 @@ optimization:
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-4        # relative objective change per round counting as none
+  trace_iterations: true        # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
+  animate: true                 # write an animation of the descent, frame by frame

@@ -764,8 +764,11 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
     -----
     The objective reads only the blocks it needs — the shipped mass takes the
     form finder and the catalog alone — while the slack runs the whole
-    pipeline. The rows are aggregated inside the traced augmented program, so
-    every constraint costs one reverse pass together — and one crossing of
+    pipeline, and the shortest length reads the form finder alone, being what
+    the descent consults before it hands a geometry to a solver that would die
+    on a collapsed one rather than refuse it. The rows are aggregated inside
+    the traced augmented program, so every constraint costs one reverse pass
+    together — and one crossing of
     whatever boundary a block sits behind.
     """
     pipeline = problem.pipeline
@@ -787,10 +790,21 @@ def design_maps(problem: DesignProblem) -> ConstrainedMaps:
 
         return design_objective(x) / reference + penalized
 
+    def read_point(x: Float[Array, "variables"]):
+        return design_objective(x), slack_constraints(x)
+
+    def read_shortest(x: Float[Array, "variables"]) -> Float[Array, ""]:
+        params = expand_variables(problem, x)
+        shape = pipeline.formfinder(params.shape_parameters, loads.formfinding)
+
+        return jnp.min(shape.lengths)
+
     maps = ConstrainedMaps(
         jax.jit(jax.value_and_grad(augmented_lagrangian)),
         jax.jit(jax.value_and_grad(design_objective)),
         jax.jit(slack_constraints),
+        jax.jit(read_point),
+        jax.jit(read_shortest),
     )
 
     return maps
@@ -800,6 +814,7 @@ def solve_problem(
     problem: DesignProblem,
     start: Float[np.ndarray, "variables"],
     budget: OptimizationBudget,
+    progress: bool = False,
 ) -> OptimizationSolution:
     """
     Descend the problem's objective under the check and the constraints.
@@ -812,6 +827,8 @@ def solve_problem(
         The variable vector to leave from.
     budget :
         What the descent may spend, and when it stops.
+    progress :
+        Whether the descent draws a progress bar while it runs.
 
     Returns
     -------
@@ -827,7 +844,7 @@ def solve_problem(
     maps = design_maps(problem)
     boxes = bound_variables(problem)
 
-    return optimize_augmented_lagrangian(maps, start, boxes, budget)
+    return optimize_augmented_lagrangian(maps, start, boxes, budget, progress)
 
 
 def envelope_diameters(

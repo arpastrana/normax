@@ -22,6 +22,8 @@ from normax.design import ProblemRecord
 from normax.design import compute_compliance
 from normax.design import compute_mass
 from normax.design import compute_mass_problem
+from normax.loads import label_load_cases
+from normax.loads import number_load_cases
 from normax.optimization import OptimizationSolution
 
 # Spaces of indentation given to anything printed under a heading.
@@ -271,7 +273,39 @@ def name_objective(problem: DesignProblem) -> str:
     return "objective"
 
 
-def report_descent(
+def report_load_cases(report: Report, config: RunConfig[Any]) -> None:
+    """
+    What each numbered load case is, and how much it carries.
+
+    Parameters
+    ----------
+    report :
+        Where to print.
+    config :
+        The run config, read for the cases it describes.
+
+    Notes
+    -----
+    The key to the figures, which label their axis `LC1` and up: a pattern and
+    its options are what a case is and do not fit under a bar, so they are
+    named here, where each gets a line. The magnitude carries no unit because
+    the patterns do not agree on one -- a total force for most of them, a
+    pressure for the ones stated per unit of plan area.
+    """
+    numbered = number_load_cases(config.load_cases)
+    labeled = label_load_cases(config.load_cases)
+    columns = (
+        ReportColumn("case", align="<"),
+        ReportColumn("pattern", align="<"),
+        ReportColumn("magnitude", ".4g"),
+    )
+    written = zip(numbered, labeled, config.load_cases, strict=True)
+    rows = [(name, label, load_case.magnitude) for name, label, load_case in written]
+    report.write_heading("The load cases")
+    report.write_table(columns, rows)
+
+
+def report_optimization(
     report: Report,
     solution: OptimizationSolution,
     heading: str = "mass [t]",
@@ -293,12 +327,16 @@ def report_descent(
         ReportColumn(heading, ".6f"),
         ReportColumn("violation", ".2e"),
     )
-    walked = zip(solution.objectives, solution.violations, strict=True)
+    coarse = solution.rounds
+    walked = zip(coarse.objectives, coarse.violations, strict=True)
     rows = [(index, value, gap) for index, (value, gap) in enumerate(walked)]
     report.write_table(columns, rows)
 
     ended = "converged" if solution.converged else "stopped on its round budget"
     entries = [("evaluations", str(solution.evaluations)), ("ended", ended)]
+    if solution.iterations is not None:
+        traced = np.size(solution.iterations.objectives)
+        entries.insert(1, ("iterations traced", str(traced)))
     report.write_entries(entries)
 
 
@@ -459,10 +497,12 @@ def report_design(
             "settings are carried and unused rather than honored."
         )
 
-    report.write_heading("The descent")
-    report_descent(report, record.solution, name_objective(record.problem))
+    report_load_cases(report, config)
+
+    report.write_heading("The optimization")
+    report_optimization(report, record.solution, name_objective(record.problem))
     summarize_design(report, record.initial, "The start")
-    summarize_design(report, record.optimized, "The answer")
+    summarize_design(report, record.optimized, "The solution")
     if record.families:
         report_families(report, record.optimized, record.families)
 

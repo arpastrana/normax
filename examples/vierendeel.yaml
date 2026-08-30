@@ -13,17 +13,25 @@ form_finding:
   shape_parametrization: fdm
   basis: pivoted
   mirror: x
+  fold_heights: true            # one height per mirrored pair of free nodes
   # LensShapeInitializer: the densities that make a sketched lens funicular.
-  density_start: {sag: 600.0, rise: 800.0, held_plan: true}
+  # A NEGATIVE sag lifts the bottom chord, so the sketch arches at constant
+  # depth and the loaded chord is fitted in compression. A sagging sketch fits
+  # it as a tension catenary and no guard lifts the answer back out of it.
+  density_start: {sag: -500.0, rise: 500.0, held_plan: true}
 
-# Every case sits on the deck. The first shapes the truss; every case is
-# checked.
+# The same three cases on the arch and on both trusses, so the masses compare:
+# the whole load over the deck, half of it on one half of the deck, and half of
+# it again on the midspan node. The first shapes the structure; every case is
+# checked. At a quarter the point load governed no member of the vierendeel at
+# all -- worst utilization 0.504 -- so it was doubled to where every case does
+# work on every structure. No mirrored case -- the mirror folds the heights and
+# the diameters alike, so a mirrored patch is a reindexing of the near one.
 load_cases:
   - name: deck
     magnitude: 180000.0
   - name: deck_half
-    magnitude: 180000.0
-    options: {factor: 0.5}
+    magnitude: 90000.0
   - name: deck_point
     magnitude: 90000.0
 
@@ -48,9 +56,16 @@ constraints:
   length_min: 1000.0
   rise_max: 2000.0
   sag_min: -1000.0
-  # Signs the chords at the start and guards them through the descent.
+  # Signs the chords and the verticals at the start and guards them through the
+  # descent. The verticals are guarded because `length_min` rows on member
+  # length, a norm, and so cannot tell a collapsed panel from an inverted one:
+  # unguarded, the descent turns five of the nine panels inside out to buy
+  # lever arm. The guard lifts the verticals from the 12.8 the fit gives them
+  # to 20.6, and stiff verticals are what hold the panels the right way up.
+  # 0.1 is the largest fraction the single self-stress can sign every family
+  # at once by; smaller lets the verticals weaken and the panels invert again.
   sign_margin_fraction: 0.1
-  sign_guard: {bottom chord: tension, top chord: compression}
+  sign_guard: {bottom chord: compression, top chord: compression, verticals: tension}
   bounds: null
 
 # The opening penalty decides the answer on this truss: below a value between
@@ -61,13 +76,19 @@ optimization:
   rounds_warmup: 3              # first rounds given the larger inner budget
   iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
   iterations_after_warmup: 100  # most L-BFGS-B iterations in every later round
-  penalty_start: 0.1            # penalty parameter of the first round
+  # 1.0, not 0.1: this truss's verticals have no plan projection, so nothing but
+  # the length row keeps them from collapsing, and an opening round the
+  # objective dominates dives through it into a geometry the descent cannot
+  # leave. Raised 2026-08-29 after a shallower lens made 0.1 stall outright.
+  penalty_start: 1.0            # penalty parameter of the first round
   penalty_growth: 10.0          # penalty multiplier when a round earns too little
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-4        # relative objective change per round counting as none
+  trace_iterations: true        # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
+  animate: true                 # write an animation of the descent, frame by frame

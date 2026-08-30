@@ -444,6 +444,31 @@ def build_load_cases(
     return assemble_load_cases(applied)
 
 
+def number_load_cases(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
+    """
+    A short name per load case: `LC1`, `LC2`, and so on in the order given.
+
+    Parameters
+    ----------
+    load_cases :
+        The cases as described.
+
+    Returns
+    -------
+    numbered :
+        One name per case, in order.
+
+    Notes
+    -----
+    What a figure's axis is labeled with. The pattern and its options are what
+    a case *is*, and they do not fit under a bar -- two sector cases differing
+    only in their center node come out as one unreadable string repeated -- so
+    the drawing carries the number and `label_load_cases` names it in the run's
+    report, where there is a line to spend on each.
+    """
+    return tuple(f"LC{order + 1}" for order in range(len(load_cases)))
+
+
 def label_load_cases(load_cases: tuple[LoadCaseConfig, ...]) -> tuple[str, ...]:
     """
     A label per load case, the pattern's name and whatever options it took.

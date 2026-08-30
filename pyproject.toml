@@ -12,6 +12,7 @@ dependencies = [
     # LGPL-2.1, imported unmodified as a pip package; permitted 2026-08-15.
     "blue-prints>=0.7.1",
     "equinox>=0.13.8",
+    "imageio-ffmpeg>=0.6.0",
     "jax>=0.11.0",
     "jax-fdm>=0.14.0",
     "jaxtyping>=0.3.11",
@@ -23,6 +24,7 @@ dependencies = [
     "scipy>=1.18.0",
     "tesseract-core[runtime]>=1.11.0",
     "tesseract-jax>=0.4.1",
+    "tqdm>=4.70.0",
 ]
 
 [tool.setuptools.packages.find]

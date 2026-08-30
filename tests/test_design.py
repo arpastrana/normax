@@ -521,16 +521,49 @@ def test_the_descent_reports_the_mass_of_the_point_it_ends_on(problem, force_den
         penalty_cap=1e8,
         violation_tol=1e-3,
         objective_rtol=1e-8,
+        trace_iterations=False,
     )
     answer = solve_problem(problem, start, budget)
     landed = compute_mass(create_design(problem, answer.parameters))
 
-    assert answer.objectives.shape == answer.violations.shape
+    assert answer.rounds.objectives.shape == answer.rounds.violations.shape
     assert answer.parameters.shape == start.shape
-    assert float(answer.objectives[0]) == pytest.approx(
+    assert float(answer.rounds.objectives[0]) == pytest.approx(
         float(compute_mass(create_design(problem, start))), rel=1e-12
     )
-    assert float(answer.objectives[-1]) == pytest.approx(float(landed), rel=1e-12)
+    assert float(answer.rounds.objectives[-1]) == pytest.approx(
+        float(landed), rel=1e-12
+    )
+
+
+def test_every_point_of_a_traced_descent_rebuilds_the_design_behind_it(
+    problem, force_densities
+):
+    # The animation's contract: the pipeline is deterministic in its
+    # parameters, so a recorded point is the design at that point and not
+    # merely a number that was true once.
+    start = initialize_optimization_parameters(
+        problem, np.asarray(force_densities), SEEDED
+    )
+    budget = OptimizationBudget(
+        rounds_max=3,
+        iterations_warmup=10,
+        iterations_after_warmup=10,
+        rounds_warmup=1,
+        penalty_start=1.0,
+        penalty_growth=4.0,
+        penalty_cap=1e8,
+        violation_tol=1e-3,
+        objective_rtol=1e-8,
+        trace_iterations=True,
+    )
+    answer = solve_problem(problem, start, budget)
+
+    walked = answer.iterations
+    assert walked is not None
+    for step, objective in zip(walked.iterates, walked.objectives, strict=True):
+        rebuilt = compute_mass(create_design(problem, step))
+        assert float(rebuilt) == pytest.approx(float(objective), rel=1e-12)
 
 
 def test_assign_signs_closes_an_open_ended_family_slice():

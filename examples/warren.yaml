@@ -13,18 +13,25 @@ form_finding:
   shape_parametrization: fdm
   basis: svd
   mirror: x
+  fold_heights: true            # one height per mirrored pair of free nodes
   # LensShapeInitializer: the densities that make a sketched lens funicular.
-  density_start: {sag: 600.0, rise: 800.0, held_plan: false}
+  # A NEGATIVE sag lifts the bottom chord, so the sketch arches at constant
+  # depth and the loaded chord is fitted in compression. Left free rather than
+  # held: the held arched fit leaves no self-stress to sign the chords along.
+  density_start: {sag: -500.0, rise: 500.0, held_plan: false}
 
-# Every case sits on the deck. The first shapes the truss; every case is
-# checked. The mirrored half-span case is a reindexing of the near one on a
-# symmetric design, so it is left out.
+# The same three cases on the arch and on both trusses, so the masses compare:
+# the whole load over the deck, half of it on one half of the deck, and half of
+# it again on the midspan node. The first shapes the structure; every case is
+# checked. At a quarter the point load governed no member of the vierendeel at
+# all -- worst utilization 0.504 -- so it was doubled to where every case does
+# work on every structure. No mirrored case -- the mirror folds the heights and
+# the diameters alike, so a mirrored patch is a reindexing of the near one.
 load_cases:
   - name: deck
     magnitude: 180000.0
   - name: deck_half
-    magnitude: 180000.0
-    options: {factor: 0.5}
+    magnitude: 90000.0
   - name: deck_point
     magnitude: 90000.0
 
@@ -48,9 +55,13 @@ constraints:
   length_min: 500.0
   rise_max: 2000.0
   sag_min: -1000.0
-  # Signs the chords at the start and guards them through the descent.
+  # Signs the chords at the start and guards them through the descent. The
+  # diagonals are not guarded and cannot be: each one reverses sign across
+  # midspan, which is what a Warren does, so no single sign fits a family.
+  # They need no guard either -- every diagonal has plan projection, so no
+  # panel can collapse or invert the way the Vierendeel's verticals can.
   sign_margin_fraction: 0.1
-  sign_guard: {bottom chord: tension, top chord: compression}
+  sign_guard: {bottom chord: compression, top chord: compression}
   bounds: null
 
 # The opening penalty is the one setting that decides the answer rather than
@@ -61,13 +72,15 @@ optimization:
   rounds_warmup: 3              # first rounds given the larger inner budget
   iterations_warmup: 400        # most L-BFGS-B iterations in each warmup round
   iterations_after_warmup: 50   # most L-BFGS-B iterations in every later round
-  penalty_start: 0.1            # penalty parameter of the first round
+  penalty_start: 1.0            # penalty parameter of the first round
   penalty_growth: 10.0          # penalty multiplier when a round earns too little
   penalty_cap: 1.0e+8           # largest penalty and multiplier the loop may reach
   violation_tol: 1.0e-6         # worst violation at which the rows count as satisfied
   objective_rtol: 1.0e-6        # relative objective change per round counting as none
+  trace_iterations: true        # record every inner iteration, not only every round
 
 # What becomes of the answer.
 output:
   verbose: true
   export: true
+  animate: true                 # write an animation of the descent, frame by frame

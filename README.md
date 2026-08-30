@@ -313,6 +313,14 @@ uv run python examples/vierendeel.py
 uv run python examples/gridshell.py
 ```
 
+The three planar systems answer one bridge problem, and its statement — the
+shared supported deck, its supports, and the three load cases — is drawn on its
+own, without running a search:
+
+```bash
+uv run python examples/problem_setup.py
+```
+
 For the planar examples, use the same model and switch only the shape
 parametrization to reproduce the baselines:
 
@@ -329,7 +337,7 @@ The options mean:
 
 ## Technical notes and guides
 
-These five notes preserve the derivations, verification protocol, and
+These six notes preserve the derivations, verification protocol, and
 engineering work behind the small public API:
 
 - [Results and experiment protocol](docs/results.md)
@@ -337,6 +345,7 @@ engineering work behind the small public API:
 - [Backpropagating through Eurocode 3 with Blueprints](docs/blueprints_backward_pass.md)
 - [Building the PyNite backward pass](docs/fast_backward_pass.md)
 - [Finding and mitigating a Tesseract concurrency race](docs/tesseract_stdio_race.md)
+- [Which way the truss bulges](docs/shape_sign.md)
 
 ## Verification
 
@@ -474,6 +483,8 @@ to the stated models and loads.
 - Commercial engineering software is not integrated. Batched validation is the
   practical first step because most commercial APIs do not expose the solver
   state or sensitivities needed by an in-loop differentiable backend.
+- Only strength is constrained. Serviceability limits are code-defined too, and
+  displacement utilization should bound a design beside the present check.
 - Local Tesseract dispatch is serialized because the hosted solvers and runtime
   redirection have mutable, thread-sensitive state.
 
