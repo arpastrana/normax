@@ -19,7 +19,7 @@ both end moments reproduces the axial answer exactly, that no buckling length
 is read at all, and that a cotangent on the clamp mask is refused rather than
 answered with zeros.
 
-The check is EN 1993-1-1 eq. (6.2) with eq. (6.10) and eq. (6.14), and nothing
+The check is Eurocode 3 eq. (6.2) with eq. (6.10) and eq. (6.14), and nothing
 else. No §6.3.1 flexural buckling, no §6.3.2 lateral-torsional buckling — a
 CHS is doubly symmetric — and no shear or torsion. So a member's size is
 decided by the cross-section check or by the catalog minimum, and those two

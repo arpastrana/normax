@@ -16,12 +16,12 @@ from normax.materials import SteelGrade
 
 
 def test_the_grade_states_its_certificate():
-    # EN 1993-1-1 Table 3.1, S355 up to 40 mm thick, in newtons per square millimeter.
+    # Eurocode 3 Table 3.1, S355 up to 40 mm thick, in newtons per square millimeter.
     s355 = Steel355()
 
     assert (s355.f_y, s355.f_u) == (355.0, 490.0)
 
-    # EN 1993-1-1 3.2.6 for the modulus; the density is 7850 kg/m3 by convention.
+    # Eurocode 3 3.2.6 for the modulus; the density is 7850 kg/m3 by convention.
     assert s355.e_mod == 210000.0
     assert s355.density == 7.85e-9
 

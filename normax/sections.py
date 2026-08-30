@@ -37,7 +37,7 @@ from normax.config import check_start_fields
 from normax.materials import SteelGrade
 from normax.structures import Structure
 
-# EN 1993-1-1 Table 5.2 sheet 3: d/t limit per class, in multiples of epsilon squared.
+# Eurocode 3 Table 5.2 sheet 3: d/t limit per class, in multiples of epsilon squared.
 CLASS_LIMITS = {1: 50.0, 2: 70.0, 3: 90.0}
 
 
@@ -159,7 +159,7 @@ class TubeCatalog(NamedTuple):
     Notes
     -----
     **Where the ratio comes from is not this container's business.** The one
-    this project runs at is a class limit of EN 1993-1-1 Table 5.2, but that
+    this project runs at is a class limit of Eurocode 3 Table 5.2, but that
     derivation is clause work and lives with the sizer that performs it; the
     catalog itself is geometry, and a swept ratio or one read off a published
     section builds the same container.
@@ -225,7 +225,7 @@ def build_section_catalog(grade: SteelGrade, section_class: int) -> TubeCatalog:
 
     Notes
     -----
-    EN 1993-1-1 Table 5.2 sheet 3, `d/t <= k epsilon^2` with `epsilon^2 =
+    Eurocode 3 Table 5.2 sheet 3, `d/t <= k epsilon^2` with `epsilon^2 =
     235 / f_y`. Sitting on the limit maximizes the wall slenderness, and so
     minimizes material, while staying inside the class, so classification is
     exact by construction and needs no smoothing.

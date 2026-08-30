@@ -3,7 +3,7 @@
 What a thinner wall buys, priced by the check the package actually ships.
 
 The wall proportion `d/t` is the one section parameter this project holds fixed,
-and it holds it at the Class 3 limit of EN 1993-1-1 Table 5.2. This sweep prices
+and it holds it at the Class 3 limit of Eurocode 3 Table 5.2. This sweep prices
 that choice: it builds the section catalog at the Class 2 limit and at the Class
 3 limit, hands each to the crossed Blueprints check, and sizes the same demand
 mix on both. A thinner wall reaches a given elastic modulus with less area, so it
@@ -16,7 +16,7 @@ section would have earned is outside what the crossed sizer implements. The swee
 prices the wall proportion alone, which is the parameter the project chooses.
 
 The sweep also bounds the shear the declined clause 6.2.6 would have seen, which
-is what licenses declining it: EN 1993-1-1 6.2.10 permits ignoring shear below
+is what licenses declining it: Eurocode 3 6.2.10 permits ignoring shear below
     half the plastic shear resistance. `docs/results.md#scope-and-limitations`
     states exactly what that check can license. Here the demand is a bound rather
     than a reading, this sweep having no frame to read one off — the analyzed
@@ -70,7 +70,7 @@ CROSSOVER_TOLERANCE = 1e-9
 # length, so a moment bounded either way is worst antisymmetric, at twice it.
 SHEAR_FACTOR = 2.0
 
-# EN 1993-1-1 6.2.10(1): shear is ignorable below half the plastic resistance.
+# Eurocode 3 6.2.10(1): shear is ignorable below half the plastic resistance.
 SHEAR_THRESHOLD = 0.5
 
 
@@ -499,7 +499,7 @@ def compare_readings(
     -----
     Both readings go through the shipped check, the resultant one as the
     equivalent uniaxial moment `sqrt(M_y^2 + M_z^2)`. The check itself sums the
-    two axes linearly, which is the conservative reading of EN 1993-1-1 eq.
+    two axes linearly, which is the conservative reading of Eurocode 3 eq.
     (6.2); a resultant stress is what an elastic stress analysis would report.
     """
     quiet = jnp.zeros_like(moments)

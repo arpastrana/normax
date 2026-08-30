@@ -15,7 +15,7 @@ code:
     numeric     a central difference of the crossed forward pass
 
 Everything is read off the shipped stack: `TesseractSizer` on the `blueprint`
-backend, whose check is EN 1993-1-1 eq. (6.10) and (6.14) summed linearly at
+backend, whose check is Eurocode 3 eq. (6.10) and (6.14) summed linearly at
 cross-section level. That check reads no buckling length and implements no
 §6.3.1, so its residual is `a/d^2 + b/d^3 - 1` rather than the buckling one,
 and the `chi <= 1` cap is not a branch this stack has. The two branches it does

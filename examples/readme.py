@@ -65,7 +65,7 @@ def compute_lawful_mass(force_densities):
 compute_mass_and_gradient = jax.value_and_grad(compute_lawful_mass, has_aux=True)
 (mass, design), gradient = compute_mass_and_gradient(force_densities)
 
-# Is every member within what EN 1993-1-1 allows?
+# Is every member within what Eurocode 3 allows?
 is_design_safe = jnp.all(design.sizes.utilization <= 1.0)
 
 print(mass)  # tonnes of steel

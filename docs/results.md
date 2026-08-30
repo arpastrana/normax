@@ -18,7 +18,7 @@ optimizes force densities and diameters together.
 | Vierendeel truss | bending-dominated planar frame | OpenSees |
 | gridshell | space frame with folded section families | PyNite |
 
-Every route uses Blueprints for the crossed EN 1993-1-1 cross-section check.
+Every route uses Blueprints for the crossed Eurocode 3 cross-section check.
 
 ## Comparison
 
@@ -145,7 +145,7 @@ claim.
 
 ### EC3 scope
 
-Blueprints evaluates EN 1993-1-1 cross-section resistance under axial force and
+Blueprints evaluates Eurocode 3 cross-section resistance under axial force and
 biaxial bending for circular hollow sections. Every headline configuration
 fixes Class 3 before optimization, precomputes its limiting
 $d/t=90(235/f_y)$ ratio, and varies only outer diameter. It does not check
