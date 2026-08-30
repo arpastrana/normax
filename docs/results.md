@@ -9,7 +9,7 @@ configs, dependencies, and reruns are frozen. A table containing
 Can a structural shape prior be optimized through real analysis and code-check
 software? Normax minimizes steel mass while constraining cross-section
 utilization, geometry, and configured force-density signs. The end-to-end route
-optimizes shape coordinates and diameters together.
+optimizes force densities and diameters together.
 
 | structure | role | analysis |
 |---|---|---|

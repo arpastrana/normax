@@ -4,8 +4,9 @@ Unless noted, measurements use the 16×16 gridshell with 257 nodes, 496 members,
 1,267 differentiable parameters, and three load cases. Reproduce them with
 `validation/pynite_adjoint.py`.
 
-PyNite is a Python space-frame solver with no tape, tangent, or sensitivity
-command. Its reverse rule took six stages. The first established correctness.
+PyNite is a structural analysis solver in plain Python with no tape, tangent,
+or sensitivity command. Its reverse rule took six stages. The first established
+correctness.
 Measurement chose the next five.
 
 | stage | change | crossed evaluation |
