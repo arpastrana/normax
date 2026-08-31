@@ -43,7 +43,7 @@ SHELL_RADIUS = 5_000.0
 SHELL_RISE = 2_000.0
 SHELL_PRESSURE = 3.0e-3
 
-# Recorded from smax at tag local-dev; see docs/oracle_removal.md.
+# Recorded from smax at tag local-dev; see docs/results.md#validation-evidence.
 SHELL_AXIAL_NORM = 1.97649588267220708e05
 SHELL_AXIAL_SAMPLED = (
     -1.15775588229506848e04,

@@ -178,9 +178,10 @@ class StructuralDesignPipeline(eqx.Module):
 
         Notes
         -----
-        Every member is assumed to buckle over its own length — a strong
-        assumption that presumes every node held in position, stated once here
-        and nowhere else.
+        The pipeline passes each member's current length to the sizing contract
+        for implementations that use a buckling length. The shipped Blueprints
+        cross-section check explicitly ignores it and implements no member
+        buckling check.
         """
         shape = self.formfinder(params.shape_parameters, loads.formfinding)
         if self.analyzer is None:
@@ -348,9 +349,10 @@ class DesignConstraints(NamedTuple):
 
     Notes
     -----
-    The length floor exists because nothing in a member check objects to a
-    vanishing member: its mass is an area times a length and its buckling length
-    is its own length, so as it shortens it becomes both free and unbucklable.
+    The length floor exists because the mass objective rewards a vanishing
+    member while the shipped cross-section check has no member-length term.
+    Keeping collapse out of the model is both a physical constraint and a guard
+    against handing a zero-length element to an analysis backend.
     """
 
     diameter_min: float
