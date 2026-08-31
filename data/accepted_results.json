@@ -9,8 +9,7 @@
   "provenance": {
     "curated_on": "2026-08-31",
     "audited_against_commit": "d8b2bc1f277be2e846d3b622446d00810d76f209",
-    "archive_generation_commit": "not embedded in the archive files",
-    "scope": "No scientific source, example driver, YAML configuration, pyproject.toml, or uv.lock changes follow the audited commit; the submission update adds documentation, ignore rules, these archives, and this manifest.",
+    "scope": "No scientific source, example driver, YAML configuration, pyproject.toml, or uv.lock changes follow the audited commit; the submission update adds documentation, ignore rules, these archives, and this manifest. Input hashes attest the audited files, not necessarily the byte-exact generators of each archive.",
     "uv_lock_sha256": "aae8a86e65f3a2a7b10b00e87249d0f45beca540213bb2b125c0b45e7459e875"
   },
   "inputs": [

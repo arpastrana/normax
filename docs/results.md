@@ -122,13 +122,13 @@ force-density coefficients plus 31 section variables for end to end, 136
 folded nodal heights plus the same 31 sections for free heights, and the 31
 sections alone for sizing only.
 
-The accepted source reports are `data/runlogs/iso_gridshell_fdm.log`,
-`data/runlogs/iso_gridshell_heights.log`, and
-`data/runlogs/iso_gridshell_fixed.log`. Their corresponding active archives are
-`data/gridshell.npz`, `data/gridshell_heights.npz`, and
-`data/gridshell_fixed.npz`. Final violations are respectively
-$5.66\times10^{-7}$, $3.33\times10^{-7}$, and $6.64\times10^{-7}$; every route
-reports `converged` and `Is the design safe? True`.
+The accepted records are the committed archives `data/gridshell.npz`,
+`data/gridshell_heights.npz`, and `data/gridshell_fixed.npz`, digested with
+their drivers and configurations in
+[`data/accepted_results.json`](../data/accepted_results.json). Final
+violations are respectively $5.66\times10^{-7}$, $3.33\times10^{-7}$, and
+$6.64\times10^{-7}$; every route's console report ended `converged` and
+`Is the design safe? True`.
 
 The 2300 mm rise cap is shared by the movable-shape routes. The end-to-end
 answer settles at 2287.9 mm, 12.1 mm below it, so the cap steers the search

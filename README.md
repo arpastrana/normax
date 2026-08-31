@@ -16,6 +16,17 @@ These three stages are traditionally disjoint in the industry; this project fuse
        alt="Three functions composed left to right. JAX form finding maps force densities to a shape and its member lengths; an OpenSees or PyNite analysis, crossed through Tesseract, maps that shape and the tube diameters to member forces; a Blueprints Eurocode 3 check, crossed through Tesseract, maps those to member utilization. Dashed arrows carry gradients back from the design task to the force densities and diameters.">
 </a>
 
+## At a glance
+
+| Judged criterion | Normax evidence |
+|---|---|
+| Real composition | [OpenSees/PyNite analysis Tesseract → Blueprints Eurocode 3 Tesseract](#one-program-three-kinds-of-differentiation) |
+| Mixed differentiation | [DDM, implicit adjoint, hand VJP, native JAX](#software-stack) |
+| Gradients doing work | [12 feasible optimizations; 29–67% mass savings](#results) |
+| Why Tesseract | [backend swap behind one schema and optimizer](#the-advantages-of-tesseract-for-structural-engineering) |
+| Engineering depth | [443 tests, independent derivative checks](#verification); [upstream race report](docs/tesseract_stdio_race.md) |
+| Reproducibility | [frozen lock, clean-clone CI](docs/reproducibility.md); [committed result records](data/accepted_results.json) |
+
 ## Motivation: design segregation in structural engineering
 
 Designing the backbone structure of a roof, a bridge, or a tower remains a fragmented process. Form finding, structural analysis, and code compliance are treated as distinct problems, addressed sequentially throughout the design cycle of architectural structures — from inception to realization. While engineering choices move forward, design feedback based on performance metrics rarely travels back.
@@ -169,22 +180,9 @@ which each stage supplies the strongest derivative it has, while the optimizer
 sees the same JAX-callable and vector-Jacobian product in every case. The
 separation also preserves the software the project intends to optimize
 through: switching OpenSees for PyNite changes one backend input, not the
-pipeline.
-
-### Why not `jax.custom_vjp`?
-
-A one-off, Python-only version of this experiment could wrap each host call in
-`jax.custom_vjp`. That would make Normax itself own three different integration
-contracts, however, and tie every solver's derivative to one autodiff client.
-Here the derivative stays with the component that can compute it best: the
-OpenSees-backed component exposes the C++ solver's Direct Differentiation
-Method, the PyNite-backed component exposes Normax's implicit structural
-adjoint, and the Blueprints-backed component exposes Normax's code-check
-pullback. Tesseract gives all three the same typed forward/VJP boundary, lets
-the analysis backend change without changing the optimization program, and
-leaves that boundary usable by clients other than JAX. The point is therefore
-not that a custom VJP is impossible; it is that the solver and its derivative
-become one swappable component rather than application-specific glue.
+pipeline. Each stage's contract is validated at the component, holds whether
+the stage runs in process under the test suite or serves from a container,
+and stays usable by clients other than JAX.
 
 ## Results
 

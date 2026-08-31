@@ -36,8 +36,7 @@ figures/*
 !figures/.gitkeep
 data/*
 
-# Accepted headline archives and their machine-readable provenance. Keep these
-# exceptions explicit so exploratory runs cannot enter a submission unnoticed.
+# Accepted headline archives and provenance, named so exploratory runs stay out.
 !data/accepted_results.json
 !data/arch.npz
 !data/arch_heights.npz

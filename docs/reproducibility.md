@@ -113,9 +113,9 @@ not depend on generated files.
 The twelve accepted headline archives are committed by explicit exception, so
 a clean clone can redraw every comparison without rerunning optimization.
 [`data/accepted_results.json`](../data/accepted_results.json) inventories their
-SHA-256 digests, final objectives and violations, record lengths, source drivers
-and configurations, and the audited code and lockfile revision. Other local
-archives remain ignored.
+SHA-256 digests, final objectives and violations, record lengths, the audited
+drivers and configurations, and the audited code and lockfile revision. Other
+local archives remain ignored.
 
 Each `.npz` stores `parameters`, `iterates`, `objectives`, `violations`, and
 `round_index`. With `trace_iterations` enabled, the path contains inner
