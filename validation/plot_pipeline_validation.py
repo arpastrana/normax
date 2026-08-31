@@ -59,7 +59,7 @@ def read_arguments() -> argparse.Namespace:
     mode.add_argument(
         "--project-pynite-fd",
         action="store_true",
-        help="project the 1,267-parameter FD cost from its measured primal",
+        help="project the 1267-parameter FD cost from its measured primal",
     )
     mode.add_argument(
         "--render-only",
@@ -370,7 +370,7 @@ def redraw_existing() -> None:
             "diameters vs FD",
             "crossed vs FD",
             "boundary parity",
-            "frozen oracle norms",
+            "frozen reference norms",
         ),
         (
             route["by_node"],
@@ -456,7 +456,7 @@ def main() -> None:
         "diameters vs FD",
         "crossed vs FD",
         "boundary parity",
-        "frozen oracle norms",
+        "frozen reference norms",
     )
     route_errors = tuple(gaps)
     route_tolerances = (

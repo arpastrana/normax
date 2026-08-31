@@ -1,8 +1,8 @@
 {
   "schema": "normax.validation.v1",
-  "generated_utc": "2026-08-30T15:53:51.894026+00:00",
+  "generated_utc": "2026-08-31T19:12:59.383450+00:00",
   "git": {
-    "commit": "cb1c0747ca985ad318477de81a5fb82507113680",
+    "commit": "4d058f520ffdd3fc63a3ad922fb4dcc06337adce",
     "worktree_dirty": true
   },
   "runtime": {
@@ -123,9 +123,9 @@
     },
     "tolerance": 5e-06,
     "timings_seconds": {
-      "forward": 0.009026874991832301,
-      "reverse": 0.04946283300523646,
-      "central_difference": 0.3482225830084644
+      "forward": 0.008738417000131449,
+      "reverse": 0.044564750000063214,
+      "central_difference": 0.2867249580012867
     }
   },
   "code": {
@@ -279,10 +279,10 @@
       "parameters": 1267
     },
     "timings_seconds": {
-      "forward": 0.04406179199577309,
-      "three_load_cases": 0.04319054100778885,
-      "adjoint": 0.04714658300508745,
-      "finite_difference": 140.71524579101242,
+      "forward": 0.04007233400079713,
+      "three_load_cases": 0.04097912500037637,
+      "adjoint": 0.04440345799957868,
+      "finite_difference": 122.55832404099965,
       "finite_difference_measured": true
     }
   },
