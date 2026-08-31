@@ -186,9 +186,28 @@ member flexural buckling under §6.3.1. A validation comparison exposes that gap
 without adding buckling to the design. The
 [backward-rule guide](blueprints_backward_pass.md) derives this exact slice.
 
-Shear, torsion, and their interactions are also absent. A final shear claim
-needs the frozen designs and their observed `V_Ed/V_pl,Rd`.
-<!-- FINAL: HEADLINE_MAX_SHEAR_RATIO_AND_SCOPE -->
+Shear, torsion, and their interactions are also absent. Clause 6.2.10 permits
+that below half the plastic shear resistance, and every frozen design stays
+there. Loads act at nodes alone, so the moment varies linearly and the shear is
+constant along a member at $\Delta M/L$; the analysis schema reports the two end
+moments without stating which rotational sense they share, so both readings are
+taken and the larger kept. Every ratio below is therefore an upper bound the
+true value cannot exceed, computed with $A_v=2A/\pi$ per 6.2.6(3) and
+$\gamma_{M0}=1.0$.
+
+| structure | end to end | free heights | sizing only |
+|---|---:|---:|---:|
+| arch | 0.208 | 0.208 | 0.447 |
+| Warren | 0.017 | 0.018 | 0.021 |
+| Vierendeel | 0.173 | 0.169 | 0.235 |
+| gridshell | 0.104 | 0.184 | 0.131 |
+
+The worst bound anywhere is 0.447, on the arch sized at its fixed drawn
+geometry. No optimized answer exceeds 0.208, and the Warren stays under 0.021.
+The margin on that worst case is real but not large, and it belongs to the one
+route whose geometry never moves: a shallower or longer-spanned structure sized
+without form finding is where the assumption would fail first. Designing for
+shear moves no diameter here, which is the whole of the claim.
 
 Planar nodal loads produce zero torsion. This says nothing about arbitrary space
 frames. Circular hollow sections avoid lateral-torsional buckling, but not the

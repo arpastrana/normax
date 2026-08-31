@@ -794,6 +794,14 @@ def animate_descent(
         standing.set_data(steps[reached : reached + 1], placed[reached : reached + 1])
         sitting.set_data(steps[reached : reached + 1], values[reached : reached + 1])
 
+    # Drawn once here, before any writer grabs a frame. A constrained layout
+    # solves at draw time and settles only after its first pass, so whatever is
+    # grabbed on that pass carries a page laid out about a pixel off from every
+    # frame after it: invisible in a video, a flick at a looping GIF's seam.
+    # Done on the figure while it is still in hand rather than in the writer,
+    # which would have to reach inside the animation for it.
+    figure.draw_without_rendering()
+
     played = FuncAnimation(
         figure,
         draw_frame,
