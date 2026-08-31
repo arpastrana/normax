@@ -102,8 +102,17 @@ def git_provenance() -> dict[str, str | bool]:
         capture_output=True,
         text=True,
     ).stdout.strip()
+    # The run's own outputs cannot dirty their own provenance; code still can.
     status = subprocess.run(
-        ["git", "status", "--porcelain"],
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            ".",
+            ":(exclude)figures",
+            ":(exclude)validation/results",
+        ],
         cwd=REPO,
         check=True,
         capture_output=True,
