@@ -36,14 +36,38 @@ figures/*
 !figures/.gitkeep
 data/
 
-# Curated submission assets, committed by exception. The README embeds these,
-# so they have to be in history for the page to render on the forge; every
-# other figure a run writes stays ignored above. Listed one by one rather than
-# by a pattern, so nothing joins them by accident.
+# Curated submission assets, committed by exception. The README and the two
+# example guides embed these, so they have to be in history for the pages to
+# render on the forge; every other figure a run writes stays ignored above.
+# Listed one by one rather than by a pattern, so nothing joins them by accident.
 !figures/normax_pipeline.png
+!figures/problem_setup_landscape.png
+!figures/problem_setup_gridshell.png
+!figures/problem_setup_gridshell_plan.png
+!figures/validation_pipeline.png
+!figures/validation_code.png
+!figures/validation_pynite.png
 !figures/arch_designs.png
+!figures/arch_heights_designs.png
+!figures/arch_fixed_designs.png
 !figures/warren_designs.png
+!figures/warren_heights_designs.png
+!figures/warren_fixed_designs.png
 !figures/vierendeel_designs.png
+!figures/vierendeel_heights_designs.png
+!figures/vierendeel_fixed_designs.png
+!figures/gridshell_designs.png
+!figures/gridshell_heights_designs.png
+!figures/gridshell_fixed_designs.png
+!figures/arch_optimization_web.gif
+!figures/arch_heights_optimization_web.gif
+!figures/arch_fixed_optimization_web.gif
+!figures/warren_optimization_web.gif
+!figures/warren_heights_optimization_web.gif
+!figures/warren_fixed_optimization_web.gif
+!figures/vierendeel_optimization_web.gif
+!figures/vierendeel_heights_optimization_web.gif
+!figures/vierendeel_fixed_optimization_web.gif
 !figures/gridshell_fixed_optimization_web.gif
 !figures/gridshell_heights_optimization_web.gif
 !figures/gridshell_optimization_web.gif

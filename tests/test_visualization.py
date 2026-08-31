@@ -10,7 +10,11 @@ from matplotlib.patches import Polygon
 from normax.loads import create_load_deck
 from normax.loads import create_load_deck_half
 from normax.loads import create_load_deck_point
+from normax.loads import create_load_sector
+from normax.loads import create_load_tributary
 from normax.structures import build_arch_2d
+from normax.structures import build_gridshell_3d
+from normax.visualization import draw_problem_plan
 from normax.visualization import draw_problem_setup
 
 
@@ -93,4 +97,40 @@ def test_problem_setup_offers_a_horizontal_slide_layout(bridge, cases):
     assert len(positions) == 3
     assert positions[0].x0 < positions[1].x0 < positions[2].x0
     assert all(np.isclose(position.y0, positions[0].y0) for position in positions)
+    plt.close(figure)
+
+
+def test_problem_setup_turns_a_solid_shell():
+    shell = build_gridshell_3d(4, 8, 5000.0, 2000.0, False, False)
+    loaded = np.zeros((shell.num_nodes, 3))
+    free = np.setdiff1d(np.arange(shell.num_nodes), np.asarray(shell.supports))
+    loaded[free, 2] = -1.0
+    figure = draw_problem_setup(shell, loaded[None], ("Uniform",), layout="horizontal")
+
+    ax = figure.axes[0]
+    arrows = [patch for patch in ax.patches if isinstance(patch, FancyArrow)]
+    pins = [patch for patch in ax.patches if type(patch) is Polygon]
+    assert len(arrows) == free.size
+    assert not pins
+    plt.close(figure)
+
+
+def test_problem_plan_shades_a_level_case_whole_and_a_drift_as_its_sector():
+    shell = build_gridshell_3d(4, 8, 5000.0, 2000.0, False, False)
+    tributary = create_load_tributary(shell, 1.0e-3)
+    drift = create_load_sector(shell, 1.0e-3, center=2, spokes=3, factor=0.5)
+    cases = np.stack([tributary, drift])
+    figure = draw_problem_plan(shell, cases, ("Tributary", "Drift"))
+
+    free = np.setdiff1d(np.arange(shell.num_nodes), np.asarray(shell.supports))
+    level, drifted = figure.axes
+    level_cells = [
+        patch for patch in level.patches if patch.get_gid() == "problem-cell"
+    ]
+    drift_cells = [
+        patch for patch in drifted.patches if patch.get_gid() == "problem-cell"
+    ]
+    assert len(level_cells) == free.size
+    # Three spokes wide over the three free rings, plus the crown a sector always holds.
+    assert len(drift_cells) == 3 * 3 + 1
     plt.close(figure)

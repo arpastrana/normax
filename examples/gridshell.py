@@ -45,8 +45,7 @@ from normax.reporting import report_design
 from normax.sections import UniformDiameterInitializer
 from normax.sections import build_section_catalog
 from normax.structures import ShellDescription
-from normax.structures import Structure
-from normax.structures import build_gridshell_3d
+from normax.structures import build_shell
 from normax.structures import create_groups_shell
 from normax.symmetry import build_height_groups
 from normax.symmetry import build_section_groups
@@ -63,22 +62,6 @@ MATERIAL = Steel355()
 PRECISION = 12
 TITLE = "Gridshell — one search to a design"
 EXPORT = ExportTarget("gridshell", REPO / "data", REPO / "figures")
-
-
-def build_shell(description: ShellDescription) -> Structure:
-    """
-    The drawn cap.
-    """
-    shell = build_gridshell_3d(
-        description.num_rings,
-        description.num_spokes,
-        description.radius,
-        description.rise,
-        description.oculus,
-        description.braced,
-    )
-
-    return shell
 
 
 def main(arguments: RunArguments) -> None:
