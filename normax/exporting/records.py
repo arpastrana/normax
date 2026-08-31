@@ -123,9 +123,10 @@ def export_design(
     np.savez(archive, **columns)
 
     target.figures.mkdir(exist_ok=True)
-    # The answer first, the drawings reading from what the search arrived at
-    # down to where it left from.
-    designs = {"solution": record.optimized, "start": record.initial}
+    # The start first, so a drawing reads from where the search left from to
+    # what it arrived at: left to right across the load cases, top to bottom
+    # down the designs.
+    designs = {"start": record.initial, "solution": record.optimized}
     labels = number_load_cases(config.load_cases)
     structure = record.problem.structure
     trace = DescentTrace("auglag", walked, config.optimization.violation_tol)
@@ -143,7 +144,8 @@ def export_design(
     played = None
     if config.output.animate:
         played = target.figures / f"{stem}_optimization.mp4"
-        save_animation(animate_descent(record.problem, panel), played)
+        spun = animate_descent(record.problem, panel, None, config.output.turns)
+        save_animation(spun, played)
 
     # Continues the run's report, so the heading separates itself from it.
     report = Report(verbose=config.output.verbose)

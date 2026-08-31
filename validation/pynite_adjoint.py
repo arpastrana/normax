@@ -150,6 +150,28 @@ class GradientGaps(NamedTuple):
     frozen: float
 
 
+class GradientMeasurement(NamedTuple):
+    """The finite-difference sweep and route gaps behind the gradient report."""
+
+    steps: tuple[float, ...]
+    node_errors: tuple[float, ...]
+    diameter_errors: tuple[float, ...]
+    gaps: GradientGaps
+
+
+class CostMeasurement(NamedTuple):
+    """Measured cost of the PyNite primal, adjoint, and difference reference."""
+
+    nodes: int
+    members: int
+    parameters: int
+    forward_seconds: float
+    load_cases_seconds: float
+    adjoint_seconds: float
+    finite_difference_seconds: float
+    finite_difference_measured: bool
+
+
 def relative(actual: Float[Array, "..."], expected: Float[Array, "..."]) -> float:
     """
     Worst absolute gap, against the largest entry of the reference.
@@ -560,36 +582,69 @@ def pull_gradient(
     return pulled
 
 
-def report_sweep(
-    report: Report,
-    swept: dict[float, pynite.Cotangents],
-    pulled: pynite.Cotangents,
-) -> None:
-    """
-    The reference against the rule at every step, so the V can be seen.
+def measure_gradient(sample: FrameSample) -> GradientMeasurement:
+    """Measure the adjoint, boundary, and finite-difference references."""
+    structure = sample.structure
+    catalog = build_section_catalog(Steel355(), SECTION_CLASS)
+    diameters = jnp.asarray(sample.diameters)
+    stacked = jnp.asarray(sample.loads)[None, ...]
+    problem = pynite.FrameProblem(
+        structure=structure, catalog=catalog, loads=sample.loads
+    )
 
-    Parameters
-    ----------
-    report :
-        Where the tables are written.
-    swept :
-        The differenced gradient at each step tried.
-    pulled :
-        The exact gradient those steps approach.
-    """
+    pulled = pull_gradient(problem, sample)
+    swept = {
+        step: compute_differences(problem, sample, step) for step in DIFFERENCE_STEPS
+    }
+    node_errors = tuple(
+        relative(pulled.xyz, swept[step].xyz) for step in DIFFERENCE_STEPS
+    )
+    diameter_errors = tuple(
+        relative(pulled.diameter, swept[step].diameter) for step in DIFFERENCE_STEPS
+    )
+
+    analysis = AnalysisConfig({"diameter": SEED_DIAMETER}, "pynite")
+    crossed = build_analyzer(structure, catalog, analysis)
+
+    def loss(xyz, sizes):
+        forces = crossed(xyz, sizes, stacked)
+
+        return compute_scalar(forces)
+
+    served = jax.grad(loss, argnums=(0, 1))(structure.nodes, diameters)
+    referenced = swept[DIFFERENCE_STEP]
+    node_norm = float(np.linalg.norm(np.asarray(pulled.xyz)))
+    member_norm = float(np.linalg.norm(np.asarray(pulled.diameter)))
+    gaps = GradientGaps(
+        by_node=relative(pulled.xyz, referenced.xyz),
+        by_member=relative(pulled.diameter, referenced.diameter),
+        crossed=max(
+            relative(served[0], referenced.xyz),
+            relative(served[1], referenced.diameter),
+        ),
+        boundary=max(
+            relative(served[0], pulled.xyz),
+            relative(served[1], pulled.diameter),
+        ),
+        frozen=max(
+            relative(node_norm, FROZEN_NODE_NORM),
+            relative(member_norm, FROZEN_DIAMETER_NORM),
+        ),
+    )
+
+    return GradientMeasurement(
+        tuple(DIFFERENCE_STEPS), node_errors, diameter_errors, gaps
+    )
+
+
+def report_sweep(report: Report, measured: GradientMeasurement) -> None:
+    """Write the finite-difference step sweep from structured measurements."""
     columns = (
         ReportColumn("step [mm]", ".0e"),
         ReportColumn("by node", ".3e"),
         ReportColumn("by diameter", ".3e"),
     )
-    rows = [
-        [
-            step,
-            relative(pulled.xyz, swept[step].xyz),
-            relative(pulled.diameter, swept[step].diameter),
-        ]
-        for step in DIFFERENCE_STEPS
-    ]
+    rows = list(zip(measured.steps, measured.node_errors, measured.diameter_errors))
     report.write_table(columns, rows)
     report.write_note(
         "Truncation falls as the step falls and round-off rises, so an exact "
@@ -631,45 +686,9 @@ def gradient_claim(report: Report, sample: FrameSample) -> GradientGaps:
         "forward solve that adjoint differentiates."
     )
 
-    structure = sample.structure
-    catalog = build_section_catalog(Steel355(), SECTION_CLASS)
-    diameters = jnp.asarray(sample.diameters)
-    stacked = jnp.asarray(sample.loads)[None, ...]
-    problem = pynite.FrameProblem(
-        structure=structure, catalog=catalog, loads=sample.loads
-    )
-
-    pulled = pull_gradient(problem, sample)
-    swept = {
-        step: compute_differences(problem, sample, step) for step in DIFFERENCE_STEPS
-    }
-    report_sweep(report, swept, pulled)
-
-    analysis = AnalysisConfig({"diameter": SEED_DIAMETER}, "pynite")
-    crossed = build_analyzer(structure, catalog, analysis)
-
-    def loss(xyz, sizes):
-        forces = crossed(xyz, sizes, stacked)
-
-        return compute_scalar(forces)
-
-    served = jax.grad(loss, argnums=(0, 1))(structure.nodes, diameters)
-    referenced = swept[DIFFERENCE_STEP]
-    node_norm = float(np.linalg.norm(np.asarray(pulled.xyz)))
-    member_norm = float(np.linalg.norm(np.asarray(pulled.diameter)))
-
-    node_gap = relative(pulled.xyz, referenced.xyz)
-    member_gap = relative(pulled.diameter, referenced.diameter)
-    crossed_gap = max(
-        relative(served[0], referenced.xyz), relative(served[1], referenced.diameter)
-    )
-    boundary_gap = max(
-        relative(served[0], pulled.xyz), relative(served[1], pulled.diameter)
-    )
-    frozen_gap = max(
-        relative(node_norm, FROZEN_NODE_NORM),
-        relative(member_norm, FROZEN_DIAMETER_NORM),
-    )
+    measured = measure_gradient(sample)
+    report_sweep(report, measured)
+    gaps = measured.gaps
 
     columns = (
         ReportColumn("route", align="<"),
@@ -677,40 +696,22 @@ def gradient_claim(report: Report, sample: FrameSample) -> GradientGaps:
         ReportColumn("worst relative gap", ".3e"),
     )
     rows = [
-        ["adjoint, in process", "central differences, by node", node_gap],
-        ["adjoint, in process", "central differences, by diameter", member_gap],
-        ["adjoint, across the schema", "central differences, both", crossed_gap],
-        ["adjoint, across the schema", "the same rule in process", boundary_gap],
-        ["adjoint, in process", "frozen norms of a traced solver", frozen_gap],
+        ["adjoint, in process", "central differences, by node", gaps.by_node],
+        ["adjoint, in process", "central differences, by diameter", gaps.by_member],
+        ["adjoint, across the schema", "central differences, both", gaps.crossed],
+        ["adjoint, across the schema", "the same rule in process", gaps.boundary],
+        ["adjoint, in process", "frozen norms of a traced solver", gaps.frozen],
     ]
     report.write_table(columns, rows)
     report.write_line()
 
-    gaps = GradientGaps(node_gap, member_gap, crossed_gap, boundary_gap, frozen_gap)
-
     return gaps
 
 
-def cost_claim(report: Report, sample: FrameSample) -> None:
-    """
-    Price the exact gradient against differencing the forward solve.
-
-    Parameters
-    ----------
-    report :
-        Where the tables are written.
-    sample :
-        The shell the cost is measured on.
-
-    Notes
-    -----
-    The comparison a hand-written adjoint has to win to be worth writing. One
-    factorization serves every parameter, so the whole dense Jacobian costs
-    about what a single forward solve costs, while differencing pays two solves
-    per parameter. The first call is reported apart because it compiles.
-    """
-    report.write_heading("What the rule buys")
-
+def measure_cost(
+    sample: FrameSample, *, run_finite_difference: bool = False
+) -> CostMeasurement:
+    """Measure the PyNite primal and adjoint, optionally running all differences."""
     structure = sample.structure
     catalog = build_section_catalog(Steel355(), SECTION_CLASS)
     nodes = np.asarray(structure.nodes)
@@ -720,18 +721,30 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
         structure=structure, catalog=catalog, loads=sample.loads
     )
 
+    def fastest(call, repeats=3):
+        best = float("inf")
+        for _ in range(repeats):
+            start = time.perf_counter()
+            call()
+            best = min(best, time.perf_counter() - start)
+
+        return best
+
     # Warmed first: the first call through either compiles, and a cost table
-    # that reported a compilation would be measuring the wrong thing.
+    # that reported a compilation would be measuring the wrong thing.  The
+    # best of three warmed calls damps scheduler noise without hiding setup.
     pynite.compute_member_forces(problem, nodes, sample.diameters, sample.loads)
-    start = time.perf_counter()
-    pynite.compute_member_forces(problem, nodes, sample.diameters, sample.loads)
-    forward = time.perf_counter() - start
+    forward = fastest(
+        lambda: pynite.compute_member_forces(
+            problem, nodes, sample.diameters, sample.loads
+        )
+    )
 
     stacked = np.stack([sample.loads, 0.6 * sample.loads, 0.4 * sample.loads])
     pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
-    start = time.perf_counter()
-    pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
-    together = time.perf_counter() - start
+    together = fastest(
+        lambda: pynite.compute_member_forces(problem, nodes, sample.diameters, stacked)
+    )
 
     seed = MemberForces(
         axial_force=np.ones(members),
@@ -739,17 +752,39 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
         moment_minor=np.ones((members, 2)),
     )
     pynite.pull_back_cotangents(problem, nodes, sample.diameters, seed)
-    start = time.perf_counter()
-    pynite.pull_back_cotangents(problem, nodes, sample.diameters, seed)
-    adjoint = time.perf_counter() - start
+    adjoint = fastest(
+        lambda: pynite.pull_back_cotangents(problem, nodes, sample.diameters, seed)
+    )
 
-    differenced = 2.0 * width * forward
+    if run_finite_difference:
+        start = time.perf_counter()
+        compute_differences(problem, sample, DIFFERENCE_STEP)
+        differenced = time.perf_counter() - start
+    else:
+        differenced = 2.0 * width * forward
+
+    return CostMeasurement(
+        nodes=nodes.shape[0],
+        members=members,
+        parameters=width,
+        forward_seconds=forward,
+        load_cases_seconds=together,
+        adjoint_seconds=adjoint,
+        finite_difference_seconds=differenced,
+        finite_difference_measured=run_finite_difference,
+    )
+
+
+def cost_claim(report: Report, sample: FrameSample) -> CostMeasurement:
+    """Price the exact gradient against differencing the forward solve."""
+    report.write_heading("What the rule buys")
+    measured = measure_cost(sample)
 
     report.write_entries(
         [
-            ("nodes", f"{nodes.shape[0]}"),
-            ("members", f"{members}"),
-            ("parameters the stage differentiates", f"{width}"),
+            ("nodes", f"{measured.nodes}"),
+            ("members", f"{measured.members}"),
+            ("parameters the stage differentiates", f"{measured.parameters}"),
         ]
     )
     report.write_line()
@@ -760,13 +795,17 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
         ReportColumn("against the exact rule", align=">"),
     )
     rows = [
-        ["one forward solve", forward, ""],
-        ["three load cases, one call", together, f"{together / forward:.2f}x"],
-        ["one reverse-mode gradient", adjoint, "1x"],
+        ["one forward solve", measured.forward_seconds, ""],
+        [
+            "three load cases, one call",
+            measured.load_cases_seconds,
+            f"{measured.load_cases_seconds / measured.forward_seconds:.2f}x",
+        ],
+        ["one reverse-mode gradient", measured.adjoint_seconds, "1x"],
         [
             "central differences, every parameter",
-            differenced,
-            f"{differenced / adjoint:.0f}x",
+            measured.finite_difference_seconds,
+            f"{measured.finite_difference_seconds / measured.adjoint_seconds:.0f}x",
         ],
     ]
     report.write_table(columns, rows)
@@ -777,6 +816,8 @@ def cost_claim(report: Report, sample: FrameSample) -> None:
         "size a descent needing hundreds of gradients could not afford one."
     )
     report.write_line()
+
+    return measured
 
 
 def main(verbose: bool = True) -> None:

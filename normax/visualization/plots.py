@@ -31,6 +31,123 @@ from normax.design import Design
 from normax.optimization import DescentHistory
 from normax.structures import Structure
 
+# The typeface every figure is set in: Computer Modern, which matplotlib ships
+# rather than asks the machine to have, so a figure reads like the text around
+# it on any install and no LaTeX is required. `text.usetex` would render
+# through a real LaTeX and look better still, at the cost of a toolchain a
+# reader must install before a figure will draw at all.
+#
+# The ASCII hyphen is not a preference: cmr10 carries no U+2212, so leaving the
+# unicode minus on prints a missing-glyph box on every negative tick, and this
+# repository's axes are full of them.
+SERIF_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["cmr10", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.formatter.use_mathtext": True,
+    "axes.unicode_minus": False,
+}
+
+# Points an axis label and a title are set at. Both a third larger than the
+# nine and eleven they were drawn at before, which is what a figure printed at
+# column width rather than read on a screen asks for.
+SIZE_LABEL = 11.7
+SIZE_PANEL = 13.0
+SIZE_TITLE = 14.3
+
+# Applied on import, so every figure this module draws is set the same way
+# whichever entry point asked for it. A caller wanting matplotlib's own look
+# back restores it with `matplotlib.rcdefaults()`. The two sizes are set here
+# as well as passed, since not every label states one.
+plt.rcParams.update(SERIF_STYLE)
+plt.rcParams.update({"axes.labelsize": SIZE_LABEL, "axes.titlesize": SIZE_TITLE})
+
+
+def clear_for_legend(upward: tuple[float, float]) -> tuple[float, float]:
+    """
+    Vertical limits with room kept under the design for the legend.
+
+    Parameters
+    ----------
+    upward :
+        Least and greatest coordinate the design reaches.
+
+    Returns
+    -------
+    cleared :
+        The same pair, its lower bound dropped by `LEGEND_CLEARANCE` of the
+        span.
+
+    Notes
+    -----
+    A fraction of the span rather than a fixed distance, so it means the same
+    thing at any scale, and applied to whatever limits arrive: where several
+    runs share a framing they share the clearance too, and the aspect ratio
+    stays equal across them.
+    """
+    low, high = upward
+    dropped = low - LEGEND_CLEARANCE * (high - low)
+
+    return dropped, high
+
+
+def clear_for_caption(upward: tuple[float, float]) -> tuple[float, float]:
+    """
+    Vertical limits with room kept over the design for a film's counters.
+
+    Parameters
+    ----------
+    upward :
+        Least and greatest coordinate the design reaches, legend room included.
+
+    Returns
+    -------
+    cleared :
+        The same pair, its upper bound raised by `CAPTION_CLEARANCE` of the
+        span.
+
+    Notes
+    -----
+    The mirror of `clear_for_legend` at the other end, and a fraction for the
+    same reason: it means one thing at any scale, and runs sharing a framing
+    share the clearance, so the aspect ratio stays equal across them. Without
+    it a shape reaching the top of its own box is written over -- which the
+    shell, whose walk climbs to its rise cap, does.
+    """
+    low, high = upward
+    raised = high + CAPTION_CLEARANCE * (high - low)
+
+    return low, raised
+
+
+def capitalize_label(text: str) -> str:
+    """
+    A label with its first letter capitalized and the rest left alone.
+
+    Parameters
+    ----------
+    text :
+        The label as it is written in the code.
+
+    Returns
+    -------
+    capitalized :
+        The same label, opening on a capital.
+
+    Notes
+    -----
+    `str.capitalize` lowercases everything after the first character, which
+    would turn a unit or a name into nonsense -- `mass [T]`, `Auglag` from
+    `AUGLAG`. Only the first character is touched, so `constraints violation`
+    becomes `Constraints violation`. A coordinate's own name is not a label to
+    capitalize and is written out as it stands.
+    """
+    if not text:
+        return text
+
+    return text[0].upper() + text[1:]
+
+
 # Points of line width given to the thinnest and the thickest member drawn.
 WIDTH_MIN = 1.8
 WIDTH_MAX = 11.0
@@ -51,7 +168,10 @@ UTILIZATION_CAP = 1.0
 # What the bar is labeled at. Quarters, against the ten or so a locator picks
 # for a unit range, the bar being read for where a member sits rather than for
 # a number.
-UTILIZATION_TICKS = (0.0, 0.25, 0.5, 0.75, 1.0)
+# The ends and the middle, and nothing between: a bar read for whether a member
+# is worked, half worked or spent wants three marks, not five, and one decimal
+# says all any of them says.
+UTILIZATION_TICKS = (0.0, 0.5, 1.0)
 
 # Color of everything that is a reference rather than a result.
 GREY = "0.55"
@@ -65,6 +185,38 @@ FAINT = "#8c8c8c"
 
 # The colors a result is drawn in, in the order several are drawn.
 SHADES = ("#31688e", "#35b779", "#c0392b")
+
+# The coordinate names, set as mathematics: the name italic and its unit
+# upright, which is the convention and is what `\text` inside `$...$` gets.
+# matplotlib's own mathtext, not a LaTeX installation, so a figure still draws
+# on a machine that has none.
+LABEL_ACROSS = r"$x~\text{[mm]}$"
+LABEL_UPWARD = r"$z~\text{[mm]}$"
+
+# Where a drawing's legend sits, and the hairline box around it. Centered at
+# the foot and laid out in one row rather than stacked: a corner is clear on one
+# structure and covered on the next, where a single row is a third the height of
+# a stack and clears the foot of any of them. Boxed, since it sits over the
+# drawing rather than under it.
+LEGEND_PLACE = "lower center"
+LEGEND_RIM = 0.5
+
+# Share of a drawing's height kept clear beneath the design, so the legend sits
+# under it rather than over it. The legend is a row about a twentieth of the
+# height; this is more, because the lowest support is a disk with a rim and it
+# is the thing a reader looks for first.
+LEGEND_CLEARANCE = 0.12
+
+# Share of a drawing's height kept clear above the design, so a film's counters
+# sit over the page rather than over the structure. Only a film carries them,
+# so only a film reserves the room; a drawing with no caption would be spending
+# a tenth of its height on nothing.
+CAPTION_CLEARANCE = 0.10
+
+# Points of line width the shape a search left from is outlined at. Two fifths
+# lighter than the 0.8 it was drawn at, so a start reads as the ghost behind a
+# design rather than as a second result.
+WIDTH_OUTLINE = 0.48
 
 # A node is a white disk with a dark rim, the way the plotters of jax-fdm and
 # compas draw one: points across it, the rim's width, and its color.
@@ -101,6 +253,20 @@ HEIGHT_DESIGN = 1.3
 # Shortest a drawing is allowed to be, whatever the shape's proportions.
 HEIGHT_DRAWING = 1.3
 
+# Inches the curve figure measures, and the margins its two panels are pinned
+# inside. Pinned rather than negotiated: a layout engine reserves whatever the
+# widest tick label of the run needs, so a structure whose masses read to four
+# characters has its axes pushed right and two runs set side by side no longer
+# line up. Reserved space, so a label wider than the margin overhangs the page
+# rather than moving the axes -- the trade `WIDTH_LABELS` already makes.
+WIDTH_CURVE = 6.0
+HEIGHT_CURVE = 5.6
+CURVE_LABELS = 0.68
+CURVE_EDGE = 0.05
+CURVE_CAPTION = 0.47
+CURVE_HEADING = 0.27
+CURVE_GAP = 0.14
+
 # Points across the open marker sitting on the first point of a round.
 ROUND_MARK = 3.0
 
@@ -115,6 +281,39 @@ SETUP_PERSON_COLOR = "#bfbfbf"
 
 sampled = mpl.colormaps["plasma"](np.linspace(STRESS_LOW, STRESS_HIGH, 256))
 UTILIZATION_MAP = ListedColormap(sampled, name="normax_utilization")
+
+
+class DrawnLimits(NamedTuple):
+    """
+    Every limit a set of runs is drawn to rather than reading off its own walk.
+
+    Attributes
+    ----------
+    across :
+        Least and greatest coordinate across the drawing.
+    upward :
+        Least and greatest coordinate up the drawing.
+    steps :
+        Points in the longest walk, which the curves are drawn across and which
+        paces an animation's frames.
+    objective :
+        Least and greatest value the objective axis spans.
+    violation :
+        Least and greatest value the violation axis spans, on its log scale.
+
+    Notes
+    -----
+    A figure left to its own extents frames each run differently, so two runs
+    of one structure come out at different aspect ratios and with different
+    ticks, and neither the shapes nor the curves can be read side by side. A
+    caller drawing several runs computes the union once and hands it to each.
+    """
+
+    across: tuple[float, float]
+    upward: tuple[float, float]
+    steps: int
+    objective: tuple[float, float]
+    violation: tuple[float, float]
 
 
 class DiameterRange(NamedTuple):
@@ -186,6 +385,68 @@ class ColorRange(NamedTuple):
     vmin: float | None = None
     vmax: float | None = None
     cmap: Colormap | str = UTILIZATION_MAP
+
+
+ISOMETRIC_AZIMUTH = 45.0
+ISOMETRIC_ELEVATION = 35.264389682754654
+
+
+def project_view(
+    xyz: Float[Array, "nodes 3"],
+    azimuth: float = ISOMETRIC_AZIMUTH,
+) -> Float[np.ndarray, "nodes 3"]:
+    """
+    The coordinates a drawing reads its two axes off, planar or solid.
+
+    Parameters
+    ----------
+    xyz :
+        Node positions as the pipeline computed them.
+    azimuth :
+        Degrees the view is taken from around the upward axis. Turning it is
+        the same map as turning the structure the other way about that axis,
+        so an animation spins the shape by pacing this rather than by moving
+        any geometry.
+
+    Returns
+    -------
+    turned :
+        Positions whose first column runs across the page and whose third runs
+        up it, which is the pair every drawing here slices. The second measures
+        toward the viewer, which nothing draws and a spinning film sorts by.
+
+    Notes
+    -----
+    A structure lying in one plane is drawn as it stands, so a planar run is
+    unchanged to the last bit -- and unturnable, which is what keeps a spin off
+    a structure that has no depth to show. A solid one is turned isometric
+    instead: a side view of a cap shows one silhouette and hides the whole of
+    the surface, where an isometric view shows the plan and the rise at once.
+    Planar is read off the geometry rather than declared, since a held plan
+    keeps a planar structure exactly planar and the test is therefore exact.
+    """
+    points = np.asarray(xyz, dtype=float)
+    if float(np.ptp(points[:, 1])) == 0.0:
+        return points
+
+    elevation = np.radians(ISOMETRIC_ELEVATION)
+    azimuth = np.radians(azimuth)
+    across = np.array([-np.sin(azimuth), np.cos(azimuth), 0.0])
+    upward = np.array(
+        [
+            -np.sin(elevation) * np.cos(azimuth),
+            -np.sin(elevation) * np.sin(azimuth),
+            np.cos(elevation),
+        ]
+    )
+    into = np.cross(across, upward)
+
+    turned = np.empty_like(points)
+    turned[:, 0] = points @ across
+    turned[:, 1] = points @ into
+    turned[:, 2] = points @ upward
+
+    return turned
 
 
 def read_member_widths(
@@ -287,6 +548,7 @@ def draw_members(
         mew=NODE_RIM,
         ms=NODE_SIZE,
         zorder=3,
+        label="Free node",
     )
     ax.plot(
         nodes[held, 0],
@@ -298,11 +560,12 @@ def draw_members(
         mew=NODE_RIM,
         ms=NODE_SIZE,
         zorder=4,
+        label="Fixed node",
     )
     ax.set_aspect("equal")
     ax.autoscale_view()
-    ax.set_xlabel("x [mm]", fontsize=9)
-    ax.set_ylabel("z [mm]", fontsize=9)
+    ax.set_xlabel(LABEL_ACROSS, fontsize=SIZE_LABEL)
+    ax.set_ylabel(LABEL_UPWARD, fontsize=SIZE_LABEL)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
@@ -699,7 +962,9 @@ def draw_problem_setup(
         ax.set_xlim(*across)
         ax.set_ylim(*upward)
         ax.set_aspect("equal")
-        ax.set_title(f"({order})  {name}", loc="left", fontsize=10)
+        ax.set_title(
+            f"({order})  {capitalize_label(name)}", loc="left", fontsize=SIZE_PANEL
+        )
         ax.set_frame_on(False)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -755,7 +1020,7 @@ def draw_outline(
 
     outline = LineCollection(
         segments,
-        linewidths=0.8,
+        linewidths=WIDTH_OUTLINE,
         colors=GREY,
         linestyles="--",
         zorder=0,
@@ -853,6 +1118,7 @@ def draw_utilization(
     structure: Structure,
     forms: Sequence[UtilizationForm],
     reference: Float[Array, "nodes 3"] | None = None,
+    limits: DrawnLimits | None = None,
 ) -> Figure:
     """
     The designs themselves, drawn down the page and colored by utilization.
@@ -866,6 +1132,8 @@ def draw_utilization(
     reference :
         Shape to outline behind the designs read against it, or None to draw
         none. The form it is the shape of is left without one.
+    limits :
+        Limits to hold the drawing to, or None to read them off the designs.
 
     Returns
     -------
@@ -904,6 +1172,9 @@ def draw_utilization(
     margin = 0.05 * float(np.ptp(both[:, 0]))
     across = (float(both[:, 0].min()) - margin, float(both[:, 0].max()) + margin)
     upward = (float(both[:, 2].min()) - margin, float(both[:, 2].max()) + margin)
+    if limits is not None:
+        across, upward = limits.across, limits.upward
+    upward = clear_for_legend(upward)
 
     spread = WIDTH_DRAWING - WIDTH_LABELS
     tall = read_drawing_height(across, upward, spread)
@@ -923,7 +1194,7 @@ def draw_utilization(
     for ax, form, envelope in zip(drawings, forms, envelopes):
         if reference is not None and form.xyz is not reference:
             outline = draw_outline(ax, reference, edges)
-            outline.set_label("starting shape")
+            outline.set_label("Starting shape")
         drawn = DrawnStructure(
             form.xyz, edges, form.diameters, scale, structure.supports
         )
@@ -931,13 +1202,26 @@ def draw_utilization(
         members = draw_members(ax, drawn, coloring)
         ax.set_xlim(*across)
         ax.set_ylim(*upward)
-        ax.set_title(form.title, fontsize=11)
+        ax.set_title(capitalize_label(form.title), fontsize=SIZE_TITLE)
 
     for ax in drawings[:-1]:
         ax.set_xlabel("")
 
-    if reference is not None:
-        drawings[0].legend(loc="lower center", fontsize=8, frameon=False)
+    # On a drawing that carries the outline, which is never the reference's own:
+    # the run names its start first and the start is the reference, so the
+    # legend belongs on the design drawn against it. Boxed, since a corner
+    # legend sits over the drawing rather than under it.
+    outlined = drawings[-1] if reference is not None else drawings[0]
+    entries = len(outlined.get_legend_handles_labels()[0])
+    legend = outlined.legend(
+        loc=LEGEND_PLACE,
+        fontsize=8,
+        frameon=True,
+        framealpha=0.9,
+        ncol=max(entries, 1),
+    )
+    legend.get_frame().set_linewidth(LEGEND_RIM)
+    legend.get_frame().set_edgecolor(FAINT)
 
     # The band the bar sits in is held out of the layout, and the bar is placed
     # in it against a settled drawing, which is what makes the widths agree.
@@ -951,8 +1235,11 @@ def draw_utilization(
     strip = figure.add_axes(placed)
     strip.set_in_layout(False)
     bar = figure.colorbar(members, cax=strip, orientation="horizontal")
-    bar.set_ticks(list(UTILIZATION_TICKS))
-    bar.set_label("utilization", fontsize=9)
+    bar.set_ticks(
+        list(UTILIZATION_TICKS),
+        labels=[f"{tick:.1f}" for tick in UTILIZATION_TICKS],
+    )
+    bar.set_label("Utilization", fontsize=SIZE_LABEL)
     bar.outline.set_edgecolor(FAINT)
     bar.outline.set_linewidth(0.6)
     paint_figure(figure)
@@ -1003,9 +1290,9 @@ def draw_governing_cases(
         counts = count_governed_members(form.utilization)
         ax.bar(np.arange(load_cases), counts, 0.6, color=SHADES[0])
         ax.set_xticks(np.arange(load_cases))
-        ax.set_xticklabels(names, fontsize=9)
-        ax.set_ylabel("members governed")
-        ax.set_title(form.title, fontsize=10)
+        ax.set_xticklabels([capitalize_label(name) for name in names], fontsize=9)
+        ax.set_ylabel("Members governed", fontsize=SIZE_LABEL)
+        ax.set_title(capitalize_label(form.title), fontsize=SIZE_PANEL)
         ax.grid(axis="y", alpha=0.3)
     paint_figure(figure)
 
@@ -1216,7 +1503,48 @@ def read_violation_floor(traces: Sequence[DescentTrace]) -> float:
     return min(reached, tightest) * VIOLATION_DECADE
 
 
-def draw_objective_descent(panel: DescentPanel) -> Figure:
+def place_curve_axes(
+    violated: Axes,
+    descent: Axes,
+    proportions: tuple[float, float],
+) -> None:
+    """
+    Pin the two curve panels to one rectangle, whatever their labels ask for.
+
+    Parameters
+    ----------
+    violated :
+        The upper panel, carrying the violation on its log scale.
+    descent :
+        The lower panel, carrying the objective.
+    proportions :
+        Heights the two panels are given, upper first, in the same shares the
+        gridspec was built with.
+
+    Notes
+    -----
+    The panels keep the shares they were built with; only the rectangle they
+    divide is fixed. Every margin is in inches against the figure's own size,
+    so the rectangle is the same fraction of every curve figure this module
+    draws and two of them scale onto a page identically.
+    """
+    left = CURVE_LABELS / WIDTH_CURVE
+    width = (WIDTH_CURVE - CURVE_LABELS - CURVE_EDGE) / WIDTH_CURVE
+    bottom = CURVE_CAPTION / HEIGHT_CURVE
+    spanned = HEIGHT_CURVE - CURVE_CAPTION - CURVE_HEADING - CURVE_GAP
+    shares = proportions[0] + proportions[1]
+    lower = spanned * proportions[1] / shares
+    upper = spanned * proportions[0] / shares
+
+    descent.set_position((left, bottom, width, lower / HEIGHT_CURVE))
+    raised = (CURVE_CAPTION + lower + CURVE_GAP) / HEIGHT_CURVE
+    violated.set_position((left, raised, width, upper / HEIGHT_CURVE))
+
+
+def draw_objective_descent(
+    panel: DescentPanel,
+    limits: DrawnLimits | None = None,
+) -> Figure:
     """
     A constrained descent as the two curves that explain each other.
 
@@ -1248,10 +1576,9 @@ def draw_objective_descent(panel: DescentPanel) -> Figure:
     figure, axes = plt.subplots(
         2,
         1,
-        figsize=(6.0, 5.6),
+        figsize=(WIDTH_CURVE, HEIGHT_CURVE),
         sharex=True,
         height_ratios=proportions,
-        layout="constrained",
     )
     violated, descent = axes
     shades = SHADES
@@ -1269,36 +1596,55 @@ def draw_objective_descent(panel: DescentPanel) -> Figure:
 
         violated.plot(steps, placed, marks, color=color, lw=1.4, ms=1.8)
         descent.plot(
-            steps, values, marks, color=color, lw=1.6, ms=1.8, label=trace.title
+            steps,
+            values,
+            marks,
+            color=color,
+            lw=1.6,
+            ms=1.8,
+            label=capitalize_label(trace.title),
         )
 
         crossings = read_round_bounds(history)
-        entry = None if named or crossings.size == 0 else "round start"
+        entry = None if named or crossings.size == 0 else "Round start"
         named = named or crossings.size > 0
         draw_round_starts(violated, steps[crossings], placed[crossings], color, None)
         draw_round_starts(descent, steps[crossings], values[crossings], color, entry)
 
     levels = sorted({trace.tolerance for trace in panel.traces})
-    violated.axhspan(floor, levels[0], color=GREY, alpha=0.15, lw=0.0)
-    for order, level in enumerate(levels):
-        titled = "tolerance" if order == 0 else None
-        violated.axhline(level, color=GREY, ls="--", lw=1.0, label=titled)
-
     spent = max(np.size(trace.history.objectives) for trace in panel.traces) - 1
+    if limits is not None:
+        spent = limits.steps - 1
     violated.set_xlim(0, max(spent, 1))
     violated.set_yscale("log")
-    violated.set_ylim(bottom=floor)
+    if limits is None:
+        violated.set_ylim(bottom=floor)
+    else:
+        violated.set_ylim(*limits.violation)
+
+    # Shaded off the axis's own floor rather than this run's, and after the
+    # limits are set: where several runs share an axis its floor is the least
+    # of theirs, and a band drawn to a higher one leaves the satisfied region
+    # looking open at the bottom.
+    violated.axhspan(violated.get_ylim()[0], levels[0], color=GREY, alpha=0.15, lw=0.0)
+    for order, level in enumerate(levels):
+        titled = "Tolerance" if order == 0 else None
+        violated.axhline(level, color=GREY, ls="--", lw=1.0, label=titled)
     minimized = panel.heading.split(" [")[0]
     headline = f"Constrained {minimized} minimization"
-    violated.set_ylabel("constraints violation")
-    violated.set_title(headline, fontsize=11)
+    violated.set_ylabel("Constraints violation", fontsize=SIZE_LABEL)
+    violated.set_title(capitalize_label(headline), fontsize=SIZE_TITLE)
     violated.legend(frameon=False, fontsize=9)
     violated.grid(alpha=0.3, which="both")
 
-    descent.set_xlabel(panel.axis)
-    descent.set_ylabel(panel.heading)
+    descent.set_xlabel(capitalize_label(panel.axis), fontsize=SIZE_LABEL)
+    descent.set_ylabel(capitalize_label(panel.heading), fontsize=SIZE_LABEL)
+    if limits is not None:
+        descent.set_xlim(0, max(spent, 1))
+        descent.set_ylim(*limits.objective)
     descent.legend(frameon=False, fontsize=9)
     descent.grid(alpha=0.3)
+    place_curve_axes(violated, descent, proportions)
     paint_figure(figure)
 
     return figure
@@ -1328,6 +1674,7 @@ def draw_design_figures(
     designs: dict[str, Design],
     case_names: tuple[str, ...],
     panel: DescentPanel,
+    limits: DrawnLimits | None = None,
 ) -> DrawnFigures:
     """
     The three figures a run draws: its designs, who governs them, the descent.
@@ -1350,9 +1697,10 @@ def draw_design_figures(
 
     Notes
     -----
-    The designs are drawn in the order they are given and the last of them is
-    outlined behind the rest, so a run naming its answer first and its start
-    last gets the start dashed in behind the answer.
+    The designs are drawn in the order they are given and the first of them is
+    outlined behind the rest, so a run naming its start first gets the start
+    dashed in behind the answer and the figure reads in the order the search
+    went.
 
     A design whose pipeline carried no check is left out, and where that leaves
     nothing to draw both design figures are None rather than empty —
@@ -1366,17 +1714,18 @@ def draw_design_figures(
             continue
         form = UtilizationForm(
             title,
-            design.shape.xyz,
+            project_view(design.shape.xyz),
             design.sizes.sections.diameter,
             design.sizes.utilization,
         )
         forms.append(form)
 
-    # The last design given is the one the others are read against, and the
-    # run names its start last.
-    started = forms[-1].xyz if len(forms) > 1 else None
-    drawn = draw_utilization(structure, forms, started) if forms else None
+    # The first design given is the one the others are read against, and the
+    # run names its start first, so a figure reads left to right and top to
+    # bottom in the order the search went.
+    started = forms[0].xyz if len(forms) > 1 else None
+    drawn = draw_utilization(structure, forms, started, limits) if forms else None
     governed = draw_governing_cases(forms, case_names) if forms else None
-    descended = draw_objective_descent(panel)
+    descended = draw_objective_descent(panel, limits)
 
     return DrawnFigures(drawn, governed, descended)

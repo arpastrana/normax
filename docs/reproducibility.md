@@ -98,8 +98,9 @@ figures/<name>_fixed_*.png
 figures/<name>_fixed_optimization.mp4
 ```
 
-`<name>` is `arch`, `warren`, `vierendeel`, or `gridshell`. The checked-in
-gridshell config disables MP4 output. Repeating a route replaces its files.
+`<name>` is `arch`, `warren`, `vierendeel`, or `gridshell`. The gridshell config
+records inner iterations and enables MP4 output; animation begins only after
+the accepted answer has printed. Repeating a route replaces its files.
 
 Generated data, images, and video are ignored by default. Curated submission
 assets need narrow `.gitignore` exceptions or an explicit forced add. Tests do
@@ -108,6 +109,26 @@ not depend on generated files.
 Each `.npz` stores `parameters`, `iterates`, `objectives`, `violations`, and
 `round_index`. With `trace_iterations` enabled, the path contains inner
 iterations. Otherwise it contains augmented-Lagrangian rounds.
+
+Any example's accepted archives can be redrawn with one shared framing, curve
+range, and animation pace across its baselines, without rerunning any
+optimization:
+
+```bash
+uv run python redraw_designs.py                     # every example, drawings only
+uv run python redraw_designs.py gridshell --film    # one of them, animation too
+uv run python redraw_designs.py gridshell --film --gif   # and a GIF of it
+```
+
+Name `arch`, `warren`, `vierendeel`, or `gridshell` to redraw a subset. Add
+`--film` for the animations, which cost minutes rather than seconds, and `--gif`
+to convert each film written. The three planar examples are drawn to one shared
+box, so an arch and a truss can be set side by side at one scale; the shell is
+framed on its own. Each example is rebuilt exactly as its
+own script builds it -- verified against every archive's recorded objective to
+4.1e-16 -- and the recorded parameters and objective histories are never
+changed. The accepted masses and matching log names are recorded in
+[results.md](results.md#gridshell-result-record).
 
 ## Focused gradient validation
 

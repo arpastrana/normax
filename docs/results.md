@@ -1,9 +1,9 @@
 # Results and experiment protocol
 
-This file defines every headline comparison. The arch, Warren, and Vierendeel
-tables contain accepted planar runs from the frozen configurations on commit
-`cb1c074`. The PyNite gridshell study remains in progress and is not yet a
-result.
+This file defines every headline comparison. The arch, Warren, Vierendeel, and
+gridshell tables contain accepted runs from their final configurations. The
+gridshell completes the same three-route comparison in three dimensions
+through PyNite.
 
 ## Research question
 
@@ -39,7 +39,9 @@ holds it. The final YAML and CLI form the executable protocol.
 
 The planar cases use 180 kN over the full deck, 90 kN over the near half, and
 90 kN at midspan. Midspan symmetry makes the far-half case a reindexing of the
-near half. The gridshell uses its own pressure loads.
+near half. The gridshell uses a tributary pressure case and two reflected
+three-spoke sector cases. Each pressure case carries the same total; the sector
+pair closes under the same mirror used to fold the design variables.
 
 The design spaces are intentionally unequal. Free heights usually contains the
 force-density shapes and adds variables. Sizing only measures the value of
@@ -66,8 +68,7 @@ optima. They are not global certificates.
 ## Final headline table
 
 Mass is reported in tonnes. Worst utilization and objective evaluations come
-from each accepted report. The remaining placeholders belong only to the
-in-progress gridshell study.
+from each accepted report.
 
 | structure | route | final mass [t] | worst utilization | evaluations |
 |---|---|---:|---:|---:|
@@ -80,22 +81,49 @@ in-progress gridshell study.
 | Vierendeel | end to end | 0.120819 | 1.000001 | 3110 |
 | Vierendeel | free heights | 0.136498 | 1.000000 | 2193 |
 | Vierendeel | sizing only | 0.277435 | 1.000000 | 1222 |
-| gridshell | end to end | <!-- FINAL: GRIDSHELL_FDM_MASS_T --> | <!-- FINAL: GRIDSHELL_FDM_WORST_U --> | <!-- FINAL: GRIDSHELL_FDM_EVALUATIONS --> |
-| gridshell | free heights | <!-- FINAL: GRIDSHELL_HEIGHTS_MASS_T --> | <!-- FINAL: GRIDSHELL_HEIGHTS_WORST_U --> | <!-- FINAL: GRIDSHELL_HEIGHTS_EVALUATIONS --> |
-| gridshell | sizing only | <!-- FINAL: GRIDSHELL_FIXED_MASS_T --> | <!-- FINAL: GRIDSHELL_FIXED_WORST_U --> | <!-- FINAL: GRIDSHELL_FIXED_EVALUATIONS --> |
+| gridshell | end to end | 0.080954 | 1.000001 | 1855 |
+| gridshell | free heights | 0.091303 | 1.000000 | 1787 |
+| gridshell | sizing only | 0.138421 | 1.000001 | 645 |
 
 | derived comparison | value |
 |---|---:|
 | arch: end to end vs sizing only | 66.83% less mass |
 | Warren: end to end vs sizing only | 29.32% less mass |
 | Vierendeel: end to end vs sizing only | 56.45% less mass |
-| gridshell: end to end vs sizing only | <!-- FINAL: GRIDSHELL_SAVINGS_PCT --> |
+| gridshell: end to end vs sizing only | 41.52% less mass |
+| gridshell: end to end vs free heights | 11.33% less mass |
 
 | geometry descriptor | value |
 |---|---:|
 | arch end-to-end rise [mm] | 1397.6 |
 | arch free-heights rise [mm] | 1632.2 |
-| gridshell end-to-end rise [mm] | <!-- FINAL: GRIDSHELL_FDM_RISE_MM --> |
+| gridshell end-to-end rise [mm] | 2287.9 |
+| gridshell free-heights rise [mm] | 2194.7 |
+
+### Gridshell result record
+
+The three gridshell routes start from the same 16-by-16 topology, 2.0 m rise,
+100 mm diameters, 1.312050 t mass, material, section model, three pressure load
+cases, PyNite analysis, Blueprints check, optimizer, and $10^{-6}$ acceptance
+tolerance. Only the shape variables differ: 23 folded force-density
+coefficients plus 31 section variables for end to end, 136 folded nodal heights
+plus the same 31 sections for free heights, and the 31 sections alone for fixed
+geometry.
+
+The accepted source reports are `data/runlogs/iso_gridshell_fdm.log`,
+`data/runlogs/iso_gridshell_heights.log`, and
+`data/runlogs/iso_gridshell_fixed.log`. Their corresponding active archives are
+`data/gridshell.npz`, `data/gridshell_heights.npz`, and
+`data/gridshell_fixed.npz`. Final violations are respectively
+$5.66\times10^{-7}$, $3.33\times10^{-7}$, and $6.64\times10^{-7}$; every route
+reports `converged` and `Is the design safe? True`.
+
+The 2.3 m rise cap is shared by the movable-shape routes. The end-to-end answer
+settles at 2287.9 mm, 12.1 mm below it, so the cap steers the search basin but
+is not active at the accepted landing. In this local comparison the
+force-density prior is 11.33% lighter than the larger free-height search. That
+is evidence about these accepted local landings, not a general proof that a
+smaller design space must win.
 
 ## Permitted claims
 

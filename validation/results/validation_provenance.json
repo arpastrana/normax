@@ -1,0 +1,306 @@
+{
+  "schema": "normax.validation.v1",
+  "generated_utc": "2026-08-30T15:53:51.894026+00:00",
+  "git": {
+    "commit": "cb1c0747ca985ad318477de81a5fb82507113680",
+    "worktree_dirty": true
+  },
+  "runtime": {
+    "python": "3.12.13",
+    "packages": {
+      "normax": "0.1",
+      "jax": "0.11.1",
+      "matplotlib": "3.11.1",
+      "numpy": "2.5.2",
+      "openseespy": "3.8.0.0",
+      "pynitefea": "3.0.0",
+      "tesseract-core": "1.12.0",
+      "tesseract-jax": "0.4.1",
+      "blue-prints": "0.7.2"
+    },
+    "hardware": {
+      "system": "Darwin",
+      "release": "25.6.0",
+      "machine": "arm64",
+      "processor": "arm",
+      "logical_cpus": 10
+    }
+  },
+  "pipeline": {
+    "description": "mean squared utilization; FDM -> OpenSees -> Blueprints; uniform, asymmetric, and midspan point load cases",
+    "parameter_names": [
+      "q0",
+      "q1",
+      "q2",
+      "q3",
+      "q4",
+      "q5",
+      "q6",
+      "q7",
+      "q8",
+      "q9",
+      "d0",
+      "d1",
+      "d2",
+      "d3",
+      "d4",
+      "d5",
+      "d6",
+      "d7",
+      "d8",
+      "d9"
+    ],
+    "parameter_kinds": [
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "force density",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter",
+      "diameter"
+    ],
+    "reverse": [
+      0.26641485447092206,
+      -0.0523948245580686,
+      -0.036688906746901506,
+      -0.023514987077535743,
+      -0.009241412592812637,
+      -0.0037776767685884227,
+      -0.04773951303704349,
+      -0.0682028948210216,
+      -0.04333630571228109,
+      0.0042911988752043495,
+      -0.4213234463655555,
+      -0.4449736348751474,
+      -0.20587422665205654,
+      -0.09817011547233155,
+      -0.05620347814942227,
+      -0.06683380359462526,
+      -0.12899394838463535,
+      -0.13529821292022187,
+      -0.12674093886226848,
+      -0.0581670104016765
+    ],
+    "central_difference": [
+      0.2664148570008962,
+      -0.052394822640096095,
+      -0.03668890750631704,
+      -0.023514987684833955,
+      -0.009241410173430609,
+      -0.0037776745806183953,
+      -0.047739512757871694,
+      -0.06820289650356415,
+      -0.04333630387513665,
+      0.004291197009891334,
+      -0.4213234822540102,
+      -0.44497366939655336,
+      -0.20587423993134735,
+      -0.09817012167570027,
+      -0.05620348001222908,
+      -0.06683380863368171,
+      -0.1289939555636721,
+      -0.1352982222435628,
+      -0.12674094814233428,
+      -0.058167015428978175
+    ],
+    "scaled_errors": {
+      "force_density": 9.496370238404345e-09,
+      "diameter": 8.065298493097703e-08,
+      "combined": 8.065298493097703e-08
+    },
+    "tolerance": 5e-06,
+    "timings_seconds": {
+      "forward": 0.009026874991832301,
+      "reverse": 0.04946283300523646,
+      "central_difference": 0.3482225830084644
+    }
+  },
+  "code": {
+    "force_derivative_errors": [
+      2.3893450125126e-10,
+      7.869346936819245e-10,
+      6.698591112338329e-09,
+      1.7859804354645642e-10,
+      6.33950790135523e-10
+    ],
+    "moment_derivative_errors": [
+      2.1343204211727613e-09,
+      3.1987518204687825e-10,
+      6.956537484239458e-10,
+      5.345156864986076e-09,
+      3.3938433681114824e-09
+    ],
+    "targets": {
+      "four_way_derivative": 1e-08,
+      "size_route": 1e-14,
+      "gradient_route": 1e-12,
+      "gradient_difference": 1e-08,
+      "utilization_root": 1e-09
+    },
+    "route_errors": {
+      "size": 0.0,
+      "gradient": 0.0,
+      "gradient_difference": 6.910418324046358e-10,
+      "utilization_root": 9.992007221626409e-16
+    },
+    "envelope": [
+      {
+        "beta": 5.0,
+        "mass_kg": 640.6978380815438,
+        "relative_excess": 0.19786160358349125,
+        "relative_bound": 0.21972245773362195,
+        "gradient_finite": true
+      },
+      {
+        "beta": 10.0,
+        "mass_kg": 561.3188936735321,
+        "relative_excess": 0.04945312771901697,
+        "relative_bound": 0.10986122886681098,
+        "gradient_finite": true
+      },
+      {
+        "beta": 25.0,
+        "mass_kg": 541.1575115613894,
+        "relative_excess": 0.011759000984290726,
+        "relative_bound": 0.04394449154672439,
+        "gradient_finite": true
+      },
+      {
+        "beta": 50.0,
+        "mass_kg": 537.5420974328831,
+        "relative_excess": 0.004999549791886811,
+        "relative_bound": 0.021972245773362195,
+        "gradient_finite": true
+      },
+      {
+        "beta": 100.0,
+        "mass_kg": 535.879136993527,
+        "relative_excess": 0.0018904454057261423,
+        "relative_bound": 0.010986122886681098,
+        "gradient_finite": true
+      },
+      {
+        "beta": 250.0,
+        "mass_kg": 535.0321768185115,
+        "relative_excess": 0.00030695157585261307,
+        "relative_bound": 0.004394449154672439,
+        "gradient_finite": true
+      },
+      {
+        "beta": 500.0,
+        "mass_kg": 534.8839081874775,
+        "relative_excess": 2.9745552084229553e-05,
+        "relative_bound": 0.0021972245773362194,
+        "gradient_finite": true
+      }
+    ],
+    "force_reversal": [
+      {
+        "load_case": 1,
+        "axial": -300.0,
+        "diameter": 153.66359134750545,
+        "utilization": 0.9999999999999996,
+        "slope": -0.15308325540919634,
+        "adjoint": -7.991607431677764e-06,
+        "central": -7.9916073758568e-06
+      },
+      {
+        "load_case": 2,
+        "axial": 200.0,
+        "diameter": 186.8693971619579,
+        "utilization": 0.9999999999999984,
+        "slope": 0.1081321903627545,
+        "adjoint": 0.08223458821522171,
+        "central": 0.08223458822231855
+      },
+      {
+        "load_case": 3,
+        "axial": -100.0,
+        "diameter": 144.76792398253866,
+        "utilization": 1.0,
+        "slope": -0.13693444100360797,
+        "adjoint": -3.8475666433273866e-07,
+        "central": -3.84747789183848e-07
+      }
+    ]
+  },
+  "pynite": {
+    "difference_steps": [
+      1e-05,
+      0.0001,
+      0.001,
+      0.01,
+      0.1
+    ],
+    "node_errors": [
+      1.3637562645664877e-07,
+      1.0716688908084492e-08,
+      1.554872853485335e-09,
+      4.9494797582931615e-09,
+      5.064606033984173e-07
+    ],
+    "diameter_errors": [
+      1.5641827429587425e-07,
+      1.8230527482457285e-08,
+      2.2177044580219857e-09,
+      1.2403897978680414e-08,
+      1.2420761699777312e-06
+    ],
+    "route_errors": {
+      "by_node": 1.554872853485335e-09,
+      "by_member": 2.2177044580219857e-09,
+      "crossed": 2.2177042270080194e-09,
+      "boundary": 2.587356422903576e-15,
+      "frozen": 1.1679167427983303e-14
+    },
+    "route_tolerances": {
+      "by_node": 1e-08,
+      "by_member": 1e-08,
+      "crossed": 1e-08,
+      "boundary": 1e-11,
+      "frozen": 1e-11
+    },
+    "scale": {
+      "nodes": 257,
+      "members": 496,
+      "parameters": 1267
+    },
+    "timings_seconds": {
+      "forward": 0.04406179199577309,
+      "three_load_cases": 0.04319054100778885,
+      "adjoint": 0.04714658300508745,
+      "finite_difference": 140.71524579101242,
+      "finite_difference_measured": true
+    }
+  },
+  "figures": {
+    "pipeline": [
+      "figures/validation_pipeline.png",
+      "figures/validation_pipeline.svg",
+      "figures/validation_pipeline.pdf"
+    ],
+    "code": [
+      "figures/validation_code.png",
+      "figures/validation_code.svg",
+      "figures/validation_code.pdf"
+    ],
+    "pynite": [
+      "figures/validation_pynite.png",
+      "figures/validation_pynite.svg",
+      "figures/validation_pynite.pdf"
+    ]
+  }
+}
