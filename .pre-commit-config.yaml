@@ -28,4 +28,9 @@ repos:
       - id: check-merge-conflict
       # The clause reference and the worked-example fixtures are the two places
       # a stray large file would hurt most on a public repo.
+      # Raised from the 500 kB default to admit the reduced gridshell GIFs the
+      # README embeds, the largest of which is 27 MB. A page cannot render what
+      # a clone has to generate first, so those three are committed on purpose;
+      # 30 MB still refuses anything larger arriving by accident.
       - id: check-added-large-files
+        args: [--maxkb=30000]

@@ -40,9 +40,13 @@ data/
 # so they have to be in history for the page to render on the forge; every
 # other figure a run writes stays ignored above. Listed one by one rather than
 # by a pattern, so nothing joins them by accident.
+!figures/normax_pipeline.png
 !figures/arch_designs.png
 !figures/warren_designs.png
-!figures/arch_optimization.png
+!figures/vierendeel_designs.png
+!figures/gridshell_fixed_optimization_web.gif
+!figures/gridshell_heights_optimization_web.gif
+!figures/gridshell_optimization_web.gif
 
 # What a local Tesseract writes per run: its captured stdio and its metrics.
 # The client redirects file descriptors into here on every crossing.

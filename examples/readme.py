@@ -69,5 +69,5 @@ compute_mass_and_gradient = jax.value_and_grad(compute_lawful_mass, has_aux=True
 passes_implemented_check = jnp.all(design.sizes.utilization <= 1.0)
 
 print(mass)  # tonnes of steel
-print(gradient)  # the mass' gradient
+print(gradient)  # the gradient of the mass
 print(passes_implemented_check)  # True when the implemented check passes
