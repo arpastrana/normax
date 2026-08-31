@@ -9,7 +9,10 @@ dimensions through packages that were never dependencies of this one; it went
 with the oracles it drew with.
 """
 
+from normax.visualization.animations import GIF_FOR_READING
+from normax.visualization.animations import GifReduction
 from normax.visualization.animations import animate_descent
+from normax.visualization.animations import convert_to_gif
 from normax.visualization.animations import save_animation
 from normax.visualization.animations import save_gif
 from normax.visualization.plots import DescentPanel
@@ -30,6 +33,9 @@ __all__ = [
     "DrawnLimits",
     "DrawnFigures",
     "animate_descent",
+    "GIF_FOR_READING",
+    "GifReduction",
+    "convert_to_gif",
     "draw_design_figures",
     "draw_code_validation",
     "draw_pipeline_validation",

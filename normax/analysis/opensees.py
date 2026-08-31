@@ -9,9 +9,9 @@ time, from one factorization.
 
 **Two dimensions only, and that is a property of OpenSees.** Its DDM reaches a
 nodal coordinate in 2D; in 3D beams return zero and trusses return wrong values,
-    because `LinearCrdTransf3d` implements no shape sensitivity. The evidence is
-    summarized in `docs/results.md#validation-evidence` and exercised by
-    `validation/opensees_ddm.py`.
+because `LinearCrdTransf3d` implements no shape sensitivity. The evidence is
+summarized in `docs/results.md#validation-evidence` and exercised by
+`validation/opensees_ddm.py`.
 
 **Elements are `forceBeamColumn` over `section('Elastic')`, never
 `elasticBeamColumn`**, which accepts every parameter and yields identically zero

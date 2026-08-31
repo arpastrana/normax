@@ -211,11 +211,17 @@ class OutputConfig(NamedTuple):
         Whether the run writes an animation of its descent, which needs the
         finer record `optimization.trace_iterations` keeps and a pipeline that
         carries a check.
+    turns :
+        Full revolutions about the upward axis the animation spins the design
+        through, spread over its whole length. Zero holds one view, which is
+        what every drawing does. Ignored on a structure lying in one plane,
+        which has no depth to turn.
     """
 
     verbose: bool
     export: bool
     animate: bool
+    turns: float = 0.0
 
 
 class RunConfig(NamedTuple, Generic[StructureT]):

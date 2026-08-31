@@ -110,19 +110,25 @@ Each `.npz` stores `parameters`, `iterates`, `objectives`, `violations`, and
 `round_index`. With `trace_iterations` enabled, the path contains inner
 iterations. Otherwise it contains augmented-Lagrangian rounds.
 
-The gridshell's three accepted archives can be redrawn with one shared
-isometric framing, curve range, and animation pace without rerunning any
+Any example's accepted archives can be redrawn with one shared framing, curve
+range, and animation pace across its baselines, without rerunning any
 optimization:
 
 ```bash
-uv run python redraw_gridshell.py
+uv run python redraw_designs.py                     # every example, drawings only
+uv run python redraw_designs.py gridshell --film    # one of them, animation too
+uv run python redraw_designs.py gridshell --film --gif   # and a GIF of it
 ```
 
-Pass `fdm`, `heights`, or `fixed` to redraw only one route. The command reads
-`data/gridshell.npz`, `data/gridshell_heights.npz`, and
-`data/gridshell_fixed.npz`; it never changes their recorded parameters or
-objective histories. The accepted masses and matching log names are recorded
-in [results.md](results.md#gridshell-result-record).
+Name `arch`, `warren`, `vierendeel`, or `gridshell` to redraw a subset. Add
+`--film` for the animations, which cost minutes rather than seconds, and `--gif`
+to convert each film written. The three planar examples are drawn to one shared
+box, so an arch and a truss can be set side by side at one scale; the shell is
+framed on its own. Each example is rebuilt exactly as its
+own script builds it -- verified against every archive's recorded objective to
+4.1e-16 -- and the recorded parameters and objective histories are never
+changed. The accepted masses and matching log names are recorded in
+[results.md](results.md#gridshell-result-record).
 
 ## Focused gradient validation
 
