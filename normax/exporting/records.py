@@ -144,7 +144,8 @@ def export_design(
     played = None
     if config.output.animate:
         played = target.figures / f"{stem}_optimization.mp4"
-        save_animation(animate_descent(record.problem, panel), played)
+        spun = animate_descent(record.problem, panel, None, config.output.turns)
+        save_animation(spun, played)
 
     # Continues the run's report, so the heading separates itself from it.
     report = Report(verbose=config.output.verbose)

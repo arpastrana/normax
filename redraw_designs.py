@@ -24,6 +24,7 @@ Run from the repository root:
     uv run python redraw_designs.py arch vierendeel     # some of them
     uv run python redraw_designs.py arch --film         # animations as well
     uv run python redraw_designs.py arch --film --gif   # and a GIF of each
+    uv run python redraw_designs.py arch --web         # a GIF light enough to embed
 """
 
 import sys
@@ -71,6 +72,7 @@ from normax.symmetry import find_mirror_nodes
 from normax.symmetry import find_rotated_nodes
 from normax.tesseract import TesseractAnalyzer
 from normax.tesseract import TesseractSizer
+from normax.visualization import GIF_FOR_READING
 from normax.visualization import DrawnLimits
 from normax.visualization import convert_to_gif
 from normax.visualization.animations import pick_frames
@@ -89,6 +91,22 @@ ROUTES = ("fdm", "heights", "fixed")
 # merely equal in size; the shell shares its own with nothing.
 FRAMINGS = (("arch", "warren", "vierendeel"), ("gridshell",))
 MATERIAL = Steel355()
+
+
+class GifRequest(NamedTuple):
+    """
+    Which GIFs of a film are wanted.
+
+    Attributes
+    ----------
+    faithful :
+        Every frame at the film's own width, which is heavy by construction.
+    reduced :
+        Narrowed and thinned until a page can carry it.
+    """
+
+    faithful: bool
+    reduced: bool
 
 
 class ExampleKind(NamedTuple):
@@ -277,6 +295,10 @@ def read_shared_limits(example: str) -> DrawnLimits:
         walked = walked._replace(
             shapes=[project_view(shape) for shape in walked.shapes]
         )
+        # The standing view alone, spin or no spin. A film that turns is drawn
+        # inside this box rather than widening it: the drawings beside it read
+        # the same limits, and measured, every view of the turn fits with the
+        # legend and caption room the film adds to spare.
         extents.append(read_drawn_bounds(walked))
         objectives.append(read_objective_bounds(np.asarray(history.objectives)))
         panel = build_descent_panel(problem, history, config)
@@ -337,11 +359,46 @@ def read_framing_limits(group: tuple[str, ...]) -> dict[str, DrawnLimits]:
     }
 
 
+def convert_films(archive: Path, wanted: GifRequest) -> tuple[str, ...]:
+    """
+    Every GIF asked for of one run's film, reported by name.
+
+    Parameters
+    ----------
+    archive :
+        The `.npz` whose stem names the film and the GIFs beside it.
+    wanted :
+        Which GIFs to write.
+
+    Returns
+    -------
+    written :
+        Name of every GIF written, in the order written.
+    """
+    video = FIGURES / f"{archive.stem}_optimization.mp4"
+    if not video.exists():
+        return ()
+
+    written = []
+    if wanted.faithful:
+        faithful = video.with_suffix(".gif")
+        convert_to_gif(video, faithful)
+        written.append(faithful.name)
+    if wanted.reduced:
+        # Named apart rather than replacing the faithful one: the two answer
+        # different questions, and a page cannot carry the heavy one.
+        light = video.with_name(f"{video.stem}_web.gif")
+        convert_to_gif(video, light, GIF_FOR_READING)
+        written.append(light.name)
+
+    return tuple(written)
+
+
 def redraw_example(
     example: str,
     limits: DrawnLimits,
     films: bool,
-    gifs: bool,
+    wanted: GifRequest,
 ) -> None:
     """
     Redraw every baseline of one example, reporting what each archive wrote.
@@ -354,8 +411,8 @@ def redraw_example(
         The limits every baseline is held to, from `read_framing_limits`.
     films :
         Whether to write the animation as well as the drawings.
-    gifs :
-        Whether to convert each film written earlier to a GIF.
+    wanted :
+        Which GIFs to write of each film already beside the archive.
     """
     print(f"\n{example}")
     print(
@@ -381,15 +438,12 @@ def redraw_example(
         written = redraw_run(problem, config, archive, FIGURES, limits)
         names = ", ".join(path.name for path in written)
         print(f"  {route}: {archive.name} -> {names}")
-        if gifs:
-            video = FIGURES / f"{archive.stem}_optimization.mp4"
-            if video.exists():
-                gif = video.with_suffix(".gif")
-                convert_to_gif(video, gif)
-                print(f"          + {gif.name}")
+        converted = convert_films(archive, wanted)
+        if converted:
+            print(f"          + {', '.join(converted)}")
 
 
-def main(asked: tuple[str, ...], films: bool, gifs: bool) -> None:
+def main(asked: tuple[str, ...], films: bool, wanted: GifRequest) -> None:
     """
     Redraw every named example, a framing group at a time.
 
@@ -399,22 +453,22 @@ def main(asked: tuple[str, ...], films: bool, gifs: bool) -> None:
         Examples to redraw, keys of `KINDS`.
     films :
         Whether to write each descent's animation as well as its drawings.
-    gifs :
-        Whether to convert each film to a GIF.
+    wanted :
+        Which GIFs to convert each film to.
     """
     for group in FRAMINGS:
-        wanted = [example for example in group if example in asked]
-        if not wanted:
+        chosen = [example for example in group if example in asked]
+        if not chosen:
             continue
         framed = read_framing_limits(group)
-        for example in wanted:
+        for example in chosen:
             if example not in framed:
                 print(f"\n{example}: no archive under {DATA}, skipped")
                 continue
-            redraw_example(example, framed[example], films, gifs)
+            redraw_example(example, framed[example], films, wanted)
 
 
-FLAGS = ("--film", "--gif")
+FLAGS = ("--film", "--gif", "--web")
 
 if __name__ == "__main__":
     asked_flags = [word for word in sys.argv[1:] if word.startswith("-")]
@@ -424,11 +478,13 @@ if __name__ == "__main__":
     if strange:
         raise SystemExit(
             f"unknown option {strange}, known: {list(FLAGS)}\n"
-            f"usage: redraw_designs.py [{'|'.join(KINDS)}] ... [--film] [--gif]"
+            f"usage: redraw_designs.py [{'|'.join(KINDS)}] ..."
+            f" [--film] [--gif] [--web]"
         )
     given = [word for word in sys.argv[1:] if not word.startswith("-")]
     wanted = tuple(given) or tuple(KINDS)
     unknown = [word for word in wanted if word not in KINDS]
     if unknown:
         raise SystemExit(f"unknown example {unknown}, known: {list(KINDS)}")
-    main(wanted, "--film" in asked_flags, "--gif" in asked_flags)
+    gifs = GifRequest("--gif" in asked_flags, "--web" in asked_flags)
+    main(wanted, "--film" in asked_flags, gifs)

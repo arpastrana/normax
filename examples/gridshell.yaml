@@ -88,3 +88,10 @@ output:
   verbose: true
   export: true
   animate: true                 # write an animation of the descent, frame by frame
+  # Full revolutions about z the film spins the shell through, spread over its
+  # whole length. 0 holds one view. Half a turn, settled by watching: at one
+  # and at two the shell reads as spinning rather than turning, which draws the
+  # eye off the descent the film is about. A half shows the back of the shell
+  # and stops there, so unlike a whole number it does NOT close on the view it
+  # opened on -- of no consequence to a video, a visible jump in a looping GIF.
+  turns: 0.5

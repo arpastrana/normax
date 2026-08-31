@@ -393,6 +393,7 @@ ISOMETRIC_ELEVATION = 35.264389682754654
 
 def project_view(
     xyz: Float[Array, "nodes 3"],
+    azimuth: float = ISOMETRIC_AZIMUTH,
 ) -> Float[np.ndarray, "nodes 3"]:
     """
     The coordinates a drawing reads its two axes off, planar or solid.
@@ -401,29 +402,35 @@ def project_view(
     ----------
     xyz :
         Node positions as the pipeline computed them.
+    azimuth :
+        Degrees the view is taken from around the upward axis. Turning it is
+        the same map as turning the structure the other way about that axis,
+        so an animation spins the shape by pacing this rather than by moving
+        any geometry.
 
     Returns
     -------
     turned :
         Positions whose first column runs across the page and whose third runs
-        up it, which is the pair every drawing here slices. The second carries
-        depth into the page, which nothing draws.
+        up it, which is the pair every drawing here slices. The second measures
+        toward the viewer, which nothing draws and a spinning film sorts by.
 
     Notes
     -----
     A structure lying in one plane is drawn as it stands, so a planar run is
-    unchanged to the last bit. A solid one is turned isometric instead: a side
-    view of a cap shows one silhouette and hides the whole of the surface,
-    where an isometric view shows the plan and the rise at once. Planar is read
-    off the geometry rather than declared, since a held plan keeps a planar
-    structure exactly planar and the test is therefore exact.
+    unchanged to the last bit -- and unturnable, which is what keeps a spin off
+    a structure that has no depth to show. A solid one is turned isometric
+    instead: a side view of a cap shows one silhouette and hides the whole of
+    the surface, where an isometric view shows the plan and the rise at once.
+    Planar is read off the geometry rather than declared, since a held plan
+    keeps a planar structure exactly planar and the test is therefore exact.
     """
     points = np.asarray(xyz, dtype=float)
     if float(np.ptp(points[:, 1])) == 0.0:
         return points
 
-    azimuth = np.radians(ISOMETRIC_AZIMUTH)
     elevation = np.radians(ISOMETRIC_ELEVATION)
+    azimuth = np.radians(azimuth)
     across = np.array([-np.sin(azimuth), np.cos(azimuth), 0.0])
     upward = np.array(
         [

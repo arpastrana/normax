@@ -115,7 +115,8 @@ def redraw_run(
     problem :
         The problem the archive belongs to, built as the run built it.
     config :
-        The run description, read for its load cases and whether to animate.
+        The run description, read for its load cases, whether to animate, and
+        how many turns the animation spins through.
     archive :
         The `.npz` to read the walk from; its stem names the files written.
     figures :
@@ -177,7 +178,8 @@ def redraw_run(
 
     if config.output.animate:
         path = figures / f"{stem}_optimization.mp4"
-        save_animation(animate_descent(problem, panel, limits), path)
+        spun = animate_descent(problem, panel, limits, config.output.turns)
+        save_animation(spun, path)
         written.append(path)
 
     return tuple(written)

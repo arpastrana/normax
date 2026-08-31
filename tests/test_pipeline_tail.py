@@ -39,8 +39,12 @@ from normax.visualization.animations import FRAMES_HELD
 from normax.visualization.animations import FRAMES_PLAYED
 from normax.visualization.animations import WIDTH_FIGURE
 from normax.visualization.animations import name_frame
+from normax.visualization.animations import pace_azimuth
 from normax.visualization.animations import pick_frames
+from normax.visualization.animations import sort_by_depth
 from normax.visualization.plots import HEIGHT_DRAWING
+from normax.visualization.plots import ISOMETRIC_AZIMUTH
+from normax.visualization.plots import project_view
 from normax.visualization.plots import read_drawing_height
 
 SPAN = 4_000.0
@@ -425,3 +429,48 @@ def test_a_long_walk_is_thinned_to_a_watchable_number_of_frames():
         assert np.all(np.diff(picked) > 0)
     # Short walks are drawn point for point.
     assert np.array_equal(pick_frames(69), np.arange(69))
+
+
+def test_a_whole_number_of_turns_closes_the_film_on_its_opening_view():
+    frames = 396
+    spun = pace_azimuth(frames, 2.0)
+
+    assert spun.size == frames
+    assert spun[0] == pytest.approx(ISOMETRIC_AZIMUTH)
+    # Divided by the frame count, so the frame after the last would sit exactly
+    # two turns on and a looping film has no seam.
+    step = spun[1] - spun[0]
+    assert spun[-1] + step == pytest.approx(ISOMETRIC_AZIMUTH + 720.0)
+    assert np.all(np.diff(spun) > 0)
+
+
+def test_no_turns_holds_the_one_view_every_drawing_uses():
+    held = pace_azimuth(396, 0.0)
+
+    assert held.size == 396
+    assert np.all(held == ISOMETRIC_AZIMUTH)
+
+
+def test_a_planar_walk_neither_turns_nor_reorders():
+    # A structure with no depth is returned by the projection unchanged at any
+    # azimuth, which is what keeps a spin off a drawing that cannot show one.
+    flat = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 1.0], [2.0, 0.0, 0.0]])
+    pairs = np.array([[0, 1], [1, 2], [0, 2]])
+    for azimuth in (ISOMETRIC_AZIMUTH, 137.0, 300.0):
+        assert np.array_equal(project_view(flat, azimuth), flat)
+    # Equal depths keep the edge list's own order, so the members come out
+    # drawn exactly as they were before any sorting existed.
+    order = sort_by_depth(project_view(flat, 137.0), pairs)
+    assert np.array_equal(order, np.arange(len(pairs)))
+
+
+def test_members_are_drawn_from_the_farthest_to_the_nearest():
+    # The projection's middle column measures toward the viewer, so the order
+    # must end on the largest depth or a member at the back covers the front.
+    solid = np.array([[5000.0, 0.0, 0.0], [0.0, 5000.0, 1000.0], [-5000.0, 0.0, 0.0]])
+    pairs = np.array([[0, 1], [1, 2]])
+    viewed = project_view(solid, ISOMETRIC_AZIMUTH)
+    order = sort_by_depth(viewed, pairs)
+    depths = 0.5 * (viewed[pairs[:, 0], 1] + viewed[pairs[:, 1], 1])
+
+    assert np.all(np.diff(depths[order]) >= 0)

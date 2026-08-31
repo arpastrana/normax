@@ -29,6 +29,7 @@ from normax.optimization import DescentHistory
 from normax.visualization.plots import FAINT
 from normax.visualization.plots import GREY
 from normax.visualization.plots import INK
+from normax.visualization.plots import ISOMETRIC_AZIMUTH
 from normax.visualization.plots import LEGEND_PLACE
 from normax.visualization.plots import LEGEND_RIM
 from normax.visualization.plots import SHADES
@@ -92,6 +93,10 @@ HEIGHT_MARGINS = 1.6
 # the drawing's own coordinates. Two-fifths larger than the ten they were drawn
 # at, which is what a caption read from across a room asks for: these are the
 # only numbers on the page that say which design is on screen.
+# Degrees between the views a swept framing is read at. Five is far finer than
+# the silhouette changes over.
+SWEPT_STEP = 5.0
+
 SIZE_CAPTION = 14.0
 CAPTION_LEFT = 0.015
 CAPTION_RIGHT = 0.985
@@ -301,6 +306,70 @@ def read_drawn_bounds(
     return across, upward
 
 
+def read_swept_bounds(
+    walked: WalkedDesigns,
+    across: tuple[float, float],
+    upward: tuple[float, float],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """
+    Limits holding every design of a walk seen from every view of a turn.
+
+    Parameters
+    ----------
+    walked :
+        Every design the descent passed through, in three dimensions.
+    across :
+        Horizontal limits the standing view asked for.
+    upward :
+        Vertical limits the standing view asked for.
+
+    Returns
+    -------
+    limits :
+        The horizontal pair and the vertical pair, wide enough for any frame of
+        any turn of this walk.
+
+    Notes
+    -----
+    Every design against every view rather than the design each frame happens
+    to pair its view with. Pairing would give a tighter box, and a different
+    one for each walk: two baselines reaching their greatest height at
+    different iterations would be framed differently and could not be set side
+    by side, which is the whole point of holding a framing. Sampled every
+    `SWEPT_STEP` degrees, since the silhouette varies smoothly with the view.
+    Unioned with the standing box, so a film is never framed more tightly than
+    the drawings beside it.
+    """
+    azimuths = np.arange(0.0, 360.0, SWEPT_STEP) + ISOMETRIC_AZIMUTH
+    lows = []
+    highs = []
+    floors = []
+    ceilings = []
+    for shape in walked.shapes:
+        for azimuth in azimuths:
+            viewed = project_view(shape, float(azimuth))
+            lows.append(float(viewed[:, 0].min()))
+            highs.append(float(viewed[:, 0].max()))
+            floors.append(float(viewed[:, 2].min()))
+            ceilings.append(float(viewed[:, 2].max()))
+
+    lowest = min(lows)
+    highest = max(highs)
+    margin = 0.05 * (highest - lowest)
+    turned_across = (lowest - margin, highest + margin)
+    turned_upward = (min(floors) - margin, max(ceilings) + margin)
+    widened_across = (
+        min(across[0], turned_across[0]),
+        max(across[1], turned_across[1]),
+    )
+    widened_upward = (
+        min(upward[0], turned_upward[0]),
+        max(upward[1], turned_upward[1]),
+    )
+
+    return widened_across, widened_upward
+
+
 def read_objective_bounds(values: Float[Array, "steps"]) -> tuple[float, float]:
     """
     The vertical limits the objective curve is drawn between.
@@ -320,6 +389,121 @@ def read_objective_bounds(values: Float[Array, "steps"]) -> tuple[float, float]:
     padding = 0.05 * max(highest - lowest, abs(highest))
 
     return lowest - padding, highest + padding
+
+
+class GifReduction(NamedTuple):
+    """
+    How much of a film's detail a GIF of it is allowed to keep.
+
+    Attributes
+    ----------
+    width :
+        Pixels across, the height following the film's proportions.
+    rate :
+        Frames a second, thinned from the film's own rate.
+    colors :
+        Entries in the palette generated from the film.
+
+    Notes
+    -----
+    A GIF stores one palette index per pixel and compresses with LZW, which
+    needs long runs of one byte to work on. A drawing of hundreds of
+    antialiased members offers few, and a turning one offers no frame worth
+    reusing either, so the file lands near a tenth of its raw pixel count
+    whatever the palette does. Measured on the shell, the pixels are the whole
+    story: dithering is worth about a tenth of the size and halving the width
+    is worth three and a half times it. Width is therefore the lever in both
+    directions -- it buys the size back, and it is the only thing that makes a
+    member thinner than a pixel legible again -- and it is a deliberate trade
+    of detail against bytes rather than a cleverer encoding.
+    """
+
+    width: int
+    rate: float
+    colors: int
+
+
+# What a GIF meant for a page rather than for review is reduced to. Measured on
+# the shell, whose film is 1280 wide and 127.8 MB as a faithful GIF: 27.1 MB at
+# these numbers. Ten frames a second rather than twelve because a GIF states
+# its delay in whole hundredths and only ten divides a hundred, so the reduced
+# film runs the length of the one it came from instead of eight percent long.
+GIF_FOR_READING = GifReduction(960, 10.0, 128)
+
+
+def pace_azimuth(
+    frames: int,
+    turns: float,
+) -> Float[np.ndarray, "frames"]:
+    """
+    The view each frame is taken from, spread over the whole film.
+
+    Parameters
+    ----------
+    frames :
+        How many frames the film runs for, held frames included.
+    turns :
+        Full revolutions to spin through. Zero returns the one standing view.
+
+    Returns
+    -------
+    azimuths :
+        Degrees around the upward axis, one per frame, opening on the standing
+        view every drawing uses.
+
+    Notes
+    -----
+    Spread over the whole film rather than over the walk, so a whole number of
+    turns lands the last frame back on the first frame's view and a looping
+    film closes on itself; the held frames at the end become a turntable of
+    the answer rather than a freeze. Divided by the frame count rather than by
+    one less, since frame zero and frame `frames` are the same view and only
+    one of them is drawn.
+    """
+    standing = np.full(max(frames, 1), float(ISOMETRIC_AZIMUTH))
+    if turns == 0.0:
+        return standing
+
+    spun = np.arange(max(frames, 1)) * 360.0 * turns / max(frames, 1)
+
+    return standing + spun
+
+
+def sort_by_depth(
+    viewed: Float[np.ndarray, "nodes 3"],
+    pairs: Int[np.ndarray, "members 2"],
+) -> Int[np.ndarray, "members"]:
+    """
+    The order members are drawn in so the nearer ones cover the farther.
+
+    Parameters
+    ----------
+    viewed :
+        Projected node positions, whose second column measures toward the
+        viewer.
+    pairs :
+        The two nodes of every member.
+
+    Returns
+    -------
+    order :
+        Members from farthest to nearest, which is the order to draw them.
+
+    Notes
+    -----
+    A line collection draws in the order it is given and carries no depth of
+    its own, so without this the member that happens to come first in the
+    edge list stays in front however the view turns. Sorted on each member's
+    midpoint, which is a painter's order: it settles which of two members
+    reads as nearer, and cannot cut one that genuinely crosses the other.
+
+    Stable, so equal depths keep the edge list's own order: a planar walk has
+    one depth throughout and must come out drawn exactly as it was before any
+    of this, which an unstable sort would not guarantee.
+    """
+    depths = 0.5 * (viewed[pairs[:, 0], 1] + viewed[pairs[:, 1], 1])
+
+    return np.argsort(depths, kind="stable")
 
 
 def name_frame(panel: DescentPanel, history: DescentHistory, frame: int) -> str:
@@ -360,6 +544,7 @@ def animate_descent(
     problem: DesignProblem,
     panel: DescentPanel,
     limits: DrawnLimits | None = None,
+    turns: float = 0.0,
 ) -> FuncAnimation:
     """
     The design at every point of a descent, beside the curve that scored it.
@@ -375,6 +560,10 @@ def animate_descent(
         Limits to hold every panel to, or None to read them off this walk
         alone. Held, so several films of one structure share a framing, a pace
         and a set of ticks.
+    turns :
+        Full revolutions about the upward axis to spin the design through over
+        the film. Zero draws the one standing view. A structure lying in one
+        plane never turns whatever this says, having no depth to show.
 
     Returns
     -------
@@ -421,12 +610,21 @@ def animate_descent(
         history.round_index[picked],
     )
     walked = rebuild_walk(problem, drawn_walk)
-    # Turned before anything reads a limit or a segment off it, so the frames,
-    # the outline and the axis limits all speak one set of coordinates.
-    walked = walked._replace(shapes=[project_view(shape) for shape in walked.shapes])
-    across, upward = read_drawn_bounds(walked)
+    # The walk is kept in its own three dimensions and turned once per frame,
+    # so a spin costs a projection rather than any geometry. A planar walk is
+    # returned unchanged by the projection, which is what makes `turns`
+    # harmless on a structure that cannot show a turn.
+    azimuths = pace_azimuth(picked.size + FRAMES_HELD, turns)
+    standing = walked._replace(shapes=[project_view(shape) for shape in walked.shapes])
+    across, upward = read_drawn_bounds(standing)
     if limits is not None:
         across, upward = limits.across, limits.upward
+    # Framed for every view the film passes through, not just the one it opens
+    # on: a box read off the standing view alone would crop the design as it
+    # came round. Only where the framing is this walk's own -- limits handed in
+    # are held exactly, their caller having swept them over every baseline.
+    if turns != 0.0 and limits is None:
+        across, upward = read_swept_bounds(walked, across, upward)
     upward = clear_for_caption(clear_for_legend(upward))
 
     values = np.asarray(history.objectives)
@@ -436,7 +634,7 @@ def animate_descent(
     placed = np.maximum(gaps, floor)
     steps = np.arange(values.size)
     edges = problem.structure.edges
-    started = walked.shapes[0]
+    started = standing.shapes[0]
 
     tall = read_drawing_height(across, upward, WIDTH_FIGURE)
     proportions = (tall, HEIGHT_VIOLATION, HEIGHT_OBJECTIVE)
@@ -550,20 +748,36 @@ def animate_descent(
 
     pairs = np.asarray(edges)
 
+    opened = walked.shapes[0]
+
     def draw_frame(frame: int) -> None:
         held = min(frame, picked.size - 1)
         reached = int(picked[held])
-        nodes = walked.shapes[held]
-        starts = nodes[pairs[:, 0]][:, [0, 2]]
-        ends = nodes[pairs[:, 1]][:, [0, 2]]
+        azimuth = float(azimuths[min(frame, azimuths.size - 1)])
+        nodes = project_view(walked.shapes[held], azimuth)
+        # Farthest first, so a member that comes round to the back stops
+        # covering the one in front of it.
+        order = sort_by_depth(nodes, pairs)
+        starts = nodes[pairs[order, 0]][:, [0, 2]]
+        ends = nodes[pairs[order, 1]][:, [0, 2]]
         segments = list(np.stack([starts, ends], axis=1))
         widths = read_member_widths(walked.diameters[held], walked.width_scale)
+        sorted_widths = list(np.asarray(widths)[order])
+        sorted_colors = np.asarray(walked.envelopes[held])[order]
 
         members.set_segments(segments)
-        members.set_linewidth(list(widths))
-        members.set_array(walked.envelopes[held])
+        members.set_linewidth(sorted_widths)
+        members.set_array(sorted_colors)
         dotted.set_data(nodes[:, 0], nodes[:, 2])
         seated.set_data(nodes[supports, 0], nodes[supports, 2])
+
+        # The ghost turns with the design: a start left standing while the
+        # answer spins reads as two structures rather than one and its shadow.
+        ghosted = project_view(opened, azimuth)
+        ghost_starts = ghosted[pairs[:, 0]][:, [0, 2]]
+        ghost_ends = ghosted[pairs[:, 1]][:, [0, 2]]
+        ghost_segments = list(np.stack([ghost_starts, ghost_ends], axis=1))
+        outline.set_segments(ghost_segments)
         named.set_text(name_frame(panel, history, reached))
         worked = float(np.mean(walked.envelopes[held]))
         weighed.set_text(f"Mass {walked.masses[held]:.3f} t / Utilization {worked:.3f}")
@@ -627,7 +841,11 @@ def save_animation(played: FuncAnimation, path: Path) -> None:
     played.save(path, writer=writer, dpi=ANIMATION_DPI)
 
 
-def convert_to_gif(video: Path, path: Path) -> None:
+def convert_to_gif(
+    video: Path,
+    path: Path,
+    reduced: GifReduction | None = None,
+) -> None:
     """
     A GIF of a video already written, narrowed and slowed to be worth its bytes.
 
@@ -637,6 +855,10 @@ def convert_to_gif(video: Path, path: Path) -> None:
         The MP4 to read.
     path :
         Where the GIF goes.
+    reduced :
+        How far to narrow and thin the film, or None to keep every frame at
+        full width -- faithful to the film, and on a drawing of any density
+        far too heavy for a page to carry.
 
     Raises
     ------
@@ -661,7 +883,19 @@ def convert_to_gif(video: Path, path: Path) -> None:
     frames cost a pipeline pass each and the transcode costs seconds: a GIF of
     a run already filmed asks for no part of the search to be repeated.
     """
-    palette = "split[a][b];[a]palettegen[p];[b][p]paletteuse"
+    if reduced is None:
+        palette = "split[a][b];[a]palettegen[p];[b][p]paletteuse"
+    else:
+        # Scaled and thinned before the palette is generated, so the palette
+        # describes the frames that are actually written. Undithered, which on
+        # a drawing is the sharper answer: both dithers lay a texture over the
+        # near-white ground, and an ordered one reads as the very pixelation a
+        # reduced GIF is accused of. The cost is mild banding along the
+        # colorbar's ramp, the one smooth gradient on the page.
+        shrunk = f"scale={reduced.width}:-1:flags=lanczos,fps={reduced.rate:g}"
+        generated = f"palettegen=max_colors={reduced.colors}"
+        used = "paletteuse=dither=none"
+        palette = f"{shrunk},split[a][b];[a]{generated}[p];[b][p]{used}"
     asked = [
         imageio_ffmpeg.get_ffmpeg_exe(),
         "-y",
