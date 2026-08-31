@@ -34,7 +34,23 @@ CLAUDE.md
 # description that names them, and the directory is kept so a clone can write.
 figures/*
 !figures/.gitkeep
-data/
+data/*
+
+# Accepted headline archives and their machine-readable provenance. Keep these
+# exceptions explicit so exploratory runs cannot enter a submission unnoticed.
+!data/accepted_results.json
+!data/arch.npz
+!data/arch_heights.npz
+!data/arch_fixed.npz
+!data/warren.npz
+!data/warren_heights.npz
+!data/warren_fixed.npz
+!data/vierendeel.npz
+!data/vierendeel_heights.npz
+!data/vierendeel_fixed.npz
+!data/gridshell.npz
+!data/gridshell_heights.npz
+!data/gridshell_fixed.npz
 
 # Curated submission assets, committed by exception. The README and the two
 # example guides embed these, so they have to be in history for the pages to

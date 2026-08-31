@@ -52,8 +52,9 @@ moving the common starting geometry. It is a baseline, not a competing shape
 method. Every report states the start so that equality can be checked rather
 than assumed: the three routes of one structure open on one recorded mass —
 0.254387 t for the arch, 0.154016 t for the Warren, 0.110419 t for the
-Vierendeel, 1.312050 t for the gridshell — shared bit for bit by their
-archives' first objectives. A start is not a design: the three planar starts
+Vierendeel, 1.312050 t for the gridshell — with their archives' first
+objectives agreeing to floating-point precision. A start is not a design: the
+three planar starts
 violate the check (worst violations 2.7, 0.01, and 3.1), while the drawn
 gridshell cap opens feasible at exactly zero.
 

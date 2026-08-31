@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Tesseract Hackathon 2026](https://img.shields.io/badge/Tesseract_Hackathon_2026-Track_01-6f42c1.svg)](https://pasteurlabs.ai/tesseract-hackathon-2026/)
 
-> Tesseract Hackathon 2026 submission — Track 01: Inverse Design & Shape Optimization (cross-listed with Track 02: Multi-physics & Coupled Systems)
+> Tesseract Hackathon 2026 submission — Track 01: Inverse Design & Shape Optimization
 
-Normax empowers engineers to perform shape optimization for material-minimizing and code-compliant structures made of beam members.
+Normax empowers engineers to minimize material through shape optimization of beam structures subject to an implemented Eurocode 3 cross-section check.
 It does so by turning structural form finding, finite element analysis, and Eurocode 3 cross-section checks into a single differentiable program.
 These three stages are traditionally disjoint in the industry; this project fuses them for end-to-end gradient-based optimization.
 
@@ -29,7 +29,7 @@ report](https://www.unep.org/resources/report/global-status-report-buildings-and
 Reducing that footprint therefore asks for design approaches that state material reduction and safety as one problem rather than two. Concretely: less material through stiffer form, and safety through code compliance and maximized member utilization, decided together.
 
 Normax responds to this important engineering and societal challenge through the lens of differentiable programming, as enabled by [Tesseract](https://github.com/pasteurlabs/tesseract-core).
-By backpropagating later-stage norms into early-stage shape decisions, geometry and cross-section properties work hand in hand to minimize material consumption while fully respecting regulations.
+By backpropagating later-stage norms into early-stage shape decisions, geometry and cross-section properties work hand in hand to minimize material consumption while satisfying the implemented cross-section constraints.
 
 ## What is special about Normax?
 
@@ -82,7 +82,7 @@ The figure below shows what that buys: the same gridshell dome designed three ti
 | One differentiable form-finding, structural-analysis, and code-compliance program | [executable Quickstart](#quickstart) and [forward/backward diagrams](#one-program-three-kinds-of-differentiation) |
 | Swappable OpenSees and PyNite analysis backends | one-line [backend change](#quickstart) behind one Tesseract schema |
 | Backpropagation through the implemented Eurocode 3 check | [derivation](docs/blueprints_backward_pass.md) and [four-way gradient agreement to a tight tolerance](validation/blueprint_adjoint.py) |
-| Matched end-to-end, free-heights, and sizing-only study | [accepted results and comparison protocol](docs/results.md) across four completed systems, including a 3D gridshell |
+| Matched end-to-end, free-heights, and sizing-only study | [accepted results and comparison protocol](docs/results.md) across four completed systems, with [committed archives and provenance](data/accepted_results.json) |
 
 ## The optimization problem
 
@@ -171,6 +171,21 @@ separation also preserves the software the project intends to optimize
 through: switching OpenSees for PyNite changes one backend input, not the
 pipeline.
 
+### Why not `jax.custom_vjp`?
+
+A one-off, Python-only version of this experiment could wrap each host call in
+`jax.custom_vjp`. That would make Normax itself own three different integration
+contracts, however, and tie every solver's derivative to one autodiff client.
+Here the derivative stays with the component that can compute it best: the
+OpenSees-backed component exposes the C++ solver's Direct Differentiation
+Method, the PyNite-backed component exposes Normax's implicit structural
+adjoint, and the Blueprints-backed component exposes Normax's code-check
+pullback. Tesseract gives all three the same typed forward/VJP boundary, lets
+the analysis backend change without changing the optimization program, and
+leaves that boundary usable by clients other than JAX. The point is therefore
+not that a custom VJP is impossible; it is that the solver and its derivative
+become one swappable component rather than application-specific glue.
+
 ## Results
 
 Four accepted studies now compare the joined form-and-sizing search with sizing
@@ -195,6 +210,9 @@ constraint tolerance. These are continuous-section research results under the
 implemented Eurocode 3 cross-section check, not code-complete or globally
 optimal designs. The matched protocol and the wider free-heights diagnostic
 keep the comparison reproducible and its claim narrow.
+The [twelve accepted archives and their provenance](data/accepted_results.json)
+are committed so every comparison can be inspected or redrawn from a clean
+clone without rerunning optimization.
 
 The fixed route is the headline baseline: it isolates the value of allowing
 the common starting geometry to move. Free heights is a separate, larger design

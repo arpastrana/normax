@@ -5,9 +5,9 @@ abutments fix a 10 m span, and the deck lays a known load on whatever stands
 beneath it. What remains negotiable is the steel backbone that carries the
 deck, and this guide designs three candidates for it: an arch, a triangulated
 Warren truss, and an unbraced Vierendeel truss. All three are designed by one
-program under the same loads, the same steel, the same code check, and the
-same search, so what differs between the answers is the structural system and
-nothing else.
+program under the same loads, steel, and code-check model. The topology-specific
+geometry and sign constraints, starting diameters, and search budgets are stated
+below.
 
 Each candidate is one driver and the YAML file beside it — `examples/arch.py`,
 `examples/warren.py`, `examples/vierendeel.py`. The gridshell roof is the same
