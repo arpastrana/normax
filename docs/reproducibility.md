@@ -1,4 +1,4 @@
-# Reproducing normax
+# Reproducing Normax
 
 This guide separates a quick check from the optimization runs behind the final
 results. Run every command from a clean clone.
@@ -24,8 +24,9 @@ git rev-parse HEAD
 uv pip freeze
 ```
 
-Examples import local Tesseract clients into the Python process. Docker is not
-required. The first JAX call may compile and is not a steady-state timing.
+Examples import local [Tesseract](https://github.com/pasteurlabs/tesseract-core)
+clients into the Python process. Docker is not required. The first JAX call may
+compile and is not a steady-state timing.
 
 ## Fast verification
 
@@ -101,9 +102,9 @@ figures/<name>_fixed_optimization.mp4
 A redraw can write two more per route: `<stem>_optimization.gif`, every frame at
 the film's own width, and `<stem>_optimization_web.gif`, reduced for a page.
 
-`<name>` is `arch`, `warren`, `vierendeel`, or `gridshell`. The gridshell config
-records inner iterations and enables MP4 output; animation begins only after
-the accepted answer has printed. Repeating a route replaces its files.
+`<name>` is `arch`, `warren`, `vierendeel`, or `gridshell`. Every shipped
+config records inner iterations and enables MP4 output; animation begins only
+after the accepted answer has printed. Repeating a route replaces its files.
 
 Generated data, images, and video are ignored by default. Curated submission
 assets need narrow `.gitignore` exceptions or an explicit forced add. Tests do
@@ -126,36 +127,55 @@ uv run python redraw_designs.py gridshell --web     # and one light enough to em
 
 Name `arch`, `warren`, `vierendeel`, or `gridshell` to redraw a subset. Add
 `--film` for the animations, which cost minutes rather than seconds. `--gif`
-converts each film at its own width and frame rate, which on a dense drawing
-runs to a hundred megabytes and is meant for review rather than a page; `--web`
-writes a second GIF beside it, narrowed and thinned until a page can carry it.
-Both read the film already on disk rather than rendering again.
+converts each film at its own width and frame rate; on a dense drawing the
+result runs to a hundred megabytes and is meant for review rather than a page.
+`--web` writes a second GIF beside it, narrowed and thinned until a page can
+carry it. Both read the film already on disk rather than rendering again.
 
 The three planar examples are drawn to one shared box, so an arch and a truss
 can be set side by side at one scale; the shell is framed on its own. Each
-example is rebuilt exactly as its own script builds it -- verified against every
-archive's recorded objective to 4.1e-16 -- and the recorded parameters and
-objective histories are never changed. The accepted masses and matching log
-names are recorded in [results.md](results.md#gridshell-result-record).
+example is rebuilt exactly as its own script builds it — verified against every
+archive's recorded objective to 4.1e-16 — and the recorded parameters and
+objective histories are never changed. The accepted masses are recorded in
+[the final headline table](results.md#final-headline-table), and the
+gridshell's source logs in [its result record](results.md#gridshell-result-record).
 
-### What the README embeds
+### What the pages embed
 
-Six of the generated files are committed by name, against the blanket ignore,
-because a page cannot render what a clone has to generate first. Every other
-figure a run writes stays ignored.
+Thirty-one figures are committed by name, against the blanket ignore, because
+a page cannot render what a clone has to generate first — thirty that runs
+generate, plus the hand-drawn pipeline diagram. The README embeds the pipeline
+diagram, the three planar end-to-end `_designs` comparisons, and the three
+gridshell films; [the planar structures guide](planar_structures.md),
+[the gridshell guide](gridshell.md), and the technical notes embed the rest.
+Every other figure a run writes stays ignored.
 
 ```text
-figures/{arch,warren,vierendeel}_designs.png        the three planar comparisons
-figures/gridshell_optimization_web.gif              end-to-end
-figures/gridshell_heights_optimization_web.gif      heights + sections
-figures/gridshell_fixed_optimization_web.gif        sections only
+figures/normax_pipeline.png                               the pipeline diagram, hand-drawn
+figures/problem_setup_landscape.png                       the planar load cases
+figures/problem_setup_gridshell.png                       the gridshell load cases
+figures/problem_setup_gridshell_plan.png                  the same cases shaded in plan
+figures/validation_pipeline.png                           the crossed-gradient evidence
+figures/validation_code.png                               the code-check evidence
+figures/validation_pynite.png                             the PyNite-adjoint evidence
+figures/{arch,warren,vierendeel}_designs.png              end-to-end start and solution
+figures/{arch,warren,vierendeel}_heights_designs.png      the free-heights baseline
+figures/{arch,warren,vierendeel}_fixed_designs.png        the sizing-only baseline
+figures/gridshell{,_heights,_fixed}_designs.png           the same three for the shell
+figures/{arch,warren,vierendeel}_optimization_web.gif     end-to-end films
+figures/{arch,warren,vierendeel}_heights_optimization_web.gif   free-heights films
+figures/{arch,warren,vierendeel}_fixed_optimization_web.gif     sizing-only films
+figures/gridshell{,_heights,_fixed}_optimization_web.gif  the gridshell films
 ```
 
-The three GIFs are `--web` output taken unaltered, so
-`uv run python redraw_designs.py gridshell --film --web` reproduces them from
-the archives. Replacing any of the six is a redraw followed by a commit of the
-file itself; the `.gitignore` exceptions are listed one per line so that
-nothing joins them by accident.
+The GIFs are `--web` output taken unaltered, so
+`uv run python redraw_designs.py --film --web` reproduces every film from the
+archives, `uv run python examples/problem_setup.py` redraws the problem-setup
+diagrams, and `uv run python validation/plot_pipeline_validation.py`
+remeasures and redraws the three validation figures beside a provenance record
+under `validation/results/`. Replacing any committed figure is a redraw followed by a
+commit of the file itself; the `.gitignore` exceptions are listed one per line
+so that nothing joins them by accident.
 
 ## Focused gradient validation
 
@@ -174,7 +194,9 @@ uv run python validation/sizing_formulations.py
 
 They compare crossed forward passes and reverse rules with central differences,
 closed forms, implicit derivatives, host calculations, and frozen reference
-norms. [blueprints_backward_pass.md](blueprints_backward_pass.md) derives the
+norms. `validation/plot_pipeline_validation.py` remeasures a subset of the same
+claims and draws the three committed `validation_*` figures the notes embed.
+[blueprints_backward_pass.md](blueprints_backward_pass.md) derives the
 code-check pullback. [fast_backward_pass.md](fast_backward_pass.md) derives the
 PyNite adjoint and records its timings.
 

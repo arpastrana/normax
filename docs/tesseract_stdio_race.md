@@ -1,6 +1,7 @@
 # Finding and mitigating a Tesseract concurrency race
 
-Normax exposed a process-wide stdio race in overlapping local Tesseract calls.
+Normax exposed a process-wide stdio race in overlapping local
+[Tesseract](https://github.com/pasteurlabs/tesseract-core) calls.
 The upstream report is
 [tesseract-core #709](https://github.com/pasteurlabs/tesseract-core/issues/709).
 That issue contains the standalone reproduction and current discussion.
@@ -23,7 +24,7 @@ run can enter `start_run` twice on one thread. This serializes local endpoint
 bodies. Preserving concurrency needs a deeper ownership model for process-wide
 descriptors.
 
-## How normax found it
+## How Normax found it
 
 A retired dense-Jacobian path made one reverse crossing per constraint row. Its
 calls overlapped while the planar Tesseract hosted OpenSees, which also owns
@@ -35,7 +36,7 @@ The overlap exposed two separate hazards:
 - Tesseract Core could corrupt process stdio.
 - Concurrent calls could mutate one OpenSees model during a solve.
 
-The dense Jacobian increased exposure. It caused neither unsafe resource.
+The dense Jacobian increased exposure. It caused neither hazard.
 
 ## Mitigation
 
@@ -43,7 +44,7 @@ Normax dispatches crossed solvers on one owner thread. Its augmented Lagrangian
 also reduces all constraint rows to one scalar before reverse mode. Each stage
 therefore needs one cotangent crossing, not one crossing per row.
 
-This protects normax's tested path. It does not make arbitrary concurrent local
+This protects Normax's tested path. It does not make arbitrary concurrent local
 clients safe. An upstream stdio lock also cannot make a hosted native library
 thread-safe.
 

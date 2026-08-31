@@ -1,7 +1,7 @@
 # Building a fast backward pass for a solver that has none
 
 Unless noted, measurements use the 16×16 gridshell with 257 nodes, 496 members,
-1,267 differentiable parameters, and three load cases. Reproduce them with
+1267 differentiable parameters, and three load cases. Reproduce them with
 `validation/pynite_adjoint.py`.
 
 PyNite is a structural analysis solver in plain Python with no tape, tangent,
@@ -14,9 +14,9 @@ sequence of changes to the reverse rule.
 | compiled element derivatives | 0.71 s |
 | final reverse rule with reused factorization, force recovery, and caching | **0.077 s** |
 
-At 0.077 s, 2,408 analysis evaluations account for about three minutes. With
-the code check included, the full crossed descent fell from **37 minutes to
-4.8**. The gradient stayed fixed while the implementation changed.
+At 0.077 s, 2408 analysis evaluations account for about three minutes. With
+the code check included, the full crossed descent fell from **37 to 4.8
+minutes**. The gradient stayed fixed while the implementation changed.
 
 ## Accuracy first
 
@@ -33,7 +33,14 @@ An approximate element rule plateaued near 1e-7. The exact element and implicit
 adjoint instead agree with central differences near their expected 1e-9 floor,
 with the same in-process rule at **2.587e-15**, and with frozen gradient-block
 norms at **1.168e-14**. See
-[results.md](results.md#validation-evidence) for the evidence ladder.
+[results.md](results.md#validation-evidence) for the evidence ladder. The
+archived measurement record draws the same ladder, and the measured cost
+beside it:
+
+<a href="../figures/validation_pynite.png">
+  <img src="../figures/validation_pynite.png" width="100%"
+       alt="Three panels validating the PyNite adjoint: the central-difference step sweep reaching its rounding floor near 1e-9, five adjoint-route agreements under their declared bounds, and measured wall times for the forward pass, three load cases in one call, the adjoint, and central differences over all 1267 parameters.">
+</a>
 
 ## 1. Compile the element derivatives
 
@@ -57,10 +64,10 @@ backends therefore use different derivative strategies and scaling laws.
 
 ## 3. Build only the needed right-hand side
 
-Rebuilding was only 1% of one solve. The surprise was a vector of zeros. Under
-nodal loading, fixed-end reactions vanish, yet building them cost 0.0176 s per
-case. Constructing the right-hand side from known loads took effectively zero
-time and agreed bit for bit.
+Rebuilding was only 1% of one solve. The cost hid in the fixed-end reactions:
+under nodal loading they are identically zero, yet building that vector of
+zeros cost 0.0176 s per case. Constructing the right-hand side from known loads
+took effectively zero time and agreed bit for bit.
 
 The stiffness matrix also stays fixed across load cases. PyNite assembled once
 but refactorized inside each solve. Three cases cost **0.0200 s** separately and
@@ -83,8 +90,9 @@ Preparation accounts for 0.0413 s of a 0.0414 s forward pass and does not depend
 on loads.
 
 One cached frame, keyed by geometry and diameters, serves every load case and
-its adjoint. Five of six calls hit. On the 16×16 shell, three cases cost
-**2.24×** one solve instead of 3×.
+its adjoint. Five of six calls hit. On the 16×16 shell, three load cases in
+one call cost about **1.0×** a single-case call instead of 3× — the marginal
+case costs less than timing noise.
 
 One cache entry suffices because reverse mode completes forward calls before
 backward calls. The key excludes loads because preparation excludes them. A
@@ -93,9 +101,10 @@ and two interleaved geometries.
 
 ## Boundary cost
 
-With the same solver on each side, the Tesseract boundary adds **12%**. The
-original 74× gap compared Python finite elements with compiled XLA. It was not a
-boundary result.
+With the same solver on each side, the
+[Tesseract](https://github.com/pasteurlabs/tesseract-core) boundary adds
+**12%**. An early measurement reported a 74× gap, but that compared Python
+finite elements against a compiled XLA solver; it was not a boundary result.
 
 The final crossed gradient uses one adjoint solve and computes only the
 contraction requested by the optimizer. The boundary is no longer the
@@ -103,7 +112,8 @@ bottleneck.
 
 ## The bottleneck moves to the code check
 
-Once analysis was cheap, the check consumed 94% of an evaluation. Reusing
+Once analysis was cheap, the check dominated a crossed evaluation: 0.245 s
+beside the 0.077 s of analysis. Reusing
 solved sizing states, avoiding repeated clause-object allocation during
 bisection, and removing five unnecessary halvings cut it from 0.245 s to about
 0.040 s. Reported utilization still runs through the public Blueprints class.
@@ -115,5 +125,5 @@ derivative and branch details.
 Threads did not accelerate Blueprints' scalar Python work. A warm process pool
 improved one endpoint by 2.4×, but cold startup and callback concurrency erased
 the gain in the actual pipeline. The simpler serial endpoint won. The final
-comparison protocol, including multiple starts, lives in
+comparison protocol, including its rule for multiple starts, lives in
 [results.md](results.md).

@@ -87,9 +87,9 @@ $$
 M=\max_{j\in\{1,2\}}\sqrt{M_{y,j}^2+M_{z,j}^2}.
 $$
 
-Because $U$ decreases strictly with positive $d$, the fully worked diameter
-$d_\star$ is the unique root of $U(d_\star,N,M)=1$. Normax finds it by
-bisection, then applies the minimum catalog diameter:
+Because $U$ decreases strictly in $d$ for positive $d$, the fully worked
+diameter $d_\star$ is the unique root of $U(d_\star,N,M)=1$. Normax finds it
+by bisection, then applies the diameter floor:
 
 $$
 d_{\mathrm{out}}=\max(d_\star,d_{\min}).
@@ -134,7 +134,8 @@ sprinkle differentiability dust over a real branch.
 
 ## Crossing the Tesseract boundary
 
-The forward endpoint receives member actions, a held diameter, and the fixed
+The [Tesseract](https://github.com/pasteurlabs/tesseract-core) forward endpoint
+receives member actions, a held diameter, and the fixed
 section constants. It returns demanded diameter and both demanded and held
 utilization. The reverse endpoint receives cotangents on those outputs and
 applies the rules above to axial force, both end-moment arrays, and held
@@ -147,9 +148,21 @@ uv run python validation/blueprint_adjoint.py
 ```
 
 The script compares the implicit tangent, its reverse transpose, an independent
-closed form, and central differences of the host bisection. The derivation is
-small. The point is large: code compliance can participate in inverse design
-without replacing the code implementation that practitioners recognize.
+closed form, and central differences of the host bisection. Its figure, drawn
+from the archived measurement record, shows the four-way agreement per member
+case, the smooth-max envelope that reconciles the diameters several load cases
+demand into one section — normax's own aggregation, no clause's, annealing onto
+the true worst case from above — and the boundary and branch checks against
+their declared bounds:
+
+<a href="../figures/validation_code.png">
+  <img src="../figures/validation_code.png" width="100%"
+       alt="Three panels validating the code-check derivative: four-way disagreement per member case under its target, the smooth-max envelope's mass excess annealing under its logarithmic bound, and boundary and branch checks under their declared bounds.">
+</a>
+
+The derivation is
+small; what it buys is that code compliance can participate in inverse design
+without replacing the code implementation practitioners recognize.
 
 ## What this rule does not cover
 
