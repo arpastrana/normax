@@ -36,6 +36,14 @@ figures/*
 !figures/.gitkeep
 data/
 
+# Curated submission assets, committed by exception. The README embeds these,
+# so they have to be in history for the page to render on the forge; every
+# other figure a run writes stays ignored above. Listed one by one rather than
+# by a pattern, so nothing joins them by accident.
+!figures/arch_designs.png
+!figures/warren_designs.png
+!figures/arch_optimization.png
+
 # What a local Tesseract writes per run: its captured stdio and its metrics.
 # The client redirects file descriptors into here on every crossing.
 logs/

@@ -222,14 +222,30 @@ lighter on the Vierendeel, and 11.33% lighter on the gridshell. Normax
 therefore claims neither that the prior must always win nor that these local
 optima are global certificates.
 
-<!-- FINAL: ARCH_DESIGNS: add figures/arch_designs.png, then uncomment below. -->
-<!-- ![Initial and optimized arch designs](figures/arch_designs.png) -->
-
-<!-- FINAL: WARREN_DESIGNS: add figures/warren_designs.png, then uncomment below. -->
-<!-- ![Initial and optimized Warren truss designs](figures/warren_designs.png) -->
-
-<!-- FINAL: ARCH_OPTIMIZATION: add figures/arch_optimization.png, then uncomment below. -->
-<!-- ![Arch objective and constraint history](figures/arch_optimization.png) -->
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <img src="figures/arch_designs.png" width="100%"
+           alt="Arch drawn flat and its optimized parabola, members colored by utilization">
+    </td>
+    <td width="33%" valign="top">
+      <img src="figures/warren_designs.png" width="100%"
+           alt="Warren truss at its lens start and its optimized shape, members colored by utilization">
+    </td>
+    <td width="34%" valign="top">
+      <img src="figures/arch_optimization.png" width="100%"
+           alt="Arch constraint violation and mass against iteration">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Arch.</b> Start and solution, every member colored
+      by its worst utilization over the three load cases.</sub></td>
+    <td align="center"><sub><b>Warren truss.</b> The same comparison, drawn to
+      the same box so the two read at one scale.</sub></td>
+    <td align="center"><sub><b>Arch descent.</b> Violation above, mass below,
+      against the inner iterations of the augmented Lagrangian.</sub></td>
+  </tr>
+</table>
 
 See [the results record](docs/results.md) for the protocol, tolerances, final
 tables, and figure provenance.
