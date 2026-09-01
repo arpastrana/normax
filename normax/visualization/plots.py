@@ -279,6 +279,15 @@ SETUP_SUPPORT_SIZE = 0.0385
 SETUP_MEMBER_WIDTH = 2.0
 SETUP_PERSON_COLOR = "#bfbfbf"
 
+# A solid's loaded field is denser than a deck's, so its arrows draw shorter.
+SETUP_SOLID_LENGTH = 0.075
+
+# Opacity the strongest shaded plan cell is drawn at; lighter ones fade linearly.
+SETUP_SHADE_ALPHA = 0.32
+
+# Points along one arc of a shaded annular cell.
+SETUP_SHADE_ARC = 12
+
 sampled = mpl.colormaps["plasma"](np.linspace(STRESS_LOW, STRESS_HIGH, 256))
 UTILIZATION_MAP = ListedColormap(sampled, name="normax_utilization")
 
@@ -391,6 +400,11 @@ ISOMETRIC_AZIMUTH = 45.0
 ISOMETRIC_ELEVATION = 35.264389682754654
 
 
+def _spans_depth(points: Float[np.ndarray, "nodes 3"]) -> bool:
+    """Whether the geometry leaves its drawing plane at all."""
+    return float(np.ptp(points[:, 1])) != 0.0
+
+
 def project_view(
     xyz: Float[Array, "nodes 3"],
     azimuth: float = ISOMETRIC_AZIMUTH,
@@ -426,9 +440,40 @@ def project_view(
     keeps a planar structure exactly planar and the test is therefore exact.
     """
     points = np.asarray(xyz, dtype=float)
-    if float(np.ptp(points[:, 1])) == 0.0:
+    if not _spans_depth(points):
         return points
 
+    return turn_solid(points, azimuth)
+
+
+def turn_solid(
+    xyz: Float[Array, "nodes 3"],
+    azimuth: float = ISOMETRIC_AZIMUTH,
+) -> Float[np.ndarray, "nodes 3"]:
+    """
+    Turn vectors into the isometric view, planar or not.
+
+    Parameters
+    ----------
+    xyz :
+        Positions or force vectors in the pipeline's coordinates.
+    azimuth :
+        Degrees the view is taken from around the upward axis.
+
+    Returns
+    -------
+    turned :
+        The same vectors in view coordinates: across the page, toward the
+        viewer, and up the page.
+
+    Notes
+    -----
+    `project_view` decides from the geometry whether a drawing is turned at
+    all; this is the turn itself, unconditional. A force vector carries no
+    planarity of its own, so a caller drawing a solid turns its forces through
+    the same basis its nodes went through.
+    """
+    points = np.asarray(xyz, dtype=float)
     elevation = np.radians(ISOMETRIC_ELEVATION)
     azimuth = np.radians(azimuth)
     across = np.array([-np.sin(azimuth), np.cos(azimuth), 0.0])
@@ -609,13 +654,19 @@ def paint_figure(figure: Figure) -> None:
             written.set_color(INK)
 
 
-def _draw_setup_structure(ax: Axes, structure: Structure) -> None:
-    """Draw the members and nodes of one problem-setup row."""
-    nodes = np.asarray(structure.nodes)
+def _draw_setup_structure(
+    ax: Axes,
+    viewed: Float[np.ndarray, "nodes 3"],
+    structure: Structure,
+) -> None:
+    """Draw the members and nodes of one problem-setup row, far ones first."""
     pairs = np.asarray(structure.edges)
     supports = np.asarray(structure.supports)
-    points = nodes[:, [0, 2]]
-    segments = points[pairs]
+    points = viewed[:, [0, 2]]
+    # Painter's order on midpoint depth; stable, so a planar row keeps its edge order.
+    depths = 0.5 * (viewed[pairs[:, 0], 1] + viewed[pairs[:, 1], 1])
+    order = np.argsort(depths, kind="stable")
+    segments = points[pairs][order]
 
     members = LineCollection(
         segments,
@@ -854,12 +905,12 @@ def draw_problem_setup(
     person_height: float | None = None,
 ) -> Figure:
     """
-    The shared bridge problem, one supported and loaded span per panel.
+    The problem statement, one supported and loaded structure per panel.
 
     Parameters
     ----------
     structure :
-        The idealized deck supplying its nodes, span, and end supports.
+        The idealized structure supplying its nodes, span, and supports.
     load_cases :
         Force applied at every node under each case to draw.
     names :
@@ -882,15 +933,22 @@ def draw_problem_setup(
 
     Notes
     -----
-    This is deliberately a drawing of the common bridge deck rather than any
-    one structural topology. The arch, Warren, and Vierendeel examples span
-    the same deck under the same three patterns, so one figure serves all of
-    them without implying that their optimized forms are identical.
+    This is deliberately a drawing of the shared problem rather than any one
+    optimized topology. The arch, Warren, and Vierendeel examples span the
+    same deck under the same three patterns, so one figure serves all of them
+    without implying that their optimized forms are identical.
 
     Loads follow Vix's 2D convention: arrows scale to the largest nodal force
     within their row and stop just clear of the loaded node. Supports use its
     crisp outlined pin over hatched ground, while the page, ink, nodes, and
     titles use the rest of Normax's figure palette.
+
+    A solid structure is turned isometric through `project_view`, its members
+    painter-sorted so the near half overdraws the far, and its forces turned
+    through the same basis. Its supports keep the filled-disk convention with
+    no pin glyphs, and its denser field of arrows draws shorter. The span
+    dimension spans the projected width, which the isometric across axis keeps
+    metric; the person is a planar convention and stays None on a solid.
     """
     applied = np.asarray(load_cases)
     if applied.ndim != 3 or applied.shape[1:] != (structure.num_nodes, 3):
@@ -907,22 +965,30 @@ def draw_problem_setup(
         raise ValueError(f"person_height must be positive, got {person_height}")
 
     nodes = np.asarray(structure.nodes)
-    span = float(np.ptp(nodes[:, 0]))
+    solid = _spans_depth(nodes)
+    viewed = project_view(nodes)
+    span = float(np.ptp(viewed[:, 0]))
     if span <= 0.0:
         raise ValueError("a problem setup needs a positive horizontal span")
 
     cases = applied.shape[0]
     x_margin = 0.105 * span
-    lower = float(nodes[:, 2].min()) - 0.11 * span
-    upper = float(nodes[:, 2].max()) + 0.13 * span
+    lower = float(viewed[:, 2].min()) - 0.11 * span
+    upper = float(viewed[:, 2].max()) + 0.13 * span
     if person_height is not None:
-        upper = max(upper, float(nodes[:, 2].min()) + person_height + 0.015 * span)
-    across = (float(nodes[:, 0].min()) - x_margin, float(nodes[:, 0].max()) + x_margin)
+        upper = max(upper, float(viewed[:, 2].min()) + person_height + 0.015 * span)
+    leftmost = float(viewed[:, 0].min()) - x_margin
+    rightmost = float(viewed[:, 0].max()) + x_margin
+    across = (leftmost, rightmost)
     upward = (lower, upper)
     if layout == "vertical":
         grid = (cases, 1)
         width = WIDTH_DRAWING
         height = cases * read_drawing_height(across, upward, width)
+    elif solid:
+        grid = (1, cases)
+        width = 4.4 * cases
+        height = read_drawing_height(across, upward, 4.4)
     else:
         grid = (1, cases)
         width = 4.4 * cases
@@ -939,26 +1005,30 @@ def draw_problem_setup(
 
     supports = np.asarray(structure.supports)
     support_size = SETUP_SUPPORT_SIZE * span
-    load_length = SETUP_LOAD_LENGTH * span
+    arrow_share = SETUP_SOLID_LENGTH if solid else SETUP_LOAD_LENGTH
+    load_length = arrow_share * span
     middle = 0.5 * (across[0] + across[1])
-    person_center = float(nodes[:, 0].min()) + 0.75 * span
-    deck_level = float(nodes[:, 2].min())
+    person_center = float(viewed[:, 0].min()) + 0.75 * span
+    deck_level = float(viewed[:, 2].min())
     for order, (ax, loads, name) in enumerate(zip(drawings, applied, names), start=1):
-        centerline = ax.axvline(
-            middle,
-            color=FAINT,
-            linewidth=0.7,
-            linestyle=(0, (2, 3)),
-            alpha=0.32,
-            zorder=0,
-        )
-        centerline.set_gid("problem-midspan")
+        if not solid:
+            centerline = ax.axvline(
+                middle,
+                color=FAINT,
+                linewidth=0.7,
+                linestyle=(0, (2, 3)),
+                alpha=0.32,
+                zorder=0,
+            )
+            centerline.set_gid("problem-midspan")
         if person_height is not None:
             _draw_person(ax, person_center, deck_level, person_height)
-        _draw_setup_structure(ax, structure)
-        for support in supports:
-            _draw_pinned_support(ax, nodes[support, [0, 2]], support_size)
-        _draw_setup_loads(ax, nodes, loads, load_length)
+        _draw_setup_structure(ax, viewed, structure)
+        if not solid:
+            for support in supports:
+                _draw_pinned_support(ax, viewed[support, [0, 2]], support_size)
+        shown = turn_solid(loads) if solid else loads
+        _draw_setup_loads(ax, viewed, shown, load_length)
         ax.set_xlim(*across)
         ax.set_ylim(*upward)
         ax.set_aspect("equal")
@@ -970,11 +1040,190 @@ def draw_problem_setup(
         ax.set_yticks([])
 
     if span_label is not None:
-        left = float(nodes[:, 0].min())
-        right = float(nodes[:, 0].max())
-        height = float(nodes[:, 2].min()) - 0.078 * span
+        left = float(viewed[:, 0].min())
+        right = float(viewed[:, 0].max())
+        height = float(viewed[:, 2].min()) - 0.078 * span
         dimensioned = drawings[-1] if layout == "vertical" else drawings[cases // 2]
         _draw_span_dimension(dimensioned, left, right, height, span_label, span)
+
+    engine = figure.get_layout_engine()
+    if engine is not None:
+        engine.set(h_pad=0.02, hspace=0.0, w_pad=0.03, wspace=0.01)
+
+    paint_figure(figure)
+
+    return figure
+
+
+def _build_plan_cells(
+    plan: Float[np.ndarray, "nodes 2"],
+) -> tuple[list[Path], Float[np.ndarray, "nodes"]]:
+    """Build every node's tributary cell in plan, and the area each one owns."""
+    radius = np.hypot(plan[:, 0], plan[:, 1])
+    angle = np.arctan2(plan[:, 1], plan[:, 0])
+    half_band = 0.5 * float(np.min(radius[radius > 0.0]))
+    outermost = float(radius.max())
+    spokes = int(np.count_nonzero(np.isclose(radius, outermost)))
+    half_wedge = np.pi / spokes
+    sweep = np.linspace(-half_wedge, half_wedge, SETUP_SHADE_ARC)
+
+    cells = []
+    areas = np.empty(plan.shape[0])
+    for node, (spun, turned) in enumerate(zip(radius, angle)):
+        if spun <= half_band:
+            cells.append(Path.circle((0.0, 0.0), half_band))
+            areas[node] = np.pi * half_band**2
+            continue
+        inner = spun - half_band
+        outer = spun + half_band
+        heading = turned + sweep
+        arc_outer = np.column_stack([outer * np.cos(heading), outer * np.sin(heading)])
+        arc_inner = np.column_stack([inner * np.cos(heading), inner * np.sin(heading)])
+        ring = np.vstack([arc_outer, arc_inner[::-1], arc_outer[:1]])
+        cells.append(Path(ring, closed=True))
+        areas[node] = half_wedge * (outer**2 - inner**2)
+
+    return cells, areas
+
+
+def _drop_level_field(
+    pressures: Float[np.ndarray, "nodes"],
+) -> Float[np.ndarray, "nodes"]:
+    """Keep only the pressures standing above a case's own lightest level."""
+    loaded = pressures > 0.0
+    if not bool(loaded.any()):
+        return pressures
+    # A hair over the floor, so float noise on a level field never stands.
+    floor = float(pressures[loaded].min()) * (1.0 + 1e-9)
+    standing = pressures > floor
+    if not bool(standing.any()):
+        return np.where(loaded, pressures, 0.0)
+
+    return np.where(standing, pressures, 0.0)
+
+
+def _shade_plan_loads(
+    ax: Axes,
+    cells: Sequence[Path],
+    pressures: Float[np.ndarray, "nodes"],
+    peak: float,
+) -> None:
+    """Shade every loaded tributary cell, its opacity linear in its pressure."""
+    for cell, pressure in zip(cells, pressures):
+        if pressure <= 0.0:
+            continue
+        share = float(pressure / peak)
+        shaded = PathPatch(
+            cell,
+            facecolor=SETUP_LOAD_COLOR,
+            edgecolor="none",
+            alpha=SETUP_SHADE_ALPHA * share,
+            zorder=6,
+        )
+        shaded.set_gid("problem-cell")
+        ax.add_patch(shaded)
+
+
+def draw_problem_plan(
+    structure: Structure,
+    load_cases: Float[Array, "load_cases nodes 3"],
+    names: Sequence[str],
+    span_label: str | None = None,
+) -> Figure:
+    """
+    The load cases in plan, each pressure shaded over the structure's top view.
+
+    Parameters
+    ----------
+    structure :
+        The solid structure supplying its nodes, plan, and supports.
+    load_cases :
+        Force applied at every node under each case to draw.
+    names :
+        Title of every load case, in panel order.
+    span_label :
+        Text written with a dimension beneath the center panel, or None to
+        draw no dimension.
+
+    Returns
+    -------
+    figure :
+        One top-view panel per case, members and nodes drawn as in the other
+        problem drawings and the shaded tributary cells over them.
+
+    Notes
+    -----
+    The shade is the load data read back as pressure: a node's force magnitude
+    over the tributary cell it owns — the annular wedge reaching halfway to
+    its neighbors, the inner disc at the apex — with opacity linear in
+    pressure and one scale shared by every panel. A level case is shaded
+    whole; a case with structure to show sheds its own lightest level and
+    shades only what stands above it, so a drift reads as its sector alone.
+    Supports carry no applied load, so the boundary band stays unshaded: that
+    share goes straight to ground.
+    """
+    applied = np.asarray(load_cases)
+    if applied.ndim != 3 or applied.shape[1:] != (structure.num_nodes, 3):
+        expected = ("load_cases", structure.num_nodes, 3)
+        raise ValueError(f"load_cases must have shape {expected}, got {applied.shape}")
+    if len(names) != applied.shape[0]:
+        raise ValueError(
+            f"names must have one entry per load case, got {len(names)} for "
+            f"{applied.shape[0]} cases"
+        )
+
+    nodes = np.asarray(structure.nodes)
+    plan = nodes[:, [0, 1]]
+    span = float(np.ptp(plan[:, 0]))
+    if span <= 0.0:
+        raise ValueError("a problem plan needs a positive horizontal span")
+
+    cells, areas = _build_plan_cells(plan)
+    magnitudes = np.linalg.norm(applied, axis=2)
+    pressures = magnitudes / areas
+    peak = float(pressures.max())
+    if peak <= 0.0:
+        raise ValueError("a problem plan needs at least one loaded node")
+
+    cases = applied.shape[0]
+    margin = 0.105 * span
+    across = (float(plan[:, 0].min()) - margin, float(plan[:, 0].max()) + margin)
+    upward = (float(plan[:, 1].min()) - margin, float(plan[:, 1].max()) + margin)
+    width = 4.4 * cases
+    height = read_drawing_height(across, upward, 4.4)
+    figure, axes = plt.subplots(
+        1,
+        cases,
+        figsize=(width, height),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        layout="constrained",
+    )
+    drawings = axes.ravel()
+
+    # The top view: page x and y, with height as depth so high members draw last.
+    viewed = nodes[:, [0, 2, 1]]
+    panels = zip(drawings, pressures, names)
+    for order, (ax, case_pressures, name) in enumerate(panels, start=1):
+        _draw_setup_structure(ax, viewed, structure)
+        standing = _drop_level_field(case_pressures)
+        _shade_plan_loads(ax, cells, standing, peak)
+        ax.set_xlim(*across)
+        ax.set_ylim(*upward)
+        ax.set_aspect("equal")
+        ax.set_title(
+            f"({order})  {capitalize_label(name)}", loc="left", fontsize=SIZE_PANEL
+        )
+        ax.set_frame_on(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    if span_label is not None:
+        left = float(plan[:, 0].min())
+        right = float(plan[:, 0].max())
+        depth = float(plan[:, 1].min()) - 0.078 * span
+        _draw_span_dimension(drawings[cases // 2], left, right, depth, span_label, span)
 
     engine = figure.get_layout_engine()
     if engine is not None:

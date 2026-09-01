@@ -452,6 +452,33 @@ def build_gridshell_3d(
     return build_structure(nodes, edges, supports)
 
 
+def build_shell(description: ShellDescription) -> Structure:
+    """
+    Build the drawn cap a shell description names.
+
+    Parameters
+    ----------
+    description :
+        Ring and spoke counts, plan radius, drawn rise, and the two topology
+        toggles.
+
+    Returns
+    -------
+    shell :
+        The drawn cap.
+    """
+    shell = build_gridshell_3d(
+        description.num_rings,
+        description.num_spokes,
+        description.radius,
+        description.rise,
+        description.oculus,
+        description.braced,
+    )
+
+    return shell
+
+
 def create_groups_shell(description: ShellDescription) -> tuple[tuple[str, slice], ...]:
     """
     Name and member slice of every family, in the generator's order.

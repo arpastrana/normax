@@ -97,6 +97,10 @@ def annotate_bars(ax: Axes, bars, values: np.ndarray) -> None:
             fontsize=7.5,
             color=MUTED,
         )
+    # Headroom over the tallest bar, so its label clears the axes frame.
+    tallest = float(np.max(values))
+    low, high = ax.get_ylim()
+    ax.set_ylim(low, max(high, 2.0 * tallest))
 
 
 def draw_error_budget(
@@ -127,7 +131,7 @@ def draw_error_budget(
     ax.set_xscale("log")
     ax.set_yticks(positions, labels)
     ax.invert_yaxis()
-    ax.set_xlabel("scaled error  ·  black tick = declared bound")
+    ax.set_xlabel(r"scaled error  $\cdot$  black tick = declared bound")
     finish_axis(ax)
 
 
@@ -332,7 +336,7 @@ def draw_pynite_validation(
     ax.set_xticks(np.arange(len(timing)), timing_labels)
     ax.set_ylabel("wall time [s], log scale")
     qualifier = "measured" if finite_difference_measured else "FD projected"
-    ax.set_title(f"3  Cost at 1,267 parameters ({qualifier})")
+    ax.set_title(f"3  Cost at 1267 parameters ({qualifier})")
     annotate_bars(ax, bars, timing)
     finish_axis(ax)
 

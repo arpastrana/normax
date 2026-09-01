@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "description": "Accepted archives behind the Normax headline comparison.",
+  "acceptance": {
+    "objective_unit": "tonne",
+    "maximum_final_violation": 1e-06,
+    "claim": "Each archive records a feasible local landing, not a global optimum or a catalog-ready design."
+  },
+  "provenance": {
+    "curated_on": "2026-08-31",
+    "audited_against_commit": "d8b2bc1f277be2e846d3b622446d00810d76f209",
+    "scope": "No scientific source, example driver, YAML configuration, pyproject.toml, or uv.lock changes follow the audited commit; the submission update adds documentation, ignore rules, these archives, and this manifest. Input hashes attest the audited files, not necessarily the byte-exact generators of each archive.",
+    "uv_lock_sha256": "aae8a86e65f3a2a7b10b00e87249d0f45beca540213bb2b125c0b45e7459e875"
+  },
+  "inputs": [
+    {
+      "driver": "examples/arch.py",
+      "driver_sha256": "ad111b3f54c0dce2c26ab38801e5c43d6fc10be8403fb46966e2bf965b48aaf0",
+      "config": "examples/arch.yaml",
+      "config_sha256": "36f43253dc51dcdce901fcff2e5dc8a811f29cd4e84d05a504838264e9c1d6bf"
+    },
+    {
+      "driver": "examples/warren.py",
+      "driver_sha256": "45d5566464320219f6efce0ffaf3978cd1f32011dbb22169a430a811e96daf4a",
+      "config": "examples/warren.yaml",
+      "config_sha256": "6231afc59b90b4166e77da330dd96350123ba0e574853cb5ad445d1c293e6fc8"
+    },
+    {
+      "driver": "examples/vierendeel.py",
+      "driver_sha256": "c3936b9b96e24d9a8b871a9927a738fd981c1ce85ae002c4bea5f1245bcb2113",
+      "config": "examples/vierendeel.yaml",
+      "config_sha256": "b7fdf429a35ad4ae8250412b4af9664c0ff29abae9741de016b571c2ce4d5681"
+    },
+    {
+      "driver": "examples/gridshell.py",
+      "driver_sha256": "357b7a7fb4eafbc9136d1ff3cb01ab9a3848e8eb290e465758151a84c9ba15c3",
+      "config": "examples/gridshell.yaml",
+      "config_sha256": "9608a4a268e956e284a0b61e894d754631b66b3b0634b0f36072759859a57e11"
+    }
+  ],
+  "archive_schema": [
+    "parameters",
+    "iterates",
+    "objectives",
+    "violations",
+    "round_index"
+  ],
+  "archives": [
+    {
+      "path": "data/arch.npz",
+      "structure": "arch",
+      "route": "fdm",
+      "sha256": "d2f0d6b0ae1b64a182a9d01e6d404017a9e262f40a8e5db5d017d5b0459acdcb",
+      "bytes": 8384,
+      "parameter_count": 6,
+      "recorded_steps": 98,
+      "final_round_index": 11,
+      "initial_objective": 0.2543868993919016,
+      "final_objective": 0.17168441505357512,
+      "final_violation": 3.645984361089205e-07
+    },
+    {
+      "path": "data/arch_heights.npz",
+      "structure": "arch",
+      "route": "heights",
+      "sha256": "1300b81497968fb0e0776427b79d1d9917c1c5fe1c7d6a98c5a488e17b7cf0d4",
+      "bytes": 36824,
+      "parameter_count": 10,
+      "recorded_steps": 341,
+      "final_round_index": 10,
+      "initial_objective": 0.2543868993919016,
+      "final_objective": 0.1545609989990366,
+      "final_violation": 3.5158818079139564e-09
+    },
+    {
+      "path": "data/arch_fixed.npz",
+      "structure": "arch",
+      "route": "fixed",
+      "sha256": "2c7c0da535e86c901b8c2d33629e7de1031fc723dd98b1e32528699c83a5ab64",
+      "bytes": 4712,
+      "parameter_count": 5,
+      "recorded_steps": 53,
+      "final_round_index": 9,
+      "initial_objective": 0.2543868993919016,
+      "final_objective": 0.5176544181988065,
+      "final_violation": 1.1105615627116094e-07
+    },
+    {
+      "path": "data/warren.npz",
+      "structure": "warren",
+      "route": "fdm",
+      "sha256": "c598dd9b1fa32ce3f1224153b37bec614b82f1d8b5965f64d5da930d1183ee0a",
+      "bytes": 297384,
+      "parameter_count": 25,
+      "recorded_steps": 1321,
+      "final_round_index": 9,
+      "initial_objective": 0.15401616280980143,
+      "final_objective": 0.050742550125702966,
+      "final_violation": 8.288432701419879e-07
+    },
+    {
+      "path": "data/warren_heights.npz",
+      "structure": "warren",
+      "route": "heights",
+      "sha256": "388d0d5607dd385de13b1a59912ce40a580ab4a846892f88e043571285b092f0",
+      "bytes": 177944,
+      "parameter_count": 24,
+      "recorded_steps": 817,
+      "final_round_index": 9,
+      "initial_objective": 0.1540161628098011,
+      "final_objective": 0.05118834557013786,
+      "final_violation": 5.308355199851178e-08
+    },
+    {
+      "path": "data/warren_fixed.npz",
+      "structure": "warren",
+      "route": "fixed",
+      "sha256": "dd8b26df12ce9acf33810c675d0e4081d1f857a77defc6fb486a5a6ab4413b6b",
+      "bytes": 18280,
+      "parameter_count": 16,
+      "recorded_steps": 111,
+      "final_round_index": 5,
+      "initial_objective": 0.1540161628098011,
+      "final_objective": 0.07179660317878986,
+      "final_violation": 6.011819109197347e-08
+    },
+    {
+      "path": "data/vierendeel.npz",
+      "structure": "vierendeel",
+      "route": "fdm",
+      "sha256": "8e2297edac870200682e84199609adef4d6f1ae59b08a960396ba6c52d989cab",
+      "bytes": 278624,
+      "parameter_count": 18,
+      "recorded_steps": 1650,
+      "final_round_index": 10,
+      "initial_objective": 0.11041901826196081,
+      "final_objective": 0.12081876931443185,
+      "final_violation": 5.410682677453593e-07
+    },
+    {
+      "path": "data/vierendeel_heights.npz",
+      "structure": "vierendeel",
+      "route": "heights",
+      "sha256": "b54f45055f27aa0b1ec26d747e140b9cb4702c71cb5c5bb12e7a2e30e05c2041",
+      "bytes": 234936,
+      "parameter_count": 20,
+      "recorded_steps": 1269,
+      "final_round_index": 12,
+      "initial_objective": 0.11041901826196085,
+      "final_objective": 0.13649818240483558,
+      "final_violation": 3.85266445412924e-07
+    },
+    {
+      "path": "data/vierendeel_fixed.npz",
+      "structure": "vierendeel",
+      "route": "fixed",
+      "sha256": "3e988888470d85bb903258943e5f62a7497fbeaf2dbb7cede8eea390f17a8f26",
+      "bytes": 44336,
+      "parameter_count": 12,
+      "recorded_steps": 358,
+      "final_round_index": 7,
+      "initial_objective": 0.11041901826196085,
+      "final_objective": 0.27743522569854223,
+      "final_violation": 2.628872479704114e-07
+    },
+    {
+      "path": "data/gridshell.npz",
+      "structure": "gridshell",
+      "route": "fdm",
+      "sha256": "3d1345d086a3eabf2fc2279eeb1b98606353e409f375c8a19620977d163e2dd7",
+      "bytes": 667472,
+      "parameter_count": 54,
+      "recorded_steps": 1460,
+      "final_round_index": 9,
+      "initial_objective": 1.312050462312225,
+      "final_objective": 0.08095430147778805,
+      "final_violation": 5.66472655227912e-07
+    },
+    {
+      "path": "data/gridshell_heights.npz",
+      "structure": "gridshell",
+      "route": "heights",
+      "sha256": "bf653fb4ce358a7b5ba3133cd6fc507f6bf7cebe8a001b61f580df46723ddfff",
+      "bytes": 2052136,
+      "parameter_count": 167,
+      "recorded_steps": 1507,
+      "final_round_index": 11,
+      "initial_objective": 1.312050462312224,
+      "final_objective": 0.09130270916117308,
+      "final_violation": 3.3275794475429166e-07
+    },
+    {
+      "path": "data/gridshell_fixed.npz",
+      "structure": "gridshell",
+      "route": "fixed",
+      "sha256": "dc3a6aaa39b5ebf7ad4353937b10f2096f72421784c2281415e6af02498e48dd",
+      "bytes": 101624,
+      "parameter_count": 31,
+      "recorded_steps": 368,
+      "final_round_index": 10,
+      "initial_objective": 1.312050462312224,
+      "final_objective": 0.13842061418971754,
+      "final_violation": 6.635115246123036e-07
+    }
+  ]
+}

@@ -20,6 +20,7 @@ from normax.visualization.plots import DescentTrace
 from normax.visualization.plots import DrawnFigures
 from normax.visualization.plots import DrawnLimits
 from normax.visualization.plots import draw_design_figures
+from normax.visualization.plots import draw_problem_plan
 from normax.visualization.plots import draw_problem_setup
 from normax.visualization.plots import read_round_bounds
 from normax.visualization.plots import track_best_feasible
@@ -39,6 +40,7 @@ __all__ = [
     "draw_design_figures",
     "draw_code_validation",
     "draw_pipeline_validation",
+    "draw_problem_plan",
     "draw_problem_setup",
     "draw_pynite_validation",
     "read_round_bounds",
