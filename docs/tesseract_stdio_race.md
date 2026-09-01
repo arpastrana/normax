@@ -3,8 +3,10 @@
 Normax exposed a process-wide stdio race in overlapping local
 [Tesseract](https://github.com/pasteurlabs/tesseract-core) calls.
 The upstream report is
-[tesseract-core #709](https://github.com/pasteurlabs/tesseract-core/issues/709).
-That issue contains the standalone reproduction and current discussion.
+[tesseract-core #709](https://github.com/pasteurlabs/tesseract-core/issues/709),
+and the proposed fix is
+[tesseract-core #710](https://github.com/pasteurlabs/tesseract-core/pull/710).
+The issue contains the standalone reproduction and current discussion.
 
 ## Defect
 
